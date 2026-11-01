@@ -81,9 +81,12 @@ The runs, the way each agent found the other's log, and how the id runs were kep
 
 ## Install
 
+tokprof builds with a recent stable Rust; its dependencies need 1.89 or later.
+
 ```sh
-cargo install --path . --root ~/.local    # puts tokprof into ~/.local/bin
-cargo uninstall tokprof --root ~/.local   # removes it
+cargo install --git https://github.com/ignatov/tokprof --root ~/.local   # puts tokprof into ~/.local/bin
+cargo install --path . --root ~/.local                                    # the same, from a clone
+cargo uninstall tokprof --root ~/.local                                   # removes it
 ```
 
 ## Quick start
@@ -125,7 +128,7 @@ advice    ▸ Resuming writes the whole 817.6k context again (+$6.38), then $0.1
             routine steps.
 ```
 
-- Resuming and a new session: once the cache is cold, the first request writes the whole context again. A new session that refers to this one is compared with that, and `tokprof handoff` prints the line that starts it. The pickup cost comes from the session's own first prompt and what the reference experiment measured.
+- Resuming and a new session: once the cache is cold, the first request writes the whole context again. A new session that refers to this one is compared with that, and when it is cheaper, the X-ray gives the `tokprof handoff` command that prints the line to start it. The pickup cost starts from the smaller of the session's first prompt and its prompt after a compaction, and adds what the reference experiment measured.
 - `/compact`: on a cold cache it costs about as much as resuming, because the compaction call writes the context again too. After it, each request reads the summary instead of the context.
 - While the cache is warm, the first items say how long it stays warm, what `/compact` costs before a break, and what resuming or a new session would cost after one.
 - The window: what the context costs per prompt at the session's pace, and when auto-compaction is close.
@@ -143,15 +146,15 @@ The list's last column is the cost of one more request and its share of the sess
 
 | Key | Action |
 |---|---|
-| `↑` `↓`, `j` `k`, PgUp PgDn, `g` `G` | Move through the sessions |
-| `⏎` or `→` | Show the X-ray full screen; arrows then scroll it |
-| `←` or `esc` | Go back |
+| `↑` `↓`, `j` `k`, PgUp PgDn, `g` `G`, Home End | Move through the sessions |
+| `⏎`, `→` or `l` | Show the X-ray full screen; `↑` `↓`, `j` `k`, PgUp PgDn and space then scroll it |
+| `←`, `h`, `esc` or backspace | Go back to the list |
 | `/` | Filter by project, agent or id; `esc` clears it |
 | `s` | Sort by time, cost, or next request |
-| `f` | Write the session's JFR for IntelliJ Profiler to `~/tokprof/<id>.jfr` |
-| `o` | Write the session's HTML flame graph to `~/tokprof/<id>.html` and open it in the browser |
+| `f` | Write the session's JFR for IntelliJ Profiler to `~/tokprof/<id>.jfr`, or into `$TOKPROF_DIR` if set |
+| `o` | Write the session's HTML flame graph to `~/tokprof/<id>.html`, or into `$TOKPROF_DIR`, and open it in the browser |
 | `c` | Copy the `tokprof handoff` line for the session, to continue it in a new session |
-| `q` | Quit |
+| `q`, Ctrl+C, or `esc` in the list | Quit |
 
 The X-ray shows:
 - the session's title;
@@ -167,7 +170,7 @@ The X-ray shows:
 
 ```sh
 tokprof summary             # spend by model and component, by origin and task, misses by cause, reconciliation
-tokprof misses --top 20     # most expensive cache misses (--expected adds compactions)
+tokprof misses --top 20     # most expensive cache misses (--expected adds compactions and cleared tool results)
 tokprof whatif              # Claude input cost under 5m vs 1h cache lifetimes
 tokprof bench               # cold returns to big sessions: resume vs /compact vs a new session vs heartbeats
 tokprof prices              # prices in effect and where each came from
@@ -206,10 +209,10 @@ A session id can be shortened to its start. Codex ids are shown by their first t
 
 | Output | Open with |
 |---|---|
-| `x.jfr` | IntelliJ IDEA: Profiler > Open snapshot. Each session is a thread, and one sample is a round amount such as $0.01. |
+| `x.jfr` | IntelliJ IDEA: Profiler > Open snapshot. Each session is a thread. One sample is $0.001, or 100 tokens, and ten times more as long as the profile would hold over 2 million samples. |
 | `x.html` | Any browser. This is async-profiler's flame graph. |
 | `x.collapsed` | async-profiler's `jfrconv`, for example `jfrconv --diff before.collapsed after.collapsed diff.html` |
-| `x.pb.gz` | `go tool pprof -http=: x.pb.gz` |
+| `x.pb.gz`, `x.pprof` or `x.pb` | `go tool pprof -http=: x.pb.gz` |
 | other | Folded stacks for speedscope or flamegraph.pl. |
 
 Options:
@@ -240,7 +243,7 @@ Every block of the prompt gets the share that falls on it, in every request it i
 A request misses when it re-processes more than 5% and at least 2,000 tokens of the prefix the previous request had cached. That is Claude Code's own rule. The re-written span is charged as `rewrite after miss`, with a cause and the avoidable premium.
 
 Coverage depends on what the logs contain:
-- **Claude Code 2.1.308 and later** logs its requests, so prompts are rebuilt exactly. Older transcripts are attributed at the request level only and show up as `unknown` content.
+- **Claude Code 2.1.300 and later** logs its requests, so prompts are rebuilt exactly. Older transcripts are attributed at the request level only and show up as `unknown` content.
 - **Codex** prompts are rebuilt from the rollouts. The system prompt comes from `session_meta`, and every `response_item` is one conversation item: messages, reasoning, tool calls and their output, and `additional_tools`. A compaction swaps in its `replacement_history`.
   - Images count as a fixed size.
   - Tool schemas other than `additional_tools` are not logged.
@@ -311,3 +314,7 @@ output = 30.00
 `tokprof prices` lists every period; `tokprof prices --at 2026-08-15` shows the prices in effect on that day. The forecast of the next request uses today's prices.
 
 Dollar figures are API-equivalent. On a subscription they measure usage, not a bill.
+
+## License
+
+MIT, see [LICENSE](LICENSE). `assets/async-profiler/flame.html` is async-profiler's flame graph page, under the [Apache License 2.0](assets/async-profiler/LICENSE).

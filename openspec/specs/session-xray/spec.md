@@ -262,7 +262,7 @@ The `in context` part SHALL break down the latest prompt of the main conversatio
 - **THEN** the head says `1 turn`, or leaves the turn count out
 
 #### Scenario: Log without the prompt's content
-- **WHEN** the log does not show the content of the prompt, as in Claude Code transcripts written before 2.1.308
+- **WHEN** the log does not show the content of the prompt, as in Claude Code transcripts written before 2.1.300
 - **THEN** the head is followed only by `claude logs do not show what the prompt holds yet`
 
 ### Requirement: Content that cost the most

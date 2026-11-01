@@ -107,7 +107,7 @@ tokprof SHALL charge output tokens at the output rate to the blocks of the messa
 tokprof SHALL charge prompt tokens it cannot place to content of kind `unknown` rather than guess what they were. A request whose prompt cannot be rebuilt (see session-logs) puts its whole prompt in one `unknown` share. A message the log refers to but does not hold becomes an `unknown` block, its size estimated as the average of the prompt's resolved messages.
 
 #### Scenario: A transcript without request records
-- **WHEN** a Claude Code transcript from before 2.1.308 has no request records
+- **WHEN** a Claude Code transcript from before 2.1.300 has no request records
 - **THEN** each request's whole prompt is one `unknown` share with no tool, target or turn, while its output still goes to the blocks it produced
 - **AND** `tokprof summary` counts the request as one without a known prompt
 

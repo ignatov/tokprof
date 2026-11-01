@@ -97,7 +97,7 @@ impl Select {
     /// Whether the times of a session's main log pass; this needs no reading.
     fn times(&self, f: &SourceFile) -> bool {
         let ms = |t: SystemTime| t.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-        let created = || std::fs::metadata(&f.path).and_then(|m| m.created()).map_or(f.modified, |t| t);
+        let created = || std::fs::metadata(&f.path).and_then(|m| m.created()).unwrap_or(f.modified);
         self.since_ms.is_none_or(|s| ms(f.modified) >= s) && self.until_ms.is_none_or(|u| ms(created()) < u)
     }
 

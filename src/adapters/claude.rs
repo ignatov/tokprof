@@ -1,7 +1,7 @@
 //! Claude Code transcripts: `~/.claude/projects/<project>/<session>.jsonl`, with subagents in
 //! `<session>/subagents/agent-<id>.jsonl`.
 //!
-//! Since 2.1.308 Claude Code also writes request-audit records into the transcript:
+//! Since 2.1.300 Claude Code also writes request-audit records into the transcript:
 //! - `api-request-shape`: tools and system prompt, keyed by `shapeHash`;
 //! - `api-request-blob`: messages that cannot be derived from transcript lines, keyed by the
 //!   SHA-256 of their canonical JSON;

@@ -3,6 +3,11 @@ name = "tokprof"
 version = "0.1.0"
 edition = "2024"
 description = "Token, cost and prompt-cache profiler for AI coding-agent session logs"
+license = "MIT"
+repository = "https://github.com/ignatov/tokprof"
+readme = "README.md"
+keywords = ["claude-code", "codex", "prompt-cache", "profiler", "llm"]
+categories = ["command-line-utilities", "development-tools::profiling"]
 publish = false
 
 [dependencies]
