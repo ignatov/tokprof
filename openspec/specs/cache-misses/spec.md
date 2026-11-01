@@ -64,7 +64,7 @@ tokprof SHALL give each miss exactly one cause: the first that fits, checked fro
 - **THEN** the list of misses shows it as `<cause>: <detail>`, such as `idle > TTL: 3.3h idle, 1h TTL`
 
 ### Requirement: Model switch and compaction
-The cause SHALL be `model switch`, with detail `<previous model> -> <model>`, when the request's model differs from the previous request's; and `compaction` when the agent logged a compaction after the previous request that got a response: a Claude Code `compact_boundary`, or a Codex `compacted` item or compaction event.
+The cause SHALL be `model switch`, with detail `<previous model> -> <model>`, when the request's model differs from the previous request's; and `compaction` when the agent logged a compaction after the previous request that got a response: a Claude Code `compact_boundary`, or a Codex `compacted` item or compaction event. A compaction cause has the marker's kind (see session-logs) as its detail: `while idle` for `idle`, else the kind; a marker with no kind gives no detail.
 
 #### Scenario: Switching models
 - **WHEN** a request to `claude-opus-5-5` follows one to `claude-sonnet-5-5` and re-processes the prefix
@@ -77,6 +77,19 @@ The cause SHALL be `model switch`, with detail `<previous model> -> <model>`, wh
 #### Scenario: A cancelled request after the compaction boundary
 - **WHEN** a `compact_boundary` is followed by a request that got no response, and then by an answered request that misses
 - **THEN** the answered request's cause is `compaction`
+
+#### Scenario: A compaction while idle
+- **WHEN** the marker before a miss has the kind `idle`
+- **THEN** the list of misses shows its cause as `compaction: while idle`
+- **AND** misses by cause still count it under `compaction`
+
+#### Scenario: An auto-compaction
+- **WHEN** the marker before a miss has the kind `auto`
+- **THEN** the list of misses shows `compaction: auto`
+
+#### Scenario: A Codex compaction
+- **WHEN** the marker before a miss is a Codex `compacted` line
+- **THEN** the cause is `compaction`, with no detail
 
 ### Requirement: Idle beyond the cache lifetime
 The cause SHALL be `idle > TTL` when more time passed since the previous request than the cache lifetime. For Claude Code the lifetime is 1 hour when the previous request wrote more tokens with the 1-hour lifetime than with the 5-minute one, else 5 minutes; for Codex it is assumed to be 30 minutes. The detail reads `<idle time> idle, <lifetime> TTL`, the idle time in seconds, minutes, or hours or days to one decimal.
