@@ -1,0 +1,190 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="1142" viewBox="0 0 880 1142" role="img" aria-labelledby="title desc" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+<title id="title">One agent picking up the other's session</title>
+<desc id="desc">Claude Code claude-32c500c2: resume it $8.40, id only by Codex $1.49, id + log path by Codex $1.60, id + note by Codex $1.48; Claude Code claude-7bb3ca19: resume it $7.59, id only by Codex $1.24, id + log path by Codex $0.94, id + note by Codex $0.88; Claude Code claude-0f54de16: resume it $6.37, id only by Codex $1.59, id + log path by Codex $0.74, id + note by Codex $0.52; Claude Code claude-bec2995a: resume it $4.27, id only by Codex $1.75, id + log path by Codex $1.60, id + note by Codex $1.78; Codex codex-01a0eec6: resume it $0.60, id + log path by Claude Code $0.49, id + note by Claude Code $0.24; Codex codex-01a0b3f1: resume it $1.10, id + log path by Claude Code $0.41, id + note by Claude Code $0.24; Codex codex-01a03fe1: resume it $0.77, id only by Claude Code $0.76, id + log path by Claude Code $0.50, id + note by Claude Code $0.31</desc>
+<style>.num{font-variant-numeric:tabular-nums}</style>
+<rect width="880" height="1142" rx="10" fill="#1a1a19"/>
+<text x="24" y="34" font-size="17" font-weight="600" fill="#f0efec">One agent picking up the other's session</text>
+<text x="24" y="56" font-size="12.5" fill="#c3c2b7">Cost of picking up the work, API-equivalent. A new session in the other agent got a reference and a read-only task: what was done, what is left</text>
+<rect x="24" y="74" width="12" height="12" rx="2" fill="#3987e5"/>
+<text x="42" y="84.5" font-size="12.5" fill="#c3c2b7">resume: tokprof’s forecast of the first request</text>
+<rect x="363.75" y="74" width="12" height="12" rx="2" fill="#d95926"/>
+<text x="381.75" y="84.5" font-size="12.5" fill="#c3c2b7">new session in the other agent: measured</text>
+<text class="num" x="174.0" y="1090" font-size="11.5" text-anchor="middle" fill="#c3c2b7">$0</text>
+<text class="num" x="305.6" y="1090" font-size="11.5" text-anchor="middle" fill="#c3c2b7">$2</text>
+<text class="num" x="437.3" y="1090" font-size="11.5" text-anchor="middle" fill="#c3c2b7">$4</text>
+<text class="num" x="568.9" y="1090" font-size="11.5" text-anchor="middle" fill="#c3c2b7">$6</text>
+<text class="num" x="700.5" y="1090" font-size="11.5" text-anchor="middle" fill="#c3c2b7">$8</text>
+<line x1="174.0" y1="132" x2="174.0" y2="244" stroke="#383835" stroke-width="1"/>
+<line x1="305.6" y1="132" x2="305.6" y2="244" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="437.3" y1="132" x2="437.3" y2="244" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="568.9" y1="132" x2="568.9" y2="244" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="700.5" y1="132" x2="700.5" y2="244" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="126" font-size="13" font-weight="600" fill="#f0efec">Claude Code session, picked up by Codex<tspan font-weight="400" fill="#c3c2b7"> · the fullest context: ran for 2.2 days, 1,981 requests, context 953k tokens, log 28 MB</tspan></text>
+<g><title>Claude Code session, resume it: $8.40, forecast</title>
+<text x="164" y="151" font-size="12.5" text-anchor="end" fill="#c3c2b7">resume it</text>
+<path d="M174.0,138.0 h548.8 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-548.8 z" fill="#3987e5"/>
+<text class="num" x="734.8" y="151" font-size="12" font-weight="600" fill="#f0efec">$8.40</text>
+</g>
+<g><title>Claude Code session, id only by Codex: $1.49 · 70 s, 8 requests</title>
+<text x="164" y="179" font-size="12.5" text-anchor="end" fill="#c3c2b7">id only</text>
+<path d="M174.0,166.0 h94.1 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-94.1 z" fill="#d95926"/>
+<text class="num" x="280.1" y="179" font-size="12" font-weight="600" fill="#f0efec">$1.49 · 70 s</text>
+</g>
+<g><title>Claude Code session, id + log path by Codex: $1.60 · 74 s, 10 requests</title>
+<text x="164" y="207" font-size="12.5" text-anchor="end" fill="#c3c2b7">id + log path</text>
+<path d="M174.0,194.0 h101.3 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-101.3 z" fill="#d95926"/>
+<text class="num" x="287.3" y="207" font-size="12" font-weight="600" fill="#f0efec">$1.60 · 74 s</text>
+</g>
+<g><title>Claude Code session, id + note by Codex: $1.48 · 61 s, 10 requests</title>
+<text x="164" y="235" font-size="12.5" text-anchor="end" fill="#c3c2b7">id + note</text>
+<path d="M174.0,222.0 h93.4 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-93.4 z" fill="#d95926"/>
+<text class="num" x="279.4" y="235" font-size="12" font-weight="600" fill="#f0efec">$1.48 · 61 s</text>
+</g>
+<line x1="174.0" y1="278" x2="174.0" y2="390" stroke="#383835" stroke-width="1"/>
+<line x1="305.6" y1="278" x2="305.6" y2="390" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="437.3" y1="278" x2="437.3" y2="390" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="568.9" y1="278" x2="568.9" y2="390" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="700.5" y1="278" x2="700.5" y2="390" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="272" font-size="13" font-weight="600" fill="#f0efec">Claude Code session, picked up by Codex<tspan font-weight="400" fill="#c3c2b7"> · the biggest log with a near-full context: ran for 1.5 days, 1,648 requests, context 900k tokens, log 658 MB</tspan></text>
+<g><title>Claude Code session, resume it: $7.59, forecast</title>
+<text x="164" y="297" font-size="12.5" text-anchor="end" fill="#c3c2b7">resume it</text>
+<path d="M174.0,284.0 h495.5 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-495.5 z" fill="#3987e5"/>
+<text class="num" x="681.5" y="297" font-size="12" font-weight="600" fill="#f0efec">$7.59</text>
+</g>
+<g><title>Claude Code session, id only by Codex: $1.24 · 55 s, 8 requests</title>
+<text x="164" y="325" font-size="12.5" text-anchor="end" fill="#c3c2b7">id only</text>
+<path d="M174.0,312.0 h77.6 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-77.6 z" fill="#d95926"/>
+<text class="num" x="263.6" y="325" font-size="12" font-weight="600" fill="#f0efec">$1.24 · 55 s</text>
+</g>
+<g><title>Claude Code session, id + log path by Codex: $0.94 · 61 s, 7 requests</title>
+<text x="164" y="353" font-size="12.5" text-anchor="end" fill="#c3c2b7">id + log path</text>
+<path d="M174.0,340.0 h57.9 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-57.9 z" fill="#d95926"/>
+<text class="num" x="243.9" y="353" font-size="12" font-weight="600" fill="#f0efec">$0.94 · 61 s</text>
+</g>
+<g><title>Claude Code session, id + note by Codex: $0.88 · 35 s, 7 requests</title>
+<text x="164" y="381" font-size="12.5" text-anchor="end" fill="#c3c2b7">id + note</text>
+<path d="M174.0,368.0 h53.9 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-53.9 z" fill="#d95926"/>
+<text class="num" x="239.9" y="381" font-size="12" font-weight="600" fill="#f0efec">$0.88 · 35 s</text>
+</g>
+<line x1="174.0" y1="424" x2="174.0" y2="536" stroke="#383835" stroke-width="1"/>
+<line x1="305.6" y1="424" x2="305.6" y2="536" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="437.3" y1="424" x2="437.3" y2="536" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="568.9" y1="424" x2="568.9" y2="536" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="700.5" y1="424" x2="700.5" y2="536" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="418" font-size="13" font-weight="600" fill="#f0efec">Claude Code session, picked up by Codex<tspan font-weight="400" fill="#c3c2b7"> · the longest session: ran for 12.8 days, 293 requests, context 724k tokens, log 7.9 MB</tspan></text>
+<g><title>Claude Code session, resume it: $6.37, forecast</title>
+<text x="164" y="443" font-size="12.5" text-anchor="end" fill="#c3c2b7">resume it</text>
+<path d="M174.0,430.0 h415.2 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-415.2 z" fill="#3987e5"/>
+<text class="num" x="601.2" y="443" font-size="12" font-weight="600" fill="#f0efec">$6.37</text>
+</g>
+<g><title>Claude Code session, id only by Codex: $1.59 · 62 s, 13 requests</title>
+<text x="164" y="471" font-size="12.5" text-anchor="end" fill="#c3c2b7">id only</text>
+<path d="M174.0,458.0 h100.6 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-100.6 z" fill="#d95926"/>
+<text class="num" x="286.6" y="471" font-size="12" font-weight="600" fill="#f0efec">$1.59 · 62 s</text>
+</g>
+<g><title>Claude Code session, id + log path by Codex: $0.74 · 31 s, 5 requests</title>
+<text x="164" y="499" font-size="12.5" text-anchor="end" fill="#c3c2b7">id + log path</text>
+<path d="M174.0,486.0 h44.7 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-44.7 z" fill="#d95926"/>
+<text class="num" x="230.7" y="499" font-size="12" font-weight="600" fill="#f0efec">$0.74 · 31 s</text>
+</g>
+<g><title>Claude Code session, id + note by Codex: $0.52 · 24 s, 4 requests</title>
+<text x="164" y="527" font-size="12.5" text-anchor="end" fill="#c3c2b7">id + note</text>
+<path d="M174.0,514.0 h30.2 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-30.2 z" fill="#d95926"/>
+<text class="num" x="216.2" y="527" font-size="12" font-weight="600" fill="#f0efec">$0.52 · 24 s</text>
+</g>
+<line x1="174.0" y1="570" x2="174.0" y2="682" stroke="#383835" stroke-width="1"/>
+<line x1="305.6" y1="570" x2="305.6" y2="682" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="437.3" y1="570" x2="437.3" y2="682" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="568.9" y1="570" x2="568.9" y2="682" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="700.5" y1="570" x2="700.5" y2="682" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="564" font-size="13" font-weight="600" fill="#f0efec">Claude Code session, picked up by Codex<tspan font-weight="400" fill="#c3c2b7"> · the most requests: ran for 7.0 days, 11,056 requests, context 530k tokens, log 61 MB</tspan></text>
+<g><title>Claude Code session, resume it: $4.27, forecast</title>
+<text x="164" y="589" font-size="12.5" text-anchor="end" fill="#c3c2b7">resume it</text>
+<path d="M174.0,576.0 h277.0 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-277.0 z" fill="#3987e5"/>
+<text class="num" x="463.0" y="589" font-size="12" font-weight="600" fill="#f0efec">$4.27</text>
+</g>
+<g><title>Claude Code session, id only by Codex: $1.75 · 75 s, 9 requests</title>
+<text x="164" y="617" font-size="12.5" text-anchor="end" fill="#c3c2b7">id only</text>
+<path d="M174.0,604.0 h111.2 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-111.2 z" fill="#d95926"/>
+<text class="num" x="297.2" y="617" font-size="12" font-weight="600" fill="#f0efec">$1.75 · 75 s</text>
+</g>
+<g><title>Claude Code session, id + log path by Codex: $1.60 · 72 s, 9 requests</title>
+<text x="164" y="645" font-size="12.5" text-anchor="end" fill="#c3c2b7">id + log path</text>
+<path d="M174.0,632.0 h101.3 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-101.3 z" fill="#d95926"/>
+<text class="num" x="287.3" y="645" font-size="12" font-weight="600" fill="#f0efec">$1.60 · 72 s</text>
+</g>
+<g><title>Claude Code session, id + note by Codex: $1.78 · 74 s, 9 requests</title>
+<text x="164" y="673" font-size="12.5" text-anchor="end" fill="#c3c2b7">id + note</text>
+<path d="M174.0,660.0 h113.1 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-113.1 z" fill="#d95926"/>
+<text class="num" x="299.1" y="673" font-size="12" font-weight="600" fill="#f0efec">$1.78 · 74 s</text>
+</g>
+<line x1="174.0" y1="716" x2="174.0" y2="800" stroke="#383835" stroke-width="1"/>
+<line x1="305.6" y1="716" x2="305.6" y2="800" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="437.3" y1="716" x2="437.3" y2="800" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="568.9" y1="716" x2="568.9" y2="800" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="700.5" y1="716" x2="700.5" y2="800" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="710" font-size="13" font-weight="600" fill="#f0efec">Codex session, picked up by Claude Code<tspan font-weight="400" fill="#c3c2b7"> · the longest session: ran for 17.9 days, 15,541 requests, context 235k tokens, log 2.7 GB</tspan></text>
+<g><title>Codex session, resume it: $0.60, forecast</title>
+<text x="164" y="735" font-size="12.5" text-anchor="end" fill="#c3c2b7">resume it</text>
+<path d="M174.0,722.0 h35.5 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-35.5 z" fill="#3987e5"/>
+<text class="num" x="221.5" y="735" font-size="12" font-weight="600" fill="#f0efec">$0.60</text>
+</g>
+<g><title>Codex session, id + log path by Claude Code: $0.49 · 207 s, 7 requests</title>
+<text x="164" y="763" font-size="12.5" text-anchor="end" fill="#c3c2b7">id + log path</text>
+<path d="M174.0,750.0 h28.2 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-28.2 z" fill="#d95926"/>
+<text class="num" x="214.2" y="763" font-size="12" font-weight="600" fill="#f0efec">$0.49 · 207 s</text>
+</g>
+<g><title>Codex session, id + note by Claude Code: $0.24 · 17 s, 2 requests</title>
+<text x="164" y="791" font-size="12.5" text-anchor="end" fill="#c3c2b7">id + note</text>
+<path d="M174.0,778.0 h11.8 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-11.8 z" fill="#d95926"/>
+<text class="num" x="197.8" y="791" font-size="12" font-weight="600" fill="#f0efec">$0.24 · 17 s</text>
+</g>
+<line x1="174.0" y1="834" x2="174.0" y2="918" stroke="#383835" stroke-width="1"/>
+<line x1="305.6" y1="834" x2="305.6" y2="918" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="437.3" y1="834" x2="437.3" y2="918" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="568.9" y1="834" x2="568.9" y2="918" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="700.5" y1="834" x2="700.5" y2="918" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="828" font-size="13" font-weight="600" fill="#f0efec">Codex session, picked up by Claude Code<tspan font-weight="400" fill="#c3c2b7"> · the most requests: ran for 5.1 days, 25,297 requests, context 217k tokens, log 656 MB</tspan></text>
+<g><title>Codex session, resume it: $1.10, forecast</title>
+<text x="164" y="853" font-size="12.5" text-anchor="end" fill="#c3c2b7">resume it</text>
+<path d="M174.0,840.0 h68.4 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-68.4 z" fill="#3987e5"/>
+<text class="num" x="254.4" y="853" font-size="12" font-weight="600" fill="#f0efec">$1.10</text>
+</g>
+<g><title>Codex session, id + log path by Claude Code: $0.41 · 184 s, 8 requests</title>
+<text x="164" y="881" font-size="12.5" text-anchor="end" fill="#c3c2b7">id + log path</text>
+<path d="M174.0,868.0 h23.0 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-23.0 z" fill="#d95926"/>
+<text class="num" x="209.0" y="881" font-size="12" font-weight="600" fill="#f0efec">$0.41 · 184 s</text>
+</g>
+<g><title>Codex session, id + note by Claude Code: $0.24 · 44 s, 3 requests</title>
+<text x="164" y="909" font-size="12.5" text-anchor="end" fill="#c3c2b7">id + note</text>
+<path d="M174.0,896.0 h11.8 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-11.8 z" fill="#d95926"/>
+<text class="num" x="197.8" y="909" font-size="12" font-weight="600" fill="#f0efec">$0.24 · 44 s</text>
+</g>
+<line x1="174.0" y1="952" x2="174.0" y2="1064" stroke="#383835" stroke-width="1"/>
+<line x1="305.6" y1="952" x2="305.6" y2="1064" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="437.3" y1="952" x2="437.3" y2="1064" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="568.9" y1="952" x2="568.9" y2="1064" stroke="#2c2c2a" stroke-width="1"/>
+<line x1="700.5" y1="952" x2="700.5" y2="1064" stroke="#2c2c2a" stroke-width="1"/>
+<text x="24" y="946" font-size="13" font-weight="600" fill="#f0efec">Codex session, picked up by Claude Code<tspan font-weight="400" fill="#c3c2b7"> · picked blind for a clean id run: ran for 2.5 days, 6,927 requests, context 153k tokens, log 7.6 MB</tspan></text>
+<g><title>Codex session, resume it: $0.77, forecast</title>
+<text x="164" y="971" font-size="12.5" text-anchor="end" fill="#c3c2b7">resume it</text>
+<path d="M174.0,958.0 h46.7 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-46.7 z" fill="#3987e5"/>
+<text class="num" x="232.7" y="971" font-size="12" font-weight="600" fill="#f0efec">$0.77</text>
+</g>
+<g><title>Codex session, id only by Claude Code: $0.76 · 299 s, 14 requests</title>
+<text x="164" y="999" font-size="12.5" text-anchor="end" fill="#c3c2b7">id only</text>
+<path d="M174.0,986.0 h46.0 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-46.0 z" fill="#d95926"/>
+<text class="num" x="232.0" y="999" font-size="12" font-weight="600" fill="#f0efec">$0.76 · 299 s</text>
+</g>
+<g><title>Codex session, id + log path by Claude Code: $0.50 · 94 s, 9 requests</title>
+<text x="164" y="1027" font-size="12.5" text-anchor="end" fill="#c3c2b7">id + log path</text>
+<path d="M174.0,1014.0 h28.9 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-28.9 z" fill="#d95926"/>
+<text class="num" x="214.9" y="1027" font-size="12" font-weight="600" fill="#f0efec">$0.50 · 94 s</text>
+</g>
+<g><title>Codex session, id + note by Claude Code: $0.31 · 45 s, 3 requests</title>
+<text x="164" y="1055" font-size="12.5" text-anchor="end" fill="#c3c2b7">id + note</text>
+<path d="M174.0,1042.0 h16.4 a4.0,4.0 0 0 1 4.0,4.0 v10.0 a4.0,4.0 0 0 1 -4.0,4.0 h-16.4 z" fill="#d95926"/>
+<text class="num" x="202.4" y="1055" font-size="12" font-weight="600" fill="#f0efec">$0.31 · 45 s</text>
+</g>
+<text x="24" y="1126" font-size="11" fill="#898781">tokprof bench/reference · one run per variant · new sessions on their agent’s default model: claude-opus-5-5, gpt-6-astra</text>
+</svg>

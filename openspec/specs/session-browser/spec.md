@@ -1,0 +1,268 @@
+# Session Browser Specification
+
+## Purpose
+`tokprof sessions` lists the coding-agent sessions on this machine, and `tokprof ui` browses them in the terminal: the list on the left and the X-ray of the selected session on the right, with keys to filter, sort, write profiles and copy the handoff line. Both show what one more request in each session would cost now.
+
+## Requirements
+
+### Requirement: Session list
+`tokprof sessions` SHALL print a header and one row per session of the agents chosen with `--agent`, newest first by the last write to its main log, at most `--limit` rows (default 20). A row shows when the main log was modified (local `YYYY-MM-DD HH:MM`), the agent, the session (the first 8 characters of its id), the size of its main and subagent logs (`X.X MB`), the project, and `+N subagents` when it has any.
+
+#### Scenario: Default list
+- **WHEN** the user runs `tokprof sessions`
+- **THEN** it prints at most 20 rows, newest first, under a header that names the columns
+
+#### Scenario: A session with subagents
+- **WHEN** a session spawned 5 subagents
+- **THEN** its row ends with `+5 subagents` and its size includes their logs
+- **AND** the subagents' logs (session-logs) get no rows of their own
+
+#### Scenario: A shorter list
+- **WHEN** the user passes `--limit 5`
+- **THEN** at most 5 rows are printed
+
+#### Scenario: Other filters
+- **WHEN** `--project`, `--session`, `--since` or `--until` is given
+- **THEN** the list is not narrowed; only `--agent` selects the sessions
+
+#### Scenario: No logs
+- **WHEN** no session logs are found
+- **THEN** only the header is printed and the command succeeds
+
+### Requirement: Costs in the session list
+With `--cost`, `tokprof sessions` SHALL parse each listed session with its subagents and fill in two more columns: `cost`, the session's API-equivalent cost over its whole life, and `next request`, the next-request cell. Without `--cost`, both columns stay blank and the logs are read only as far as the row needs.
+
+#### Scenario: Costs of the latest sessions
+- **WHEN** the user runs `tokprof sessions --cost --limit 5`
+- **THEN** each row shows the session's cost, like `$10.44`, and its next-request cell, like `$0.11   1%`
+
+#### Scenario: Large amounts
+- **WHEN** a session cost $1,234.56
+- **THEN** its cost reads `$1,235`
+
+#### Scenario: Date filters
+- **WHEN** `--since 7d` is given with `--cost`
+- **THEN** each cost still covers the session's whole life
+
+#### Scenario: A log that cannot be parsed
+- **WHEN** one of a session's logs fails to parse
+- **THEN** its cost is left out of the session's cost and no error is shown
+
+### Requirement: Next-request cell
+The next-request cell, in `tokprof ui` and `tokprof sessions --cost`, SHALL show what one more request in the session's main conversation would cost now, as session-xray forecasts it, then that cost as a whole-number share of the session's cost so far, capped at 999%. It is green while the prompt cache is warm, red once it is cold and the request re-writes the whole context, and blank when there is no forecast.
+
+#### Scenario: Warm cache
+- **WHEN** the cache is warm, the forecast is $0.11 and the session cost $10.44 so far
+- **THEN** the cell reads `$0.11   1%` in green
+
+#### Scenario: Cold cache
+- **WHEN** the cache is cold and the request that re-writes the context costs $2.76 in a $10.44 session
+- **THEN** the cell reads `$2.76  26%` in red
+
+#### Scenario: The cache goes cold while the ui is open
+- **WHEN** the cache lifetime of a listed session runs out while `tokprof ui` runs
+- **THEN** its cell switches to the cold cost in red at that moment, without the session being parsed again
+
+#### Scenario: A session that cost nothing
+- **WHEN** the session's cost so far is $0.00
+- **THEN** the cell shows the forecast without a share
+
+#### Scenario: No forecast
+- **WHEN** the session's main conversation has no request with a prompt, or its model has no price
+- **THEN** the cell is blank
+
+#### Scenario: Output that is not a terminal
+- **WHEN** `tokprof sessions --cost` writes to a pipe, or `NO_COLOR` is set
+- **THEN** the cell carries no color codes
+
+### Requirement: Browser layout
+`tokprof ui` SHALL show every session that `tokprof sessions` would list, without a limit, in a 74-column list on the left, the X-ray (session-xray) of the selected session on the right, and a footer line with the keys, the active filter and the latest status message. It starts with the newest session selected.
+
+#### Scenario: A list row
+- **WHEN** the list is shown
+- **THEN** each row has the main log's last write time (local `MM-DD HH:MM`), the agent, the project clipped from the left with `…`, the session's cost in bold, and the next-request cell
+
+#### Scenario: Pane titles
+- **WHEN** the ui is drawn
+- **THEN** the list title reads like ` 756 sessions · $2,065 · by time · costing 396… · next = one more request `, where the amount is the total of the costs known so far
+- **AND** the X-ray title reads `<agent> <id> · <project>`
+
+#### Scenario: Filters on the command line
+- **WHEN** `tokprof ui` is started with `--project`, `--session`, `--since` or `--until`
+- **THEN** they are ignored, while `--agent` and `--prices` apply
+
+#### Scenario: No logs
+- **WHEN** no session logs are found
+- **THEN** `tokprof ui` fails with `no session logs found`
+
+### Requirement: Background work
+`tokprof ui` SHALL stay responsive while it parses logs: it costs every listed session in the background, in parallel, and computes X-rays one at a time for the session selected last, keeping each finished X-ray to show again when its session is selected.
+
+#### Scenario: Costs fill in
+- **WHEN** the ui starts
+- **THEN** cost cells read `…` and the list title counts `costing <n>…` until every cost is known
+
+#### Scenario: An X-ray being computed
+- **WHEN** the selected session's X-ray is not ready
+- **THEN** the right pane reads `computing the X-ray of <id> (<size> MB)…`
+
+#### Scenario: Moving fast
+- **WHEN** the selection moves past several sessions while an X-ray is being computed
+- **THEN** only the X-ray of the session selected last is computed next
+
+#### Scenario: Coming back
+- **WHEN** a session whose X-ray was computed is selected again
+- **THEN** its X-ray shows at once
+
+#### Scenario: A failing X-ray
+- **WHEN** the X-ray cannot be computed
+- **THEN** the right pane shows `error: <reason>`
+
+### Requirement: Moving through the list
+In the list, `↑` or `k` and `↓` or `j` SHALL move the selection by one session, PgUp and PgDn by a page (the terminal height less 4 rows), `g` or Home to the first session and `G` or End to the last. The selection stops at both ends, and the X-ray of the newly selected session shows from its top.
+
+#### Scenario: The last row
+- **WHEN** the last session is selected and `↓` is pressed
+- **THEN** the selection stays on it
+
+#### Scenario: Jumping
+- **WHEN** `G` and then `g` are pressed
+- **THEN** the selection goes to the last session and back to the first
+
+### Requirement: Full-screen X-ray
+`⏎`, `→` or `l` SHALL show the selected session's X-ray full screen. There `↑` or `k` and `↓` or `j` scroll it by a line, PgUp, PgDn or space by a page, and `←`, `h`, Backspace or esc go back to the list. `f`, `o`, `c` and `q` work there as in the list.
+
+#### Scenario: Scrolling
+- **WHEN** `⏎` and then `↓` are pressed
+- **THEN** the X-ray scrolls by one line and the same session stays selected
+
+#### Scenario: Back to the list
+- **WHEN** esc is pressed in the full-screen X-ray
+- **THEN** the list shows again and the ui keeps running
+
+### Requirement: Filter
+`/` SHALL start a filter that keeps only the sessions whose agent, project or id contain the typed text, ignoring case, updated with every key. `⏎` ends typing and keeps the filter; esc while typing, or esc in the list while a filter is set, clears it. The selected session stays selected while it matches; otherwise the first match is selected.
+
+#### Scenario: Typing a filter
+- **WHEN** the user presses `/` and types `air`
+- **THEN** only the sessions with `air` in their agent, project or id stay, and the footer reads `filter: air▌`
+- **AND** Backspace removes the last character typed
+
+#### Scenario: Keeping the filter
+- **WHEN** `⏎` is pressed after typing
+- **THEN** the keys move through the list again and the footer shows `filter: air`
+
+#### Scenario: Clearing the filter
+- **WHEN** esc is pressed in the list while the filter is set
+- **THEN** every session is listed again
+
+#### Scenario: Nothing matches
+- **WHEN** no session matches the filter
+- **THEN** the right pane reads `no session matches the filter`
+
+### Requirement: Sort
+`s` SHALL cycle the order of the list from time (newest main log first, the order it starts in) to cost (most expensive session first) to next request (dearest next request now first) and back to time. Sessions whose value is not known yet go last, the list re-sorts as costs arrive, and the selected session stays selected.
+
+#### Scenario: By cost
+- **WHEN** `s` is pressed once
+- **THEN** the most expensive session is on top, the sessions still being costed are at the bottom, and the list title reads `by cost`
+
+#### Scenario: By next request
+- **WHEN** `s` is pressed twice
+- **THEN** the session whose next request would cost the most now is on top, and the list title reads `by next request`
+
+#### Scenario: Back to time
+- **WHEN** `s` is pressed three times
+- **THEN** the list is newest first again
+
+### Requirement: Quit
+`q` and Ctrl+C SHALL quit `tokprof ui` and restore the terminal from any view, Ctrl+C also while a filter is being typed; esc quits too when the list is shown and no filter is set.
+
+#### Scenario: Esc in the list
+- **WHEN** esc is pressed in the list with no filter set
+- **THEN** the ui quits
+
+#### Scenario: Esc elsewhere
+- **WHEN** esc is pressed in the full-screen X-ray, or in the list while a filter is set
+- **THEN** it goes back to the list or clears the filter instead of quitting
+
+#### Scenario: Typing q into a filter
+- **WHEN** `q` is pressed while a filter is being typed
+- **THEN** `q` is added to the filter, and only Ctrl+C quits
+
+### Requirement: Profiles from the browser
+`f` SHALL write the selected session's JFR to `<profile dir>/<id>.jfr` and `o` its HTML flame graph to `<profile dir>/<id>.html`, in the background, where the profile directory is the one profile-export uses (`$TOKPROF_DIR`, or `~/tokprof`) and is created when missing. The profile covers the whole session with its subagents, with profile-export's default stack and threads, measured in cost.
+
+#### Scenario: Writing the JFR
+- **WHEN** `f` is pressed
+- **THEN** the footer reads `writing ~/tokprof/<id>.jfr…` and then `wrote <n> samples (1 = $<unit>) to ~/tokprof/<id>.jfr`
+
+#### Scenario: Writing and opening the HTML
+- **WHEN** `o` is pressed
+- **THEN** the footer reads `wrote <n> frames to ~/tokprof/<id>.html`, and the page is titled `tokprof: <agent> <project> <id>`
+- **AND** tokprof then tries to open the page with the system's `open` command
+
+#### Scenario: No way to open the page
+- **WHEN** the `open` command is missing or fails
+- **THEN** the file is still written and no error is shown
+
+#### Scenario: The export fails
+- **WHEN** the profile directory cannot be created, or a log of the session cannot be parsed
+- **THEN** the footer reads `export failed: <reason>`
+
+#### Scenario: An existing file
+- **WHEN** the file is left from an earlier export
+- **THEN** it is overwritten
+
+### Requirement: Handoff key
+`c` SHALL copy the selected session's handoff line (handoff) to the clipboard with the first of `pbcopy`, `wl-copy` and `xclip` that works, after which the footer reads `copied the handoff line for <id>: paste it into a new session`.
+
+#### Scenario: No clipboard tool
+- **WHEN** none of the three tools works
+- **THEN** nothing is copied and the footer reads `no clipboard tool (pbcopy, wl-copy, xclip); run: tokprof handoff <id>`
+
+### Requirement: Live updates
+While it runs, `tokprof ui` SHALL follow the agents' log directories: a new session joins the list, a session whose main or subagent logs change is costed and X-rayed again, and a session whose main log is deleted or moved away leaves the list. Until the new X-ray is ready, the old one stays, with `· updating…` in its title.
+
+#### Scenario: A new session
+- **WHEN** an agent starts a new session
+- **THEN** it shows up on top of the list sorted by time, and the selection stays on the session it was on
+
+#### Scenario: A growing session
+- **WHEN** the selected session's log grows
+- **THEN** its cost updates, the X-ray title reads `· updating…` until the new X-ray replaces the old one, and in time order the session moves to the top
+
+#### Scenario: A deleted session
+- **WHEN** a session's main log is deleted
+- **THEN** the session leaves the list, and if it was selected, the cursor stays on the same row
+
+#### Scenario: Dropped change events
+- **WHEN** the file system reports that it dropped change events
+- **THEN** the ui scans every log directory again, removes the sessions that are gone and adds the ones that are there
+
+#### Scenario: A directory created later
+- **WHEN** a log directory such as `~/.codex/archived_sessions` does not exist yet
+- **THEN** its parent is followed, and its sessions show up once it is created
+
+#### Scenario: Busy logs
+- **WHEN** an agent writes its log many times a second
+- **THEN** changes are gathered for 500 ms, and a session that keeps changing is costed or X-rayed again only after as long as its last costing or X-ray took, so it uses at most about half a core
+
+#### Scenario: The logs cannot be followed
+- **WHEN** the log directories cannot be watched
+- **THEN** the ui runs without live updates and the footer reads `not following the logs: <reason>`
+
+### Requirement: One frame as text
+The hidden option `tokprof ui --dump <width>x<height>` SHALL render one frame of that size as plain text on standard output and exit, without a terminal and without following the logs. It waits up to 20 s for the X-ray of the newest session, then 0.5 s more for costs, and prints every row with trailing spaces trimmed.
+
+#### Scenario: Checking the layout
+- **WHEN** the user runs `tokprof ui --dump 160x45`
+- **THEN** it prints 45 lines with the list, the X-ray of the newest session and the footer, and costs not known yet read `…`
+
+#### Scenario: A bad size
+- **WHEN** the user runs `tokprof ui --dump 160`
+- **THEN** the command fails with `--dump takes WIDTHxHEIGHT`
+
+#### Scenario: Not in the help
+- **WHEN** the user runs `tokprof ui --help`
+- **THEN** `--dump` is not listed

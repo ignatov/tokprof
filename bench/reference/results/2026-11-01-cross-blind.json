@@ -1,0 +1,61 @@
+[
+ {
+  "agent": "codex",
+  "variant": "resume",
+  "forecast": true,
+  "session": "01a03fe1-681d-78e2-884d-51e0cc9513f3",
+  "spend": "$0.77",
+  "context": "153.0k",
+  "span": "2.5d",
+  "requests": "6927",
+  "log_mb": 7.6,
+  "name": "codex-01a03fe1",
+  "pick": "picked blind for a clean id run"
+ },
+ {
+  "agent": "codex",
+  "name": "codex-01a03fe1",
+  "by": "claude",
+  "variant": "id",
+  "model": null,
+  "session": "c9e72f8b-1ece-4645-9132-63e5dc54c659",
+  "seconds": 299,
+  "cli_usd": 0.7643006000000001,
+  "spend": "$0.76",
+  "requests": "14",
+  "subagents": "0",
+  "context": "65.1k",
+  "calls": 13,
+  "note": "ran first and alone; it found the rollout by its file name in ~/.codex"
+ },
+ {
+  "agent": "codex",
+  "name": "codex-01a03fe1",
+  "by": "claude",
+  "variant": "path",
+  "model": null,
+  "session": "90af9021-8780-4b6d-8cbd-46c7a2964643",
+  "seconds": 94,
+  "cli_usd": 0.5033246,
+  "spend": "$0.50",
+  "requests": "9",
+  "subagents": "0",
+  "context": "57.9k",
+  "calls": 8
+ },
+ {
+  "agent": "codex",
+  "name": "codex-01a03fe1",
+  "by": "claude",
+  "variant": "note",
+  "model": null,
+  "session": "a9b041b7-f57f-4d88-9405-bbf5fd1d047e",
+  "seconds": 45,
+  "cli_usd": 0.32500239999999997,
+  "spend": "$0.31",
+  "requests": "3",
+  "subagents": "0",
+  "context": "46.6k",
+  "calls": 2
+ }
+]

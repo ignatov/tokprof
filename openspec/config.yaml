@@ -1,0 +1,59 @@
+schema: spec-driven
+
+# Project context: constraints an agent cannot infer from the code. Behavior lives in
+# openspec/specs/, usage in README.md.
+context: |
+  Product: tokprof, one profiler of token spend, dollars and prompt-cache misses in the logs that
+  coding agents already write (Claude Code and Codex today; Junie and OpenCode are planned).
+  Cache misses are one dimension of the profile, not a separate tool. Its edge over other tools is
+  dollars by cause across all history, subagents included, with advice on what to do next.
+
+  Constraints:
+  - Local only: tokprof reads local log files, needs no proxy or account, and makes no network
+    calls. Nothing leaves the machine.
+  - Console first: `tokprof` with no arguments answers about the latest session in under a second.
+    New features get an instant terminal view first; files (JFR, HTML) are the deeper layer.
+  - Dollars are API-equivalent and come from logged usage. Claude Code totals must stay within
+    about 1.5% of Claude Code's own cost-state counter; a change to cost attribution re-checks this.
+  - Never guess: a model or a date without a known price has no price, and content that cannot be
+    rebuilt from the log is reported as `unknown`, not estimated.
+  - Performance: the author's ~8.5 GB of logs parse in about 8 s; changes must not make this
+    noticeably slower.
+  - Profiles must open in the author's tools: IntelliJ Profiler (.jfr), async-profiler's
+    flame graph and jfrconv 4.6 (.html, .collapsed), pprof (.pb.gz).
+  - Agent log formats are external, undocumented interfaces that change between agent releases.
+    Behavior that depends on a log field names the field and the agent versions it was seen in.
+  - Charts: label every number and say what each block is; ship light and dark SVGs.
+
+  How work is checked: the main test corpus is the author's real logs in ~/.claude and ~/.codex.
+  Ideas are measured on them before they are built, and results are compared with logged totals.
+  Several agent sessions may work in this repository at once, so keep edits small and targeted.
+
+  Artifacts are written in English, like README.md. The author reads them in Russian chats, so
+  keep sentences short and plain.
+
+rules:
+  proposal:
+    - State the user-visible outcome and the command or view where it shows up.
+    - Say how the result will be checked on the real logs, with the numbers to compare.
+    - List what is out of scope.
+  specs:
+    - Describe observable behavior only; no Rust type, function, module or crate names.
+    - State every threshold, default and constant that changes a result.
+    - Refer to other capabilities by name instead of repeating their requirements.
+  design:
+    - Name the log fields and agent versions the design depends on.
+    - Estimate the effect on the parse time of the full log corpus.
+  tasks:
+    - Include unit tests for new rules, next to the code they test.
+    - Include running the changed command on the real logs and recording the numbers.
+    - Include updating README.md when user-visible behavior changes.
+
+operations:
+  apply:
+    guidance:
+      - Run `cargo test` before marking a task done.
+      - Reinstall the binary the author runs with `cargo install --path . --root ~/.local`.
+  archive:
+    guidance:
+      - Run `openspec validate --all --strict` after the specs are merged.
