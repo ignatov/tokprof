@@ -119,18 +119,26 @@ struct App {
     notes_tx: Sender<Note>,
 }
 
-pub fn run(agents: &[Agent], pricing: Pricing, dump: Option<(u16, u16)>) -> Result<()> {
+pub fn run(agents: &[Agent], pricing: Pricing, dump: Option<(u16, u16)>, select: xray::Select) -> Result<()> {
     let (notes_tx, notes_rx) = mpsc::channel();
     // The log directories are watched from before the sessions are listed, so that no change
     // is missed.
     let following = match dump {
         Some(_) => Ok(()),
         None => {
-            let tx = notes_tx.clone();
-            watch::watch(adapters::roots(agents), move |change| tx.send(Note::Change(change)).is_ok())
+            let (tx, select) = (notes_tx.clone(), select.clone());
+            watch::watch(adapters::roots(agents), move |change| {
+                // Only the sessions the filters select join the list.
+                let change = match change {
+                    Change::Session(row) if !select.row(&row) => return true,
+                    Change::All(rows) => Change::All(rows.into_iter().filter(|r| select.row(r)).collect()),
+                    change => change,
+                };
+                tx.send(Note::Change(change)).is_ok()
+            })
         }
     };
-    let rows = xray::rows(agents, usize::MAX);
+    let rows = xray::rows(agents, usize::MAX, &select);
     if rows.is_empty() {
         bail!("no session logs found");
     }
@@ -432,9 +440,9 @@ impl App {
             }
             KeyCode::Esc => return false,
             KeyCode::Up | KeyCode::Char('k') if self.zoom => self.scroll = self.scroll.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') if self.zoom => self.scroll = self.scroll.saturating_add(1),
+            KeyCode::Down | KeyCode::Char('j') if self.zoom => self.scroll = self.scroll.saturating_add(1).min(self.max_scroll(height)),
             KeyCode::PageUp if self.zoom => self.scroll = self.scroll.saturating_sub(page),
-            KeyCode::PageDown | KeyCode::Char(' ') if self.zoom => self.scroll = self.scroll.saturating_add(page),
+            KeyCode::PageDown | KeyCode::Char(' ') if self.zoom => self.scroll = self.scroll.saturating_add(page).min(self.max_scroll(height)),
             KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
             KeyCode::PageUp => self.move_by(-(page as isize)),
@@ -467,6 +475,13 @@ impl App {
     }
 
     /// Writes the selected session's profile on a worker thread; HTML opens in the browser.
+    /// How far the full-screen X-ray scrolls: until its last line is at the bottom of the pane,
+    /// which loses a footer line and two border lines from the terminal's height.
+    fn max_scroll(&self, height: u16) -> u16 {
+        let lines = self.selected().and_then(|i| self.entries[i].report.as_ref()).map_or(0, |t| t.lines.len());
+        lines.saturating_sub(height.saturating_sub(3) as usize).min(u16::MAX as usize) as u16
+    }
+
     fn export(&mut self, ext: &str, open: bool) {
         let Some(i) = self.selected() else { return };
         let row = self.entries[i].row.clone();
@@ -480,7 +495,8 @@ impl App {
                 .and_then(|_| xray::export(&row, &pricing, &path))
                 .map(|written| {
                     if open {
-                        let _ = std::process::Command::new("open").arg(&path).spawn();
+                        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+                        let _ = std::process::Command::new(opener).arg(&path).spawn();
                     }
                     format!("wrote {written}")
                 })
@@ -611,6 +627,7 @@ mod tests {
             subagents: Vec::new(),
             project: project.to_string(),
             id: format!("id{i}"),
+            session_id: format!("id{i}"),
             bytes: 1 + at,
         }
     }
@@ -697,8 +714,14 @@ mod tests {
 
         press(&mut a, KeyCode::Enter);
         assert!(a.zoom);
+        // 40 lines in a pane of 27 (30 rows less the footer and the borders) scroll by 13.
+        a.entries[2].report = Some(Text::raw(vec!["line"; 40].join("\n")));
         press(&mut a, KeyCode::Down);
         assert_eq!((a.scroll, a.selected()), (1, Some(2)), "arrows scroll the report when zoomed");
+        for _ in 0..3 {
+            press(&mut a, KeyCode::PageDown);
+        }
+        assert_eq!(a.scroll, 13, "scrolling stops at the last page");
         assert!(press(&mut a, KeyCode::Esc) && !a.zoom);
         assert!(!press(&mut a, KeyCode::Char('q')));
     }

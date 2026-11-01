@@ -6,7 +6,7 @@
 ## Requirements
 
 ### Requirement: Default output file
-Without `-o`, `tokprof flame` SHALL write a `.jfr` file into the profile directory: `$TOKPROF_DIR` when it is set and not empty, otherwise `~/tokprof`. The directory is created when it is missing, and an existing file with the same name is overwritten.
+Without `-o`, `tokprof flame` SHALL write a `.jfr` file into the profile directory: `$TOKPROF_DIR` when it is set and not empty, otherwise `~/tokprof`. The directory is created when it is missing, but only once the options are valid, and an existing file with the same name is overwritten.
 
 #### Scenario: No output option
 - **WHEN** the user runs `tokprof flame` and `TOKPROF_DIR` is not set
@@ -25,8 +25,12 @@ Without `-o`, `tokprof flame` SHALL write a `.jfr` file into the profile directo
 - **WHEN** `~/tokprof/all.jfr` is left from an earlier run
 - **THEN** it is replaced without a prompt
 
+#### Scenario: An invalid option
+- **WHEN** the user runs `tokprof flame --stack foo` and `~/tokprof` does not exist
+- **THEN** the command fails with the unknown dimension error and `~/tokprof` is not created
+
 ### Requirement: Default file name follows the filters
-The default file name SHALL be built from the global filters (session-logs), joined with `-`, then `.jfr`: the agent when exactly one is given; the `--session` value; the last path segment of `--project`; `all` when neither `--session` nor `--project` is given; `since-<value>`; `until-<value>`; and `tokens` for `--value tokens` or `misses` for `--value avoidable`. In each part, characters other than ASCII letters, digits and `.` become `-`, trimmed at both ends.
+The default file name SHALL be built from the global filters (session-logs), joined with `-`, then `.jfr`: the agent when exactly one is given; the `--session` value; the last segment of `--project` as session-logs reads it; `all` when neither `--session` nor `--project` is given; `since-<value>`; `until-<value>`; and `tokens` for `--value tokens` or `misses` for `--value avoidable`. In each part, characters other than ASCII letters, digits and `.` become `-`, trimmed at both ends.
 
 #### Scenario: All sessions
 - **WHEN** the user runs `tokprof flame`
@@ -48,8 +52,12 @@ The default file name SHALL be built from the global filters (session-logs), joi
 - **WHEN** the user runs `tokprof --until 2026-10-16 flame --value tokens`
 - **THEN** the file is `all-until-2026-10-16-tokens.jfr`
 
+#### Scenario: A project with a trailing slash
+- **WHEN** the user runs `tokprof --project ~/src/billing/ --since 7d flame`
+- **THEN** the file is `billing-since-7d.jfr`
+
 ### Requirement: The extension picks the format
-`tokprof flame -o FILE` SHALL write FILE in the format its name ends with: `.jfr` a JFR recording, `.html` async-profiler's HTML flame graph, `.collapsed` collapsed stacks with frame-type suffixes, `.pb.gz`, `.pprof` or `.pb` a gzipped pprof profile, and any other name plain folded stacks. An existing file is overwritten, and the file's directory is not created.
+`tokprof flame -o FILE` SHALL write FILE in the format its name ends with, ignoring case: `.jfr` a JFR recording, `.html` async-profiler's HTML flame graph, `.collapsed` collapsed stacks with frame-type suffixes, `.pb.gz`, `.pprof` or `.pb` a gzipped pprof profile, and any other name plain folded stacks. An existing file is overwritten, and the file's directory is not created.
 
 #### Scenario: Folded stacks for speedscope
 - **WHEN** the output is `-o stacks.txt`
@@ -63,6 +71,10 @@ The default file name SHALL be built from the global filters (session-logs), joi
 - **WHEN** the output is `-o /tmp/nodir/x.html` and `/tmp/nodir` does not exist
 - **THEN** after reading the logs the command fails with `writing /tmp/nodir/x.html`, caused by `No such file or directory`
 - **AND** for a pprof output the error reads `creating <path>` instead
+
+#### Scenario: An upper-case extension
+- **WHEN** the output is `-o x.HTML` or `-o x.JFR`
+- **THEN** the file is an HTML flame graph or a JFR recording, as for `x.html` or `x.jfr`
 
 ### Requirement: Stack dimensions
 `--stack` SHALL set the frames of every stack, root first, as a comma-separated list of the dimensions that cost-attribution defines; the default is `agent,project,session,chain,turn,kind,tool,target,component`. Empty entries in the list are ignored, and a dimension that has no value for a cost adds no frame to that cost's stack.
@@ -86,6 +98,10 @@ The default file name SHALL be built from the global filters (session-logs), joi
 #### Scenario: Separators inside values
 - **WHEN** a value, such as a command line in `target`, contains `;` or a line break
 - **THEN** each of them is replaced by a space in every format, so folded lines still split into the right frames
+
+#### Scenario: Stacks by origin and task
+- **WHEN** the user passes `--stack origin,task,kind,component`
+- **THEN** every stack starts with the request's origin, such as `skill:code-review`, then its task, such as `Angle C cross-file tracer`, and every cost has both frames
 
 ### Requirement: Measure
 `--value` SHALL pick which of the measures that cost-attribution defines every stack carries: `cost` (the default), API-equivalent dollars in micro-dollars; `tokens`; or `avoidable`, the miss premium, in micro-dollars. Each stack's value is rounded to a whole number, and in every format but pprof a stack whose value is zero or less is left out.
@@ -115,14 +131,14 @@ The default file name SHALL be built from the global filters (session-logs), joi
 
 #### Scenario: Unknown component
 - **WHEN** the user passes `--component read,foo`
-- **THEN** the command fails before reading any log with `unknown component "foo"`
+- **THEN** the command fails before reading any log with `unknown component "foo"; use read, write, rewrite, uncached, output`
 
 ### Requirement: Summary line
-After writing, `tokprof flame` SHALL print one line to standard output with what it wrote and where, the path shown with `~` for the home directory: `wrote <n> samples (1 sample = <unit>), <t> threads, <s> stack traces to <path>` for JFR, where the unit reads like `$0.001` or `100 tokens`; `wrote <n> frames to <path>` for HTML; and `wrote <n> stacks to <path>` for every other format.
+After writing, `tokprof flame` SHALL print one line to standard output with what it wrote and where, the path shown with `~` for the home directory: `wrote <n> samples (1 sample = <unit>), <t> threads, <s> stack traces to <path>` for JFR, where the unit reads like `$0.001` or `100 tokens`; `wrote <n> frames to <path>` for HTML; and `wrote <n> stacks to <path>` for every other format. A count of 1 takes the singular: `1 thread`, `1 frame`, `1 stack`, `1 sample`.
 
 #### Scenario: A JFR file
 - **WHEN** the user runs `tokprof --session 65e9d5a1 flame -o ~/tokprof/x.jfr`
-- **THEN** it prints a line such as `wrote 10549 samples (1 sample = $0.001), 1 threads, 429 stack traces to ~/tokprof/x.jfr`
+- **THEN** it prints a line such as `wrote 10549 samples (1 sample = $0.001), 1 thread, 429 stack traces to ~/tokprof/x.jfr`
 
 #### Scenario: HTML counts every frame
 - **WHEN** the output is HTML
@@ -130,7 +146,7 @@ After writing, `tokprof flame` SHALL print one line to standard output with what
 
 #### Scenario: The filters leave no cost
 - **WHEN** `--project` matches no session
-- **THEN** the file is still written, empty, and the line reads `wrote 0 samples (1 sample = $0.001), 0 threads, 0 stack traces to <path>`, `wrote 1 frames to <path>` for HTML (the root only), or `wrote 0 stacks to <path>`
+- **THEN** the file is still written, empty, and the line reads `wrote 0 samples (1 sample = $0.001), 0 threads, 0 stack traces to <path>`, `wrote 1 frame to <path>` for HTML (the root only), or `wrote 0 stacks to <path>`
 
 #### Scenario: No log file matches the session
 - **WHEN** `--session` matches no log file
@@ -207,6 +223,10 @@ In JFR output, each distinct set of values of the `--threads` dimensions SHALL b
 - **WHEN** the user passes `--threads bogus -o x.jfr`
 - **THEN** the command fails with the unknown dimension error
 - **AND** with `-o x.html` the option is ignored
+
+#### Scenario: No dimension left below the threads
+- **WHEN** every `--stack` dimension is also a `--threads` dimension, as with `--threads agent --stack agent -o x.jfr`
+- **THEN** the command fails before reading any log with `--stack needs a dimension that --threads does not take`, instead of writing a recording with no samples
 
 ### Requirement: JFR sample unit
 Each JFR sample SHALL stand for one round unit of the measure: the smallest of $0.001, $0.01, $0.1 and so on for cost and avoidable, or of 100, 1,000 and so on tokens for tokens, at which the total makes at most 2,000,000 samples. Each thread, stack and minute gets one sample per whole unit, and its remainder gives one more sample or none, with a chance equal to the remainder's share of a unit, drawn the same way on every run.

@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
 use crate::analysis::cache::Cause;
-use crate::analysis::{Component, Fact, MissEvent, RequestRecord, Sink};
+use crate::analysis::{Component, Fact, Filter, MissEvent, RequestRecord, Sink};
 use crate::export::{Frame, Stacks, Tint};
 use crate::jfr::TimedStacks;
 use crate::model::{Agent, ChainKind, Session, Usage};
@@ -222,6 +222,15 @@ pub struct ModelTotals {
 struct SessionTotals {
     ours: f64,
     reported: Option<f64>,
+    /// The first and the last request of the session, in every chain and file.
+    span: Option<(i64, i64)>,
+}
+
+fn union(a: Option<(i64, i64)>, b: Option<(i64, i64)>) -> Option<(i64, i64)> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some((a.0.min(b.0), a.1.max(b.1))),
+        (a, b) => a.or(b),
+    }
 }
 
 /// Simulated input cost of the Claude requests under each TTL policy.
@@ -278,6 +287,7 @@ impl Collector {
             let s = self.sessions.entry(k).or_default();
             s.ours += v.ours;
             s.reported = max_opt(s.reported, v.reported);
+            s.span = union(s.span, v.span);
         }
         for i in 0..2 {
             self.whatif.actual[i] += o.whatif.actual[i];
@@ -298,6 +308,9 @@ impl Sink for Collector {
         // Keyed by the short id that facts carry; subagent files share their parent's id.
         let e = self.sessions.entry((s.agent, s.short_id().to_string())).or_default();
         e.reported = max_opt(e.reported, s.reported_usd);
+        let times = s.chains.iter().flat_map(|c| &c.requests).map(|r| r.ts_ms);
+        let span = times.clone().min().zip(times.max());
+        e.span = union(e.span, span);
     }
 
     fn request(&mut self, r: &RequestRecord) {
@@ -374,6 +387,12 @@ pub fn tokens(n: f64) -> String {
     }
 }
 
+/// `1 miss`, `2 misses`: a count with the word for it.
+pub fn count(n: impl Into<u64>, one: &str, many: &str) -> String {
+    let n = n.into();
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
 pub fn usd(n: f64) -> String {
     let n = n + 0.0; // no "-0.00"
     if n.abs() >= 100.0 {
@@ -387,7 +406,8 @@ pub fn usd(n: f64) -> String {
         }
         format!("{}${out}", if n < 0.0 { "-" } else { "" })
     } else {
-        format!("${n:.2}")
+        let cents = format!("{:.2}", n.abs());
+        format!("{}${cents}", if n < 0.0 && cents != "0.00" { "-" } else { "" })
     }
 }
 
@@ -412,7 +432,9 @@ pub(crate) fn table(rows: &[Vec<String>], right_from: usize) -> String {
     out
 }
 
-pub fn summary(c: &Collector) -> String {
+/// `window` is the time filter the requests were selected by; it limits the reconciliation to
+/// the sessions it holds whole.
+pub fn summary(c: &Collector, window: &Filter) -> String {
     let mut out = String::new();
     let mut rows = vec![
         ["agent", "model", "requests", "prompt known"].iter().map(|s| s.to_string())
@@ -420,7 +442,7 @@ pub fn summary(c: &Collector) -> String {
             .chain(["total".to_string()])
             .collect::<Vec<_>>(),
     ];
-    let (mut total, mut avoidable) = (0.0, 0.0);
+    let mut total = 0.0;
     let mut unpriced: Vec<(String, f64)> = Vec::new();
     let mut models: Vec<_> = c.models.iter().collect();
     models.sort_by(|a, b| {
@@ -441,21 +463,32 @@ pub fn summary(c: &Collector) -> String {
         rows.push(row);
         if m.priced {
             total += sum;
-            avoidable += m.by_component.iter().map(|v| v.avoidable).sum::<f64>();
         } else {
             unpriced.push((model.clone(), m.by_component.iter().map(|v| v.tokens).sum::<f64>()));
         }
     }
     let _ = writeln!(out, "Spend by model (API-equivalent USD; token counts where no price is known)\n");
     out.push_str(&table(&rows, 2));
+    // The premium of the misses the cause table lists, so expected rebuilds are left out of both.
+    let avoidable: f64 = c.misses.iter().filter(|m| !m.cause.expected()).filter_map(|m| m.premium_usd).sum();
     let _ = writeln!(out, "\nTotal priced: {}   avoidable on cache misses: {} ({:.1}%)", usd(total), usd(avoidable), 100.0 * avoidable / total.max(1e-9));
     if !unpriced.is_empty() {
         let list = unpriced.iter().map(|(m, t)| format!("{m} ({} tokens)", tokens(*t))).collect::<Vec<_>>().join(", ");
         let _ = writeln!(out, "No price for {list}. Add them to {}", crate::pricing::user_config_path().display());
     }
-    let (ours, reported, n) = c.sessions.values().filter_map(|s| s.reported.map(|r| (s.ours, r))).fold((0.0, 0.0, 0), |(a, b, n), (o, r)| (a + o, b + r, n + 1));
+    // The agent's counter covers a session's whole life, so with a time filter only the sessions
+    // inside the window compare.
+    let windowed = window.since_ms.is_some() || window.until_ms.is_some();
+    let inside = |s: &&SessionTotals| !windowed || s.span.is_some_and(|(first, last)| window.accepts(first) && window.accepts(last));
+    let (ours, reported, n) = c
+        .sessions
+        .values()
+        .filter(inside)
+        .filter_map(|s| s.reported.map(|r| (s.ours, r)))
+        .fold((0.0, 0.0, 0), |(a, b, n), (o, r)| (a + o, b + r, n + 1));
     if n > 0 {
-        let _ = writeln!(out, "Claude Code's own cost counter for {n} sessions: {}; tokprof for the same sessions: {}", usd(reported), usd(ours));
+        let what = format!("{n} session{}{}", if n == 1 { "" } else { "s" }, if windowed { " inside the window" } else { "" });
+        let _ = writeln!(out, "Claude Code's own cost counter for {what}: {}; tokprof for the same sessions: {}", usd(reported), usd(ours));
     }
     out.push('\n');
     out.push_str(&work(&c.work, 15, 15));
@@ -677,6 +710,60 @@ mod tests {
         assert_eq!((tasks[0].0, tasks[0].1, tasks[0].2.requests), ("Fix the parser", "skill:code-review", 2));
         assert_eq!(w.origins().iter().map(|(o, _)| *o).collect::<Vec<_>>(), ["skill:code-review", "agent:Explore", "prompt"]);
         assert_eq!(dims("origin, task"), [Dim::Origin, Dim::Task]);
+    }
+
+    #[test]
+    fn summary_totals_match_the_cause_table_and_the_window() {
+        use crate::model::{Chain, Request};
+        let session = |id: &str, times: &[i64], reported| {
+            let mut s = Session::new(Agent::Claude, id.into());
+            s.reported_usd = Some(reported);
+            let requests = times
+                .iter()
+                .map(|&ts_ms| Request { ts_ms, model: "claude-opus-5-5".into(), usage: Usage { cache_read: 1_000, output: 10, ..Usage::default() }, ..Request::default() })
+                .collect();
+            s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+            s
+        };
+        let pricing = Pricing::defaults();
+        let window = Filter { since_ms: Some(10), until_ms: None };
+        let mut c = Collector::new(None, None);
+        for s in [session("inside", &[10, 20], 1.0), session("across", &[5, 20], 2.0)] {
+            crate::analysis::analyze(&s, &pricing, &window, &mut c);
+        }
+        let miss = |cause, premium| MissEvent {
+            agent: Agent::Claude,
+            project: String::new(),
+            session: "inside".into(),
+            chain: "main".into(),
+            ts_ms: 20,
+            model: "claude-opus-5-5".into(),
+            cause,
+            detail: String::new(),
+            context: 0,
+            rewritten: 0,
+            premium_usd: Some(premium),
+        };
+        c.misses = vec![miss(Cause::IdleTtl, 0.5), miss(Cause::Compaction, 0.2)];
+
+        let out = summary(&c, &window);
+        assert!(out.contains("avoidable on cache misses: $0.50"), "{out}");
+        assert!(out.contains("own cost counter for 1 session inside the window: $1.00;"), "{out}");
+        let all = summary(&c, &Filter::default());
+        assert!(all.contains("own cost counter for 2 sessions: $3.00;"), "{all}");
+        // No session lies wholly inside a window that ends before the last request.
+        let early = Filter { since_ms: None, until_ms: Some(15) };
+        assert!(!summary(&c, &early).contains("own cost counter"));
+    }
+
+    #[test]
+    fn a_count_of_one_takes_the_singular() {
+        assert_eq!((count(1u64, "miss", "misses"), count(0u64, "miss", "misses"), count(2u64, "miss", "misses")), ("1 miss".into(), "0 misses".into(), "2 misses".into()));
+    }
+
+    #[test]
+    fn negative_amounts_put_the_sign_first() {
+        assert_eq!((usd(-1.83), usd(-1234.0), usd(1.83), usd(-0.001), usd(0.0)), ("-$1.83".into(), "-$1,234".into(), "$1.83".into(), "$0.00".into(), "$0.00".into()));
     }
 
     #[test]

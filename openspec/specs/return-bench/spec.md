@@ -23,11 +23,11 @@
 
 #### Scenario: A log that cannot be read
 - **WHEN** one log fails to parse
-- **THEN** the bench leaves it out and goes on with the others, without printing a warning
+- **THEN** the bench leaves it out, goes on with the others, and prints a warning as the other reports do (session-logs)
 
 #### Scenario: No logs at all
 - **WHEN** no session log is found, for example because `--session` matches none
-- **THEN** the bench does not fail and reports that there are no cold returns
+- **THEN** the bench fails with `no session logs found for <agents>`, as the other reports do
 
 ### Requirement: What counts as a cold return
 A request SHALL count as a return when it comes more than one cache lifetime after the previous request of its conversation, misses the cache on that request's prompt by the cache-misses rule, uses the same model, does not follow a compaction, is sent within `--since` and `--until`, and that previous prompt, the return's context, has at least `--min-context` tokens (default 100000). Requests without prompt tokens and advisor calls are skipped.
@@ -77,7 +77,7 @@ The bench SHALL assume that the prompt cache lives 1 hour in a Claude Code conve
 - **THEN** it is a cold return, while a 29-minute break is not
 
 ### Requirement: Following a return
-The bench SHALL follow each return for up to `--requests` requests (default 60), the return being the first, and stop before the first later request that comes after a compaction or after a cold break: more than one cache lifetime after the request before it, with a cache miss, the lifetime being that of the latest cache write so far.
+The bench SHALL follow each return for up to `--requests` requests (default 60, at least 1), the return being the first, and stop before the first later request that comes after a compaction or after a cold break: more than one cache lifetime after the request before it, with a cache miss, the lifetime being that of the latest cache write so far.
 
 #### Scenario: A long warm run
 - **WHEN** a return is followed by 80 requests on a warm cache
@@ -95,6 +95,10 @@ The bench SHALL follow each return for up to `--requests` requests (default 60),
 #### Scenario: A pause the cache survived
 - **WHEN** a request in the span comes more than one cache lifetime after the one before it but still reads that prompt from the cache
 - **THEN** the span goes on through it
+
+#### Scenario: No requests to follow
+- **WHEN** the bench runs with `--requests 0`
+- **THEN** it fails with a usage error before reading any log
 
 ### Requirement: Costs priced at their time
 The bench SHALL price every cost through the pricing capability at the time it falls: a followed request at its own time and with the prompt size it has in the replay, a compaction call at the return, a handoff note at the last request before the break, and a ping at its own time. Resuming as is costs the followed requests as logged.
@@ -215,6 +219,10 @@ The heartbeat replay SHALL send a ping every 5/6 of the cache lifetime after the
 - **WHEN** the bench runs with `--keep-warm 30s`
 - **THEN** it fails with `bad duration "30s", expected 6h or 90m`
 
+#### Scenario: A window that is not whole minutes
+- **WHEN** the bench runs with `--keep-warm 0.5m` or `--keep-warm 90.5m`
+- **THEN** the report calls the window `0.5m` or `90.5m`, not `0h` or `90m`
+
 ### Requirement: A return kept warm
 When a return comes within one cache lifetime of the last ping, the heartbeat replay SHALL price its first request as on a warm cache: the previous prompt, up to the request's own prompt size, is read from the cache, and only what is new stays written or uncached; the requests after it run as logged. A return the pings did not keep warm runs as logged, after the pings.
 
@@ -231,7 +239,7 @@ When a return comes within one cache lifetime of the last ping, the heartbeat re
 - **THEN** the return stays cold, and heartbeats cost the seven pings plus the requests as logged, more than resuming
 
 ### Requirement: Per-agent table
-For each agent with returns, Claude Code first, the report SHALL give the number of returns, the `--min-context` threshold, the median context and break, the request limit and the median number of requests followed, then a table of the mean cost per return after the 1st, the 10th and the Nth request, and the total over all returns after N, for each of the four ways, each cost including what the way spends before the first request.
+For each agent with returns, Claude Code first, the report SHALL give the number of returns, the `--min-context` threshold, the median context and break, the request limit and the median number of requests followed, then a table of the mean cost per return after the 1st request, after the 10th when N is over 10, and after the Nth, and the total over all returns after N, for each of the four ways, each cost including what the way spends before the first request.
 
 #### Scenario: The reference run
 - **WHEN** the bench runs on the logs behind `docs/bench.txt`
@@ -254,8 +262,16 @@ For each agent with returns, Claude Code first, the report SHALL give the number
 - **WHEN** no agent has a return
 - **THEN** below its title line the report prints only `No cold returns to contexts of 100k+ tokens in these logs.`
 
+#### Scenario: A short follow
+- **WHEN** the bench runs with `--requests 5`
+- **THEN** the table has the columns `mean per return`, `1st request`, `5 requests` and `all returns`, with no `10 requests` column
+
+#### Scenario: Following one request
+- **WHEN** the bench runs with `--requests 1`
+- **THEN** the table has the columns `mean per return`, `1st request` and `all returns`
+
 ### Requirement: What the alternatives would have saved
-After each agent's table the report SHALL compare the alternatives with resuming after N requests: what a handoff note would have saved over all returns, and per return as a median, in dollars and percent, and in how many returns it was cheaper; from which request /compact first costs less on average and what it saves over all; how many returns heartbeats kept warm, what the pings cost and what they saved or added; and in how many returns heartbeats cost less than the note.
+After each agent's table the report SHALL compare the alternatives with resuming after N requests: what a handoff note would have saved over all returns, and per return as a median, in dollars and percent, and in how many returns it was cheaper; from which request on /compact first stays cheaper on average up to the Nth, and what it saves over all; how many returns heartbeats kept warm, what the pings cost and what they saved or added; and in how many returns heartbeats cost less than the note.
 
 #### Scenario: The reference run
 - **WHEN** the bench runs on the logs behind `docs/bench.txt`
@@ -274,6 +290,10 @@ After each agent's table the report SHALL compare the alternatives with resuming
 #### Scenario: Two separate medians
 - **WHEN** the report gives the median saving per return
 - **THEN** the median in dollars and the median in percent are taken separately, so they can come from different returns
+
+#### Scenario: /compact first catches up and falls behind again
+- **WHEN** the mean cost of /compact first drops below that of resuming at request 8 and is above it again at request N
+- **THEN** the report says `/compact first does not pay off within <N> requests.`
 
 ### Requirement: Forecast check
 For each agent the report SHALL say for how many returns, and for what share, the session-xray capability's forecast of the next request on a cold cache, made from the conversation before the break and priced at the return, came within 10% of the logged cost of the first request back.

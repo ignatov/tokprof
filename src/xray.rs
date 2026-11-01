@@ -80,22 +80,90 @@ pub fn main_sessions(agents: &[Agent]) -> Vec<SourceFile> {
     files
 }
 
-/// A session file given by path, or by a prefix of its session id.
-pub fn find(spec: &str, agents: &[Agent]) -> Result<SourceFile> {
+/// The sessions that the commands which pick or list sessions consider: the global filters.
+#[derive(Clone, Debug, Default)]
+pub struct Select {
+    /// Text the project, written with `~` for the home directory, contains.
+    pub project: Option<String>,
+    /// The start of the session id, in any case.
+    pub session: Option<String>,
+    /// The main log was written on or after this time.
+    pub since_ms: Option<i64>,
+    /// The main log was created before this time.
+    pub until_ms: Option<i64>,
+}
+
+impl Select {
+    /// Whether the times of a session's main log pass; this needs no reading.
+    fn times(&self, f: &SourceFile) -> bool {
+        let ms = |t: SystemTime| t.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        let created = || std::fs::metadata(&f.path).and_then(|m| m.created()).map_or(f.modified, |t| t);
+        self.since_ms.is_none_or(|s| ms(f.modified) >= s) && self.until_ms.is_none_or(|u| ms(created()) < u)
+    }
+
+    /// Whether the id and the project pass, as the first lines of the log tell them.
+    fn meta(&self, project: &str, id: &str) -> bool {
+        self.project.as_ref().is_none_or(|p| project.contains(p.as_str())) && self.session.as_ref().is_none_or(|s| id_starts_with(id, s))
+    }
+
+    fn reads_meta(&self) -> bool {
+        self.project.is_some() || self.session.is_some()
+    }
+
+    /// Whether a listed session passes.
+    pub fn row(&self, row: &SessionRow) -> bool {
+        self.times(&row.file) && self.meta(&row.project, &row.session_id)
+    }
+}
+
+/// Whether a session id starts with `prefix`, in any case.
+pub fn id_starts_with(id: &str, prefix: &str) -> bool {
+    id.get(..prefix.len()).is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+}
+
+/// The main log modified most recently among the selected sessions.
+pub fn latest(agents: &[Agent], select: &Select) -> Option<SourceFile> {
+    main_sessions(agents).into_iter().filter(|f| select.times(f)).find(|f| {
+        !select.reads_meta() || {
+            let (project, id) = quick_meta(f);
+            select.meta(&project, &id)
+        }
+    })
+}
+
+/// A session file given by path, or among the selected sessions by the start of its id.
+pub fn find(spec: &str, agents: &[Agent], select: &Select) -> Result<SourceFile> {
     let path = Path::new(spec);
     let agent = if adapters::codex::is_rollout(path) { Agent::Codex } else { Agent::Claude };
-    if let Some(file) = SourceFile::at(agent, path) {
+    // An absolute path, so that what is printed about the file can be opened from anywhere.
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    if let Some(file) = SourceFile::at(agent, &absolute) {
         return Ok(file);
     }
     // Claude names the file after the session id; Codex ends the rollout name with it.
-    let newest = main_sessions(agents).into_iter().find(|f| {
-        let stem = f.path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
-        stem.starts_with(spec) || stem.contains(&format!("-{spec}"))
-    });
-    match newest {
-        Some(f) => Ok(f),
-        None => bail!("no session file or session id matches {spec:?}; see `tokprof sessions`"),
+    let matches: Vec<SessionRow> = main_sessions(agents)
+        .into_iter()
+        .filter(|f| select.times(f) && id_starts_with(&crate::handoff::session_id(f), spec))
+        .map(SessionRow::new)
+        .filter(|r| select.row(r))
+        .collect();
+    match matches.as_slice() {
+        [] => bail!("no session file or session id matches {spec:?}; see `tokprof sessions`"),
+        [one] => Ok(one.file.clone()),
+        many => bail!("{}", ambiguous(spec, many)),
     }
+}
+
+/// The error for a prefix that several sessions share: up to 10 of them, newest first.
+fn ambiguous(spec: &str, rows: &[SessionRow]) -> String {
+    let mut out = format!("{spec:?} matches {} sessions; give more of the id:", rows.len());
+    for r in rows.iter().take(10) {
+        let _ = write!(out, "\n  {:<18}  {}  {:<6}  {}", r.id, local_time(r.modified_ms(), "%Y-%m-%d %H:%M"), r.file.agent.name(), r.project);
+    }
+    if rows.len() > 10 {
+        let _ = write!(out, "\n  … and {} more", rows.len() - 10);
+    }
+    out
 }
 
 /// Totals for one session, its subagents included.
@@ -164,16 +232,16 @@ pub fn xray(file: &SourceFile, pricing: &Pricing, style: &Style) -> Result<Strin
     let same_day = local_time(first, "%F") == local_time(last, "%F");
     let subagents = match files.len() - 1 {
         0 => String::new(),
-        n => format!(" · {n} subagents"),
+        n => format!(" · {}", crate::report::count(n as u64, "subagent", "subagents")),
     };
     let _ = writeln!(
         out,
-        "{} {} → {} ({}) · {} requests{subagents}",
+        "{} {} → {} ({}) · {}{subagents}",
         label("time"),
         local_time(first, "%Y-%m-%d %H:%M"),
         local_time(last, if same_day { "%H:%M" } else { "%Y-%m-%d %H:%M" }),
         human_duration((last - first) as f64 / 1000.0),
-        totals.requests,
+        crate::report::count(totals.requests, "request", "requests"),
     );
 
     let trailing = live.as_ref().and_then(|l| trailing_compaction(main, l, pricing));
@@ -560,11 +628,11 @@ fn miss_lines(out: &mut String, t: &Totals, style: &Style) {
     let rewritten: u64 = misses.iter().map(|m| m.rewritten).sum();
     let premium: f64 = misses.iter().filter_map(|m| m.premium_usd).sum();
     let head = format!(
-        "{} misses · re-processed {} tokens{}{}",
-        misses.len(),
+        "{} · re-processed {} tokens{}{}",
+        crate::report::count(misses.len() as u64, "miss", "misses"),
         tokens(rewritten as f64),
         if t.priced { format!(" · {} avoidable", usd(premium)) } else { String::new() },
-        if expected > 0 { format!(" · {expected} expected rebuilds") } else { String::new() }
+        if expected > 0 { format!(" · {}", crate::report::count(expected as u64, "expected rebuild", "expected rebuilds")) } else { String::new() }
     );
     let _ = writeln!(out, "{} {}", style.dim(&format!("{:<9}", "cache")), if misses.is_empty() { head } else { style.paint("31", &head) });
     let mut by_cause: BTreeMap<Cause, (usize, f64)> = BTreeMap::new();
@@ -613,18 +681,14 @@ fn quick_meta(file: &SourceFile) -> (String, String) {
             }
         if id.is_empty()
             && let Some(s) = v.get("sessionId").or_else(|| payload.get("id")).and_then(Value::as_str) {
-                id = s.chars().take(8).collect();
+                id = s.to_string();
             }
         if !project.is_empty() && !id.is_empty() {
             break;
         }
     }
     if id.is_empty() {
-        let name = match file.agent {
-            Agent::Codex => adapters::codex::id_from_name(&file.path),
-            Agent::Claude => file.path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string(),
-        };
-        id = name.chars().take(8).collect();
+        id = crate::handoff::session_id(file);
     }
     (project, id)
 }
@@ -635,18 +699,22 @@ pub struct SessionRow {
     pub file: SourceFile,
     pub subagents: Vec<SourceFile>,
     pub project: String,
+    /// The short id the session is shown by.
     pub id: String,
+    /// The whole id.
+    pub session_id: String,
     pub bytes: u64,
 }
 
 impl SessionRow {
     /// The row of the session whose main log this is.
     pub fn new(file: SourceFile) -> SessionRow {
-        let (project, id) = quick_meta(&file);
+        let (project, session_id) = quick_meta(&file);
         let mut subagents = file.subagent_files();
         subagents.sort_by(|a, b| a.path.cmp(&b.path));
         let bytes = file.size + subagents.iter().map(|s| s.size).sum::<u64>();
-        SessionRow { file, subagents, project, id, bytes }
+        let id = crate::model::short_id(file.agent, &session_id).to_string();
+        SessionRow { file, subagents, project, id, session_id, bytes }
     }
 
     pub fn modified_ms(&self) -> i64 {
@@ -658,10 +726,17 @@ impl SessionRow {
     }
 }
 
-/// Session rows, newest first.
-pub fn rows(agents: &[Agent], limit: usize) -> Vec<SessionRow> {
-    let files: Vec<SourceFile> = main_sessions(agents).into_iter().take(limit).collect();
-    files.into_par_iter().map(SessionRow::new).collect()
+/// Rows of the selected sessions, newest first.
+pub fn rows(agents: &[Agent], limit: usize, select: &Select) -> Vec<SessionRow> {
+    let files = main_sessions(agents).into_iter().filter(|f| select.times(f));
+    if !select.reads_meta() {
+        let files: Vec<SourceFile> = files.take(limit).collect();
+        return files.into_par_iter().map(SessionRow::new).collect();
+    }
+    let files: Vec<SourceFile> = files.collect();
+    let mut rows: Vec<SessionRow> = files.into_par_iter().map(SessionRow::new).filter(|r| select.row(r)).collect();
+    rows.truncate(limit);
+    rows
 }
 
 /// A session's cost with its subagents, and what its next request would cost.
@@ -715,40 +790,48 @@ pub fn next_cell(g: &Glance, now: i64) -> Option<(String, bool)> {
 pub fn export(row: &SessionRow, pricing: &Pricing, path: &Path) -> Result<String> {
     use crate::export::{self as profile, HtmlOptions, Measure};
     use crate::report::{Collector, DEFAULT_STACK, DEFAULT_THREADS, dims};
-    let jfr = path.extension().is_some_and(|e| e == "jfr");
+    let jfr = profile::has_ext(path, "jfr");
     let mut c = Collector::new(Some(dims(DEFAULT_STACK)), None);
     if jfr {
         c.threads = Some(dims(DEFAULT_THREADS));
     }
-    for file in row.files() {
-        analysis::analyze(&adapters::parse(file)?, pricing, &Filter::default(), &mut c);
+    analysis::analyze(&adapters::parse(&row.file)?, pricing, &Filter::default(), &mut c);
+    // A subagent log that cannot be read is left out, as `tokprof flame` leaves it out.
+    let mut unreadable = 0u64;
+    for file in &row.subagents {
+        match adapters::parse(file) {
+            Ok(s) => analysis::analyze(&s, pricing, &Filter::default(), &mut c),
+            Err(_) => unreadable += 1,
+        }
     }
+    let left_out = if unreadable == 0 { String::new() } else { format!(", {} left out", crate::report::count(unreadable, "unreadable log", "unreadable logs")) };
+    let shown = adapters::display_path(&path.to_string_lossy());
     if jfr {
         let w = crate::jfr::write(path, &c.timed, Measure::Cost)?;
-        Ok(format!("{} samples (1 = ${}) to {}", w.samples, w.quantum as f64 / 1e6, adapters::display_path(&path.to_string_lossy())))
+        Ok(format!("{} (1 = ${}) to {shown}{left_out}", crate::report::count(w.samples, "sample", "samples"), w.quantum as f64 / 1e6))
     } else {
         let title = format!("tokprof: {} {} {}", row.file.agent.name(), row.project, row.id);
         let n = profile::write(path, &c.stacks, Measure::Cost, &HtmlOptions { title: &title, highlight: None })?;
-        Ok(format!("{n} frames to {}", adapters::display_path(&path.to_string_lossy())))
+        Ok(format!("{} to {shown}{left_out}", crate::report::count(n as u64, "frame", "frames")))
     }
 }
 
-pub fn sessions(agents: &[Agent], limit: usize, cost: bool, pricing: &Pricing, style: &Style) -> String {
-    let rows = rows(agents, limit);
+pub fn sessions(agents: &[Agent], limit: usize, cost: bool, pricing: &Pricing, style: &Style, select: &Select) -> String {
+    let rows = rows(agents, limit, select);
     let glances: Vec<Option<Glance>> = rows.par_iter().map(|r| cost.then(|| glance(r, pricing))).collect();
     let now = now_ms();
     let mut out = String::new();
     let (cost_head, next_head) = if cost { ("cost", "next request") } else { ("", "") };
-    let _ = writeln!(out, "{}", style.dim(&format!("{:<16}  {:<6}  {:<8}  {:>8}  {:>9}  {:<12}  project", "modified", "agent", "session", "size", cost_head, next_head)));
+    let _ = writeln!(out, "{}", style.dim(&format!("{:<16}  {:<6}  {:<18}  {:>8}  {:>9}  {:<12}  project", "modified", "agent", "session", "size", cost_head, next_head)));
     for (r, g) in rows.iter().zip(glances) {
-        let extra = if r.subagents.is_empty() { String::new() } else { style.dim(&format!("  +{} subagents", r.subagents.len())) };
+        let extra = if r.subagents.is_empty() { String::new() } else { style.dim(&format!("  +{}", crate::report::count(r.subagents.len() as u64, "subagent", "subagents"))) };
         let next = g.as_ref().and_then(|g| next_cell(g, now)).map_or_else(
             || " ".repeat(12),
             |(cell, cold)| style.paint(if cold { "31" } else { "32" }, &format!("{cell:<12}")),
         );
         let _ = writeln!(
             out,
-            "{}  {:<6}  {:<8}  {:>8}  {:>9}  {next}  {}{extra}",
+            "{}  {:<6}  {:<18}  {:>8}  {:>9}  {next}  {}{extra}",
             local_time(r.modified_ms(), "%Y-%m-%d %H:%M"),
             r.file.agent.name(),
             r.id,
@@ -766,6 +849,65 @@ mod tests {
     use crate::model::{Block, Chain, ChainKind, Compaction, Usage};
 
     const MIN: i64 = 60_000;
+
+    #[test]
+    fn session_ids_match_from_their_start_in_any_case() {
+        let id = "01a197e1-4d9f-76b1-b25d-cdd77b01e10f";
+        assert!(id_starts_with(id, "01a197e1") && id_starts_with(id, "01A197E1-4D9F") && id_starts_with(id, id));
+        assert!(!id_starts_with(id, "4d9f") && !id_starts_with(id, "2026") && !id_starts_with(id, &format!("{id}0")));
+        assert_eq!(crate::model::short_id(Agent::Codex, id), "01a197e1-4d9f-76b1");
+        // Launched in the same millisecond: the random third group keeps them apart.
+        assert_eq!(crate::model::short_id(Agent::Codex, "01a1978f-f718-7312-87f0-032deca644fd"), "01a1978f-f718-7312");
+        assert_eq!(crate::model::short_id(Agent::Codex, "01a1978f-f718-7691-b255-4f2e7d2af8e2"), "01a1978f-f718-7691");
+        assert_eq!(crate::model::short_id(Agent::Claude, "3f951de0-14bc-4966-880b-81f649966ccf"), "3f951de0");
+    }
+
+    #[test]
+    fn a_shared_prefix_lists_the_sessions() {
+        let row = |id: &str| SessionRow {
+            file: SourceFile { agent: Agent::Codex, path: format!("/r/rollout-{id}.jsonl").into(), size: 0, modified: SystemTime::UNIX_EPOCH },
+            subagents: Vec::new(),
+            project: "~/src/p".into(),
+            id: crate::model::short_id(Agent::Codex, id).to_string(),
+            session_id: id.into(),
+            bytes: 0,
+        };
+        let rows: Vec<SessionRow> = (0..12).map(|i| row(&format!("01a197e1-4d{i:02}-76b1-b25d-cdd77b01e10f"))).collect();
+        let text = ambiguous("01a197e1", &rows);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "\"01a197e1\" matches 12 sessions; give more of the id:");
+        assert!(lines[1].starts_with("  01a197e1-4d00-76b1  ") && lines[1].ends_with("codex   ~/src/p"), "{}", lines[1]);
+        assert_eq!((lines.len(), lines[11]), (12, "  … and 2 more"));
+
+        let select = Select { project: Some("src/p".into()), session: Some("01A197E1-4D05".into()), ..Select::default() };
+        assert_eq!(rows.iter().filter(|r| select.meta(&r.project, &r.session_id)).count(), 1);
+    }
+
+    #[test]
+    fn the_ui_export_leaves_out_unreadable_subagent_logs() {
+        let d = std::env::temp_dir().join(format!("tokprof-export-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let main = d.join("5e5510f0-0000-0000-0000-000000000000.jsonl");
+        std::fs::write(&main, "").unwrap();
+        let file = |path: &Path| SourceFile { agent: Agent::Claude, path: path.to_path_buf(), size: 0, modified: SystemTime::UNIX_EPOCH };
+        let row = SessionRow {
+            file: file(&main),
+            subagents: vec![file(&d.join("gone.jsonl"))],
+            project: "~/p".into(),
+            id: "5e5510f0".into(),
+            session_id: "5e5510f0-0000-0000-0000-000000000000".into(),
+            bytes: 0,
+        };
+        let written = export(&row, &Pricing::defaults(), &d.join("x.html")).unwrap();
+        assert!(written.ends_with(", 1 unreadable log left out"), "{written}");
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn a_relative_target_is_made_absolute() {
+        let file = find("Cargo.toml", &[], &Select::default()).unwrap();
+        assert!(file.path.is_absolute() && file.path.ends_with("Cargo.toml"), "{}", file.path.display());
+    }
 
     /// da18a2d8 on 2026-10-29: a 440.1k-token prompt at 18:18, 40% of it tool results, then a
     /// compaction at 19:13 with no request after it. With `earlier`, its previous compaction was
@@ -915,7 +1057,7 @@ mod tests {
     #[test]
     #[ignore]
     fn exports_the_latest_session() {
-        let row = rows(&Agent::ALL, 1).pop().expect("a local session");
+        let row = rows(&Agent::ALL, 1, &Select::default()).pop().expect("a local session");
         let dir = std::env::temp_dir().join("tokprof-test");
         std::fs::create_dir_all(&dir).unwrap();
         for ext in ["jfr", "html"] {

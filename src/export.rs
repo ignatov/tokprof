@@ -114,14 +114,22 @@ pub struct HtmlOptions<'a> {
     pub highlight: Option<&'a str>,
 }
 
-pub fn write(path: &Path, stacks: &Stacks, measure: Measure, html: &HtmlOptions) -> Result<usize> {
+/// Whether a file name ends with `.<ext>`, in any case.
+pub fn has_ext(path: &Path, ext: &str) -> bool {
     let name = path.to_string_lossy();
-    let text = if name.ends_with(".pb.gz") || name.ends_with(".pprof") || name.ends_with(".pb") {
+    name.len() > ext.len() && name.is_char_boundary(name.len() - ext.len() - 1) && {
+        let (head, tail) = name.split_at(name.len() - ext.len());
+        head.ends_with('.') && tail.eq_ignore_ascii_case(ext)
+    }
+}
+
+pub fn write(path: &Path, stacks: &Stacks, measure: Measure, html: &HtmlOptions) -> Result<usize> {
+    let text = if has_ext(path, "pb.gz") || has_ext(path, "pprof") || has_ext(path, "pb") {
         return write_pprof(path, stacks, measure);
-    } else if name.ends_with(".html") {
+    } else if has_ext(path, "html") {
         flame_html(stacks, measure, html)
     } else {
-        folded(stacks, measure, name.ends_with(".collapsed"))
+        folded(stacks, measure, has_ext(path, "collapsed"))
     };
     std::fs::write(path, &text.0).with_context(|| format!("writing {}", path.display()))?;
     Ok(text.1)
@@ -414,6 +422,12 @@ mod tests {
         s.insert(vec![f("claude", Tint::Structure), f("Read", Tint::Content), f("rewrite after miss", Tint::Miss)], v(1.0));
         s.insert(vec![f("claude", Tint::Structure), f("Bash 'x'", Tint::Content)], v(0.5));
         s
+    }
+
+    #[test]
+    fn extensions_match_in_any_case() {
+        assert!(has_ext(Path::new("x.HTML"), "html") && has_ext(Path::new("x.JFR"), "jfr") && has_ext(Path::new("/t/x.PB.GZ"), "pb.gz"));
+        assert!(!has_ext(Path::new("xhtml"), "html") && !has_ext(Path::new("html"), "html") && !has_ext(Path::new("x.pb.gz.txt"), "pb.gz"));
     }
 
     #[test]

@@ -6,7 +6,7 @@ Hand the work of an earlier coding-agent session to a new session instead of res
 ## Requirements
 
 ### Requirement: Handoff line
-`tokprof handoff [target]` SHALL print one line, `Continue from the earlier session <id>. Its log: <path>.`, for the session the target names, resolved as session-xray resolves a target, or for the latest main session when no target is given. `<id>` is the full session id: a Claude Code transcript's file name without `.jsonl`, or the thread id that ends a Codex rollout's name. `<path>` is the log's path with the home directory shown as `~`.
+`tokprof handoff [target]` SHALL print one line, `Continue from the earlier session <id>. Its log: <path>.`, for the session the target names, resolved as session-xray resolves a target, or for the latest main session when no target is given. `<id>` is the full session id: a Claude Code transcript's file name without `.jsonl`, or the thread id that ends a Codex rollout's name. `<path>` is the log's absolute path with the home directory shown as `~`.
 
 #### Scenario: Claude Code session
 - **WHEN** the user runs `tokprof handoff 3f951de0`
@@ -31,6 +31,10 @@ Hand the work of an earlier coding-agent session to a new session instead of res
 #### Scenario: Unknown target or no logs
 - **WHEN** the target matches nothing, or the chosen agents have no session logs
 - **THEN** the command fails with the same errors as `tokprof scan`
+
+#### Scenario: A relative path as the target
+- **WHEN** the user runs `tokprof handoff logs/x.jsonl` in `/work`
+- **THEN** the path in the line is `/work/logs/x.jsonl`, so a session started elsewhere can open it
 
 ### Requirement: Clipboard copy in a terminal
 When stdout is a terminal, `tokprof handoff` SHALL also copy the text it printed, the note included, to the clipboard with the first of `pbcopy`, `wl-copy` and `xclip -selection clipboard` that runs and succeeds. It then says on stderr `copied to the clipboard: paste it into a new session`, or `no clipboard tool found (pbcopy, wl-copy, xclip): copy the text above` when none worked.
@@ -74,7 +78,7 @@ With `--note`, `tokprof handoff` SHALL print `Continue from the earlier session 
 - **THEN** the note has no `## Task list` section
 
 ### Requirement: Note header
-The note SHALL open with `# Handoff from <agent> session <id8>`, where `<agent>` is `Claude Code` or `Codex` and `<id8>` the first 8 characters of the id. Then come `Project <project>, branch <branch>; <first> → <last>.`, with the local `YYYY-MM-DD HH:MM` of the first and last message, and `The full log is <size> MB: search it only for details this note lacks.`, with the log file's size on disk.
+The note SHALL open with `# Handoff from <agent> session <short id>`, where `<agent>` is `Claude Code` or `Codex` and `<short id>` the session's short id (see session-logs). Then come `Project <project>, branch <branch>; <first> → <last>.`, with the local `YYYY-MM-DD HH:MM` of the first and last message, and `The full log is <size> MB: search it only for details this note lacks.`, with the log file's size on disk.
 
 #### Scenario: Claude Code header
 - **WHEN** the log is a Claude Code transcript
@@ -95,7 +99,7 @@ The note SHALL open with `# Handoff from <agent> session <id8>`, where `<agent>`
 - **THEN** the size is that of the compressed file, as in `The full log is 0.2 MB: search it only for details this note lacks.`
 
 ### Requirement: Prompts in the note
-The note SHALL take as prompts only what a person typed. For Claude Code these are `user` lines not flagged `isMeta`, `isCompactSummary` or `isSidechain`, with a slash command shown as its name and arguments and any other text that starts with `<` left out. For Codex they are `user` messages in `response_item` lines whose text does not start with `<` or `# AGENTS.md`.
+The note SHALL take as prompts only what a person typed. For Claude Code these are `user` lines not flagged `isMeta`, `isCompactSummary` or `isSidechain`, with a slash command shown as its name and arguments and any other text that starts with `<` or `[Request interrupted` left out. For Codex they are `user` messages in `response_item` lines whose text does not start with `<` or `# AGENTS.md`.
 
 #### Scenario: Slash command
 - **WHEN** a Claude Code user line holds `<command-name>/model</command-name><command-args>opus</command-args>`
@@ -111,6 +115,10 @@ The note SHALL take as prompts only what a person typed. For Claude Code these a
 
 #### Scenario: Codex instructions
 - **WHEN** a Codex user message starts with `# AGENTS.md` or with a tag such as `<environment_context>`
+- **THEN** it is not a prompt
+
+#### Scenario: An interruption marker
+- **WHEN** a Claude Code user line holds `[Request interrupted by user]` or `[Request interrupted by user for tool use]`
 - **THEN** it is not a prompt
 
 ### Requirement: Task and latest prompts

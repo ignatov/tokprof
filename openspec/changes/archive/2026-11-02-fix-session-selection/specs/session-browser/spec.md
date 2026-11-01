@@ -26,7 +26,7 @@
 
 #### Scenario: Codex sessions started in the same minute
 - **WHEN** six Codex sessions started within one minute
-- **THEN** each row shows a different 13-character short id
+- **THEN** each row shows a different 18-character short id
 
 ### Requirement: Browser layout
 `tokprof ui` SHALL show every session that `tokprof sessions` would list, without a limit, in a 74-column list on the left, the X-ray (session-xray) of the selected session on the right, and a footer line with the keys, the active filter and the latest status message. It starts with the newest session selected.

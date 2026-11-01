@@ -6,7 +6,7 @@ The session X-ray answers in the terminal, with no setup, what one coding-agent 
 ## Requirements
 
 ### Requirement: Latest session by default
-Without a target, `tokprof` and `tokprof scan` SHALL X-ray the main session log that was modified most recently among the agents chosen with `--agent` (default `claude,codex`). Main logs are Claude Code transcripts outside a `subagents` directory and Codex rollouts whose `session_meta` line names no `parent_thread_id`. Where the logs are found belongs to session-logs.
+Without a target, `tokprof` and `tokprof scan` SHALL X-ray the main session log that was modified most recently among the sessions that `--agent` (default `claude,codex`) and the other filters select (see session-logs). Main logs are Claude Code transcripts outside a `subagents` directory and Codex rollouts whose `session_meta` line names no `parent_thread_id`. Where the logs are found belongs to session-logs.
 
 #### Scenario: No command
 - **WHEN** the user runs `tokprof` with no command
@@ -24,20 +24,24 @@ Without a target, `tokprof` and `tokprof scan` SHALL X-ray the main session log 
 - **WHEN** the chosen agents have no main session log
 - **THEN** the command fails with the error `no session logs found` and a non-zero exit code
 
+#### Scenario: A project filter
+- **WHEN** the user runs `tokprof --project billing`
+- **THEN** the X-ray is of the latest main session of a project whose path contains `billing`
+
 ### Requirement: Target resolution
-`tokprof scan <target>` SHALL X-ray the file at `<target>` when it is an existing file, and otherwise the most recently modified main session log whose file name, without its last extension, starts with `<target>` or contains `-` followed by `<target>`. Matching is case-sensitive. A file named `rollout-*.jsonl` or `rollout-*.jsonl.zst` is read as a Codex rollout, any other file as a Claude Code transcript.
+`tokprof scan <target>` SHALL X-ray the file at `<target>` when it is an existing file, and otherwise the selected main session whose id starts with `<target>`, ignoring case, as session-logs resolves a target. A file named `rollout-*.jsonl` or `rollout-*.jsonl.zst` is read as a Codex rollout, any other file as a Claude Code transcript.
 
 #### Scenario: Claude Code id prefix
 - **WHEN** the user runs `tokprof scan 3f951de0`
 - **THEN** the X-ray is of the transcript `3f951de0-14bc-4966-880b-81f649966ccf.jsonl`
 
 #### Scenario: Codex thread id
-- **WHEN** the user runs `tokprof scan 019ff5ca`
-- **THEN** the X-ray is of the rollout `rollout-2026-08-12T13-44-47-019ff5ca-0db2-7180-8f61-e241e484f21a.jsonl`, whose name holds the id after a dash
+- **WHEN** the user runs `tokprof scan 019ff5ca` and one Codex thread id starts with it
+- **THEN** the X-ray is of the rollout `rollout-2026-08-12T13-44-47-019ff5ca-0db2-7180-8f61-e241e484f21a.jsonl`
 
 #### Scenario: Several sessions share the prefix
-- **WHEN** the target matches several main session logs, as Codex thread ids made minutes apart share their first 8 characters
-- **THEN** the X-ray is of the most recently modified of them, with no warning
+- **WHEN** the target matches several main sessions, as Codex thread ids made minutes apart share their first 8 characters
+- **THEN** the command fails and lists the matching sessions by their short ids, so a longer prefix can be given
 
 #### Scenario: Compressed Codex rollout by path
 - **WHEN** the target is the path of an archived `rollout-*.jsonl.zst`
@@ -64,7 +68,11 @@ The X-ray SHALL count the whole session: its main log and every subagent log it 
 - **THEN** the X-ray is the same as without `--since`
 
 ### Requirement: Header
-The X-ray SHALL open with the title `tokprof · session X-ray` and three lines: `session` with the agent, the project path (home shown as `~`) and the full session id; `models` with each model and its request count; `time` with the first and last request in local time, the span between them, the request count and, when there are any, the number of subagent logs.
+The X-ray SHALL open with the title `tokprof · session X-ray` and these lines:
+- `session` with the agent, the project path (home shown as `~`) and the full session id;
+- `title` with the session's title (see cost-attribution) cut to 82 characters, when it has one;
+- `models` with each model and its request count;
+- `time` with the first and last request in local time, the span between them, the request count and, when there are any, the number of subagent logs.
 
 #### Scenario: Session within one day
 - **WHEN** the first and last requests fall on the same local date
@@ -82,8 +90,13 @@ The X-ray SHALL open with the title `tokprof · session X-ray` and three lines: 
 - **WHEN** the span is under a minute, under an hour, under a day, or longer
 - **THEN** it shows in seconds (`59s`), whole minutes (`45m`), hours with one decimal (`9.4h`) or days with one decimal (`1.4d`)
 
+#### Scenario: Title
+- **WHEN** the session's title is `Ревью PR #1141 по чеклисту`
+- **THEN** the line after `session` reads `title     Ревью PR #1141 по чеклисту`
+- **AND** a session without a title has no `title` line
+
 ### Requirement: Layout
-The X-ray SHALL print, in this order and separated by blank lines: the header; the `context`, `cache` and `next` lines with the advice; `spend`; `in context`; `what cost the most`; the cache misses; and the pointer `profile: tokprof flame --session <id> → <dir>/<id>.jfr (IntelliJ: Open snapshot)`, with the session's 8-character id and `~/tokprof`, or `$TOKPROF_DIR` when set, as `<dir>`. The parts about the live context need a main conversation.
+The X-ray SHALL print, in this order and separated by blank lines: the header; the `context`, `cache` and `next` lines with the advice; `spend`; the `work` block when it is shown; `in context`; `what cost the most`; the cache misses; and the pointer `profile: tokprof flame --session <id> → <dir>/<id>.jfr (IntelliJ: Open snapshot)`, with the session's 8-character id and `~/tokprof`, or `$TOKPROF_DIR` when set, as `<dir>`. The parts about the live context need a main conversation.
 
 #### Scenario: Session with a main conversation
 - **WHEN** the main log has a request with a prompt
@@ -92,7 +105,7 @@ The X-ray SHALL print, in this order and separated by blank lines: the header; t
 #### Scenario: No main conversation
 - **WHEN** the main log has no request with a prompt, for example when only its subagents made requests or the target is a subagent transcript
 - **THEN** the `context`, `cache` and `next` lines, the advice and `in context` are left out
-- **AND** the header, `spend`, `what cost the most`, the cache misses and the pointer are still printed
+- **AND** the header, `spend`, the `work` block when it is shown, `what cost the most`, the cache misses and the pointer are still printed
 
 #### Scenario: Session without requests
 - **WHEN** the log holds no request with usage
@@ -481,3 +494,21 @@ The X-ray SHALL read in full only the chosen session's main log and its subagent
 - **WHEN** the machine holds gigabytes of older logs and the latest session's logs are a few megabytes
 - **THEN** `tokprof` answers in under a second
 - **AND** it does not parse the other sessions' logs
+
+### Requirement: Work block
+After `spend`, the X-ray SHALL print a `work` block when the session, its subagents included, has more than one origin or more than one task (see cost-attribution). The block starts with `work      by origin: the kind of work each request was part of`. Then comes one line per origin, most expensive first, with a bar, its share and its cost. The sixth and later origins fold into one `<n> more` line.
+
+#### Scenario: A code-review session
+- **WHEN** a session ran the `code-review` skill with 98 subagents, at a cost of $508 of its $526
+- **THEN** the first origin line reads `skill:code-review` with a nearly full bar, `96.5%` and `$508`, followed by `prompt` and the session's other origins
+
+#### Scenario: Typed prompts only
+- **WHEN** every request of a session without subagents comes from typed prompts and the session has one title
+- **THEN** there is no `work` block
+
+### Requirement: Tasks in the work block
+When the session has more than one task, the work block SHALL go on with `by task: the session title, and what each subagent was asked to do`. Up to 6 tasks follow, most expensive first, each with its cost, the task cut to 50 characters and its main origin. A last line `<n> more tasks` counts the rest.
+
+#### Scenario: Reviewers by name
+- **WHEN** the code-review subagents were described as `Angle C cross-file tracer` and `Angle A line-by-line scan`
+- **THEN** the task lines read, for example, `$57.46  Angle C cross-file tracer` with `skill:code-review` dimmed after it

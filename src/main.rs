@@ -1,5 +1,5 @@
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -111,7 +111,7 @@ enum Command {
     /// with heartbeats that keep the cache warm.
     Bench {
         /// Follow each return for up to this many requests.
-        #[arg(long, default_value_t = 60)]
+        #[arg(long, default_value_t = 60, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         requests: usize,
         /// Only returns to contexts of at least this many tokens.
         #[arg(long, default_value_t = 100_000)]
@@ -141,6 +141,7 @@ enum Value {
 
 fn main() -> Result<()> {
     let mut cli = Cli::parse();
+    cli.project = cli.project.as_deref().map(normalize_project);
     let agents = cli
         .agent
         .iter()
@@ -152,38 +153,43 @@ fn main() -> Result<()> {
         None => Command::Scan { target: None },
         Some(c) => c,
     };
+    // Without `-o`, the profile goes into the profile directory, which is made once the options
+    // are known to be valid.
+    let mut default_dir = None;
     if let Command::Flame { output: output @ None, value, .. } = &mut command {
         let path = export::default_dir().join(default_name(&cli, *value));
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-        }
+        default_dir = path.parent().map(Path::to_path_buf);
         *output = Some(path);
     }
+    if let Command::Prices { at } = &command {
+        let at = match at.as_deref() {
+            Some(d) => Some((parse_date(d)?, d)),
+            None => None,
+        };
+        print!("{}", report::prices(&pricing, at));
+        return Ok(());
+    }
+    let filter = Filter { since_ms: cli.since.as_deref().map(parse_since).transpose()?, until_ms: cli.until.as_deref().map(parse_date).transpose()? };
+    // The commands that pick or list sessions select them by the same filters.
+    let select = xray::Select { project: cli.project.clone(), session: cli.session.clone(), since_ms: filter.since_ms, until_ms: filter.until_ms };
+    let none_found = || if cli.project.is_some() || cli.session.is_some() || cli.since.is_some() || cli.until.is_some() { "no session logs found for these filters" } else { "no session logs found" };
     match &command {
-        Command::Prices { at } => {
-            let at = match at.as_deref() {
-                Some(d) => Some((parse_date(d)?, d)),
-                None => None,
-            };
-            print!("{}", report::prices(&pricing, at));
-            return Ok(());
-        }
         Command::Scan { target } => {
             let file = match target {
-                Some(spec) => xray::find(spec, &agents)?,
-                None => xray::main_sessions(&agents).into_iter().next().context("no session logs found")?,
+                Some(spec) => xray::find(spec, &agents, &select)?,
+                None => xray::latest(&agents, &select).context(none_found())?,
             };
             print!("{}", xray::xray(&file, &pricing, &style)?);
             return Ok(());
         }
         Command::Sessions { limit, cost } => {
-            print!("{}", xray::sessions(&agents, *limit, *cost, &pricing, &style));
+            print!("{}", xray::sessions(&agents, *limit, *cost, &pricing, &style, &select));
             return Ok(());
         }
         Command::Handoff { target, note } => {
             let file = match target {
-                Some(spec) => xray::find(spec, &agents)?,
-                None => xray::main_sessions(&agents).into_iter().next().context("no session logs found")?,
+                Some(spec) => xray::find(spec, &agents, &select)?,
+                None => xray::latest(&agents, &select).context(none_found())?,
             };
             let text = if *note { handoff::with_note(&file)? } else { handoff::line(&file) };
             println!("{text}");
@@ -199,30 +205,41 @@ fn main() -> Result<()> {
         Command::Ui { dump } => {
             let size = match dump {
                 Some(d) => {
-                    let (w, h) = d.split_once('x').context("--dump takes WIDTHxHEIGHT")?;
-                    Some((w.parse()?, h.parse()?))
+                    let size = d.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
+                    Some(size.context("--dump takes WIDTHxHEIGHT")?)
                 }
                 None => None,
             };
-            return tokprof::ui::run(&agents, pricing, size);
+            return tokprof::ui::run(&agents, pricing, size, select);
         }
         _ => {}
     }
-    let filter = Filter { since_ms: cli.since.as_deref().map(parse_since).transpose()?, until_ms: cli.until.as_deref().map(parse_date).transpose()? };
     if let Command::Bench { requests, min_context, keep_warm, svg } = &command {
         let started = Instant::now();
         // Returns happen in main conversations, so subagent logs are left out.
         let files: Vec<SourceFile> = adapters::discover(&agents)
             .into_iter()
-            .filter(|f| !f.is_subagent() && cli.session.as_ref().is_none_or(|id| f.path.to_string_lossy().contains(id.as_str())))
+            .filter(|f| !f.is_subagent() && in_session(&cli, f))
             .collect();
-        let found = files
+        if files.is_empty() {
+            bail!("no session logs found for {}", cli.agent.join(", "));
+        }
+        let (found, errors) = files
             .par_iter()
-            .filter_map(|f| adapters::parse(f).ok())
-            .filter(|s| accepts(&cli, s))
-            .map(|s| bench::scan(&s, &filter, *requests, *min_context))
-            .reduce(bench::Found::default, bench::Found::merge);
+            .map(|f| match adapters::parse(f) {
+                Ok(s) if accepts(&cli, &s, f) => (bench::scan(&s, &filter, *requests, *min_context), Vec::new()),
+                Ok(_) => (bench::Found::default(), Vec::new()),
+                Err(e) => (bench::Found::default(), vec![format!("{}: {e:#}", f.path.display())]),
+            })
+            .reduce(
+                || (bench::Found::default(), Vec::new()),
+                |(a, mut ea), (b, eb)| {
+                    ea.extend(eb);
+                    (bench::Found::merge(a, b), ea)
+                },
+            );
         eprintln!("{}", sources(&files, started.elapsed().as_secs_f64()));
+        warn(&errors);
         let b = bench::replay(found, &pricing, *requests, *min_context, *keep_warm);
         print!("{}", bench::report(&b, &style));
         if let Some(path) = svg {
@@ -244,13 +261,20 @@ fn main() -> Result<()> {
     let (stack, components) = match &command {
         Command::Flame { stack, component, output, threads: thread_dims, .. } => {
             let dims = parse_dims(stack)?;
-            if output.as_ref().is_some_and(|o| o.extension().is_some_and(|e| e == "jfr")) {
-                threads = Some(parse_dims(thread_dims)?);
+            if output.as_deref().is_some_and(|o| export::has_ext(o, "jfr")) {
+                let thread_dims = parse_dims(thread_dims)?;
+                if dims.iter().all(|d| thread_dims.contains(d)) {
+                    bail!("--stack needs a dimension that --threads does not take");
+                }
+                threads = Some(thread_dims);
             }
             let comps = component
                 .iter()
-                .map(|c| Component::parse(c).with_context(|| format!("unknown component {c:?}")))
+                .map(|c| Component::parse(c).with_context(|| format!("unknown component {c:?}; use read, write, rewrite, uncached, output")))
                 .collect::<Result<Vec<_>>>()?;
+            if let Some(dir) = &default_dir {
+                std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+            }
             (Some(dims), (!comps.is_empty()).then_some(comps))
         }
         _ => (None, None),
@@ -258,11 +282,8 @@ fn main() -> Result<()> {
 
     let started = Instant::now();
     let mut files = adapters::discover(&agents);
-    if let Some(id) = &cli.session {
-        // Session ids are part of the file paths, subagent transcripts included; `accepts`
-        // still checks the parsed id.
-        files.retain(|f| f.path.to_string_lossy().contains(id.as_str()));
-    }
+    // A session's subagent logs go with it.
+    files.retain(|f| in_session(&cli, f));
     if files.is_empty() {
         bail!("no session logs found for {}", cli.agent.join(", "));
     }
@@ -274,7 +295,7 @@ fn main() -> Result<()> {
             c.files = 1;
             c.bytes = file.size;
             match adapters::parse(file) {
-                Ok(session) if accepts(&cli, &session) => analysis::analyze(&session, &pricing, &filter, &mut c),
+                Ok(session) if accepts(&cli, &session, file) => analysis::analyze(&session, &pricing, &filter, &mut c),
                 Ok(_) => {}
                 Err(e) => c.errors.push(format!("{}: {e:#}", file.path.display())),
             }
@@ -292,9 +313,7 @@ fn main() -> Result<()> {
             },
         );
     eprintln!("{}", sources(&files, started.elapsed().as_secs_f64()));
-    for e in collector.errors.iter().take(5) {
-        eprintln!("warning: {e}");
-    }
+    warn(&collector.errors);
 
     match command {
         Command::Scan { .. }
@@ -305,7 +324,7 @@ fn main() -> Result<()> {
         | Command::Bench { .. } => {
             unreachable!("handled before reading logs")
         }
-        Command::Summary => print!("{}", report::summary(&collector)),
+        Command::Summary => print!("{}", report::summary(&collector, &filter)),
         Command::Misses { top, expected } => print!("{}", report::misses(&collector, top, expected)),
         Command::Whatif => print!("{}", report::whatif(&collector)),
         Command::Flame { output, value, stack, title, highlight, .. } => {
@@ -316,22 +335,25 @@ fn main() -> Result<()> {
                 Value::Cost => (Measure::Cost, "cost, µ$"),
                 Value::Avoidable => (Measure::Avoidable, "avoidable cost of cache misses, µ$"),
             };
-            if output.extension().is_some_and(|e| e == "jfr") {
+            if export::has_ext(&output, "jfr") {
                 let w = tokprof::jfr::write(&output, &collector.timed, measure)?;
                 let per_sample = match measure {
                     Measure::Tokens => format!("{} tokens", w.quantum),
                     _ => format!("${}", w.quantum as f64 / 1e6),
                 };
                 println!(
-                    "wrote {} samples (1 sample = {per_sample}), {} threads, {} stack traces to {shown}",
-                    w.samples, w.threads, w.stack_traces
+                    "wrote {} (1 sample = {per_sample}), {}, {} to {shown}",
+                    report::count(w.samples as u64, "sample", "samples"),
+                    report::count(w.threads as u64, "thread", "threads"),
+                    report::count(w.stack_traces as u64, "stack trace", "stack traces")
                 );
                 return Ok(());
             }
             let title = title.unwrap_or_else(|| format!("tokprof: {what} by {}", stack.join(" > ")));
             let html = export::HtmlOptions { title: &title, highlight: highlight.as_deref() };
             let n = export::write(&output, &collector.stacks, measure, &html)?;
-            println!("wrote {n} {} to {shown}", if output.extension().is_some_and(|e| e == "html") { "frames" } else { "stacks" });
+            let written = if export::has_ext(&output, "html") { report::count(n as u64, "frame", "frames") } else { report::count(n as u64, "stack", "stacks") };
+            println!("wrote {written} to {shown}");
         }
     }
     Ok(())
@@ -363,9 +385,42 @@ fn default_name(cli: &Cli, value: Value) -> String {
     format!("{}.jfr", parts.join("-"))
 }
 
-fn accepts(cli: &Cli, s: &tokprof::model::Session) -> bool {
+fn accepts(cli: &Cli, s: &tokprof::model::Session, file: &SourceFile) -> bool {
     cli.project.as_ref().is_none_or(|p| s.project.contains(p.as_str()))
-        && cli.session.as_ref().is_none_or(|id| s.id.starts_with(id.as_str()))
+        && cli.session.as_ref().is_none_or(|id| xray::id_starts_with(&s.id, id) || in_session(cli, file))
+}
+
+/// Whether a log belongs to the session `--session` names: its own id, or that of the session
+/// that spawned it, starts with the text.
+fn in_session(cli: &Cli, f: &SourceFile) -> bool {
+    let Some(id) = &cli.session else { return true };
+    let main = adapters::session_of(f.agent, &f.path).unwrap_or_else(|| f.path.clone());
+    xray::id_starts_with(&handoff::id_of(f.agent, &main), id) || xray::id_starts_with(&handoff::id_of(f.agent, &f.path), id)
+}
+
+/// `--project` as the projects are written: the home directory as `~`, no trailing `/`, so that a
+/// path the shell expanded matches.
+fn normalize_project(p: &str) -> String {
+    let p = if p.len() > 1 { p.trim_end_matches('/') } else { p };
+    adapters::display_path(p)
+}
+
+/// The first logs that could not be read, then how many more there were.
+fn warn(errors: &[String]) {
+    for line in warnings(errors) {
+        eprintln!("{line}");
+    }
+}
+
+fn warnings(errors: &[String]) -> Vec<String> {
+    const SHOWN: usize = 5;
+    let mut lines: Vec<String> = errors.iter().take(SHOWN).map(|e| format!("warning: {e}")).collect();
+    match errors.len().saturating_sub(SHOWN) {
+        0 => {}
+        1 => lines.push("warning: 1 more log could not be read".to_string()),
+        n => lines.push(format!("warning: {n} more logs could not be read")),
+    }
+    lines
 }
 
 fn sources(files: &[SourceFile], secs: f64) -> String {
@@ -410,10 +465,32 @@ mod tests {
     }
 
     #[test]
+    fn warnings_stop_after_five_and_count_the_rest() {
+        let errors: Vec<String> = (0..12).map(|i| format!("log{i}: broken")).collect();
+        let lines = warnings(&errors);
+        assert_eq!(lines.len(), 6);
+        assert_eq!((lines[0].as_str(), lines[5].as_str()), ("warning: log0: broken", "warning: 7 more logs could not be read"));
+        assert_eq!(warnings(&errors[..6]).last().unwrap(), "warning: 1 more log could not be read");
+        assert_eq!(warnings(&errors[..5]).len(), 5);
+    }
+
+    #[test]
     fn default_profile_names_follow_the_filters() {
         assert_eq!(name(&["flame"], Value::Cost), "all.jfr");
         assert_eq!(name(&["--session", "3f951de0", "flame"], Value::Cost), "3f951de0.jfr");
         assert_eq!(name(&["--project", "~/src/billing", "--since", "7d", "flame"], Value::Cost), "billing-since-7d.jfr");
         assert_eq!(name(&["--agent", "codex", "flame"], Value::Avoidable), "codex-all-misses.jfr");
+        let mut cli = Cli::parse_from(["tokprof", "--project", "~/src/billing/", "--since", "7d", "flame"]);
+        cli.project = cli.project.as_deref().map(normalize_project);
+        assert_eq!(default_name(&cli, Value::Cost), "billing-since-7d.jfr");
+    }
+
+    #[test]
+    fn project_filters_read_like_the_projects() {
+        let home = std::env::home_dir().unwrap().to_string_lossy().to_string();
+        assert_eq!(normalize_project(&format!("{home}/src/app")), "~/src/app");
+        assert_eq!(normalize_project("~/src/app/"), "~/src/app");
+        assert_eq!(normalize_project("billing"), "billing");
+        assert_eq!(normalize_project("/"), "/");
     }
 }

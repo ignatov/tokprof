@@ -6,7 +6,7 @@
 ## Requirements
 
 ### Requirement: Session list
-`tokprof sessions` SHALL print a header and one row per session of the agents chosen with `--agent`, newest first by the last write to its main log, at most `--limit` rows (default 20). A row shows when the main log was modified (local `YYYY-MM-DD HH:MM`), the agent, the session (the first 8 characters of its id), the size of its main and subagent logs (`X.X MB`), the project, and `+N subagents` when it has any.
+`tokprof sessions` SHALL print a header and one row per session that the filters select (see session-logs), newest first by the last write to its main log, at most `--limit` rows (default 20). A row shows when the main log was modified (local `YYYY-MM-DD HH:MM`), the agent, the session (its short id, see session-logs), the size of its main and subagent logs (`X.X MB`), the project, and `+N subagents` when it has any.
 
 #### Scenario: Default list
 - **WHEN** the user runs `tokprof sessions`
@@ -23,11 +23,15 @@
 
 #### Scenario: Other filters
 - **WHEN** `--project`, `--session`, `--since` or `--until` is given
-- **THEN** the list is not narrowed; only `--agent` selects the sessions
+- **THEN** the list holds only the sessions they select
 
 #### Scenario: No logs
 - **WHEN** no session logs are found
 - **THEN** only the header is printed and the command succeeds
+
+#### Scenario: Codex sessions started in the same minute
+- **WHEN** six Codex sessions started within one minute
+- **THEN** each row shows a different 18-character short id
 
 ### Requirement: Costs in the session list
 With `--cost`, `tokprof sessions` SHALL parse each listed session with its subagents and fill in two more columns: `cost`, the session's API-equivalent cost over its whole life, and `next request`, the next-request cell. Without `--cost`, both columns stay blank and the logs are read only as far as the row needs.
@@ -89,7 +93,7 @@ The next-request cell, in `tokprof ui` and `tokprof sessions --cost`, SHALL show
 
 #### Scenario: Filters on the command line
 - **WHEN** `tokprof ui` is started with `--project`, `--session`, `--since` or `--until`
-- **THEN** they are ignored, while `--agent` and `--prices` apply
+- **THEN** it lists only the sessions they select, and a session that starts while it runs joins the list only when they select it
 
 #### Scenario: No logs
 - **WHEN** no session logs are found
@@ -139,6 +143,10 @@ In the list, `↑` or `k` and `↓` or `j` SHALL move the selection by one sessi
 #### Scenario: Back to the list
 - **WHEN** esc is pressed in the full-screen X-ray
 - **THEN** the list shows again and the ui keeps running
+
+#### Scenario: The end of the X-ray
+- **WHEN** the X-ray is scrolled down to its last line
+- **THEN** further `↓`, PgDn or space keep the last page on screen instead of scrolling past the end
 
 ### Requirement: Filter
 `/` SHALL start a filter that keeps only the sessions whose agent, project or id contain the typed text, ignoring case, updated with every key. `⏎` ends typing and keeps the filter; esc while typing, or esc in the list while a filter is set, clears it. The selected session stays selected while it matches; otherwise the first match is selected.
@@ -191,7 +199,7 @@ In the list, `↑` or `k` and `↓` or `j` SHALL move the selection by one sessi
 - **THEN** `q` is added to the filter, and only Ctrl+C quits
 
 ### Requirement: Profiles from the browser
-`f` SHALL write the selected session's JFR to `<profile dir>/<id>.jfr` and `o` its HTML flame graph to `<profile dir>/<id>.html`, in the background, where the profile directory is the one profile-export uses (`$TOKPROF_DIR`, or `~/tokprof`) and is created when missing. The profile covers the whole session with its subagents, with profile-export's default stack and threads, measured in cost.
+`f` SHALL write the selected session's JFR to `<profile dir>/<id>.jfr` and `o` its HTML flame graph to `<profile dir>/<id>.html`, in the background, where the profile directory is the one profile-export uses (`$TOKPROF_DIR`, or `~/tokprof`) and is created when missing. The profile covers the whole session with its subagents, with profile-export's default stack and threads, measured in cost. A subagent log that cannot be read is left out of the profile, as `tokprof flame` leaves it out.
 
 #### Scenario: Writing the JFR
 - **WHEN** `f` is pressed
@@ -200,15 +208,16 @@ In the list, `↑` or `k` and `↓` or `j` SHALL move the selection by one sessi
 #### Scenario: Writing and opening the HTML
 - **WHEN** `o` is pressed
 - **THEN** the footer reads `wrote <n> frames to ~/tokprof/<id>.html`, and the page is titled `tokprof: <agent> <project> <id>`
-- **AND** tokprof then tries to open the page with the system's `open` command
+- **AND** tokprof then tries to open the page with `open` on macOS, and with `xdg-open` elsewhere
 
 #### Scenario: No way to open the page
 - **WHEN** the `open` command is missing or fails
 - **THEN** the file is still written and no error is shown
 
 #### Scenario: The export fails
-- **WHEN** the profile directory cannot be created, or a log of the session cannot be parsed
+- **WHEN** the profile directory cannot be created, or the session's main log cannot be parsed
 - **THEN** the footer reads `export failed: <reason>`
+- **AND** a subagent log that cannot be parsed does not fail the export; the footer adds `, <n> unreadable logs left out`
 
 #### Scenario: An existing file
 - **WHEN** the file is left from an earlier export
@@ -260,7 +269,7 @@ The hidden option `tokprof ui --dump <width>x<height>` SHALL render one frame of
 - **THEN** it prints 45 lines with the list, the X-ray of the newest session and the footer, and costs not known yet read `…`
 
 #### Scenario: A bad size
-- **WHEN** the user runs `tokprof ui --dump 160`
+- **WHEN** the user runs `tokprof ui --dump 160` or `tokprof ui --dump 160xabc`
 - **THEN** the command fails with `--dump takes WIDTHxHEIGHT`
 
 #### Scenario: Not in the help

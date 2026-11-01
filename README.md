@@ -183,16 +183,20 @@ The bench replays the requests that followed each return; only the old conversat
 
 Heartbeats go out at 5/6 of the cache lifetime: every 50 minutes on a 1-hour cache, every 4 minutes 10 seconds on a 5-minute one, and every 25 minutes in Codex. Each reads the context at the price of its time and outputs 100 tokens. A return within the lifetime of the last ping reads the previous prompt from the cache and writes only what is new; the requests after it run as logged. For Codex this assumes a ping resets OpenAI's cache timer as it resets Anthropic's.
 
-Every command takes these filters:
+Every command but `tokprof prices` takes these filters:
 
 | Filter | Example |
 |---|---|
 | `--agent` | `claude,codex` |
 | `--since` | `2026-10-01`, or `7d` for the last seven days |
-| `--until` | `2026-10-16` |
-| `--project` | text the project path contains |
-| `--session` | session id prefix |
+| `--until` | `2026-10-16`, excluded |
+| `--project` | text the project path contains, such as `billing`; a path under the home directory works with or without `~` |
+| `--session` | the start of a session id, with its subagents |
 | `--prices` | a price file, `FILE.toml` |
+
+The reports count the requests the filters select. `tokprof`, `scan`, `handoff`, `sessions` and `ui` pick or list the sessions they select: `--since` keeps sessions written since that day, `--until` sessions started before it. An X-ray still covers its session's whole log.
+
+A session id can be shortened to its start. Codex ids are shown by their first three groups, such as `01a197e1-4d9f-76b1`, because threads launched together share the first two. A start that several sessions share is an error that lists them.
 
 ## Flame graphs and profiles
 

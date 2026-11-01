@@ -23,9 +23,14 @@ use crate::xray::local_time;
 /// The session id: the transcript's name for Claude Code, the end of the rollout's name for
 /// Codex.
 pub fn session_id(file: &SourceFile) -> String {
-    match file.agent {
-        Agent::Claude => file.path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string(),
-        Agent::Codex => adapters::codex::id_from_name(&file.path),
+    id_of(file.agent, &file.path)
+}
+
+/// The session id a log's file name holds.
+pub fn id_of(agent: Agent, path: &std::path::Path) -> String {
+    match agent {
+        Agent::Claude => path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string(),
+        Agent::Codex => adapters::codex::id_from_name(path),
     }
 }
 
@@ -128,7 +133,8 @@ fn claude_line(e: &mut Earlier, v: &Value) {
             // Slash commands are logged as tags; anything else in tags is not typed by a person.
             let text = match between(&text, "command-name") {
                 Some(name) => [name, between(&text, "command-args").unwrap_or_default()].join(" ").trim().to_string(),
-                None if text.starts_with('<') => return,
+                // An interruption is logged as a user line too: `[Request interrupted by user]`.
+                None if text.starts_with('<') || text.starts_with("[Request interrupted") => return,
                 None => text,
             };
             if !text.is_empty() {
@@ -303,7 +309,7 @@ pub fn note(file: &SourceFile) -> Result<String> {
     };
     let id = session_id(file);
     let mut out = String::new();
-    let _ = writeln!(out, "# Handoff from {agent} session {}\n", id.chars().take(8).collect::<String>());
+    let _ = writeln!(out, "# Handoff from {agent} session {}\n", crate::model::short_id(file.agent, &id));
     let branch = e.branch.as_deref().map_or(String::new(), |b| format!(", branch {b}"));
     let _ = writeln!(out, "Project {}{branch}; {} → {}.", cwd.map_or("?".to_string(), adapters::display_path), when(e.first_ms), when(e.last_ms));
     let _ = writeln!(out, "The full log is {:.1} MB: search it only for details this note lacks.", file.size as f64 / 1e6);
@@ -412,6 +418,7 @@ mod tests {
             user(0, "fix the flaky test in parser"),
             serde_json::json!({"type": "user", "timestamp": at(1), "message": {"content": "<command-name>/model</command-name><command-args>opus</command-args>"}}),
             serde_json::json!({"type": "user", "timestamp": at(2), "message": {"content": "<system-reminder>not typed</system-reminder>"}}),
+            serde_json::json!({"type": "user", "timestamp": at(2), "message": {"content": "[Request interrupted by user for tool use]"}}),
             tool(3, "Read", serde_json::json!({"file_path": "/w/p/src/parser.rs"})),
             tool(4, "Edit", serde_json::json!({"file_path": "/w/p/src/parser.rs"})),
             tool(5, "Bash", serde_json::json!({"command": "cargo test parser\necho done"})),
@@ -424,7 +431,7 @@ mod tests {
         assert!(note.contains("branch main"), "{note}");
         assert!(note.contains("## Task\nfix the flaky test in parser"), "{note}");
         assert!(note.contains(" /model opus\n"), "{note}");
-        assert!(!note.contains("not typed") && !note.contains("a subagent's words"), "{note}");
+        assert!(!note.contains("not typed") && !note.contains("a subagent's words") && !note.contains("interrupted"), "{note}");
         assert!(note.contains("## Where it stopped\nFixed the race; the regression test is left."), "{note}");
         assert!(note.contains("- [x] find the race\n- [ ] add a regression test"), "{note}");
         assert!(note.contains("## Files changed, latest first\n- src/parser.rs"), "{note}");

@@ -387,11 +387,17 @@ impl<'a> Walker<'a> {
         }
 
         if !req.advisor {
+            // A request that wrote nothing to the cache says nothing about its lifetime, so the
+            // lifetime of the latest one that did carries on, as in the X-ray.
+            let long_ttl = match &self.prev {
+                Some(p) if usage.cache_write() == 0 => p.long_ttl,
+                _ => usage.write_long > usage.write_short,
+            };
             self.prev = Some(Prev {
                 prompt,
                 ts_ms: req.ts_ms,
                 model: req.model.clone(),
-                long_ttl: usage.write_long > usage.write_short,
+                long_ttl,
                 params: req.params.clone(),
                 version: req.version.clone(),
                 shape: self.shape,
@@ -626,5 +632,38 @@ mod tests {
         assert!((spend("prompt") - one).abs() < 1e-12 && (spend("skill:code-review") - one).abs() < 1e-12);
         assert!(c.stacks.keys().all(|k| k[1].name == "Fix the parser"));
         assert!((c.work.by_origin["skill:code-review"].usd - one).abs() < 1e-12, "whole requests agree with the facts");
+    }
+
+    #[test]
+    fn the_cache_lifetime_carries_over_requests_that_write_nothing() {
+        let mut s = Session::new(Agent::Claude, "s".into());
+        let request = |ts_ms, usage| Request { ts_ms, model: "claude-opus-5-5".into(), usage, ..Request::default() };
+        let minute = 60_000;
+        let requests = vec![
+            request(0, Usage { write_long: 50_000, output: 100, ..Usage::default() }),
+            // Read from the cache, written nothing: the 1-hour lifetime still holds.
+            request(minute, Usage { cache_read: 50_000, output: 100, ..Usage::default() }),
+            // 20 minutes later, the whole prompt is processed again.
+            request(21 * minute, Usage { write_long: 50_000, output: 100, ..Usage::default() }),
+        ];
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+
+        let mut c = crate::report::Collector::new(None, None);
+        analyze(&s, &Pricing::defaults(), &Filter::default(), &mut c);
+        assert_eq!(c.misses.len(), 1);
+        assert_ne!(c.misses[0].cause, Cause::IdleTtl, "{}", c.misses[0].detail);
+
+        // A chain that only ever wrote with the 5-minute lifetime keeps it.
+        let mut s5 = Session::new(Agent::Claude, "s".into());
+        let requests = vec![
+            request(0, Usage { write_short: 50_000, output: 100, ..Usage::default() }),
+            request(minute, Usage { cache_read: 50_000, output: 100, ..Usage::default() }),
+            request(21 * minute, Usage { write_short: 50_000, output: 100, ..Usage::default() }),
+        ];
+        s5.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+        let mut c = crate::report::Collector::new(None, None);
+        analyze(&s5, &Pricing::defaults(), &Filter::default(), &mut c);
+        assert_eq!((c.misses.len(), c.misses[0].cause), (1, Cause::IdleTtl));
+        assert_eq!(c.misses[0].detail, "20m idle, 5m TTL");
     }
 }

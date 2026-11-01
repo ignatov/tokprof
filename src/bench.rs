@@ -81,9 +81,13 @@ fn ping_every(ttl_ms: i64) -> i64 {
 }
 
 /// A heartbeat window as the report names it: 6h, 90m.
+/// Whole hours as `6h`, anything else in minutes with up to one decimal: `90m`, `90.5m`, `0.5m`.
 fn window_name(ms: i64) -> String {
-    let minutes = ms / 60_000;
-    if minutes % 60 == 0 { format!("{}h", minutes / 60) } else { format!("{minutes}m") }
+    if ms % 3_600_000 == 0 {
+        return format!("{}h", ms / 3_600_000);
+    }
+    let minutes = format!("{:.1}", ms as f64 / 60_000.0);
+    format!("{}m", minutes.trim_end_matches(".0"))
 }
 
 /// A request as logged.
@@ -348,10 +352,24 @@ pub fn mean_curve(returns: &[&Return], s: Strategy, n: usize) -> Vec<f64> {
     (0..=n).map(|k| returns.iter().map(|r| r.after(s, k)).sum::<f64>() / returns.len().max(1) as f64).collect()
 }
 
-/// The first request count after which `a` costs less than `b`, on average.
+/// The first request count from which `a` costs less than `b` on average, up to `n`.
 fn break_even(returns: &[&Return], a: Strategy, b: Strategy, n: usize) -> Option<usize> {
-    let (ca, cb) = (mean_curve(returns, a, n), mean_curve(returns, b, n));
-    (1..=n).find(|&k| ca[k] < cb[k])
+    lasting_lead(&mean_curve(returns, a, n), &mean_curve(returns, b, n))
+}
+
+/// The first request from which curve `a` stays below `b` to the end, if it ends below.
+fn lasting_lead(a: &[f64], b: &[f64]) -> Option<usize> {
+    let n = a.len().min(b.len()).checked_sub(1)?;
+    let behind = (1..=n).rev().find(|&k| a[k] >= b[k]).unwrap_or(0);
+    (behind < n).then_some(behind + 1)
+}
+
+/// The request counts the table shows: the 1st, the 10th when there are more, and the Nth.
+fn table_marks(n: usize) -> Vec<usize> {
+    let mut marks = vec![1, 10, n];
+    marks.retain(|&k| k <= n);
+    marks.dedup();
+    marks
 }
 
 pub fn report(b: &Bench, style: &Style) -> String {
@@ -380,10 +398,11 @@ pub fn report(b: &Bench, style: &Style) -> String {
             human_duration(idle as f64 / 1000.0),
         );
         let _ = writeln!(out, "       each followed for up to {n} requests, until the next break or compaction (median {len})\n");
-        let marks = [1, 10, n];
-        let mut rows = vec![
-            ["mean per return".to_string(), "1st request".to_string(), "10 requests".to_string(), format!("{n} requests"), "all returns".to_string()].to_vec(),
-        ];
+        let marks = table_marks(n);
+        let mut header = vec!["mean per return".to_string()];
+        header.extend(marks.iter().map(|&k| if k == 1 { "1st request".to_string() } else { format!("{k} requests") }));
+        header.push("all returns".to_string());
+        let mut rows = vec![header];
         for s in Strategy::ALL {
             let mut row = vec![s.name().to_string()];
             row.extend(marks.iter().map(|&k| usd(returns.iter().map(|r| r.after(s, k)).sum::<f64>() / returns.len() as f64)));
@@ -773,7 +792,11 @@ fn svg(b: &Bench, t: &Theme) -> String {
         let half = (x1 - x0) / n as f64 / 2.0;
         for (k, at) in (0..=n).map(|k| Strategy::ALL.map(|s| curves[s as usize][k])).enumerate() {
             let cx = x(k as f64);
-            let when = if k == 0 { "before the first request".to_string() } else { format!("after {k} requests") };
+            let when = match k {
+                0 => "before the first request".to_string(),
+                1 => "after 1 request".to_string(),
+                _ => format!("after {k} requests"),
+            };
             let values: Vec<String> = Strategy::ALL.iter().zip(at).map(|(s, v)| format!("{} {}", s.name(), usd(v))).collect();
             let _ = writeln!(
                 o,
@@ -888,6 +911,8 @@ mod tests {
         // With no window there are no pings, and the return stays cold.
         assert_eq!(heartbeats(2 * HOUR, HOUR, 0), (vec![], false));
         assert_eq!(window_name(6 * HOUR), "6h");
+        assert_eq!(window_name(90 * minute + 30_000), "90.5m");
+        assert_eq!(window_name(30_000), "0.5m");
         assert_eq!(window_name(90 * minute), "90m");
     }
 
@@ -925,5 +950,22 @@ mod tests {
         assert_eq!(nice_axis(3.98).0, 1.0);
         assert_eq!(nice_axis(0.4).0, 0.1);
         assert_eq!(round_tokens(490_700), "491k");
+    }
+
+    #[test]
+    fn the_table_shows_each_request_count_once() {
+        assert_eq!(table_marks(60), vec![1, 10, 60]);
+        assert_eq!(table_marks(10), vec![1, 10]);
+        assert_eq!(table_marks(5), vec![1, 5]);
+        assert_eq!(table_marks(1), vec![1]);
+    }
+
+    #[test]
+    fn compact_pays_off_only_if_it_stays_cheaper() {
+        let resume = [0.0, 5.0, 6.0, 7.0, 8.0];
+        assert_eq!(lasting_lead(&[0.0, 6.0, 6.5, 6.9, 7.5], &resume), Some(3));
+        // Below at request 2, above again at the end: no payoff.
+        assert_eq!(lasting_lead(&[0.0, 6.0, 5.0, 7.5, 8.5], &resume), None);
+        assert_eq!(lasting_lead(&[0.0, 4.0, 5.0, 6.0, 7.0], &resume), Some(1));
     }
 }

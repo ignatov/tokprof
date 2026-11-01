@@ -11,7 +11,7 @@ Commands that pick or show one session can pick the wrong one, and say nothing:
 
 ## What Changes
 
-- **Short ids.** Codex short ids become 13 characters, `01a197e1-4d9f`, the whole millisecond timestamp of the UUIDv7. Claude Code ids keep 8. This holds everywhere a short id appears: `sessions`, the X-ray, `misses`, flame `session` frames, ui profile file names and the handoff note.
+- **Short ids.** Codex short ids become the first three groups of the id, 18 characters such as `01a197e1-4d9f-76b1`: the millisecond timestamp of the UUIDv7 and 12 random bits, since parallel launches share the timestamp. Claude Code ids keep 8. This holds everywhere a short id appears: `sessions`, the X-ray, `misses`, flame `session` frames, ui profile file names and the handoff note.
 - **Targets.** A target is a file path, or the start of a session id, ignoring case. A prefix that several sessions share fails and lists them with their short ids, instead of taking the newest.
 - **Filters everywhere.** The four filters select the sessions that the default command, `scan`, `handoff`, `sessions` and `ui` pick or list: project and id as in reports, a main log last written on or after `--since`, and created before `--until`. An X-ray still covers the whole log of its session. `prices` is the only command that ignores them.
 - **`--session` keeps subagents.** It keeps a Codex session's subagent threads too, as it already does for Claude Code subagents.

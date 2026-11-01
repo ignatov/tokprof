@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Short session id
-Wherever tokprof shows a session by a short id, the short id SHALL be the first 8 characters of a Claude Code id and the first 13 characters of a Codex id. A Codex thread id is a UUIDv7 whose first 13 characters hold the whole millisecond timestamp, so Codex sessions started within the same minute get different short ids.
+Wherever tokprof shows a session by a short id, the short id SHALL be the first 8 characters of a Claude Code id and the first three groups of a Codex id, 18 characters. A Codex thread id is a UUIDv7: its first 13 characters are the millisecond it was made, which threads launched together share, and the third group adds 12 random bits.
 
 #### Scenario: Claude Code session
 - **WHEN** a Claude Code session has the id `3f951de0-14bc-4966-880b-81f649966ccf`
@@ -9,7 +9,11 @@ Wherever tokprof shows a session by a short id, the short id SHALL be the first 
 
 #### Scenario: Codex sessions started in the same minute
 - **WHEN** two Codex threads have the ids `01a197e1-4d9f-76b1-b25d-cdd77b01e10f` and `01a197e1-4dc9-7fa1-8e33-599c9d21e8c2`
-- **THEN** their short ids are `01a197e1-4d9f` and `01a197e1-4dc9`
+- **THEN** their short ids are `01a197e1-4d9f-76b1` and `01a197e1-4dc9-7fa1`
+
+#### Scenario: Codex sessions launched in the same millisecond
+- **WHEN** four Codex threads launched together have ids that start `01a1978f-f718-7312`, `01a1978f-f718-7691`, `01a1978f-f718-7ff1` and `01a1978f-f718-7991`
+- **THEN** each keeps its own short id
 
 ## MODIFIED Requirements
 

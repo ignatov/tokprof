@@ -208,6 +208,19 @@ pub struct Chain {
     pub requests: Vec<Request>,
 }
 
+/// The short form of a session id: 8 characters of a Claude Code id, which is random, and the
+/// first three groups of a Codex id, 18 characters. A Codex id is a UUIDv7: its first 13
+/// characters are the millisecond it was made, which threads launched together share, and the
+/// third group adds 12 random bits.
+pub fn short_id(agent: Agent, id: &str) -> &str {
+    let n = match agent {
+        Agent::Claude => 8,
+        Agent::Codex => 18,
+    };
+    let end = id.char_indices().nth(n).map_or(id.len(), |(i, _)| i);
+    &id[..end]
+}
+
 #[derive(Clone, Debug)]
 pub struct Session {
     pub agent: Agent,
@@ -300,8 +313,7 @@ impl Session {
     }
 
     pub fn short_id(&self) -> &str {
-        let end = self.id.char_indices().nth(8).map_or(self.id.len(), |(i, _)| i);
-        &self.id[..end]
+        short_id(self.agent, &self.id)
     }
 
     pub fn push_message(&mut self, blocks: Vec<Block>, starts_turn: bool) -> usize {

@@ -50,7 +50,7 @@ tokprof SHALL treat a session as one main log together with the logs of the suba
 - **THEN** the rollout is a main log
 
 ### Requirement: One-session target
-`scan` and `handoff` SHALL work on the session their target names or, without a target, like the default command, on the main log modified most recently among the selected agents. A target is the path of an existing file, or else a session id prefix matched against the names of main logs, newest first: a name without its extension that starts with the text, or that contains `-` followed by it, as the thread id ends a Codex rollout name.
+`scan` and `handoff` SHALL work on the session their target names or, without a target, like the default command, on the main log modified most recently among the selected sessions. A target is the path of an existing file, or else a session id prefix: the start of a main session's id, ignoring case. A prefix that several selected main sessions share MUST fail rather than pick one of them.
 
 #### Scenario: Latest session
 - **WHEN** `tokprof` runs without a command
@@ -62,15 +62,21 @@ tokprof SHALL treat a session as one main log together with the logs of the suba
 - **THEN** that file is read wherever it lies, as a Codex rollout when its name matches `rollout-*.jsonl` or `rollout-*.jsonl.zst`, and as a Claude Code transcript otherwise, whatever `--agent` says
 
 #### Scenario: Target is an id prefix
-- **WHEN** `tokprof scan 3f951de0` runs and two main logs match
-- **THEN** the one modified more recently is used
+- **WHEN** `tokprof scan 3f951de0` runs and one main session's id starts with `3f951de0`
+- **THEN** that session is used
+- **AND** text from the middle of an id, such as `14bc-4966`, or the date in a Codex rollout's name matches nothing
 
 #### Scenario: Nothing matches
 - **WHEN** no main log matches the target `abcdef`
 - **THEN** the command fails with ``no session file or session id matches "abcdef"; see `tokprof sessions` ``
 
+#### Scenario: Several sessions share the prefix
+- **WHEN** `tokprof scan 01a197e1` runs and six Codex sessions' ids start with `01a197e1`
+- **THEN** the command fails with `"01a197e1" matches 6 sessions; give more of the id:`
+- **AND** then lists them newest first, one per line with the short id, the main log's local `YYYY-MM-DD HH:MM`, the agent and the project, at most 10 of them and `… and <n> more`
+
 ### Requirement: Session id and project
-Each log SHALL carry a session id and a project read from the log. The id is the `sessionId` of Claude Code `user` and `assistant` lines, or the `id` of the Codex `session_meta` payload. The project is the first `cwd` of those Claude Code lines, or of Codex `session_meta` and `turn_context` lines, written with `~` for the home directory. A short id is the first 8 characters of the id.
+Each log SHALL carry a session id and a project read from the log. The id is the `sessionId` of Claude Code `user` and `assistant` lines, or the `id` of the Codex `session_meta` payload. The project is the first `cwd` of those Claude Code lines, or of Codex `session_meta` and `turn_context` lines, written with `~` for the home directory.
 
 #### Scenario: Claude Code subagent transcript
 - **WHEN** a subagent transcript's lines carry the parent's `sessionId`
@@ -89,16 +95,20 @@ Each log SHALL carry a session id and a project read from the log. The id is the
 - **THEN** the project is `~/src/app`
 
 ### Requirement: Chains
-tokprof SHALL split a session's requests into chains, one per cache lineage, each with a name and a kind: main, subagent or side. Claude Code requests with request-audit lines form one chain per `agentId` and `querySource` pair; requests without them form chains by `agentId` and `isSidechain`, apart from the audited ones. Each Codex rollout is one chain.
+tokprof SHALL split a session's requests into chains, one per cache lineage, each with a name and a kind: main, subagent or side. Claude Code requests with request-audit lines form one chain per `agentId` and `querySource` pair; requests without them form chains by `agentId` and `isSidechain`, apart from the audited ones. Each Codex rollout is one chain. A subagent chain is named `subagent: <task>` when its log names the task (see cost-attribution).
 
 #### Scenario: Claude Code main conversation
 - **WHEN** an `api-request` in a main transcript has no `agentId` and a `querySource` of `repl_main_thread`, `sdk`, `main` or none
 - **THEN** its chain is `main`, of kind main
 
 #### Scenario: Claude Code subagent stream
-- **WHEN** the `querySource` is `agent:builtin:Explore`
+- **WHEN** the `querySource` is `agent:builtin:Explore` and the subagent has no meta file with a `description`
 - **THEN** the chain is `subagent:Explore`, of kind subagent, named after the part after the last `:`, so `agent:custom` gives `subagent:custom`
 - **AND** a main-thread `querySource` with an `agentId`, or in a subagent transcript, gives the chain `subagent`
+
+#### Scenario: Claude Code subagent with a task
+- **WHEN** a subagent's meta file has `"description": "Find handlers"`
+- **THEN** every subagent chain of its transcript is named `subagent: Find handlers`
 
 #### Scenario: Claude Code side streams
 - **WHEN** the `querySource` contains `compact`
@@ -113,6 +123,11 @@ tokprof SHALL split a session's requests into chains, one per cache lineage, eac
 - **WHEN** a rollout is a subagent thread whose `session_meta.source.subagent` is `{"other": "guardian"}`
 - **THEN** its chain is `subagent:guardian`: the role is that field when it is a string, or the first string inside it when it is an object, and the chain is `subagent` when there is no role
 - **AND** the chain of any other rollout is `main`
+
+#### Scenario: Codex spawned thread
+- **WHEN** `session_meta.source.subagent` is `thread_spawn` with `"agent_path": "/root/fix_flaky_tests"` and no `agent_role`
+- **THEN** its role is `default`, and its chain is `subagent: fix flaky tests`
+- **AND** without an `agent_path` the chain is `subagent:default`
 
 ### Requirement: Main conversations across chains
 Main chains of one name that follow one another in time SHALL be read as one conversation, in time order, while main chains of one name that overlap in time stay separate conversations. A Claude Code session that spans the release that added request-audit lines thus keeps its unaudited and audited requests in one conversation. The cache state of session-xray and the returns of return-bench are read from these conversations.
@@ -328,19 +343,22 @@ tokprof SHALL take a Claude Code session's own cost counter from the `totalCostU
 - **AND** `--until 7d` fails the same way, since `--until` takes no day count
 
 ### Requirement: Project filter
-`--project` SHALL keep only the logs whose project, written with `~` for the home directory, contains the given text.
+`--project` SHALL keep only the logs whose project, written with `~` for the home directory, contains the given text. A value that starts with the home directory is read with `~` in its place, and a trailing `/` is dropped, so a path the shell expanded matches as typed.
 
 #### Scenario: Part of the path
 - **WHEN** `--project billing` is given
 - **THEN** the sessions of `~/src/billing` are kept
 
 #### Scenario: Absolute path under the home directory
-- **WHEN** `--project /Users/me/src/app` is given, as a shell expands an unquoted `~/src/app`
-- **THEN** no session under the home directory matches, because their projects start with `~`
-- **AND** the report is empty, without an error
+- **WHEN** `--project /Users/me/src/app` is given, as a shell expands an unquoted `~/src/app`, and the home directory is `/Users/me`
+- **THEN** it is read as `~/src/app` and the sessions of `~/src/app` match
+
+#### Scenario: Trailing slash
+- **WHEN** `--project ~/src/billing/` is given
+- **THEN** it matches the sessions of `~/src/billing`, as `--project ~/src/billing` does
 
 ### Requirement: Session filter
-`--session` SHALL keep only the logs whose session id starts with the given text. Logs whose path does not contain the text are not read at all.
+`--session` SHALL keep only the sessions whose id starts with the given text, ignoring case, together with their subagent logs.
 
 #### Scenario: Claude Code session with subagents
 - **WHEN** `--session 9f51246e` is given and that session has 9 subagent transcripts
@@ -348,20 +366,32 @@ tokprof SHALL take a Claude Code session's own cost counter from the `totalCostU
 
 #### Scenario: Codex session with subagent threads
 - **WHEN** `--session` gives the id prefix of a Codex thread that spawned subagents
-- **THEN** the parent's rollout is kept
-- **AND** its subagent threads are kept only when their own ids happen to start with the same text
+- **THEN** the parent's rollout and the rollouts of its subagent threads are kept
+- **AND** the subagent threads are still reported under their own ids
 
 ### Requirement: Commands the filters apply to
-`--since`, `--until`, `--project` and `--session` SHALL apply only to the reports over all sessions: `summary`, `misses`, `whatif`, `flame` and `bench`. The default command, `scan`, `sessions`, `handoff`, `ui` and `prices` accept these flags and ignore them.
+`--since`, `--until`, `--project` and `--session` SHALL apply to every command but `prices`. The reports `summary`, `misses`, `whatif`, `flame` and `bench` count the requests they select. The default command, `scan`, `handoff`, `sessions` and `ui` pick or list only the sessions they select: project and id as for the reports, a main log last written on or after `--since`, and created before `--until`. An X-ray still covers its session's whole log.
 
 #### Scenario: Default command with a session filter
 - **WHEN** `tokprof --session 3f951de0` runs without a command
-- **THEN** it X-rays the latest session, not `3f951de0`
-- **AND** `tokprof scan 3f951de0` X-rays that session
+- **THEN** it X-rays `3f951de0`, as `tokprof scan 3f951de0` does
+- **AND** `tokprof --project billing` X-rays the latest session of `~/src/billing`
 
 #### Scenario: Session list with a time filter
 - **WHEN** `tokprof --since 7d sessions` runs
-- **THEN** it lists the same sessions as without `--since`
+- **THEN** it lists only the sessions whose main log was written in the last 7 days
+
+#### Scenario: Sessions started before a date
+- **WHEN** `tokprof --until 2026-10-01 sessions` runs
+- **THEN** it lists only the sessions whose main log was created before 2026-10-01 00:00 local time
+
+#### Scenario: A target outside the filters
+- **WHEN** `tokprof --project billing scan 3f951de0` runs and `3f951de0` belongs to another project
+- **THEN** the command fails as for a target that matches nothing
+
+#### Scenario: Prices
+- **WHEN** `tokprof --since 7d prices` runs
+- **THEN** it prints the same prices as `tokprof prices`
 
 ### Requirement: Line about the logs read
 `summary`, `misses`, `whatif`, `flame` and `bench` SHALL print one line to stderr after reading the logs: `read <agent> <N> files (<X.X> GB), … in <S.S>s`, for each agent with at least one file, with sizes on disk in units of 10^9 bytes. It counts every log file read, including subagent logs and logs that the project, id or time filters then leave out; `bench` does not read subagent logs.
@@ -379,7 +409,7 @@ tokprof SHALL take a Claude Code session's own cost counter from the `totalCostU
 - **THEN** the line still counts every log that was read
 
 ### Requirement: Unreadable logs
-`summary`, `misses`, `whatif` and `flame` SHALL carry on with the logs that can be read, and print `warning: <path>: <error>` to stderr, after the read line, for at most 5 logs that could not be opened, read or decompressed. Inside a log, lines that are not valid JSON are skipped without a warning, and invalid UTF-8 is replaced.
+`summary`, `misses`, `whatif`, `flame` and `bench` SHALL carry on with the logs that can be read, and print `warning: <path>: <error>` to stderr, after the read line, for at most 5 logs that could not be opened, read or decompressed, then `warning: <n> more logs could not be read` for the rest. Inside a log, lines that are not valid JSON are skipped without a warning, and invalid UTF-8 is replaced.
 
 #### Scenario: A log cannot be opened
 - **WHEN** a log is removed or made unreadable between discovery and reading
@@ -391,7 +421,7 @@ tokprof SHALL take a Claude Code session's own cost counter from the `totalCostU
 
 #### Scenario: Many unreadable logs
 - **WHEN** 12 logs cannot be read
-- **THEN** only 5 warnings are printed
+- **THEN** 5 warnings name them, and a sixth reads `warning: 7 more logs could not be read`
 
 #### Scenario: Line still being written
 - **WHEN** the last line of a log is incomplete because the agent is still writing it
@@ -399,7 +429,7 @@ tokprof SHALL take a Claude Code session's own cost counter from the `totalCostU
 
 #### Scenario: Other commands
 - **WHEN** `bench` meets a log that it cannot read
-- **THEN** it skips the log without a warning
+- **THEN** it skips the log and prints a warning, as the other reports do
 - **AND** the X-ray of session-xray fails with the read error when the session's main log or a subagent log cannot be read
 
 ### Requirement: No logs found
@@ -420,3 +450,42 @@ A command that has no log to read SHALL fail with an error: `summary`, `misses`,
 #### Scenario: Commands that do not fail
 - **WHEN** `sessions` or `bench` finds no log
 - **THEN** `sessions` prints only its header line and `bench` prints `read  in 0.0s` and its empty report, both with exit status 0
+
+### Requirement: Claude Code origin and task fields
+tokprof SHALL read the origin, task and title of Claude Code work (see cost-attribution) from:
+- `attributionSkill`, `attributionMcpServer` and `attributionPlugin` on assistant lines;
+- `<command-name>` and `<task-notification>` with its `<task-id>` at the start of user messages;
+- `agentType`, `description` and `toolUseId` in the `agent-<id>.meta.json` next to a subagent transcript;
+- `ai-title` and `custom-title` lines.
+
+These fields were seen in Claude Code 2.1.284–2.1.312.
+
+#### Scenario: A subagent transcript without a meta file
+- **WHEN** `subagents/agent-a1.jsonl` has no `agent-a1.meta.json` next to it
+- **THEN** the subagent has no task, its chain keeps its stream name, and its origin comes from the stream's type
+
+### Requirement: Codex origin and task fields
+tokprof SHALL read the origin, task and title of Codex work (see cost-attribution) from:
+- `session_meta.source.subagent`: `thread_spawn` with `agent_path` and `agent_role`, or a role such as `{"other": "guardian"}` or `"review"`;
+- `id` and `thread_name` in `session_index.jsonl` under `$CODEX_HOME`, or `~/.codex` when it is not set.
+
+These fields were seen in Codex 0.146–0.163. The Codex app and TUI write the index; threads started from IDE plugins and `codex exec` were not in it.
+
+#### Scenario: No index
+- **WHEN** `session_index.jsonl` does not exist
+- **THEN** Codex sessions have no title and the rest of the analysis is unchanged
+
+### Requirement: Short session id
+Wherever tokprof shows a session by a short id, the short id SHALL be the first 8 characters of a Claude Code id and the first three groups of a Codex id, 18 characters. A Codex thread id is a UUIDv7: its first 13 characters are the millisecond it was made, which threads launched together share, and the third group adds 12 random bits.
+
+#### Scenario: Claude Code session
+- **WHEN** a Claude Code session has the id `3f951de0-14bc-4966-880b-81f649966ccf`
+- **THEN** its short id is `3f951de0`
+
+#### Scenario: Codex sessions started in the same minute
+- **WHEN** two Codex threads have the ids `01a197e1-4d9f-76b1-b25d-cdd77b01e10f` and `01a197e1-4dc9-7fa1-8e33-599c9d21e8c2`
+- **THEN** their short ids are `01a197e1-4d9f-76b1` and `01a197e1-4dc9-7fa1`
+
+#### Scenario: Codex sessions launched in the same millisecond
+- **WHEN** four Codex threads launched together have ids that start `01a1978f-f718-7312`, `01a1978f-f718-7691`, `01a1978f-f718-7ff1` and `01a1978f-f718-7991`
+- **THEN** each keeps its own short id
