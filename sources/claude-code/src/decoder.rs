@@ -21,9 +21,10 @@ use tokprof_core::api::ApiId;
 use tokprof_core::labels::display_path;
 use tokprof_core::model::{Block, BlockKind, Class, CompactionTrigger, Origin, ReminderKind, ToolClass, Chain, ChainKind, Compaction, Params, PromptDelta, Request, Session, Shape, Usage};
 use tokprof_core::source::{AgentId, Decoder};
+use tokprof_core::trigger::{Pending, Trigger};
 use tokprof_logio::{canonical_hash, canonical_string, json_len, parse_ts_ms, str_at, u64_at};
 
-use crate::tools::tool_target;
+use crate::tools::{call_kind, tool_target};
 
 /// Size an image is counted as, in characters (roughly 1,400 tokens).
 const IMAGE_CHARS: u64 = 5_000;
@@ -67,6 +68,8 @@ struct Response {
     /// The skill, MCP server or plugin Claude Code attributes the response to, or for the main
     /// conversation the origin of the turn it answers.
     origin: Option<String>,
+    /// What the chain logged since its previous response.
+    trigger: Option<Trigger>,
 }
 
 /// Reads a Claude Code transcript, one line at a time.
@@ -100,6 +103,10 @@ pub(crate) struct Parser {
     idle_notices: Vec<i64>,
     /// Between a `compact_boundary` and the next response, where the idle notice can come.
     after_boundary: bool,
+    /// Per chain (agent id, sidechain): what it logged since its latest response.
+    pending: HashMap<(String, bool), Pending>,
+    /// The trigger each response's message id was first seen with.
+    trigger_by_message: HashMap<String, Option<Trigger>>,
 }
 
 impl Parser {
@@ -125,6 +132,8 @@ impl Parser {
             compactions: Vec::new(),
             idle_notices: Vec::new(),
             after_boundary: false,
+            pending: HashMap::new(),
+            trigger_by_message: HashMap::new(),
         }
     }
 
@@ -215,10 +224,42 @@ impl Parser {
             self.msg_by_hash.insert(hash, idx);
         }
         let sidechain = v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false);
+        if !meta
+            && let Some(event) = prompt_text(msg).and_then(user_event) {
+                let chain = self.chain_key(v);
+                self.pending.entry(chain).or_default().event(event);
+            }
         if !meta && !sidechain && !self.subagent_file
             && let Some(origin) = prompt_text(msg).and_then(|t| self.turn_origin(t)) {
                 self.turn = Some(origin);
             }
+    }
+
+    /// The chain a line belongs to: its agent id and whether it is a sidechain. A subagent's
+    /// own transcript is one chain.
+    fn chain_key(&self, v: &Value) -> (String, bool) {
+        if self.subagent_file {
+            return (String::new(), false);
+        }
+        (str_at(v, "agentId").unwrap_or_default().to_string(), v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false))
+    }
+
+    /// Takes what the chain logged since its previous response when a response first shows up,
+    /// then records the calls of each of its lines.
+    fn note_calls(&mut self, v: &Value, message_id: Option<&str>, model: &str, content: &[Value]) {
+        if model.is_empty() || model == "<synthetic>" {
+            return;
+        }
+        let chain = self.chain_key(v);
+        let pending = self.pending.entry(chain).or_default();
+        if let Some(id) = message_id
+            && !self.trigger_by_message.contains_key(id) {
+                self.trigger_by_message.insert(id.to_string(), pending.trigger());
+                *pending = Pending::default();
+            }
+        for item in content.iter().filter(|i| str_at(i, "type") == Some("tool_use")) {
+            pending.call(call_kind(str_at(item, "name").unwrap_or_default(), item.get("input").unwrap_or(&Value::Null)));
+        }
     }
 
     /// What a user message starts: a slash command, the follow-up of a background task, or a
@@ -287,6 +328,7 @@ impl Parser {
         }
 
         let model = str_at(msg, "model").unwrap_or_default();
+        self.note_calls(v, message_id.as_deref(), model, &content);
         let Some(usage) = msg.get("usage") else { return };
         if model.is_empty() || model == "<synthetic>" {
             return;
@@ -306,6 +348,7 @@ impl Parser {
         let sidechain = v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false);
         let main = !self.subagent_file && agent_id.is_empty() && !sidechain;
         let origin = attribution(v).or_else(|| if main { self.turn.clone() } else { None });
+        let trigger = message_id.as_ref().and_then(|id| self.trigger_by_message.get(id).copied().flatten());
         self.responses.push(Response {
             ts_ms: parse_ts_ms(v.get("timestamp")).unwrap_or(0),
             model: model.to_string(),
@@ -316,6 +359,7 @@ impl Parser {
             sidechain,
             request_ref,
             origin,
+            trigger,
         });
     }
 
@@ -520,7 +564,7 @@ impl Parser {
                     used[ri] = true;
                     let resp = &self.responses[ri];
                     let produced = resp.message_id.as_ref().and_then(|id| self.msg_by_assistant_id.get(id).copied());
-                    let base = Request { origin: origin_of(resp, &chains[ci], self.agent.as_ref()).map(|o| Origin::parse(&o)), ..base };
+                    let base = Request { origin: origin_of(resp, &chains[ci], self.agent.as_ref()).map(|o| Origin::parse(&o)), trigger: resp.trigger, ..base };
                     push_response(&mut chains[ci], base, resp, Some(delta), produced);
                 }
                 // Keep the request so later deltas still apply; it has no usage to attribute.
@@ -541,7 +585,7 @@ impl Parser {
             };
             let ci = chain_for((resp.agent_id.clone(), format!("legacy:{name}")), name, kind, &mut chains);
             let origin = origin_of(resp, &chains[ci], self.agent.as_ref());
-            let base = Request { ts_ms: resp.ts_ms, version: resp.version.clone(), origin: origin.map(|o| Origin::parse(&o)), ..Request::default() };
+            let base = Request { ts_ms: resp.ts_ms, version: resp.version.clone(), origin: origin.map(|o| Origin::parse(&o)), trigger: resp.trigger, ..Request::default() };
             let produced = resp.message_id.as_ref().and_then(|id| self.msg_by_assistant_id.get(id).copied());
             push_response(&mut chains[ci], base, resp, None, produced);
         }
@@ -628,6 +672,22 @@ fn prompt_text(msg: &Value) -> Option<&str> {
             items.iter().filter(|i| str_at(i, "type") == Some("text")).filter_map(|i| str_at(i, "text")).find(|t| !is_reminder(t))
         }
         _ => None,
+    }
+}
+
+/// What a user message's text tells about the next request: a typed prompt or command, a
+/// background task's result, an interruption. `None` for what carries on the work: reminders,
+/// the summary after a compaction, a shell command run from the prompt.
+fn user_event(text: &str) -> Option<Trigger> {
+    let t = text.trim_start();
+    if t.starts_with("[Request interrupted") {
+        Some(Trigger::Continuation)
+    } else if t.starts_with("<task-notification>") {
+        Some(Trigger::Notification)
+    } else if is_reminder(t) || ["This session is being continued", "<bash-", "<local-command"].iter().any(|p| t.starts_with(p)) {
+        None
+    } else {
+        Some(Trigger::Prompt)
     }
 }
 
@@ -888,6 +948,83 @@ mod tests {
 
     fn user_line(text: &str) -> Value {
         json!({"type": "user", "message": {"role": "user", "content": text}})
+    }
+
+    fn results_line(ids: &[&str], agent: Option<&str>) -> Value {
+        let items: Vec<Value> = ids.iter().map(|id| json!({"type": "tool_result", "tool_use_id": id, "content": "x"})).collect();
+        let mut v = json!({"type": "user", "message": {"role": "user", "content": items}});
+        if let Some(a) = agent {
+            v["agentId"] = json!(a);
+        }
+        v
+    }
+
+    fn triggers(s: &Session, chain: usize) -> Vec<Trigger> {
+        s.chains[chain].requests.iter().map(Request::trigger).collect()
+    }
+
+    #[test]
+    fn requests_carry_what_triggered_them() {
+        let call = |id: &str, name: &str, input: Value| json!({"type": "tool_use", "id": id, "name": name, "input": input});
+        let calls = |id: &str, items: Value| assistant_line(id, json!({}), items);
+        let s = session_from(&[
+            user_line("fix the parser"),
+            calls("m1", json!([call("t1", "Read", json!({"file_path": "src/lib.rs"}))])),
+            results_line(&["t1"], None),
+            // Parallel calls written one per line, with their results in separate lines.
+            calls("m2", json!([call("t2", "Grep", json!({"pattern": "fn"}))])),
+            calls("m2", json!([call("t3", "Bash", json!({"command": "git show HEAD:src/lib.rs | head -40"}))])),
+            results_line(&["t2"], None),
+            results_line(&["t3"], None),
+            calls("m3", json!([call("t4", "Bash", json!({"command": "cargo test"})), call("t5", "Edit", json!({"file_path": "src/lib.rs"}))])),
+            results_line(&["t4", "t5"], None),
+            calls("m4", json!([call("t6", "Bash", json!({"command": "cargo test"}))])),
+            results_line(&["t6"], None),
+            calls("m5", json!([call("t7", "Agent", json!({"description": "x"}))])),
+            results_line(&["t7"], None),
+            calls("m6", json!([call("t8", "Read", json!({"file_path": "a"}))])),
+            user_line("[Request interrupted by user]"),
+            calls("m7", json!([{"type": "text", "text": "ok"}])),
+            user_line("[Request interrupted by user]"),
+            user_line("now the tests"),
+            calls("m8", json!([{"type": "text", "text": "ok"}])),
+            user_line("<task-notification>\n<task-id>b7x2k9</task-id>"),
+            calls("m9", json!([{"type": "text", "text": "ok"}])),
+        ]);
+        use Trigger::*;
+        assert_eq!(triggers(&s, 0), [Prompt, Lookup, Lookups, Edit, Run, Subagent, Continuation, Prompt, Notification]);
+    }
+
+    #[test]
+    fn a_retry_keeps_the_trigger_of_the_failed_request() {
+        let call = json!([{"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "a"}}]);
+        let mut failed = assistant_line("e1", json!({"isApiErrorMessage": true}), json!([{"type": "text", "text": "API Error"}]));
+        failed["message"]["model"] = json!("<synthetic>");
+        let s = session_from(&[
+            user_line("go"),
+            assistant_line("m1", json!({}), call),
+            results_line(&["t1"], None),
+            failed,
+            assistant_line("m2", json!({}), json!([{"type": "text", "text": "ok"}])),
+        ]);
+        assert_eq!(triggers(&s, 0), [Trigger::Prompt, Trigger::Lookup]);
+    }
+
+    #[test]
+    fn a_subagent_starts_from_its_brief_and_legacy_transcripts_get_triggers() {
+        // A subagent's own transcript, without request-audit lines.
+        let mut p = parser("agent-a1", true);
+        for l in [
+            user_line("Find the handlers"),
+            assistant_line("m1", json!({}), json!([{"type": "tool_use", "id": "t1", "name": "Glob", "input": {"pattern": "*.rs"}}])),
+            results_line(&["t1"], None),
+            assistant_line("m2", json!({}), json!([{"type": "text", "text": "done"}])),
+        ] {
+            p.line(&l.to_string());
+        }
+        let s = p.into_session();
+        assert!(s.chains[0].requests.iter().all(|r| r.prompt.is_none()), "a legacy transcript");
+        assert_eq!(triggers(&s, 0), [Trigger::Prompt, Trigger::Lookup]);
     }
 
     #[test]

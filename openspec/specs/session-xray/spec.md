@@ -298,7 +298,7 @@ The X-ray SHALL summarize the session's cache misses on a `cache` line: the coun
 - **THEN** the line counts `0 misses` and the expected rebuilds, with no miss rows
 
 ### Requirement: Advice block
-When there is a main conversation, the X-ray SHALL print an `advice` block after the `next` line, with the items of each rule that fires, in this order: how to carry on, context cost, tool results, tool calls, reminders, pasted prompts, thinking, cache misses. The rules are deterministic and every item carries the numbers behind it. Each item says one thing in plain sentences: what it is about, the numbers, and what to do.
+When there is a main conversation, the X-ray SHALL print an `advice` block after the `next` line, with the items of each rule that fires, in this order: how to carry on, context cost, tool results, tool calls, lookups, reminders, pasted prompts, thinking, cache misses. The rules are deterministic and every item carries the numbers behind it. Each item says one thing in plain sentences: what it is about, the numbers, and what to do.
 
 #### Scenario: Several rules fire
 - **WHEN** three rules fire, one item each
@@ -526,3 +526,26 @@ When the session has more than one task, the work block SHALL go on with `by tas
 #### Scenario: Reviewers by name
 - **WHEN** the code-review subagents were described as `Angle C cross-file tracer` and `Angle A line-by-line scan`
 - **THEN** the task lines read, for example, `$57.46  Angle C cross-file tracer` with `skill:code-review` dimmed after it
+
+### Requirement: Lookup advice
+When the session's requests with trigger `lookup` (see cost-attribution), subagents included, number at least 20 and cost at least $5 or at least 10% of the session's spend, the advice SHALL say how many requests single lookups made, how many tokens each re-read on average, what they cost and what share of the session that is, and suggest batching independent reads or exploring in a subagent.
+
+#### Scenario: Lookups in a big context
+- **WHEN** 412 requests with trigger `lookup` re-read 380,200 tokens on average and cost $58.10 of a $276.67 session
+- **THEN** the item reads "Single lookups made 412 requests, each re-reading ≈ 380.2k tokens: $58.10, 21% of the session. Batch independent reads, or explore in a subagent."
+
+#### Scenario: Lookups in subagents
+- **WHEN** the main conversation made 5 single lookups and its subagents 300, for $30 of a $200 session
+- **THEN** the item counts all 305 requests and their $30
+
+#### Scenario: Few lookups
+- **WHEN** 15 single lookups cost $9.00 of a $40.00 session
+- **THEN** there is no lookups item, since it takes at least 20 requests
+
+#### Scenario: Cheap lookups
+- **WHEN** 200 single lookups cost $3.00 of a $60.00 session, 5%
+- **THEN** there is no lookups item
+
+#### Scenario: Unpriced session
+- **WHEN** the session's spend is zero because nothing is priced
+- **THEN** there is no lookups item

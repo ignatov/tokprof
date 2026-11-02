@@ -22,6 +22,7 @@ use crate::model::{BlockKind, CompactionTrigger, Session, Usage};
 use crate::pricing::{Price, Pricing};
 use crate::profile::Values;
 use crate::report::Work;
+use crate::trigger::Trigger;
 use crate::fmt::count;
 
 /// The main logs of sessions, without subagents' logs, newest first.
@@ -314,6 +315,7 @@ fn advice_of(s: &Session, live: &LiveContext, cache: &CacheState, t: &Totals, pr
         requests_per_prompt: live.requests_per_prompt,
         spend_usd: t.components.iter().map(|v| v.usd).sum(),
         thinking_usd: t.content.iter().filter(|((k, _, _), _)| *k == BlockKind::Thinking).map(|(_, v)| v.usd).sum(),
+        lookups: t.work.by_trigger.get(&Trigger::Lookup).copied().unwrap_or_default(),
         effort: efforts.iter().max_by_key(|(_, n)| **n).map(|(e, _)| e.to_string()),
         misses: misses.into_iter().map(|(c, (n, u))| (c, n, u)).collect(),
         after_compaction: billed.iter().rev().find(|r| r.compacted_before).map(|r| r.usage.prompt()),
@@ -650,6 +652,7 @@ mod tests {
                 requests_per_prompt: 3.0,
                 spend_usd: 414.0,
                 thinking_usd: 100.0,
+                lookups: crate::report::TriggerSpend::default(),
                 effort: None,
                 misses: vec![(Cause::HistoryEdited, 44, 154.0)],
                 after_compaction: Some(55_800),

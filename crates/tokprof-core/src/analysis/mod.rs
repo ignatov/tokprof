@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use crate::api::ApiId;
 use crate::model::{BlockKind, Chain, ChainKind, Request, Session, Usage};
 use crate::source::AgentId;
+use crate::trigger::Trigger;
 use crate::pricing::{Price, Pricing};
 use cache::{Cause, Edit, Prev};
 
@@ -74,6 +75,8 @@ pub struct Fact<'a> {
     pub chain: &'a str,
     /// What kind of work the request was part of (see `Request::origin`).
     pub origin: &'a str,
+    /// What made the agent send the request (see `Request::trigger`).
+    pub trigger: Trigger,
     /// What the work was: a subagent's task or the session title (see `Session::task_label`).
     pub task: &'a str,
     pub model: &'a str,
@@ -113,6 +116,7 @@ pub struct RequestRecord<'a> {
     pub chain_kind: ChainKind,
     pub advisor: bool,
     pub origin: &'a str,
+    pub trigger: Trigger,
     pub task: &'a str,
     pub model: &'a str,
     pub price: Option<Price>,
@@ -325,7 +329,8 @@ struct Walker<'a> {
     block_ts: Vec<Option<i64>>,
     first_ts: Option<i64>,
     models: Vec<String>,
-    origins: Vec<String>,
+    /// Origin and trigger of the requests, which every share of a request carries.
+    origins: Vec<(String, Trigger)>,
     /// (label, model, origin) -> per block [read, read $, write, write $, uncached, uncached $].
     input: HashMap<(usize, usize, usize), Vec<[f64; 6]>>,
     unknown_input: HashMap<(usize, usize, usize), [f64; 6]>,
@@ -371,11 +376,11 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn origin_idx(&mut self, origin: String) -> usize {
-        match self.origins.iter().position(|o| *o == origin) {
+    fn origin_idx(&mut self, origin: String, trigger: Trigger) -> usize {
+        match self.origins.iter().position(|(o, t)| *o == origin && *t == trigger) {
             Some(i) => i,
             None => {
-                self.origins.push(origin);
+                self.origins.push((origin, trigger));
                 self.origins.len() - 1
             }
         }
@@ -428,6 +433,7 @@ impl<'a> Walker<'a> {
                 chain_kind: if req.advisor { ChainKind::Advisor } else { self.chain.kind },
                 advisor: req.advisor,
                 origin: &origin,
+                trigger: req.trigger(),
                 task: self.task,
                 model: &req.model,
                 price,
@@ -480,7 +486,7 @@ impl<'a> Walker<'a> {
         self.first_ts.get_or_insert(req.ts_ms);
         let label = if req.advisor { ADVISOR } else { 0 };
         let model = self.model_idx(&req.model);
-        let origin = self.origin_idx(origin_name(req));
+        let origin = self.origin_idx(origin_name(req), req.trigger());
         self.priced.insert(model, price.is_some());
         let usage = req.usage;
         let t = usage.prompt() as f64;
@@ -609,7 +615,8 @@ impl<'a> Walker<'a> {
                 project: &s.project,
                 session: s.short_id(),
                 chain: chain_name(label),
-                origin: &self.origins[origin],
+                origin: &self.origins[origin].0,
+                trigger: self.origins[origin].1,
                 task,
                 model: &self.models[model],
                 turn,
@@ -749,6 +756,36 @@ mod tests {
         assert!((spend("prompt") - one).abs() < 1e-12 && (spend("skill:code-review") - one).abs() < 1e-12);
         assert!(c.profile.stacks.keys().all(|k| k[1].name == "Fix the parser"));
         assert!((c.work.by_origin["skill:code-review"].usd - one).abs() < 1e-12, "whole requests agree with the facts");
+    }
+
+    #[test]
+    fn every_share_of_a_request_carries_its_trigger() {
+        use crate::trigger::Trigger;
+        let mut s = Session::new(crate::testing::claude(), "s".into());
+        let prompt = s.push_message(vec![Block { class: crate::model::Class::None, kind: BlockKind::Prompt, chars: 400, tool: None, target: None }], true);
+        let usage = Usage { cache_read: 1000, output: 100, ..Usage::default() };
+        let request = |ts_ms, keep, trigger| Request {
+            ts_ms,
+            model: "claude-opus-5-5".into(),
+            usage,
+            prompt: Some(PromptDelta { shape: None, keep, tail: if keep == 0 { vec![prompt] } else { Vec::new() } }),
+            trigger: Some(trigger),
+            ..Request::default()
+        };
+        let requests = vec![request(1, 0, Trigger::Prompt), request(2, 1, Trigger::Lookup)];
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+
+        let pricing = Pricing::defaults();
+        let one = pricing.get("claude-opus-5-5", 1000, 1).unwrap().cost(&usage);
+        let mut c = crate::report::Collector::new(Some(crate::report::dims("trigger,origin")), None);
+        analyze(&s, &pricing, &Filter::default(), &mut c);
+        let spend = |t: &str| c.profile.stacks.iter().filter(|(k, _)| k[0].name == t).map(|(_, v)| v.usd).sum::<f64>();
+        assert!((spend("lookup") - one).abs() < 1e-12, "the cache reads and the output of the second request");
+        assert!(c.profile.stacks.keys().all(|k| k[1].name == "prompt"), "the trigger frame comes before the origin");
+        let lookup = c.work.by_trigger[&Trigger::Lookup];
+        assert_eq!((lookup.spend.requests, lookup.avg_prompt()), (1, 1000.0));
+        let total: f64 = c.work.triggers().iter().map(|(_, t)| t.spend.usd).sum();
+        assert!((total - 2.0 * one).abs() < 1e-12, "the triggers sum to the total");
     }
 
     #[test]

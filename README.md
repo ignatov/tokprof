@@ -133,6 +133,7 @@ advice    ▸ Resuming writes the whole 817.6k context again (+$6.38), then $0.1
 - While the cache is warm, the first items say how long it stays warm, what `/compact` costs before a break, and what resuming or a new session would cost after one.
 - The window: what the context costs per prompt at the session's pace, and when auto-compaction is close.
 - Tool results, tool calls, reminders and pasted prompts: what fills the context, with up to two leading sources and a hint for the one that holds the most. All of it is read again on every request, which is why trimming it pays.
+- Single lookups: how many requests followed a response that made one read-only call, what each re-read and what they cost. It shows when they made at least 20 requests and cost $5 or 10% of the session, subagents included. Each such call costs a whole pass over the context, so independent reads are cheaper in one response, and exploring is cheaper in a subagent with a small context.
 - Thinking and cache misses: the thinking cost at the effort level used most, and the main cause of cache misses with what they could have saved.
 
 `tokprof ui` shows the sessions on the left and the X-ray of the selected one on the right. Costs fill in while it runs. The list follows the log directories:
@@ -169,11 +170,22 @@ The X-ray shows:
 ## Reports over all sessions
 
 ```sh
-tokprof summary             # spend by model and component, by origin and task, misses by cause, reconciliation
+tokprof summary             # spend by model and component, by origin and task, by trigger, misses by cause, reconciliation
 tokprof misses --top 20     # most expensive cache misses (--expected adds compactions and cleared tool results)
 tokprof whatif              # Claude input cost under 5m vs 1h cache lifetimes
 tokprof bench               # cold returns to big sessions: resume vs /compact vs a new session vs heartbeats
 tokprof prices              # prices in effect and where each came from
+```
+
+`Spend by trigger` says what made the agent send each request, and so what every pass over the context was for (see [What triggered a request](#what-triggered-a-request)):
+
+```
+trigger       requests  avg prompt    cost  per request  share
+lookup           37169      239.4k  $3,718        $0.10  40.3%
+run              22512      355.3k  $2,668        $0.12  28.9%
+prompt            1939      263.5k    $977        $0.50  10.6%
+lookups           4378      199.6k    $854        $0.20   9.2%
+edit              3564      382.7k    $469        $0.13   5.1%
 ```
 
 `tokprof bench` takes these options:
@@ -216,7 +228,7 @@ A session id can be shortened to its start. Codex ids are shown by their first t
 | other | Folded stacks for speedscope or flamegraph.pl. |
 
 Options:
-- `--stack` sets the stack dimensions, root first. Available: `agent`, `project`, `session`, `chain`, `origin`, `task`, `model`, `turn`, `component`, `cause`, `kind`, `tool`, `target`. Default: `agent,project,session,chain,turn,kind,tool,target,component`.
+- `--stack` sets the stack dimensions, root first. Available: `agent`, `project`, `session`, `chain`, `origin`, `task`, `trigger`, `model`, `turn`, `component`, `cause`, `kind`, `tool`, `target`. Default: `agent,project,session,chain,turn,kind,tool,target,component`.
 - `--value` picks the measure: `cost` (micro-dollars), `tokens`, or `avoidable` (the miss premium).
 - `--component` keeps only some components: `read,write,rewrite,uncached,output`.
 - `--threads` applies to `.jfr` and sets the dimensions that name a thread. Default: `agent,project,session`.
@@ -229,6 +241,7 @@ tokprof --session 3f951de0 flame                                      # ~/tokpro
 tokprof flame --threads agent --stack kind,tool,target,component -o ~/tokprof/content.jfr
 tokprof flame --value avoidable --component rewrite --stack cause,project,session,kind,tool,target -o misses.html
 tokprof --since 30d flame --stack origin,task,kind,tool,component -o work.html   # what kind of work the money went to
+tokprof --since 30d flame --stack trigger,origin,session -o trips.html            # what made the agent go round again
 ```
 
 ## How cost is attributed
@@ -280,6 +293,22 @@ The task is what a subagent was asked to do, else the session title, else `untit
 A subagent's chain is named after its task, for example `subagent: Find handlers`.
 
 These fields were seen in Claude Code 2.1.284–2.1.312 and Codex 0.146–0.163.
+
+## What triggered a request
+
+Every request also carries its trigger, what made the agent send it:
+- `prompt`: a message the user typed, or a subagent's brief.
+- `lookup`: the result of one read-only call. `lookups`: several, all read-only.
+- `edit`: an edit among the calls. `subagent`: a subagent among them. `run`: any other call, such as a build, a test, a script or an MCP tool.
+- `notification`: a background task's result.
+- `compaction`: the first request after a compaction.
+- `continuation`: the agent went on after an interruption, or in Codex after its own message.
+- `advisor`: an advisor call.
+- `unknown`: the log does not show it.
+
+A call is read-only when its tool only reads, searches or fetches. A shell command is read-only when every part of it starts with a program that only reads, such as `cat`, `sed -n`, `rg`, `ls` or `git show`, and nothing writes to a file. Loops and conditions around such commands count too. Codex code in `exec` counts by the calls inside it. The full rule is in `openspec/specs/cost-attribution/spec.md`.
+
+All of a request's spend goes to its trigger, its output included. Every request reads the whole context, so at 600k tokens on Opus one lookup costs $0.12 in cache reads alone, however little it returns.
 
 ## Prices
 

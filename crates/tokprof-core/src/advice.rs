@@ -10,6 +10,7 @@ use crate::fmt::{human_duration, tokens, usd};
 use crate::forecast::{CacheState, SUMMARY_TOKENS, pickup_shape, pickup_usd};
 use crate::model::{BlockKind, Class, ReminderKind, Session, ToolClass};
 use crate::pricing::Price;
+use crate::report::TriggerSpend;
 
 pub struct Inputs<'a> {
     pub session: &'a Session,
@@ -24,6 +25,8 @@ pub struct Inputs<'a> {
     pub requests_per_prompt: f64,
     pub spend_usd: f64,
     pub thinking_usd: f64,
+    /// Requests whose trigger was a single lookup, subagents included.
+    pub lookups: TriggerSpend,
     pub effort: Option<String>,
     /// Unexpected misses by cause: count and avoidable cost.
     pub misses: Vec<(Cause, usize, f64)>,
@@ -56,6 +59,7 @@ pub enum Topic {
     ContextCost,
     ToolResults,
     ToolCalls,
+    Lookups,
     Reminders,
     PastedPrompts,
     Thinking,
@@ -207,6 +211,16 @@ pub fn advise(i: &Inputs) -> Vec<Advice> {
         };
         out.push(Advice::new(Topic::ToolCalls, item(format!("Tool calls take {:.0}% of the context", 100.0 * share(BlockKind::ToolUse)), &v, hint)));
     }
+    let l = i.lookups;
+    if l.spend.requests >= 20 && i.spend_usd > 0.0 && (l.spend.usd >= 5.0 || l.spend.usd / i.spend_usd >= 0.1) {
+        out.push(Advice::new(Topic::Lookups, format!(
+            "Single lookups made {} requests, each re-reading ≈ {} tokens: {}, {:.0}% of the session. Batch independent reads, or explore in a subagent.",
+            l.spend.requests,
+            tokens(l.avg_prompt()),
+            usd(l.spend.usd),
+            100.0 * l.spend.usd / i.spend_usd
+        )));
+    }
     if held(BlockKind::Reminder) >= 30_000.0 || share(BlockKind::Reminder) >= 0.05 {
         let v = sources(BlockKind::Reminder);
         let instructions = format!("trim {}, or move rarely needed parts to docs read on demand", i.instruction_files.join(" and "));
@@ -355,6 +369,7 @@ mod tests {
             requests_per_prompt: 30.0,
             spend_usd: 100.0,
             thinking_usd: 0.0,
+            lookups: TriggerSpend::default(),
             effort: None,
             misses: Vec::new(),
             after_compaction: None,
@@ -551,6 +566,41 @@ mod tests {
         let lines = advice(&s, &live, &cold_cache(None), |i| i.price_at = &NO_PRICE);
         let expected = "Pasted prompts (turn 1 14.6k, turn 3 29.6k, turn 12 110.2k and 2 more) are re-read on every request: pass a file path instead.";
         assert!(lines.iter().any(|l| l == expected), "{lines:#?}");
+    }
+
+    fn lookups(requests: u64, avg_prompt: f64, usd: f64) -> TriggerSpend {
+        TriggerSpend { spend: crate::report::Spend { requests, tokens: avg_prompt * requests as f64, usd }, prompt_tokens: avg_prompt * requests as f64 }
+    }
+
+    #[test]
+    fn lookups_in_a_big_context() {
+        let (s, live) = session(&[(BlockKind::Prompt, None, 1_000.0, 1)], 1);
+        let lines = advice(&s, &live, &cold_cache(None), |i| {
+            i.spend_usd = 276.67;
+            i.lookups = lookups(412, 380_200.0, 58.10);
+        });
+        assert_eq!(lines, ["Single lookups made 412 requests, each re-reading ≈ 380.2k tokens: $58.10, 21% of the session. Batch independent reads, or explore in a subagent."]);
+    }
+
+    #[test]
+    fn lookups_come_after_the_tool_calls_and_before_the_reminders() {
+        let (s, live) = session(&[(BlockKind::ToolUse, Some("Bash"), 30_000.0, 1), (BlockKind::Reminder, Some("instructions"), 8_000.0, 0), (BlockKind::Prompt, None, 1_000.0, 1)], 1);
+        let lines = advice(&s, &live, &cold_cache(None), |i| i.lookups = lookups(100, 30_000.0, 20.0));
+        let at = |prefix: &str| lines.iter().position(|l| l.starts_with(prefix)).unwrap_or_else(|| panic!("no {prefix}: {lines:?}"));
+        assert!(at("Tool calls") < at("Single lookups") && at("Single lookups") < at("Reminders"));
+    }
+
+    #[test]
+    fn few_or_cheap_lookups_give_no_item() {
+        let (s, live) = session(&[(BlockKind::Prompt, None, 1_000.0, 1)], 1);
+        let lines = |spend: f64, l: TriggerSpend| advice(&s, &live, &cold_cache(None), |i| {
+            i.spend_usd = spend;
+            i.lookups = l;
+        });
+        assert!(lines(40.0, lookups(15, 50_000.0, 9.0)).is_empty(), "fewer than 20 requests");
+        assert!(lines(60.0, lookups(200, 50_000.0, 3.0)).is_empty(), "under $5 and 10%");
+        assert_eq!(lines(20.0, lookups(30, 50_000.0, 2.5)).len(), 1, "10% of a small session");
+        assert!(lines(0.0, lookups(300, 50_000.0, 0.0)).is_empty(), "an unpriced session");
     }
 
     #[test]

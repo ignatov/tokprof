@@ -7,6 +7,7 @@ use crate::analysis::{Component, Fact, Filter, MissEvent, RequestRecord, Sink};
 use crate::model::{ChainKind, Session, Usage};
 use crate::profile::{Frame, Stacks, Tint, TimedStacks, Values};
 use crate::source::AgentId;
+use crate::trigger::Trigger;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dim {
@@ -16,6 +17,7 @@ pub enum Dim {
     Chain,
     Origin,
     Task,
+    Trigger,
     Model,
     Turn,
     Component,
@@ -35,7 +37,7 @@ pub fn dims(list: &str) -> Vec<Dim> {
 }
 
 impl Dim {
-    pub const NAMES: &str = "agent, project, session, chain, origin, task, model, turn, component, cause, kind, tool, target";
+    pub const NAMES: &str = "agent, project, session, chain, origin, task, trigger, model, turn, component, cause, kind, tool, target";
 
     /// Short name, used as the class name of JFR frames.
     pub fn name(self) -> &'static str {
@@ -46,6 +48,7 @@ impl Dim {
             Dim::Chain => "chain",
             Dim::Origin => "origin",
             Dim::Task => "task",
+            Dim::Trigger => "trigger",
             Dim::Model => "model",
             Dim::Turn => "turn",
             Dim::Component => "component",
@@ -64,6 +67,7 @@ impl Dim {
             "chain" => Dim::Chain,
             "origin" => Dim::Origin,
             "task" => Dim::Task,
+            "trigger" => Dim::Trigger,
             "model" => Dim::Model,
             "turn" => Dim::Turn,
             "component" => Dim::Component,
@@ -84,6 +88,7 @@ impl Dim {
             Dim::Chain => (f.chain.to_string(), Tint::Structure),
             Dim::Origin => (f.origin.to_string(), Tint::Structure),
             Dim::Task => (f.task.to_string(), Tint::Structure),
+            Dim::Trigger => (f.trigger.name().to_string(), Tint::Structure),
             Dim::Model => (f.model.to_string(), Tint::Structure),
             Dim::Turn => (
                 match f.turn {
@@ -130,12 +135,33 @@ impl Spend {
     }
 }
 
-/// Spend by the kind of work the requests were part of, and by what the work was.
+/// Spend of the requests with one trigger, and the prompt tokens they read.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TriggerSpend {
+    pub spend: Spend,
+    pub prompt_tokens: f64,
+}
+
+impl TriggerSpend {
+    pub fn add(&mut self, o: TriggerSpend) {
+        self.spend.add(o.spend);
+        self.prompt_tokens += o.prompt_tokens;
+    }
+
+    /// The mean prompt of the requests.
+    pub fn avg_prompt(&self) -> f64 {
+        self.prompt_tokens / self.spend.requests.max(1) as f64
+    }
+}
+
+/// Spend by the kind of work the requests were part of, by what the work was, and by what
+/// made the agent send them.
 #[derive(Clone, Debug, Default)]
 pub struct Work {
     pub by_origin: HashMap<String, Spend>,
     /// Task, then origin.
     pub by_task: HashMap<String, HashMap<String, Spend>>,
+    pub by_trigger: HashMap<Trigger, TriggerSpend>,
 }
 
 impl Work {
@@ -146,6 +172,7 @@ impl Work {
             self.by_task.insert(r.task.to_string(), HashMap::new());
         }
         add_spend(self.by_task.get_mut(r.task).expect("inserted above"), r.origin, s);
+        self.by_trigger.entry(r.trigger).or_default().add(TriggerSpend { spend: s, prompt_tokens: r.usage.prompt() as f64 });
     }
 
     pub fn merge(&mut self, o: Work) {
@@ -158,6 +185,16 @@ impl Work {
                 t.entry(origin).or_default().add(s);
             }
         }
+        for (trigger, s) in o.by_trigger {
+            self.by_trigger.entry(trigger).or_default().add(s);
+        }
+    }
+
+    /// Triggers, most expensive first.
+    pub fn triggers(&self) -> Vec<(Trigger, TriggerSpend)> {
+        let mut rows: Vec<(Trigger, TriggerSpend)> = self.by_trigger.iter().map(|(t, s)| (*t, *s)).collect();
+        rows.sort_by(|a, b| b.1.spend.usd.total_cmp(&a.1.spend.usd).then(b.1.spend.tokens.total_cmp(&a.1.spend.tokens)).then(a.0.cmp(&b.0)));
+        rows
     }
 
     /// Origins, most expensive first.
@@ -495,6 +532,7 @@ mod tests {
                 chain_kind: ChainKind::Main,
                 advisor: false,
                 origin,
+                trigger: crate::trigger::Trigger::Prompt,
                 task,
                 model: "claude-opus-5-5",
                 price,

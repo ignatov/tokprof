@@ -69,6 +69,8 @@ pub fn summary(c: &Collector, window: &Filter, price_file: &Path) -> String {
     out.push('\n');
     out.push_str(&work(&c.work, 15, 15));
     out.push('\n');
+    out.push_str(&triggers(&c.work));
+    out.push('\n');
     out.push_str(&miss_causes(c, false));
     out
 }
@@ -105,6 +107,24 @@ pub fn work(w: &Work, top_origins: usize, top_tasks: usize) -> String {
         rows.push(vec![clip_end(task, 60), origin.to_string(), s.requests.to_string(), amount(&s), share(&s)]);
     }
     out.push_str(&table(&rows, 2));
+    out
+}
+
+/// Spend by trigger: what made the agent send each request.
+pub fn triggers(w: &Work) -> String {
+    let rows_in = w.triggers();
+    let priced = rows_in.iter().any(|(_, t)| t.spend.usd > 0.0);
+    let key = |s: &Spend| if priced { s.usd } else { s.tokens };
+    let total: f64 = rows_in.iter().map(|(_, t)| key(&t.spend)).sum();
+    let mut out = String::from("Spend by trigger: what made the agent send each request\n\n");
+    let mut rows = vec![["trigger", "requests", "avg prompt", "cost", "per request", "share"].map(str::to_string).to_vec()];
+    for (trigger, t) in rows_in {
+        let s = t.spend;
+        let n = s.requests.max(1) as f64;
+        let (cost, per) = if priced { (usd(s.usd), usd(s.usd / n)) } else { (format!("{} tok", tokens(s.tokens)), format!("{} tok", tokens(s.tokens / n))) };
+        rows.push(vec![trigger.name().to_string(), s.requests.to_string(), tokens(t.avg_prompt()), cost, per, format!("{:.1}%", 100.0 * key(&s) / total.max(1e-9))]);
+    }
+    out.push_str(&table(&rows, 1));
     out
 }
 
@@ -274,6 +294,22 @@ mod tests {
         AgentId::new(AgentInfo { cost_counter: Some("Claude Code's own cost counter".into()), ..AgentInfo::named("claude") })
     }
 
+
+    #[test]
+    fn a_trigger_row() {
+        use tokprof_core::report::TriggerSpend;
+        use tokprof_core::trigger::Trigger;
+        let mut w = Work::default();
+        let row = |requests: u64, avg: f64, usd: f64| TriggerSpend { spend: Spend { requests, tokens: avg * requests as f64, usd }, prompt_tokens: avg * requests as f64 };
+        w.by_trigger.insert(Trigger::Lookup, row(31_833, 263_000.0, 3_393.0));
+        w.by_trigger.insert(Trigger::Prompt, row(10_000, 100_000.0, 5_703.0));
+        let text = triggers(&w);
+        assert!(text.starts_with("Spend by trigger: what made the agent send each request\n\n"));
+        let line = text.lines().find(|l| l.starts_with("lookup")).unwrap();
+        assert_eq!(line.split_whitespace().collect::<Vec<_>>(), ["lookup", "31833", "263.0k", "$3,393", "$0.11", "37.3%"]);
+        let first = text.lines().nth(3).unwrap();
+        assert!(first.starts_with("prompt"), "most expensive first: {first}");
+    }
 
     #[test]
     fn summary_totals_match_the_cause_table_and_the_window() {

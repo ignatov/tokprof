@@ -10,6 +10,7 @@ use std::ops::Range;
 
 use crate::api::ApiId;
 use crate::source::AgentId;
+use crate::trigger::Trigger;
 
 /// Token counts the provider reported for one API request.
 #[derive(Clone, Copy, Debug, Default)]
@@ -237,6 +238,22 @@ pub struct Request {
     pub context_window: Option<u64>,
     /// What kind of work the request was part of. `None` counts as a prompt.
     pub origin: Option<Origin>,
+    /// What made the agent send the request, as its source saw it; see [`Request::trigger`].
+    pub trigger: Option<Trigger>,
+}
+
+impl Request {
+    /// What made the agent send the request: an advisor call and the first request after a
+    /// compaction say so themselves, everything else is what the source saw, else `unknown`.
+    pub fn trigger(&self) -> Trigger {
+        if self.advisor {
+            Trigger::Advisor
+        } else if self.compacted_before {
+            Trigger::Compaction
+        } else {
+            self.trigger.unwrap_or_default()
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

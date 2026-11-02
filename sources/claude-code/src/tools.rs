@@ -4,6 +4,7 @@ use std::path::Path;
 
 use serde_json::Value;
 use tokprof_core::labels::{command_head, display_path, url_host};
+use tokprof_core::trigger::{CallKind, read_only_command};
 
 pub(crate) fn tool_target(tool: &str, input: &Value, cwd: Option<&str>, home: &Path) -> Option<String> {
     let s = |k: &str| input.get(k).and_then(Value::as_str);
@@ -22,4 +23,15 @@ pub(crate) fn tool_target(tool: &str, input: &Value, cwd: Option<&str>, home: &P
         _ => None,
     };
     target.filter(|t| !t.is_empty())
+}
+
+/// What a Claude Code tool call did, for the trigger of the request after it.
+pub(crate) fn call_kind(tool: &str, input: &Value) -> CallKind {
+    match tool {
+        "Read" | "NotebookRead" | "Grep" | "Glob" | "LS" | "WebFetch" | "WebSearch" => CallKind::ReadOnly,
+        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => CallKind::Edit,
+        "Agent" | "Task" => CallKind::Subagent,
+        "Bash" if input.get("command").and_then(Value::as_str).is_some_and(read_only_command) => CallKind::ReadOnly,
+        _ => CallKind::Run,
+    }
 }

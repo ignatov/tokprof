@@ -22,6 +22,7 @@ use tokprof_core::api::ApiId;
 use tokprof_core::labels::{command_head, display_path};
 use tokprof_core::model::{Block, BlockKind, Class, CompactionTrigger, Origin, ReminderKind, ToolClass, Chain, ChainKind, Compaction, Params, PromptDelta, Request, Session, Shape, Usage};
 use tokprof_core::source::{AgentId, Decoder};
+use tokprof_core::trigger::{CallKind, Pending, Trigger, read_only_command};
 use tokprof_logio::{json_len, parse_ts_ms, str_at, u64_at};
 
 use crate::tools::tool_target;
@@ -41,6 +42,10 @@ struct Stream {
     /// Conversation items in the previous request's prompt; `None` before the first request
     /// and after a compaction replaced the conversation.
     prompt_len: Option<usize>,
+    /// The calls of the latest response, and what was logged after them.
+    pending: Pending,
+    /// The latest response ended with an assistant message and made no call.
+    ended_with_text: bool,
     requests: Vec<Request>,
 }
 
@@ -60,6 +65,10 @@ pub(crate) struct Parser {
     /// Items at the end of `history` that the response in flight produced.
     trailing_outputs: usize,
     tools_by_call: HashMap<String, (String, Option<String>)>,
+    /// What the calls of a conversation item did, by message index.
+    call_kinds: HashMap<usize, Vec<CallKind>>,
+    /// The calls of the item being read, until it gets its message index.
+    item_calls: Vec<CallKind>,
     shape: Option<usize>,
     streams: [Stream; 2],
     seen: HashSet<String>,
@@ -77,6 +86,8 @@ impl Parser {
             history: Vec::new(),
             trailing_outputs: 0,
             tools_by_call: HashMap::new(),
+            call_kinds: HashMap::new(),
+            item_calls: Vec::new(),
             shape: None,
             streams: [Stream::default(), Stream::default()],
             seen: HashSet::new(),
@@ -204,7 +215,14 @@ impl Parser {
             return;
         }
         let starts_turn = blocks.iter().any(|b| b.kind == BlockKind::Prompt);
+        if starts_turn {
+            self.streams.iter_mut().for_each(|s| s.pending.event(Trigger::Prompt));
+        }
         let idx = self.session.push_message(blocks, starts_turn);
+        let calls = std::mem::take(&mut self.item_calls);
+        if !calls.is_empty() {
+            self.call_kinds.insert(idx, calls);
+        }
         self.history.push(idx);
         self.trailing_outputs = if output { self.trailing_outputs + 1 } else { 0 };
     }
@@ -252,11 +270,13 @@ impl Parser {
                 let name = str_at(item, "name").unwrap_or("?");
                 let (tool, target, chars) = if ty == "custom_tool_call" {
                     let input = str_at(item, "input").unwrap_or_default();
+                    self.item_calls = code_calls(name, input);
                     let (tool, target) = code_target(name, input, cwd, &self.home);
                     (tool, target, input.len() as u64)
                 } else {
                     let args = str_at(item, "arguments").unwrap_or_default();
                     let parsed: Value = serde_json::from_str(args).unwrap_or(Value::Null);
+                    self.item_calls = vec![call_kind(name, &parsed)];
                     (name.to_string(), call_target(name, &parsed, cwd, &self.home), args.len() as u64)
                 };
                 if let Some(id) = str_at(item, "call_id") {
@@ -304,7 +324,14 @@ impl Parser {
                 .collect();
             self.session.push_message(blocks, false)
         });
+        let outputs = &self.history[prompt_len..];
+        let calls: Vec<CallKind> = outputs.iter().filter_map(|m| self.call_kinds.get(m)).flatten().copied().collect();
+        let text = outputs.iter().any(|&m| self.session.blocks[self.session.messages[m].blocks.clone()].iter().any(|b| b.kind == BlockKind::Text));
         let s = &mut self.streams[stream];
+        let trigger = s.pending.trigger().or((s.ended_with_text && !s.requests.is_empty()).then_some(Trigger::Continuation));
+        s.pending = Pending::default();
+        calls.iter().for_each(|&k| s.pending.call(k));
+        s.ended_with_text = text && calls.is_empty();
         let keep = s.prompt_len.filter(|&prev| prev <= prompt_len).unwrap_or(0);
         let delta = PromptDelta {
             shape: if s.requests.is_empty() { self.shape } else { None },
@@ -331,6 +358,7 @@ impl Parser {
             compacted_before: s.compacted,
             after_assistant_message: s.after_assistant,
             context_window: s.context_window,
+            trigger,
             ..Request::default()
         });
         s.compacted = false;
@@ -440,6 +468,56 @@ fn code_target(name: &str, code: &str, cwd: Option<&str>, home: &Path) -> (Strin
     }
 }
 
+/// What a Codex function call did, for the trigger of the request after it.
+fn call_kind(name: &str, args: &Value) -> CallKind {
+    match name {
+        "exec_command" | "shell" | "container.exec" => {
+            let cmd = match args.get("cmd").or(args.get("command")) {
+                Some(Value::String(c)) => Some(c.clone()),
+                Some(Value::Array(parts)) => {
+                    let parts: Vec<&str> = parts.iter().filter_map(Value::as_str).collect();
+                    match parts.as_slice() {
+                        [_, flag, script] if flag.starts_with('-') => Some(script.to_string()),
+                        _ => Some(parts.join(" ")),
+                    }
+                }
+                _ => None,
+            };
+            if cmd.is_some_and(|c| read_only_command(&c)) { CallKind::ReadOnly } else { CallKind::Run }
+        }
+        "apply_patch" => CallKind::Edit,
+        "spawn_agent" => CallKind::Subagent,
+        _ => CallKind::Run,
+    }
+}
+
+/// What the calls of a custom tool did. The `exec` tool's JavaScript is read by its inner
+/// `tools.<name>(...)` calls, one kind each; a command that is not a plain string literal runs.
+fn code_calls(name: &str, code: &str) -> Vec<CallKind> {
+    if name == "apply_patch" {
+        return vec![CallKind::Edit];
+    }
+    let starts: Vec<usize> = code.match_indices("tools.").map(|(at, _)| at).collect();
+    let mut kinds = Vec::new();
+    for (i, &at) in starts.iter().enumerate() {
+        let segment = &code[at..starts.get(i + 1).copied().unwrap_or(code.len())];
+        let ident: String = segment[6..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+        kinds.push(match ident.as_str() {
+            "" => continue,
+            "exec_command" => {
+                if js_string(segment, "cmd").is_some_and(|c| read_only_command(&c)) { CallKind::ReadOnly } else { CallKind::Run }
+            }
+            "apply_patch" => CallKind::Edit,
+            "spawn_agent" => CallKind::Subagent,
+            _ => CallKind::Run,
+        });
+    }
+    if kinds.is_empty() {
+        kinds.push(CallKind::Run);
+    }
+    kinds
+}
+
 /// The string value of `field:` in JavaScript source, with any quote style.
 fn js_string(code: &str, field: &str) -> Option<String> {
     let at = code.find(&format!("{field}:")).or_else(|| code.find(&format!("\"{field}\":")))?;
@@ -503,6 +581,40 @@ mod tests {
             ("apply_patch".to_string(), Some("src/a.rs".to_string()))
         );
         assert_eq!(code_target("exec", "await Promise.all([tools.exec_command({}), tools.write_stdin({})])", cwd, Path::new("/h")).1.as_deref(), Some("exec_command, write_stdin"));
+    }
+
+    #[test]
+    fn requests_carry_what_triggered_them() {
+        use serde_json::json;
+        let mut p = parser("t");
+        let mut n = 0;
+        let mut line = |v: Value| p.line(&v.to_string());
+        let mut record = |line: &mut dyn FnMut(Value)| {
+            n += 1;
+            line(json!({"type": "token_usage_record", "payload": {"response_id": format!("r{n}"), "usage": {"input_tokens": 100, "output_tokens": 1}}}));
+        };
+        let item = |payload: Value| json!({"type": "response_item", "payload": payload});
+        let exec = |code: &str| item(json!({"type": "custom_tool_call", "name": "exec", "call_id": "c", "input": code}));
+        let out = || item(json!({"type": "custom_tool_call_output", "call_id": "c", "output": "x"}));
+        line(item(json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "fix it"}]})));
+        line(exec("text(await tools.exec_command({cmd: \"rg -n foo\"})); text(await tools.exec_command({cmd: 'sed -n 1,80p src/lib.rs'}))"));
+        record(&mut line);
+        line(out());
+        line(exec("text(await tools.apply_patch(`*** Begin Patch\n*** Update File: a.rs`))"));
+        record(&mut line);
+        line(out());
+        line(exec("const c = 'ls'; text(await tools.exec_command({cmd: c}))"));
+        record(&mut line);
+        line(out());
+        line(item(json!({"type": "function_call", "name": "exec_command", "call_id": "d", "arguments": "{\"cmd\":\"cat Cargo.toml\"}"})));
+        record(&mut line);
+        line(item(json!({"type": "function_call_output", "call_id": "d", "output": "x"})));
+        line(item(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "checking"}]})));
+        record(&mut line);
+        record(&mut line);
+        let s = p.into_session();
+        use Trigger::*;
+        assert_eq!(s.chains[0].requests.iter().map(Request::trigger).collect::<Vec<_>>(), [Prompt, Lookups, Edit, Run, Lookup, Continuation]);
     }
 
     #[test]
