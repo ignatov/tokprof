@@ -452,6 +452,9 @@ impl Parser {
 
     fn add_message(&mut self, msg: &Value, meta: bool) -> usize {
         let user = str_at(msg, "role") != Some("assistant");
+        // Since 2.1.300 request-audit blobs carry Claude Code's reminders (environment, hook
+        // context, file-change notes) as messages of role `system`, without reminder tags.
+        let meta = meta || str_at(msg, "role") == Some("system");
         let cwd = self.session.cwd.clone();
         let mut blocks = Vec::new();
         let (mut prompt, mut tool_result) = (false, false);
@@ -1025,6 +1028,19 @@ mod tests {
         let s = p.into_session();
         assert!(s.chains[0].requests.iter().all(|r| r.prompt.is_none()), "a legacy transcript");
         assert_eq!(triggers(&s, 0), [Trigger::Prompt, Trigger::Lookup]);
+    }
+
+    #[test]
+    fn system_messages_are_reminders_and_start_no_turn() {
+        let mut p = parser("s", false);
+        let blob = |hash: &str, role: &str, text: &str| json!({"type": "api-request-blob", "hash": hash, "message": {"role": role, "content": [{"type": "text", "text": text}]}});
+        p.line(&blob("h1", "system", "The user hasn't heard from you in a while — say in a few words what you're doing, then continue.").to_string());
+        p.line(&blob("h2", "system", "UserPromptSubmit hook additional context: Any multi-step request needs a todo list").to_string());
+        p.line(&blob("h3", "user", "fix the parser").to_string());
+        let s = p.into_session();
+        let kinds: Vec<(BlockKind, bool)> = s.messages.iter().map(|m| (s.blocks[m.blocks.start].kind, m.starts_turn)).collect();
+        assert_eq!(kinds, [(BlockKind::Reminder, false), (BlockKind::Reminder, false), (BlockKind::Prompt, true)]);
+        assert_eq!(s.blocks[s.messages[1].blocks.start].target.as_deref(), Some("hook context"));
     }
 
     #[test]
