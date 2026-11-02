@@ -218,7 +218,7 @@ pub fn xray(file: &SourceFile, pricing: &Pricing, style: &Style) -> Result<Strin
     let main = &sessions[0];
     let live = analysis::live_context(main);
     let ts: Vec<i64> = sessions.iter().flat_map(|s| s.chains.iter().flat_map(|c| c.requests.iter().map(|r| r.ts_ms))).filter(|&t| t > 0).collect();
-    let (first, last) = (ts.iter().copied().min().unwrap_or(0), ts.iter().copied().max().unwrap_or(0));
+    let span = ts.iter().copied().min().zip(ts.iter().copied().max());
 
     let mut out = String::new();
     let label = |s: &str| style.dim(&format!("{s:<9}"));
@@ -227,22 +227,11 @@ pub fn xray(file: &SourceFile, pricing: &Pricing, style: &Style) -> Result<Strin
     if let Some(title) = &main.title {
         let _ = writeln!(out, "{} {}", label("title"), clip_end(title, 82));
     }
-    let models = totals.models.iter().map(|(m, n)| format!("{m} ×{n}")).collect::<Vec<_>>().join(", ");
-    let _ = writeln!(out, "{} {models}", label("models"));
-    let same_day = local_time(first, "%F") == local_time(last, "%F");
-    let subagents = match files.len() - 1 {
-        0 => String::new(),
-        n => format!(" · {}", crate::report::count(n as u64, "subagent", "subagents")),
-    };
-    let _ = writeln!(
-        out,
-        "{} {} → {} ({}) · {}{subagents}",
-        label("time"),
-        local_time(first, "%Y-%m-%d %H:%M"),
-        local_time(last, if same_day { "%H:%M" } else { "%Y-%m-%d %H:%M" }),
-        human_duration((last - first) as f64 / 1000.0),
-        crate::report::count(totals.requests, "request", "requests"),
-    );
+    if !totals.models.is_empty() {
+        let models = totals.models.iter().map(|(m, n)| format!("{m} ×{n}")).collect::<Vec<_>>().join(", ");
+        let _ = writeln!(out, "{} {models}", label("models"));
+    }
+    let _ = writeln!(out, "{} {}", label("time"), time_line(span, totals.requests, files.len() - 1));
 
     let trailing = live.as_ref().and_then(|l| trailing_compaction(main, l, pricing));
     if let Some(live) = &live {
@@ -381,7 +370,37 @@ fn compacted_live(s: &Session, live: &LiveContext, t: &Trailing) -> LiveContext 
         context_window: live.context_window,
         blocks: live.blocks.iter().filter(|(b, _, _)| is_setup(s, *b)).copied().collect(),
         turns: 0,
+        requests_per_prompt: live.requests_per_prompt,
     }
+}
+
+/// The `time` line after its label: the first and last request, the span, and the counts; only
+/// the counts when no request has a time.
+fn time_line(span: Option<(i64, i64)>, requests: u64, subagents: usize) -> String {
+    let mut line = String::new();
+    if let Some((first, last)) = span {
+        let same_day = local_time(first, "%F") == local_time(last, "%F");
+        line = format!(
+            "{} → {} ({}) · ",
+            local_time(first, "%Y-%m-%d %H:%M"),
+            local_time(last, if same_day { "%H:%M" } else { "%Y-%m-%d %H:%M" }),
+            human_duration((last - first) as f64 / 1000.0)
+        );
+    }
+    line += &crate::report::count(requests, "request", "requests");
+    if subagents > 0 {
+        line += &format!(" · {}", crate::report::count(subagents as u64, "subagent", "subagents"));
+    }
+    line
+}
+
+/// A forecast as a share of the session's cost, as ` = 6% of the session's $107`; empty when
+/// the cost would read `$0.00`, since a share of that says nothing.
+fn of_session(usd_next: f64, spend: f64) -> String {
+    if spend < 0.005 {
+        return String::new();
+    }
+    format!(" = {:.0}% of the session's {}", 100.0 * usd_next / spend, usd(spend))
 }
 
 fn context_lines(out: &mut String, live: &LiveContext, cache: &CacheState, trailing: Option<&Trailing>, spend: f64, pricing: &Pricing, style: &Style) {
@@ -398,7 +417,7 @@ fn context_lines(out: &mut String, live: &LiveContext, cache: &CacheState, trail
             let _ = writeln!(out, "{label} {approx}{} tokens", tokens(size as f64));
         }
     }
-    let of_session = |x: f64| if spend > 0.0 { format!(" = {:.0}% of the session's {}", 100.0 * x / spend, usd(spend)) } else { String::new() };
+    let of_session = |x: f64| of_session(x, spend);
     if let Some(t) = trailing {
         let when = local_time(t.at_ms, "%H:%M");
         let how = match t.kind.as_deref() {
@@ -455,13 +474,14 @@ fn advice_lines(out: &mut String, s: &Session, live: &LiveContext, cache: &Cache
         e.0 += 1;
         e.1 += m.premium_usd.unwrap_or(0.0);
     }
+    let price_at = |prompt| pricing.get(&live.model, prompt, crate::pricing::now_ms());
     let inputs = advice::Inputs {
         session: s,
         live,
-        price: pricing.get(&live.model, live.usage.prompt(), crate::pricing::now_ms()),
+        price_at: &price_at,
         cache,
         window: live.context_window.or_else(|| pricing.context_window(&live.model)),
-        requests_per_prompt: billed.len() as f64 / live.turns.max(1) as f64,
+        requests_per_prompt: live.requests_per_prompt,
         spend_usd: t.components.iter().map(|v| v.usd).sum(),
         thinking_usd: t.content.iter().filter(|((k, _, _), _)| *k == BlockKind::Thinking).map(|(_, v)| v.usd).sum(),
         effort: efforts.iter().max_by_key(|(_, n)| **n).map(|(e, _)| e.to_string()),
@@ -851,6 +871,23 @@ mod tests {
     const MIN: i64 = 60_000;
 
     #[test]
+    fn the_share_of_a_cost_that_reads_zero_is_left_out() {
+        assert_eq!(of_session(0.01, 0.004), "");
+        assert_eq!(of_session(0.01, 0.0), "");
+        assert_eq!(of_session(0.03, 0.02), " = 150% of the session's $0.02");
+        assert_eq!(of_session(6.57, 107.0), " = 6% of the session's $107");
+    }
+
+    #[test]
+    fn a_session_without_times_shows_only_its_counts() {
+        assert_eq!(time_line(None, 0, 0), "0 requests");
+        assert_eq!(time_line(None, 12, 1), "12 requests · 1 subagent");
+        use chrono::TimeZone;
+        let at = |h: u32, m: u32| chrono::Local.with_ymd_and_hms(2026, 11, 1, h, m, 0).unwrap().timestamp_millis();
+        assert_eq!(time_line(Some((at(8, 49), at(18, 15))), 657, 0), "2026-11-01 08:49 → 18:15 (9.4h) · 657 requests");
+    }
+
+    #[test]
     fn session_ids_match_from_their_start_in_any_case() {
         let id = "01a197e1-4d9f-76b1-b25d-cdd77b01e10f";
         assert!(id_starts_with(id, "01a197e1") && id_starts_with(id, "01A197E1-4D9F") && id_starts_with(id, id));
@@ -941,6 +978,7 @@ mod tests {
             context_window: Some(1_000_000),
             blocks: kinds.iter().enumerate().map(|(n, &(_, t))| (Some(n), t, 1)).collect(),
             turns: 30,
+            requests_per_prompt: 3.0,
         };
         (s, live)
     }
@@ -1000,10 +1038,11 @@ mod tests {
         let t = trailing_compaction(&s, &live, &pricing).unwrap();
         let advise = |live: &LiveContext| {
             let cache = cache_state(&s, live, &pricing);
+            let price_at = |prompt| pricing.get(&live.model, prompt, crate::pricing::now_ms());
             advice::advise(&advice::Inputs {
                 session: &s,
                 live,
-                price: pricing.get(&live.model, live.usage.prompt(), crate::pricing::now_ms()),
+                price_at: &price_at,
                 cache: &cache,
                 window: live.context_window,
                 requests_per_prompt: 3.0,
@@ -1042,6 +1081,7 @@ mod tests {
             context_window: None,
             blocks: Vec::new(),
             turns: 2,
+            requests_per_prompt: 1.0,
         };
         let prompts: Vec<u64> = conversation(&s, &live).iter().map(|r| r.usage.prompt()).collect();
         assert_eq!(prompts, [34_800, 40_000, 721_000, 724_000]);

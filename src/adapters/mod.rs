@@ -36,7 +36,8 @@ impl SourceFile {
         }
     }
 
-    /// The logs of the subagents this session spawned.
+    /// The logs of the subagents this session spawned, and for Codex of the threads they
+    /// spawned in turn.
     pub fn subagent_files(&self) -> Vec<SourceFile> {
         let mut out = Vec::new();
         match self.agent {
@@ -48,7 +49,7 @@ impl SourceFile {
                     }
                 });
             }
-            Agent::Codex => out.extend(codex::children(&self.path).iter().filter_map(|path| SourceFile::at(Agent::Codex, path))),
+            Agent::Codex => out.extend(codex::descendants(&self.path).iter().filter_map(|path| SourceFile::at(Agent::Codex, path))),
             Agent::Claude => {}
         }
         out

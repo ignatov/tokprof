@@ -299,7 +299,7 @@ A Claude Code user message SHALL keep the origin of the turn before it when it i
 - **THEN** the requests after the interruption still have origin `command:/goal`
 
 ### Requirement: Task of a request
-A request's task SHALL be what its subagent was asked to do, else its session's title, else `untitled` followed by the session's 8-character id:
+A request's task SHALL be what its subagent was asked to do, else its session's title, else `untitled` followed by the session's short id (see session-logs):
 - a Claude Code subagent's task is the `description` in its `subagents/agent-<id>.meta.json`;
 - a Codex thread's task is the last part of its `agent_path`, with underscores as spaces.
 
@@ -313,12 +313,12 @@ A request's task SHALL be what its subagent was asked to do, else its session's 
 
 #### Scenario: No title
 - **WHEN** a session has no title and is not a subagent
-- **THEN** its requests have task `untitled 019ff5ca` for session `019ff5ca-…`
+- **THEN** its requests have task `untitled 019ff5ca-1a2b-7c3d` for Codex session `019ff5ca-1a2b-7c3d-…`
 
 ### Requirement: Session title
 A session's title SHALL be:
 - for Claude Code, the latest `custom-title` line, else the latest `ai-title` line, without a leading `[archived]` mark;
-- for Codex, the `thread_name` of the thread in `~/.codex/session_index.jsonl` (under `$CODEX_HOME` when set), and for a subagent thread its parent's.
+- for Codex, the `thread_name` of the thread in `~/.codex/session_index.jsonl` (under `$CODEX_HOME` when set), and for a subagent thread the title of the session it belongs to (see session-logs), however deep it is.
 
 tokprof SHALL read the index again when its size changes.
 
@@ -329,6 +329,10 @@ tokprof SHALL read the index again when its size changes.
 #### Scenario: A Codex thread from an IDE plugin
 - **WHEN** the index has no entry for a thread
 - **THEN** the thread has no title
+
+#### Scenario: A thread spawned by a subagent
+- **WHEN** main thread `M` is titled `Fix the parser` in the index, its subagent thread `A` spawned thread `B`, and neither `A` nor `B` is in the index
+- **THEN** `A` and `B` both have the title `Fix the parser`
 
 ### Requirement: Spend by origin
 `tokprof summary` SHALL print `Spend by origin: the kind of work each request was part of` and a table of whole requests with `origin`, `requests`, `tokens`, `cost` and `share`, most expensive first. The table holds the top 15 origins; the rest fold into one `<n> more` row. Shares are of the cost, or of tokens when no request has a price.

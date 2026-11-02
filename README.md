@@ -249,7 +249,7 @@ Coverage depends on what the logs contain:
   - Tool schemas other than `additional_tools` are not logged.
   - `world_state` repeats the messages, so it is not counted.
   - Compressed rollouts (`.jsonl.zst`, in `sessions` and `archived_sessions`) are read too.
-  - Subagent threads join their parent through `parent_thread_id`.
+  - Subagent threads join their parent through `parent_thread_id`, and count under the topmost thread above them, so threads that subagents spawn belong to the same session.
 
 ## Origin and task
 
@@ -274,7 +274,7 @@ The origin is the first of these that applies:
 The task is what a subagent was asked to do, else the session title, else `untitled <id>`:
 - **Claude Code.** A subagent's task is the `description` in its meta file. The title is the latest `custom-title`, or else the latest `ai-title`, without the `[archived]` mark.
 - **Codex.** A spawned thread's task is the end of its `agent_path`: `/root/fix_flaky_tests` becomes `fix flaky tests`.
-  - The title is the `thread_name` in `~/.codex/session_index.jsonl`, the parent's for a subagent thread.
+  - The title is the `thread_name` in `~/.codex/session_index.jsonl`, the session's for a subagent thread.
   - Codex writes it for threads started in its app and TUI. Threads from IDE plugins and `codex exec` stay untitled.
 
 A subagent's chain is named after its task, for example `subagent: Find handlers`.

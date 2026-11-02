@@ -33,7 +33,9 @@ impl CacheState {
 pub struct Inputs<'a> {
     pub session: &'a Session,
     pub live: &'a LiveContext,
-    pub price: Option<Price>,
+    /// Today's price of the latest request's model for a prompt of the given size: a model with
+    /// a long-context tier prices a big prompt above a small one.
+    pub price_at: &'a dyn Fn(u64) -> Option<Price>,
     pub cache: &'a CacheState,
     pub window: Option<u64>,
     pub requests_per_prompt: f64,
@@ -60,18 +62,23 @@ pub(crate) const SUMMARY_TOKENS: f64 = 10_000.0;
 /// bench measured it (docs/reference-bench.md). The new session starts from `start` tokens,
 /// takes in what it needs from the old log and the project, and answers.
 pub fn pickup_usd(agent: Agent, start: f64, p: Price, write: f64) -> f64 {
-    // Tokens taken in, requests and output of a pickup, per agent.
-    let (taken, requests, output) = match agent {
+    let (taken, requests, output) = pickup_shape(agent);
+    ((start + taken) * write + (requests - 1.0) * (start + taken / 2.0) * p.read + output * p.output) / 1e6
+}
+
+/// Tokens taken in, requests and output of a pickup, per agent.
+fn pickup_shape(agent: Agent) -> (f64, f64, f64) {
+    match agent {
         Agent::Claude => (8_000.0, 4.0, 2_000.0),
         Agent::Codex => (30_000.0, 6.0, 4_000.0),
-    };
-    ((start + taken) * write + (requests - 1.0) * (start + taken / 2.0) * p.read + output * p.output) / 1e6
+    }
 }
 
 pub fn advise(i: &Inputs) -> Vec<String> {
     let mut out = Vec::new();
     let prompt = i.live.usage.prompt() as f64;
-    let per_request = i.price.map(|p| prompt * p.read / 1e6);
+    let price = (i.price_at)(i.live.usage.prompt());
+    let per_request = price.map(|p| prompt * p.read / 1e6);
 
     let mut by_kind: BTreeMap<BlockKind, f64> = BTreeMap::new();
     let mut by_source: BTreeMap<(BlockKind, String), f64> = BTreeMap::new();
@@ -110,8 +117,15 @@ pub fn advise(i: &Inputs) -> Vec<String> {
         // A session forked from another starts big, so the smaller of its first prompt and the
         // prompt after a compaction (the setup and a summary) stands for a fresh start.
         let start = [i.first_prompt, i.after_compaction].into_iter().flatten().min().map_or(setup, |t| t as f64);
-        let write = i.price.map_or(0.0, |p| if i.cache.long_ttl { p.write_long } else { p.write_short });
-        let pickup = i.price.filter(|_| start > 0.0).map(|p| pickup_usd(i.session.agent, start, p, write));
+        let write_of = |p: Price| if i.cache.long_ttl { p.write_long } else { p.write_short };
+        let write = price.map_or(0.0, write_of);
+        // The new session's prompts stay near its start, so they are priced at their own size,
+        // below a long-context tier that the old prompt may be over.
+        let largest = start + pickup_shape(i.session.agent).0;
+        let pickup = price
+            .filter(|_| start > 0.0)
+            .and_then(|_| (i.price_at)(largest as u64))
+            .map(|p| pickup_usd(i.session.agent, start, p, write_of(p)));
         let handoff = format!("tokprof handoff {}", i.session.short_id());
         if i.cache.cold() {
             let mut line = format!("Resuming writes the whole {} context again", tokens(prompt));
@@ -123,7 +137,7 @@ pub fn advise(i: &Inputs) -> Vec<String> {
             }
             line.push('.');
             out.push(line);
-            if let (Some(p), Some(pickup)) = (i.price, pickup) {
+            if let (Some(p), Some(pickup)) = (price, pickup) {
                 if i.cache.rebuild_usd.is_some_and(|r| pickup < r) {
                     out.push(format!(
                         "A new session that refers to this one is cheaper: ≈ {} to pick up the work. `{handoff}` prints the line to start it with.",
@@ -142,7 +156,7 @@ pub fn advise(i: &Inputs) -> Vec<String> {
             let left = human_duration((i.cache.ttl_ms - i.cache.idle_ms) as f64 / 1000.0);
             let mut line = format!("Cache warm for {left}: keep going now");
             // While warm, the compaction call reads the context at the cache rate.
-            if let Some(p) = i.price {
+            if let Some(p) = price {
                 line += &format!(", or /compact before a break (≈ {} now)", usd(prompt * p.read / 1e6 + SUMMARY_TOKENS * p.output / 1e6));
             }
             line.push('.');
@@ -290,16 +304,33 @@ mod tests {
             context_window: Some(1_000_000),
             blocks: blocks.iter().enumerate().map(|(n, b)| (Some(n), b.2, b.3)).collect(),
             turns,
+            requests_per_prompt: 1.0,
         };
         (s, live)
     }
 
     /// The advice for a session, checked to fit two lines of the X-ray per item.
+    /// No price for any prompt, as for a model without a price today.
+    static NO_PRICE: fn(u64) -> Option<Price> = |_| None;
+
     fn advice(s: &Session, live: &LiveContext, cache: &CacheState, edit: impl FnOnce(&mut Inputs<'_>)) -> Vec<String> {
+        let pricing = crate::pricing::Pricing::defaults();
+        let opus = |n| pricing.get("claude-opus-5-5", n, crate::pricing::now_ms());
+        priced_advice(s, live, cache, &opus, edit)
+    }
+
+    /// The advice with these prices.
+    fn priced_advice<'a>(
+        s: &'a Session,
+        live: &'a LiveContext,
+        cache: &'a CacheState,
+        price_at: &'a dyn Fn(u64) -> Option<Price>,
+        edit: impl FnOnce(&mut Inputs<'a>),
+    ) -> Vec<String> {
         let mut i = Inputs {
             session: s,
             live,
-            price: crate::pricing::Pricing::defaults().get("claude-opus-5-5", 0, crate::pricing::now_ms()),
+            price_at,
             cache,
             window: live.context_window,
             requests_per_prompt: 30.0,
@@ -378,9 +409,9 @@ mod tests {
     fn without_a_price_only_the_tokens_remain() {
         let (s, live) = full();
         let results = "Tool results take 84% of the context (Bash 800.0k): pipe long command output through tail or grep.";
-        let cold = advice(&s, &live, &cold_cache(None), |i| i.price = None);
+        let cold = advice(&s, &live, &cold_cache(None), |i| i.price_at = &NO_PRICE);
         assert_eq!(cold[..2], ["Resuming writes the whole 950.0k context again.", results]);
-        let warm = advice(&s, &live, &warm_cache(None), |i| i.price = None);
+        let warm = advice(&s, &live, &warm_cache(None), |i| i.price_at = &NO_PRICE);
         assert_eq!(warm[..2], ["Cache warm for 50m: keep going now.", results]);
     }
 
@@ -393,6 +424,26 @@ mod tests {
         });
         assert!(lines[1].starts_with("A new session that refers to this one is cheaper: ≈ $0.29 to pick up the work."), "{lines:#?}");
         assert_eq!(lines[2], "/compact costs about as much as resuming (≈ $7.80 once), then ~21.8k per request.");
+    }
+
+    #[test]
+    fn a_pickup_is_priced_below_the_old_prompts_long_context_tier() {
+        let pricing = crate::pricing::Pricing::defaults();
+        let now = crate::pricing::now_ms();
+        let astra = |n| pricing.get("gpt-6-astra", n, now);
+        let pickup = |prompt: f64| {
+            let (mut s, live) = session(&[(BlockKind::Tools, None, 10_000.0, 0), (BlockKind::ToolResult, Some("Bash"), prompt - 10_000.0, 1)], 1);
+            s.agent = Agent::Codex;
+            let cache = cold_cache(Some(50.0));
+            let lines = priced_advice(&s, &live, &cache, &astra, |i| i.first_prompt = Some(18_000));
+            lines.into_iter().find(|l| l.starts_with("A new session")).unwrap()
+        };
+        // 300k is over the 272k tier, 100k is not; a pickup from 18k pays the standard prices.
+        let standard = astra(0).unwrap();
+        assert_ne!(astra(300_000), Some(standard));
+        let expected = usd(pickup_usd(Agent::Codex, 18_000.0, standard, standard.write_long));
+        assert!(pickup(300_000.0).contains(&format!("≈ {expected} to pick up")), "{}", pickup(300_000.0));
+        assert_eq!(pickup(300_000.0), pickup(100_000.0));
     }
 
     #[test]
@@ -487,7 +538,7 @@ mod tests {
     fn pasted_prompts_list_the_three_largest_in_turn_order() {
         let block = |t, turn| (BlockKind::Prompt, None, t, turn);
         let (s, live) = session(&[block(14_600.0, 1), block(29_600.0, 3), block(10_500.0, 5), block(11_000.0, 8), block(110_200.0, 12)], 12);
-        let lines = advice(&s, &live, &cold_cache(None), |i| i.price = None);
+        let lines = advice(&s, &live, &cold_cache(None), |i| i.price_at = &NO_PRICE);
         let expected = "Pasted prompts (turn 1 14.6k, turn 3 29.6k, turn 12 110.2k and 2 more) are re-read on every request: pass a file path instead.";
         assert!(lines.iter().any(|l| l == expected), "{lines:#?}");
     }

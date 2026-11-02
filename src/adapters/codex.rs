@@ -13,7 +13,7 @@
 //!   not counted.
 //! - Subagent threads name their parent in `session_meta.parent_thread_id`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
@@ -86,6 +86,38 @@ impl Threads {
         }
         self.by_path.insert(path, thread);
     }
+
+    /// The topmost thread above `id`: follows parents while their rollouts are known, so a
+    /// parent whose rollout is missing ends the walk. 64 steps stop a cycle in damaged logs.
+    fn root(&self, id: &str) -> String {
+        let mut id = id.to_string();
+        for _ in 0..64 {
+            let parent = self.by_id.get(&id).and_then(|path| self.by_path.get(path)).and_then(|t| t.as_ref()?.1.clone());
+            match parent {
+                Some(parent) => id = parent,
+                None => break,
+            }
+        }
+        id
+    }
+
+    /// Rollouts of every thread below `id`, breadth first: the threads it spawned, then theirs.
+    fn descendants(&self, id: &str) -> Vec<PathBuf> {
+        let (mut out, mut seen) = (Vec::new(), HashSet::from([id.to_string()]));
+        let mut queue = VecDeque::from([id.to_string()]);
+        while let Some(parent) = queue.pop_front() {
+            for path in self.children.get(&parent).into_iter().flatten() {
+                let Some(Some((child, _))) = self.by_path.get(path) else { continue };
+                if seen.insert(child.clone()) {
+                    queue.push_back(child.clone());
+                }
+                if !out.contains(path) {
+                    out.push(path.clone());
+                }
+            }
+        }
+        out
+    }
 }
 
 fn threads() -> &'static RwLock<Threads> {
@@ -154,19 +186,27 @@ pub fn is_child(path: &Path) -> bool {
     thread(path).is_some_and(|(_, parent)| parent.is_some())
 }
 
-/// Rollouts of the subagents a thread spawned.
-pub fn children(path: &Path) -> Vec<PathBuf> {
+/// Rollouts of every subagent thread below a thread: those it spawned, and theirs.
+pub fn descendants(path: &Path) -> Vec<PathBuf> {
     let Some((id, _)) = thread(path) else { return Vec::new() };
-    threads().read().expect("thread index").children.get(&id).cloned().unwrap_or_default()
+    threads().read().expect("thread index").descendants(&id)
 }
 
 /// The rollout of the session a rollout belongs to: its own, or for a subagent thread the
-/// rollout of the thread that spawned it; `None` when that rollout is not known.
+/// rollout of the topmost thread above it; `None` when that rollout is not known.
 pub fn session_of(path: &Path) -> Option<PathBuf> {
     match thread(path) {
-        Some((_, Some(parent))) => threads().read().expect("thread index").by_id.get(&parent).cloned(),
+        Some((_, Some(parent))) => {
+            let threads = threads().read().expect("thread index");
+            threads.by_id.get(&threads.root(&parent)).cloned()
+        }
         _ => Some(path.to_path_buf()),
     }
+}
+
+/// The id of the session a subagent thread with this parent belongs to.
+fn session_id(parent: &str) -> String {
+    threads().read().expect("thread index").root(parent)
 }
 
 /// Per usage source: the model settings and the prompt state its requests continue from.
@@ -315,7 +355,11 @@ impl Parser {
                 .and_then(|p| p.rsplit('/').next())
                 .filter(|t| !t.is_empty())
                 .map(|t| t.replace('_', " "));
-            self.session.title = str_at(payload, "parent_thread_id").and_then(thread_name);
+            // The thread's requests count under its session, however deep the thread is.
+            if let Some(parent) = str_at(payload, "parent_thread_id") {
+                self.session.id = session_id(parent);
+                self.session.title = thread_name(&self.session.id);
+            }
         }
         if self.shape.is_none() {
             let chars = payload.pointer("/base_instructions/text").and_then(Value::as_str).map_or(0, |t| t.len() as u64);
@@ -631,11 +675,37 @@ mod tests {
         };
         let s = child(serde_json::json!({"thread_spawn": {"parent_thread_id": "p", "depth": 1, "agent_path": "/root/fix_flaky_tests", "agent_nickname": "Carver", "agent_role": null}}));
         assert_eq!(s.task.as_deref(), Some("fix flaky tests"));
+        // The parent's rollout is not on disk, so the thread counts under the parent's id.
+        assert_eq!(s.id, "p");
         assert_eq!(s.chains[0].name, "subagent: fix flaky tests");
         assert_eq!(s.chains[0].requests[0].origin.as_deref(), Some("agent:default"));
         let s = child(serde_json::json!({"other": "guardian"}));
         assert_eq!((s.task.as_deref(), s.chains[0].name.as_str()), (None, "subagent:guardian"));
         assert_eq!(s.chains[0].requests[0].origin.as_deref(), Some("agent:guardian"));
+    }
+
+    #[test]
+    fn nested_threads_belong_to_the_topmost_thread() {
+        let mut t = Threads::default();
+        let mut add = |id: &str, parent: Option<&str>| {
+            t.add(PathBuf::from(format!("/r/rollout-{id}.jsonl")), Some((id.to_string(), parent.map(str::to_string))));
+        };
+        add("m", None);
+        add("a", Some("m"));
+        add("b", Some("a"));
+        add("c", Some("b"));
+        add("x", Some("gone"));
+        add("y", Some("z"));
+        add("z", Some("y"));
+        assert_eq!((t.root("c"), t.root("a"), t.root("m")), ("m".to_string(), "m".to_string(), "m".to_string()));
+        // A parent whose rollout is missing is as far as the walk gets.
+        assert_eq!((t.root("x"), t.root("gone")), ("gone".to_string(), "gone".to_string()));
+        // A cycle ends after the cap on one of its threads.
+        assert!(["y", "z"].contains(&t.root("y").as_str()));
+        let names = |paths: Vec<PathBuf>| paths.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>();
+        assert_eq!(names(t.descendants("m")), ["rollout-a.jsonl", "rollout-b.jsonl", "rollout-c.jsonl"]);
+        assert_eq!(names(t.descendants("b")), ["rollout-c.jsonl"]);
+        assert_eq!(names(t.descendants("y")), ["rollout-z.jsonl", "rollout-y.jsonl"]);
     }
 
     #[test]

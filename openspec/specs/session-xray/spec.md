@@ -71,7 +71,7 @@ The X-ray SHALL count the whole session: its main log and every subagent log it 
 The X-ray SHALL open with the title `tokprof · session X-ray` and these lines:
 - `session` with the agent, the project path (home shown as `~`) and the full session id;
 - `title` with the session's title (see cost-attribution) cut to 82 characters, when it has one;
-- `models` with each model and its request count;
+- `models` with each model and its request count, if any;
 - `time` with the first and last request in local time, the span between them, the request count and, when there are any, the number of subagent logs.
 
 #### Scenario: Session within one day
@@ -81,6 +81,11 @@ The X-ray SHALL open with the title `tokprof · session X-ray` and these lines:
 #### Scenario: Session over several days
 - **WHEN** a session ran from one day into the next
 - **THEN** both ends show the date, as in `time      2026-10-22 11:18 → 2026-10-23 19:57 (1.4d) · 7015 requests · 75 subagents`
+
+#### Scenario: Session without requests
+- **WHEN** a session's logs hold no request, as in a Codex rollout that stopped before its first response
+- **THEN** there is no `models` line, and the time line reads `time      0 requests`
+- **AND** no date from 1970 is shown: whenever no request has a time, the line gives only the counts
 
 #### Scenario: Models
 - **WHEN** a session used two models
@@ -96,7 +101,7 @@ The X-ray SHALL open with the title `tokprof · session X-ray` and these lines:
 - **AND** a session without a title has no `title` line
 
 ### Requirement: Layout
-The X-ray SHALL print, in this order and separated by blank lines: the header; the `context`, `cache` and `next` lines with the advice; `spend`; the `work` block when it is shown; `in context`; `what cost the most`; the cache misses; and the pointer `profile: tokprof flame --session <id> → <dir>/<id>.jfr (IntelliJ: Open snapshot)`, with the session's 8-character id and `~/tokprof`, or `$TOKPROF_DIR` when set, as `<dir>`. The parts about the live context need a main conversation.
+The X-ray SHALL print, in this order and separated by blank lines: the header; the `context`, `cache` and `next` lines with the advice; `spend`; the `work` block when it is shown; `in context`; `what cost the most`; the cache misses; and the pointer `profile: tokprof flame --session <id> → <dir>/<id>.jfr (IntelliJ: Open snapshot)`, with the session's short id (see session-logs) and `~/tokprof`, or `$TOKPROF_DIR` when set, as `<dir>`. The parts about the live context need a main conversation.
 
 #### Scenario: Session with a main conversation
 - **WHEN** the main log has a request with a prompt
@@ -109,7 +114,7 @@ The X-ray SHALL print, in this order and separated by blank lines: the header; t
 
 #### Scenario: Session without requests
 - **WHEN** the log holds no request with usage
-- **THEN** the `models` line is empty, the `time` line says `0 requests`, `spend` shows `0 tokens (no price)` and the misses line says `no misses`
+- **THEN** there is no `models` line, the `time` line says `0 requests`, `spend` shows `0 tokens (no price)` and the misses line says `no misses`
 
 ### Requirement: Main conversation
 The context, cache, forecast and advice SHALL describe the main conversation that holds the session's latest request with a prompt, advisor calls left out. Chains of that conversation's name that follow one another in time count as one conversation; chains of that name that overlap it in time are other conversations. How chains are built belongs to session-logs.
@@ -173,9 +178,9 @@ When the model has a price today (see pricing), the `next` line SHALL forecast t
 - **THEN** the line gives the cold cost and the prompt it re-writes, as in `next      ≈ $6.57 for one request, re-writing 817.6k = 6% of the session's $107`
 
 #### Scenario: Share of the session's cost
-- **WHEN** the session has cost something so far
+- **WHEN** the session has cost $0.005 or more so far
 - **THEN** the line ends with the cold forecast as a share of the session's cost, subagents included
-- **AND** when the session's cost is zero the share is left out
+- **AND** when the session's cost is under $0.005, so that it would read `$0.00`, the share is left out, here and on the forecast after a trailing compaction
 
 #### Scenario: No price today
 - **WHEN** the latest request's model has no price today
@@ -334,7 +339,7 @@ When the latest prompt holds at least 100,000 tokens, the first advice items SHA
 #### Scenario: Cold cache, a new session is cheaper
 - **WHEN** a 950.0k-token Claude Code prompt on `claude-opus-5-5` with 1-hour writes is cold, its conversation's first prompt held 40,000 tokens, its tool schemas and system prompt hold 30,000, and it was never compacted
 - **THEN** the items read "Resuming writes the whole 950.0k context again (+$7.41), then $0.19 per request.", "A new session that refers to this one is cheaper: ≈ $0.45 to pick up the work. `tokprof handoff 3f951de0` prints the line to start it with." and "/compact costs about as much as resuming (≈ $7.80 once), then ~50.0k per request."
-- **AND** `+$7.41` is the prompt at the write price less the read price, `$0.19` the prompt at the read price, and the handoff command takes the session's 8-character id
+- **AND** `+$7.41` is the prompt at the write price less the read price, `$0.19` the prompt at the read price, and the handoff command takes the session's short id
 - **AND** `/compact` once is the prompt at the write price plus 10,000 output tokens, and `~50.0k` is the prompt right after the session's last compaction or, without one, the tool schemas and system prompt plus 20,000 tokens
 
 #### Scenario: Cold cache, a new session is not cheaper
@@ -364,7 +369,11 @@ The pickup cost SHALL be a calibrated estimate of picking up the work in a new s
 #### Scenario: How the estimate adds up
 - **WHEN** the pickup is estimated
 - **THEN** it is the start and the taken-in tokens written once, plus the start and half the taken-in tokens read on each further request, plus the output
-- **AND** it uses today's prices and the old conversation's cache-write lifetime
+- **AND** it uses today's prices for a prompt of the start plus the taken-in tokens, and the old conversation's cache-write lifetime
+
+#### Scenario: Old prompt over a long-context tier
+- **WHEN** a Codex session on `gpt-6-astra`, whose prices change for prompts over 272,000 tokens, holds a 300,000-token prompt and starts from 18,000 tokens
+- **THEN** the pickup is priced at the standard prices, as for any 48,000-token prompt, while resuming and `/compact` are priced at the long-context ones
 
 #### Scenario: Claude Code calibration
 - **WHEN** a Claude Code session on `claude-opus-5-5` with 1-hour writes starts from 42,000 tokens
@@ -388,7 +397,12 @@ When the model has a price today and the latest prompt holds at least 200,000 to
 #### Scenario: Nearly full window
 - **WHEN** a 950.0k-token prompt fills 95% of a 1M window at 30 requests per prompt on `claude-opus-5-5`
 - **THEN** the item reads "The context fills 95% of the window. At 30 requests per prompt, each prompt costs ≈ $5.70 in reads alone. Auto-compaction is close."
-- **AND** requests per prompt are the conversation's requests with a prompt divided by the turns in the latest prompt, and a prompt's cost is that many reads of the whole prompt
+- **AND** requests per prompt are the conversation's requests whose prompt the log shows, divided by the prompts the user sent in them, and a prompt's cost is that many reads of the whole prompt
+- **AND** each request adds as many prompts as its prompt holds turns beyond the previous request's, while the first request after a compaction adds none, since the compaction re-sends earlier prompts
+
+#### Scenario: After a compaction
+- **WHEN** a Codex conversation sent 700 requests over 300 prompts, its compaction re-sent 20 of those prompts, and it then sent 20 requests over 2 new prompts
+- **THEN** the item gives 2 requests per prompt (720 over 302), not 33 (720 over the 22 turns of the latest prompt)
 
 #### Scenario: Context without turns
 - **WHEN** the latest prompt holds no turn

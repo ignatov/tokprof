@@ -182,6 +182,10 @@ pub struct LiveContext {
     /// Block index, or `None` for content the log does not show; tokens; turn.
     pub blocks: Vec<(Option<usize>, f64, u32)>,
     pub turns: u32,
+    /// The chain's requests whose prompt the log shows, per prompt the user sent in them. Each
+    /// request adds the turns its prompt holds beyond the previous one's; the first after a
+    /// compaction adds none, since the compaction re-sends earlier prompts.
+    pub requests_per_prompt: f64,
 }
 
 pub fn live_context(s: &Session) -> Option<LiveContext> {
@@ -193,12 +197,27 @@ pub fn live_context(s: &Session) -> Option<LiveContext> {
         .max_by_key(|c| c.requests.iter().filter(|r| billed(r)).map(|r| r.ts_ms).max().unwrap_or(i64::MIN))?;
     let last = chain.requests.iter().rposition(billed)?;
     let (mut list, mut shape) = (Vec::new(), None);
+    // Turn starts in `list[..i]`, so each prompt's turns are known as it is replayed.
+    let mut starts = vec![0u32];
+    let (mut requests, mut prompts, mut held) = (0u32, 0u32, 0u32);
     for r in &chain.requests[..=last] {
         if let Some(d) = &r.prompt {
             list.truncate(d.keep.min(list.len()));
+            starts.truncate(list.len() + 1);
+            for &m in &d.tail {
+                starts.push(starts[starts.len() - 1] + u32::from(s.messages[m].starts_turn));
+            }
             list.extend_from_slice(&d.tail);
             if d.shape.is_some() {
                 shape = d.shape;
+            }
+            if billed(r) {
+                let turns = starts[starts.len() - 1];
+                if !r.compacted_before {
+                    prompts += turns.saturating_sub(held);
+                }
+                held = turns;
+                requests += 1;
             }
         }
     }
@@ -231,6 +250,7 @@ pub fn live_context(s: &Session) -> Option<LiveContext> {
         context_window: req.context_window,
         blocks,
         turns: count,
+        requests_per_prompt: f64::from(requests) / f64::from(prompts.max(1)),
     })
 }
 
@@ -602,9 +622,58 @@ mod tests {
         s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
 
         let live = live_context(&s).unwrap();
-        assert_eq!((live.ts_ms, live.turns), (2, 1));
+        assert_eq!((live.ts_ms, live.turns, live.requests_per_prompt), (2, 1, 2.0));
         let sizes: Vec<(Option<usize>, f64)> = live.blocks.iter().map(|(b, t, _)| (*b, *t)).collect();
         assert_eq!(sizes, vec![(Some(0), 600.0), (Some(1), 1400.0)]);
+    }
+
+    #[test]
+    fn a_compaction_that_re_sends_prompts_does_not_count_them_again() {
+        let mut s = Session::new(Agent::Codex, "s".into());
+        let mut message = |kind, starts_turn| s.push_message(vec![Block { kind, chars: 10, tool: None, target: None }], starts_turn);
+        let typed: Vec<usize> = (0..300).map(|_| message(BlockKind::Prompt, true)).collect();
+        let output = message(BlockKind::Text, false);
+        // The compaction re-sends the last 20 prompts as new items, then a summary.
+        let mut rebuilt: Vec<usize> = (0..20).map(|_| message(BlockKind::Prompt, true)).collect();
+        rebuilt.push(message(BlockKind::Text, false));
+        let later: Vec<usize> = (0..2).map(|_| message(BlockKind::Prompt, true)).collect();
+        let request = |keep, tail: Vec<usize>, compacted_before| Request {
+            ts_ms: 1,
+            model: "gpt-5.6-sol".into(),
+            usage: Usage { cache_read: 100, ..Usage::default() },
+            prompt: Some(PromptDelta { shape: None, keep, tail }),
+            compacted_before,
+            ..Request::default()
+        };
+        // 700 requests over 300 prompts: each prompt, then an output until the next one.
+        let mut requests = Vec::new();
+        let mut len = 0;
+        for (n, &p) in typed.iter().enumerate() {
+            let calls = if n < 100 { 3 } else { 2 };
+            requests.push(request(len, vec![p], false));
+            len += 1;
+            for _ in 1..calls {
+                requests.push(request(len, vec![output], false));
+                len += 1;
+            }
+        }
+        assert_eq!(requests.len(), 700);
+        requests.push(request(0, rebuilt.clone(), true));
+        let mut len = rebuilt.len();
+        for (n, &p) in later.iter().enumerate() {
+            requests.push(request(len, vec![p], false));
+            len += 1;
+            for _ in 1..if n == 0 { 9 } else { 10 } {
+                requests.push(request(len, vec![output], false));
+                len += 1;
+            }
+        }
+        assert_eq!(requests.len(), 720);
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+
+        let live = live_context(&s).unwrap();
+        assert_eq!(live.turns, 22);
+        assert_eq!(live.requests_per_prompt, 720.0 / 302.0);
     }
 
     #[test]
