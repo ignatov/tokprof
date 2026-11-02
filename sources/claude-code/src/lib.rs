@@ -9,6 +9,7 @@ mod tools;
 use std::collections::HashMap;
 use std::fs::Metadata;
 use std::io::BufRead;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -18,7 +19,7 @@ use tokprof_core::source::{
     Activity, AgentId, AgentInfo, Capabilities, Claim, Decoder, Detail, Harness, Head, Locator, LogSource, OwnCost, Pickup, Records, SessionRef,
     Touched,
 };
-use tokprof_logio::{file_times, str_at, walk};
+use tokprof_logio::{file_times, parse_ts_ms, str_at, walk};
 
 use decoder::{AgentMeta, Parser};
 
@@ -191,6 +192,28 @@ impl LogSource for ClaudeCode {
     fn activity(&self, s: &SessionRef) -> Result<Activity> {
         activity::read(s.path())
     }
+
+    fn last_active(&self, s: &SessionRef) -> Option<i64> {
+        last_timestamp(s.path())
+    }
+}
+
+/// The time of the last line of a transcript with a top-level `timestamp`. Claude Code writes
+/// `cost-state`, `last-prompt`, `ai-title`, `mode`, `tools-used` and other bookkeeping lines
+/// without one, also when the IDE resumes a session that then does nothing, so they are passed
+/// over, and so is a line that does not parse, such as one still being written.
+fn last_timestamp(path: &Path) -> Option<i64> {
+    let mut found = None;
+    tokprof_logio::for_each_line_back(path, |line| {
+        if !line.contains("\"timestamp\"") {
+            return ControlFlow::Continue(());
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { return ControlFlow::Continue(()) };
+        found = parse_ts_ms(v.get("timestamp"));
+        if found.is_some() { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+    })
+    .ok()?;
+    found
 }
 
 /// The lines of a transcript.
@@ -241,4 +264,43 @@ fn read_metas(dir: &Path) -> HashMap<String, AgentMeta> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The last activity of a transcript with these lines.
+    fn last(name: &str, lines: &[&str]) -> Option<i64> {
+        let path = std::env::temp_dir().join(format!("tokprof-claude-last-{}-{name}.jsonl", std::process::id()));
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let t = last_timestamp(&path);
+        std::fs::remove_file(&path).ok();
+        t
+    }
+
+    fn ms(ts: &str) -> Option<i64> {
+        parse_ts_ms(Some(&Value::String(ts.to_string())))
+    }
+
+    #[test]
+    fn records_without_a_time_are_no_activity() {
+        let resumed = [
+            r#"{"type":"user","sessionId":"s","timestamp":"2026-11-02T08:27:39.981Z","message":{"role":"user","content":"go"}}"#,
+            r#"{"type":"cost-state","sessionId":"s","totalCostUSD":1.98,"totalDuration":24366969,"startTime":1793607245463}"#,
+            r#"{"type":"last-prompt","sessionId":"s","lastPrompt":"go"}"#,
+            r#"{"type":"ai-title","sessionId":"s","aiTitle":"a title with a \"timestamp\" in it"}"#,
+            "",
+        ];
+        assert_eq!(last("resumed", &resumed), ms("2026-11-02T08:27:39.981Z"), "an idle-resume tail gives the timed line before it");
+
+        let cut = [
+            r#"{"type":"assistant","sessionId":"s","timestamp":"2026-11-02T15:13:15.635Z","message":{"id":"m1"}}"#,
+            r#"{"type":"assistant","sessionId":"s","timestamp":"2026-11-02T15:13:19.922Z","message":{"id"#,
+        ];
+        assert_eq!(last("cut", &cut), ms("2026-11-02T15:13:15.635Z"), "a cut-off last line is passed over");
+
+        let untimed = [r#"{"type":"cost-state","sessionId":"s","totalCostUSD":0.5}"#, r#"{"type":"mode","sessionId":"s","mode":"default"}"#];
+        assert_eq!(last("untimed", &untimed), None, "no timed line gives nothing");
+    }
 }

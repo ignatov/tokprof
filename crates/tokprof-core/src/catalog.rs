@@ -149,11 +149,15 @@ mod tests {
         detail: Detail,
         refs: Vec<SessionRef>,
         claim: Claim,
+        active: Option<i64>,
     }
 
     impl LogSource for Fake {
         fn name(&self) -> &'static str {
             self.name
+        }
+        fn last_active(&self, _: &SessionRef) -> Option<i64> {
+            self.active
         }
         fn agents(&self) -> Vec<AgentId> {
             self.agents.clone()
@@ -212,7 +216,24 @@ mod tests {
     }
 
     fn fake(name: &'static str, agents: &[&AgentId], detail: Detail, refs: Vec<SessionRef>, claim: Claim) -> Box<dyn LogSource> {
-        Box::new(Fake { name, agents: agents.iter().map(|a| (*a).clone()).collect(), detail, refs, claim })
+        Box::new(Fake { name, agents: agents.iter().map(|a| (*a).clone()).collect(), detail, refs, claim, active: None })
+    }
+
+    #[test]
+    fn the_last_activity_is_never_after_the_last_write() {
+        let a = agent("a");
+        let source = Fake { name: "one", agents: vec![a.clone()], detail: Detail::Requests, refs: vec![], claim: Claim::No, active: Some(5_000) };
+        let c = Catalog::new(vec![Box::new(source)], PathBuf::new());
+        let mut s = log("one", &a, "s1", 1);
+        s.modified_ns = 9_000 * 1_000_000;
+        assert_eq!(c.last_active(&s), 5_000, "the time the source reads");
+        s.modified_ns = 3_000 * 1_000_000;
+        assert_eq!(c.last_active(&s), 3_000, "never after the last write");
+        s.modified_ns = 0;
+        assert_eq!(c.last_active(&s), 5_000, "a file system without modification times bounds nothing");
+        let c = Catalog::new(vec![fake("one", &[&a], Detail::Requests, vec![], Claim::No)], PathBuf::new());
+        s.modified_ns = 9_000 * 1_000_000;
+        assert_eq!(c.last_active(&s), 9_000, "a source that cannot tell gives the last write");
     }
 
     #[test]

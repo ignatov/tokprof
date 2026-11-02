@@ -33,14 +33,31 @@ pub fn main_sessions(catalog: &Catalog, agents: &[AgentId]) -> Vec<SessionRef> {
     files
 }
 
-/// The main log modified most recently among the selected sessions.
+/// The main session active last among the selected sessions. Logs are read newest written first,
+/// and only while one could still be newer: a session's last activity is never after its log's
+/// last write.
 pub fn latest(catalog: &Catalog, select: &Query) -> Option<SessionRef> {
-    main_sessions(catalog, &select.agents).into_iter().filter(|f| select.times(f)).find(|f| {
-        !select.reads_meta() || {
-            let head = catalog.head(f);
-            select.meta(&head.project, &head.session_id)
+    let mut best: Option<(i64, SessionRef)> = None;
+    for f in main_sessions(catalog, &select.agents).into_iter().filter(|f| select.times(f)) {
+        // A file system that keeps no modification time gives 0, which bounds nothing.
+        if let Some((t, _)) = &best
+            && f.modified_ns > 0
+            && f.modified_ms() <= *t
+        {
+            break;
         }
-    })
+        if select.reads_meta() {
+            let head = catalog.head(&f);
+            if !select.meta(&head.project, &head.session_id) {
+                continue;
+            }
+        }
+        let t = catalog.last_active(&f);
+        if best.as_ref().is_none_or(|(b, _)| t > *b) {
+            best = Some((t, f));
+        }
+    }
+    best.map(|(_, f)| f)
 }
 
 /// A session file given by path, or among the selected sessions by the start of its id.
@@ -65,11 +82,14 @@ pub fn find(spec: &str, catalog: &Catalog, select: &Query) -> Result<SessionRef>
     }
 }
 
-/// The error for a prefix that several sessions share: up to 10 of them, newest first.
+/// The error for a prefix that several sessions share: up to 10 of them, newest first by last
+/// activity.
 fn ambiguous(spec: &str, rows: &[SessionRow]) -> String {
     let mut out = format!("{spec:?} matches {} sessions; give more of the id:", rows.len());
+    let mut rows = rows.to_vec();
+    rows.sort_by(newest_first);
     for r in rows.iter().take(10) {
-        let _ = write!(out, "\n  {:<18}  {}  {:<6}  {}", r.id, local_time(r.modified_ms(), "%Y-%m-%d %H:%M"), r.file.agent.name(), r.project);
+        let _ = write!(out, "\n  {:<18}  {}  {:<6}  {}", r.id, local_time(r.active_ms, "%Y-%m-%d %H:%M"), r.file.agent.name(), r.project);
     }
     if rows.len() > 10 {
         let _ = write!(out, "\n  … and {} more", rows.len() - 10);
@@ -523,15 +543,42 @@ impl SessionRow {
     }
 }
 
-/// Rows of the selected sessions, newest first.
+/// Rows of the selected sessions, newest first by last activity.
 pub fn rows(catalog: &Catalog, select: &Query, limit: usize) -> Vec<SessionRow> {
-    let files = main_sessions(catalog, &select.agents).into_iter().filter(|f| select.times(f));
-    if !select.reads_meta() {
-        let files: Vec<SessionRef> = files.take(limit).collect();
-        return files.into_par_iter().map(|f| SessionRow::new(catalog, f)).collect();
+    let files: Vec<SessionRef> = main_sessions(catalog, &select.agents).into_iter().filter(|f| select.times(f)).collect();
+    newest_rows(&files, limit, |batch| batch.par_iter().map(|f| SessionRow::new(catalog, f.clone())).filter(|r| select.row(r)).collect())
+}
+
+/// Newest first by last activity; rows active at the same moment, by their last write.
+pub fn newest_first(a: &SessionRow, b: &SessionRow) -> std::cmp::Ordering {
+    b.active_ms.cmp(&a.active_ms).then(b.file.modified_ns.cmp(&a.file.modified_ns)).then_with(|| a.file.path().cmp(b.file.path()))
+}
+
+/// The rows of the `limit` sessions active last, newest first. `files` come newest written
+/// first, and their rows are built in batches until no log left can be among them: a session's
+/// last activity is never after its log's last write.
+fn newest_rows(files: &[SessionRef], limit: usize, build: impl Fn(&[SessionRef]) -> Vec<SessionRow>) -> Vec<SessionRow> {
+    let mut rows = Vec::new();
+    if limit == 0 {
+        return rows;
     }
-    let files: Vec<SessionRef> = files.collect();
-    let mut rows: Vec<SessionRow> = files.into_par_iter().map(|f| SessionRow::new(catalog, f)).filter(|r| select.row(r)).collect();
+    let batch = limit.clamp(16, 256);
+    let mut at = 0;
+    while at < files.len() {
+        let end = (at + batch).min(files.len());
+        rows.extend(build(&files[at..end]));
+        at = end;
+        if rows.len() >= limit && at < files.len() {
+            rows.sort_by(newest_first);
+            rows.truncate(limit);
+            let next = &files[at];
+            // A file system that keeps no modification time gives 0, which bounds nothing.
+            if next.modified_ns > 0 && rows[limit - 1].active_ms > next.modified_ms() {
+                break;
+            }
+        }
+    }
+    rows.sort_by(newest_first);
     rows.truncate(limit);
     rows
 }
@@ -653,6 +700,61 @@ mod tests {
             created_ms: None,
         }
     }
+    /// The row of session `n`, its log last written at `written` ms, the session last active at
+    /// `active` ms.
+    fn listed(n: usize, written: i64, active: i64) -> SessionRow {
+        let mut file = log(crate::testing::codex(), &format!("/r/{n:03}.jsonl"));
+        file.modified_ns = written as i128 * 1_000_000;
+        SessionRow { file, subagents: Vec::new(), project: String::new(), id: n.to_string(), session_id: n.to_string(), bytes: 0, active_ms: active }
+    }
+
+    /// `newest_rows` over these rows, with their logs in last-write order as discovery gives them,
+    /// and how many rows it built.
+    fn newest(rows: &[SessionRow], limit: usize) -> (Vec<usize>, usize) {
+        let mut files: Vec<SessionRef> = rows.iter().map(|r| r.file.clone()).collect();
+        files.sort_by_key(|f| std::cmp::Reverse(f.modified_ns));
+        let built = std::cell::Cell::new(0);
+        let out = newest_rows(&files, limit, |batch| {
+            built.set(built.get() + batch.len());
+            batch.iter().map(|f| rows.iter().find(|r| r.file.path() == f.path()).unwrap().clone()).collect()
+        });
+        (out.iter().map(|r| r.id.parse().unwrap()).collect(), built.get())
+    }
+
+    #[test]
+    fn the_list_is_newest_first_by_last_activity() {
+        let hour = 60 * MIN;
+        // Written last by bookkeeping on a resume, idle since 09:27; another session worked at 16:00.
+        let rows = [listed(0, 16 * hour + MIN, 9 * hour + 27 * MIN), listed(1, 16 * hour, 16 * hour), listed(2, 12 * hour, 12 * hour)];
+        assert_eq!(newest(&rows, 3).0, [1, 2, 0], "an idle session written last ranks below the ones active after it");
+
+        // Stopping early gives the rows that sorting every row gives.
+        let mut seed = 7u64;
+        let mut next = move |n: i64| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as i64 % n
+        };
+        let rows: Vec<SessionRow> = (0..300)
+            .map(|n| {
+                let written = 1_000 * hour + next(500 * hour);
+                // Half are idle sessions that a resume wrote to long after their last activity.
+                let active = if next(2) == 0 { written - next(100 * hour) } else { written - next(MIN) };
+                listed(n, written, active)
+            })
+            .collect();
+        let mut all = rows.clone();
+        all.sort_by(newest_first);
+        for limit in [1, 2, 5, 20, 50, 299, 300, 1_000, usize::MAX] {
+            let (got, built) = newest(&rows, limit);
+            let want: Vec<usize> = all.iter().take(limit).map(|r| r.id.parse().unwrap()).collect();
+            assert_eq!(got, want, "limit {limit}");
+            if limit <= 20 {
+                assert!(built < 300, "limit {limit} built every row");
+            }
+        }
+        assert!(newest(&rows, 0).0.is_empty());
+    }
+
     use crate::model::Request;
     use crate::model::{Block, Chain, ChainKind, Compaction, Usage};
 

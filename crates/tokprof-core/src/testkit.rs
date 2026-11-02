@@ -57,6 +57,10 @@ fn check(source: &dyn LogSource, s: &SessionRef) -> Result<()> {
     }
     let short = short_id(&s.agent, &head.session_id);
     ensure!(head.session_id.starts_with(short), "short id {short} is no prefix of {}", head.session_id);
+    // A record is written after what it records, so the log's last write is never earlier.
+    if let Some(t) = source.last_active(s) {
+        ensure!(t <= s.modified_ms(), "the last activity {t} is later than the log's last write {}", s.modified_ms());
+    }
 
     for chain in &whole.chains {
         if let Some(w) = chain.requests.windows(2).find(|w| w[1].ts_ms < w[0].ts_ms) {

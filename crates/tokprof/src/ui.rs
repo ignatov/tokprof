@@ -2,8 +2,10 @@
 //! selected one on the right. Costs fill in from a background pass over all logs; X-rays are
 //! computed on a worker thread, newest request first, and kept. The list follows the log
 //! directories: new sessions show up, and a session that is still being written is costed and
-//! X-rayed again as it grows.
+//! X-rayed again as it grows. Rows move only when the user sorts or filters; what arrives in the
+//! background fills in cells.
 
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -249,8 +251,10 @@ impl App {
         self.list.selected().and_then(|s| self.visible.get(s).copied())
     }
 
+    /// Takes in what the background work sent. It fills in cells and never moves a row that
+    /// stays listed: rows move only when the user sorts or filters.
     fn absorb(&mut self, notes: &Receiver<Note>) {
-        let (mut costs_changed, mut listed) = (false, false);
+        let mut listed = false;
         while let Ok(note) = notes.try_recv() {
             match note {
                 Note::Glance(i, version, g, took) => {
@@ -259,7 +263,6 @@ impl App {
                     e.glanced = version;
                     e.glancing = false;
                     e.glance_after = Instant::now() + took;
-                    costs_changed = true;
                 }
                 Note::Report(i, version, text, took) => {
                     let e = &mut self.entries[i];
@@ -272,18 +275,45 @@ impl App {
             }
         }
         if listed {
-            // When the selected session is gone, the cursor stays where it was.
-            let (kept, at) = (self.selected(), self.list.selected());
-            self.refilter();
-            if self.selected() != kept
-                && let Some(at) = at
-                && !self.visible.is_empty()
-            {
-                self.list.select(Some(at.min(self.visible.len() - 1)));
+            self.relist();
+        }
+    }
+
+    /// Takes in what the log directories changed without moving the rows that stay listed: a
+    /// session that is gone takes its row with it, and a new one is put before the first row that
+    /// the current order puts after it. Rows that come or go above the screen move the screen
+    /// with them, so the rows on it stay where they are. When the selected session is gone, the
+    /// cursor stays on its row.
+    fn relist(&mut self) {
+        let (kept, at) = (self.selected(), self.list.selected());
+        let first = self.list.offset();
+        let mut offset = first;
+        let listed: HashSet<usize> = self.visible.iter().copied().collect();
+        let mut rows = Vec::with_capacity(self.visible.len());
+        for (row, &i) in self.visible.iter().enumerate() {
+            if self.shows(i) {
+                rows.push(i);
+            } else if row < first {
+                offset -= 1;
+            }
+        }
+        let keys = self.keys(now_ms());
+        for i in (0..self.entries.len()).filter(|&i| !listed.contains(&i) && self.shows(i)) {
+            let place = rows.iter().position(|&j| order(&keys, i, j) == Ordering::Less).unwrap_or(rows.len());
+            if place < offset {
+                offset += 1;
+            }
+            rows.insert(place, i);
+        }
+        self.visible = rows;
+        *self.list.offset_mut() = offset;
+        match kept.and_then(|k| self.visible.iter().position(|&i| i == k)) {
+            Some(row) => self.list.select(Some(row)),
+            None if self.visible.is_empty() => self.list.select(None),
+            None => {
+                self.list.select(Some(at.unwrap_or(0).min(self.visible.len() - 1)));
                 self.scroll = 0;
             }
-        } else if costs_changed && self.sort != Sort::Time {
-            self.sort();
         }
     }
 
@@ -379,15 +409,15 @@ impl App {
         let _ = self.xray_tx.send((i, e.version, e.row.file.clone()));
     }
 
+    /// Whether entry `i` is listed: its main log is there and it matches the filter.
+    fn shows(&self, i: usize) -> bool {
+        let (e, r) = (&self.entries[i], &self.entries[i].row);
+        !e.gone && (self.filter.is_empty() || format!("{} {} {}", r.file.agent.name(), r.project, r.id).to_lowercase().contains(&self.filter.to_lowercase()))
+    }
+
     fn refilter(&mut self) {
         let keep = self.selected();
-        let needle = self.filter.to_lowercase();
-        self.visible = (0..self.entries.len())
-            .filter(|&i| {
-                let (e, r) = (&self.entries[i], &self.entries[i].row);
-                !e.gone && (needle.is_empty() || format!("{} {} {}", r.file.agent.name(), r.project, r.id).to_lowercase().contains(&needle))
-            })
-            .collect();
+        self.visible = (0..self.entries.len()).filter(|&i| self.shows(i)).collect();
         self.sort_keeping(keep);
     }
 
@@ -395,17 +425,27 @@ impl App {
         self.sort_keeping(self.selected());
     }
 
-    fn sort_keeping(&mut self, keep: Option<usize>) {
-        let now = now_ms();
+    /// The value of each entry that the current order sorts by, at `now`; an unknown one is -1.
+    fn keys(&self, now: i64) -> Vec<f64> {
         let key = |e: &Entry| match self.sort {
-            Sort::Time => e.row.modified_ms() as f64,
+            Sort::Time => e.row.active_ms as f64,
             Sort::Cost => e.glance.map_or(-1.0, |g| g.cost),
             Sort::Next => e.glance.and_then(|g| g.next(now)).map_or(-1.0, |(usd, _)| usd),
         };
-        let keys: Vec<f64> = self.entries.iter().map(key).collect();
-        self.visible.sort_by(|&a, &b| keys[b].total_cmp(&keys[a]).then(a.cmp(&b)));
+        self.entries.iter().map(key).collect()
+    }
+
+    fn sort_keeping(&mut self, keep: Option<usize>) {
+        let keys = self.keys(now_ms());
+        self.visible.sort_by(|&a, &b| order(&keys, a, b));
         let at = keep.and_then(|k| self.visible.iter().position(|&i| i == k));
         self.list.select(if self.visible.is_empty() { None } else { Some(at.unwrap_or(0)) });
+    }
+
+    /// Whether sorting again at `now` would change the order of the list.
+    fn out_of_date(&self, now: i64) -> bool {
+        let keys = self.keys(now);
+        self.visible.windows(2).any(|w| order(&keys, w[0], w[1]) == Ordering::Greater)
     }
 
     fn move_by(&mut self, delta: isize) {
@@ -464,6 +504,7 @@ impl App {
                 self.sort = self.sort.following();
                 self.sort();
             }
+            KeyCode::Char('r') => self.sort(),
             KeyCode::Char('f') => self.export("jfr", false),
             KeyCode::Char('o') => self.export("html", true),
             KeyCode::Char('c') => self.handoff(),
@@ -544,7 +585,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 None => Span::raw(" ".repeat(12)),
             };
             ListItem::new(Line::from(vec![
-                Span::raw(tokprof_core::fmt::local_time(r.modified_ms(), "%m-%d %H:%M")).dim(),
+                Span::raw(tokprof_core::fmt::local_time(r.active_ms, "%m-%d %H:%M")).dim(),
                 Span::raw(" "),
                 Span::styled(format!("{:<6}", r.file.agent.name()), Style::new().fg(agent_color)),
                 Span::raw(" "),
@@ -558,10 +599,11 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let known: f64 = app.visible.iter().filter_map(|&i| app.entries[i].glance.map(|g| g.cost)).sum();
     let pending = app.visible.iter().filter(|&&i| app.entries[i].glance.is_none()).count();
     let title = format!(
-        " {} sessions · {} · by {}{} · next = one more request ",
+        " {} sessions · {} · by {}{}{} · next = one more request ",
         app.visible.len(),
         usd(known),
         app.sort.name(),
+        if app.out_of_date(now) { ", r re-sorts" } else { "" },
         if pending > 0 { format!(" · costing {pending}…") } else { String::new() }
     );
     let list = List::new(items)
@@ -595,7 +637,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         let keys = if app.zoom {
             " ↑↓ PgUp PgDn scroll · ← back · f JFR · o HTML · c handoff · q quit"
         } else {
-            " ↑↓ move · ⏎ zoom · / filter · s sort: time, cost, next · f JFR for IntelliJ · o HTML · c handoff · q quit"
+            " ↑↓ move · ⏎ zoom · / filter · s sort: time, cost, next · r re-sort · f JFR for IntelliJ · o HTML · c handoff · q quit"
         };
         let mut spans = vec![Span::raw(keys).dim()];
         if !app.filter.is_empty() {
@@ -607,6 +649,11 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(spans)
     };
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// The order of the list: the larger value first, then the session listed first.
+fn order(keys: &[f64], a: usize, b: usize) -> Ordering {
+    keys[b].total_cmp(&keys[a]).then(a.cmp(&b))
 }
 
 fn now_ms() -> i64 {
@@ -649,11 +696,34 @@ mod tests {
         }
     }
 
-    fn app(projects: &[&str]) -> App {
-        let rows = projects.iter().enumerate().map(|(i, p)| row(i, p, 0)).collect();
+    /// Session `i`'s row, its log last written `written` seconds after the epoch and the session
+    /// last active `active` seconds after it, as when bookkeeping is written to an idle session.
+    fn resumed(i: usize, project: &str, written: u64, active: u64) -> SessionRow {
+        SessionRow { active_ms: active as i64 * 1000, ..row(i, project, written) }
+    }
+
+    fn app_of(rows: Vec<SessionRow>) -> App {
         let (xray_tx, _) = mpsc::channel();
         let (notes_tx, _) = mpsc::channel();
         App::new(Arc::new(Catalog::new(Vec::new(), PathBuf::new())), rows, Arc::new(Pricing::defaults()), xray_tx, notes_tx)
+    }
+
+    fn app(projects: &[&str]) -> App {
+        app_of(projects.iter().enumerate().map(|(i, p)| row(i, p, 0)).collect())
+    }
+
+    /// 30 sessions, session `i` last active `1000 - i` seconds after the epoch: listed 0, 1, 2…
+    fn thirty() -> App {
+        app_of((0..30).map(|i| row(i, "~/p", 1000 - i as u64)).collect())
+    }
+
+    /// The first and the last line of the ui drawn 160 columns wide.
+    fn title_and_footer(app: &mut App) -> (String, String) {
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 20)).unwrap();
+        t.draw(|f| draw(f, app)).unwrap();
+        let b = t.backend().buffer();
+        let line = |y| (0..160).map(|x| b[(x, y)].symbol()).collect::<String>();
+        (line(0), line(19))
     }
 
     fn press(app: &mut App, code: KeyCode) -> bool {
@@ -680,14 +750,15 @@ mod tests {
         assert_eq!(a.entries[0].version, 1, "an unchanged session stays as it is");
 
         take(&mut a, Change::Session(Box::new(row(1, "~/src/b", 20))));
-        assert_eq!((a.visible.clone(), a.selected()), (vec![1, 2, 0], Some(1)), "a session that grew moves up");
+        assert_eq!((a.visible.clone(), a.selected()), (vec![2, 0, 1], Some(1)), "a session that grew keeps its row");
+        assert_eq!(a.entries[1].row.active_ms, 20_000, "with its new time");
         assert_eq!((a.entries[1].version, a.entries[1].reported), (2, 1));
         a.request_report();
         assert_eq!(a.pending, Some((1, 2)), "and is X-rayed again");
 
-        press(&mut a, KeyCode::Down);
+        press(&mut a, KeyCode::Home);
         take(&mut a, Change::Gone("/x/2.jsonl".into()));
-        assert_eq!((a.visible.clone(), a.selected()), (vec![1, 0], Some(0)), "a gone session leaves the cursor where it was");
+        assert_eq!((a.visible.clone(), a.selected()), (vec![0, 1], Some(0)), "a gone session leaves the cursor where it was");
 
         take(&mut a, Change::All(vec![row(0, "~/src/a", 0), row(2, "~/src/c", 30)]));
         assert_eq!(a.visible, vec![2, 0], "a rescan drops the sessions that are gone and brings back the ones that are there");
@@ -697,6 +768,91 @@ mod tests {
         parent.subagents.push(row(2, "~/src/c", 30).file);
         take(&mut a, Change::Session(Box::new(parent)));
         assert_eq!(a.visible, vec![0], "a log that turns out to be a subagent's leaves the list");
+    }
+
+    #[test]
+    fn rows_stay_in_place() {
+        let mut a = thirty();
+        let listed: Vec<usize> = (0..30).collect();
+        assert_eq!(a.visible, listed);
+
+        take(&mut a, Change::Session(Box::new(resumed(12, "~/p", 2000, 1000 - 12))));
+        assert_eq!(a.visible, listed, "a change that keeps the last activity moves nothing");
+        assert_eq!(a.entries[12].version, 2, "the session is costed again");
+        assert!(!a.out_of_date(now_ms()), "and the order still holds");
+
+        take(&mut a, Change::Session(Box::new(row(12, "~/p", 3000))));
+        assert_eq!(a.visible, listed, "a session that works keeps its row");
+        assert_eq!(a.entries[12].row.active_ms, 3_000_000, "and its time updates");
+
+        let before = a.visible.clone();
+        let rows: Vec<SessionRow> = a.entries.iter().map(|e| e.row.clone()).collect();
+        take(&mut a, Change::All(rows));
+        assert_eq!(a.visible, before, "a rescan after dropped events keeps the listed rows in place");
+
+        press(&mut a, KeyCode::Char('s'));
+        let by_cost = a.visible.clone();
+        let (tx, rx) = mpsc::channel();
+        for i in [29, 5, 17] {
+            let g = xray::Glance { cost: i as f64, ..xray::Glance::default() };
+            tx.send(Note::Glance(i, a.entries[i].version, g, Duration::ZERO)).unwrap();
+        }
+        a.absorb(&rx);
+        assert_eq!(a.visible, by_cost, "costs that arrive in cost order fill in their cells and move no row");
+        assert_eq!(a.entries[29].glance.map(|g| g.cost), Some(29.0));
+    }
+
+    #[test]
+    fn rows_on_the_screen_stay_when_rows_come_or_go_above_it() {
+        let mut a = thirty();
+        *a.list.offset_mut() = 10;
+        a.list.select(Some(15));
+        let screen = |a: &App| a.visible[a.list.offset()..a.list.offset() + 10].to_vec();
+        let shown = screen(&a);
+
+        take(&mut a, Change::Session(Box::new(row(30, "~/p", 5000))));
+        assert_eq!(a.visible[0], 30, "a new session goes on top in time order");
+        assert_eq!((screen(&a), a.selected()), (shown.clone(), Some(15)), "the rows on the screen stay, and so does the selection");
+
+        take(&mut a, Change::Gone("/x/3.jsonl".into()));
+        assert_eq!((screen(&a), a.selected()), (shown.clone(), Some(15)), "a session that leaves above the screen moves nothing on it");
+
+        take(&mut a, Change::Gone("/x/12.jsonl".into()));
+        assert_eq!(screen(&a)[..2], shown[..2], "a session that leaves on the screen keeps the rows above it");
+        assert_eq!(screen(&a)[2..9], shown[3..10], "and pulls the rows below it up by one");
+        assert_eq!(a.selected(), Some(15));
+    }
+
+    #[test]
+    fn r_re_sorts_an_order_out_of_date() {
+        let mut a = thirty();
+        press(&mut a, KeyCode::Char('j'));
+        let (title, footer) = title_and_footer(&mut a);
+        assert!(title.contains("· by time · ") && !title.contains("r re-sorts"), "{title}");
+        assert!(footer.contains("s sort: time, cost, next · r re-sort"), "{footer}");
+
+        take(&mut a, Change::Session(Box::new(row(12, "~/p", 3000))));
+        assert_eq!(a.visible[12], 12);
+        let (title, _) = title_and_footer(&mut a);
+        assert!(title.contains("· by time, r re-sorts · "), "a request in a session down the list puts the order out of date: {title}");
+
+        press(&mut a, KeyCode::Char('r'));
+        assert_eq!((a.visible[0], a.selected()), (12, Some(1)), "r puts that session on top and keeps the selection");
+        let (title, _) = title_and_footer(&mut a);
+        assert!(!title.contains("r re-sorts"), "{title}");
+
+        // By next request, a cache that goes cold changes the order with no new note.
+        let now = now_ms();
+        for (i, e) in a.entries.iter_mut().enumerate() {
+            let (warm, cold, cold_at) = if i == 7 { (0.1, 5.0, now + 60_000) } else { (1.0, 1.0, i64::MAX) };
+            e.glance = Some(xray::Glance { cost: 10.0, next_warm: Some(warm), next_cold: Some(cold), cold_at_ms: cold_at });
+        }
+        press(&mut a, KeyCode::Char('s'));
+        press(&mut a, KeyCode::Char('s'));
+        assert_eq!(*a.visible.last().unwrap(), 7, "the cheapest next request goes last while the cache is warm");
+        assert!(!a.out_of_date(now));
+        assert!(a.out_of_date(now + 120_000), "once the cache is cold, the order is out of date");
+        assert_eq!(*a.visible.last().unwrap(), 7, "and the row stays where it is");
     }
 
     #[test]

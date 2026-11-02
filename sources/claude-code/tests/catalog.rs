@@ -78,6 +78,7 @@ fn the_ui_export_leaves_out_unreadable_subagent_logs() {
         id: "5e5510f0".into(),
         session_id: "5e5510f0-0000-0000-0000-000000000000".into(),
         bytes: 0,
+        active_ms: 0,
     };
     let written = xray::export(&c, &row, &Pricing::defaults(), &d.join("x.html")).unwrap();
     assert!(written.ends_with(", 1 unreadable log left out"), "{written}");
@@ -89,4 +90,38 @@ fn a_relative_target_is_made_absolute() {
     let c = catalog(Path::new("/nonexistent"));
     let file = xray::find("Cargo.toml", &c, &Query::default()).unwrap();
     assert!(file.path().is_absolute() && file.path().ends_with("Cargo.toml"), "{}", file.path().display());
+}
+
+#[test]
+fn the_latest_session_is_the_one_active_last() {
+    let d = dir("latest");
+    let c = catalog(&d);
+    let (idle, busy) = ("5e5510f0-aaaa-4000-8000-000000000000", "5e5510f0-bbbb-4000-8000-000000000000");
+    let prompt = |id: &str, ts: &str| serde_json::json!({"type": "user", "sessionId": id, "cwd": "/w/app", "timestamp": ts, "message": {"role": "user", "content": "go"}});
+    log(&c, &d, &format!("{busy}.jsonl"), &[prompt(busy, "2026-11-02T15:00:00Z")]);
+    // Idle since 08:27, then written last when the IDE resumed it: lines without a time.
+    let resumed = [
+        prompt(idle, "2026-11-02T08:27:39Z"),
+        serde_json::json!({"type": "cost-state", "sessionId": idle, "totalCostUSD": 1.98, "totalDuration": 24366969, "startTime": 1793607245463u64}),
+        serde_json::json!({"type": "last-prompt", "sessionId": idle, "lastPrompt": "go"}),
+    ];
+    log(&c, &d, &format!("{idle}.jsonl"), &resumed);
+    let ms = |ts: &str| tokprof_logio::parse_ts_ms(Some(&Value::String(ts.to_string()))).unwrap();
+    let at = |name: &str, ts: &str| {
+        let f = std::fs::File::options().write(true).open(d.join(name)).unwrap();
+        f.set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(ms(ts) as u64)).unwrap();
+    };
+    at(&format!("{busy}.jsonl"), "2026-11-02T15:00:05Z");
+    at(&format!("{idle}.jsonl"), "2026-11-02T15:01:50Z");
+
+    let select = Query { agents: c.agents(), ..Query::default() };
+    assert_eq!(xray::latest(&c, &select).unwrap().session_id, busy, "the log written last only got lines without a time");
+
+    let error = xray::find("5e5510f0", &c, &select).unwrap_err().to_string();
+    let lines: Vec<&str> = error.lines().collect();
+    assert_eq!(lines[0], "\"5e5510f0\" matches 2 sessions; give more of the id:");
+    let local = |ts: &str| tokprof_core::fmt::local_time(ms(ts), "%Y-%m-%d %H:%M");
+    assert!(lines[1].starts_with("  5e5510f0  ") && lines[1].contains(&local("2026-11-02T15:00:00Z")), "the busy session first, at its last activity: {}", lines[1]);
+    assert!(lines[2].contains(&local("2026-11-02T08:27:39Z")), "then the idle one, at its last activity: {}", lines[2]);
+    std::fs::remove_dir_all(d).unwrap();
 }

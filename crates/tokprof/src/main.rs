@@ -73,7 +73,7 @@ enum Command {
         #[arg(long, hide = true)]
         dump: Option<String>,
     },
-    /// List session logs on this machine, newest first.
+    /// List session logs on this machine, newest first by last activity.
     Sessions {
         #[arg(long, default_value_t = 20)]
         limit: usize,

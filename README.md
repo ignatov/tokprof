@@ -94,10 +94,12 @@ cargo uninstall tokprof --root ~/.local                                   # remo
 ```sh
 tokprof                     # X-ray the latest session on this machine
 tokprof ui                  # browse all sessions interactively
-tokprof sessions            # list session logs, newest first (--cost adds each session's cost)
+tokprof sessions            # list session logs, newest first by last activity (--cost adds each session's cost)
 tokprof scan 3f951de0       # X-ray one session by id prefix, or: tokprof scan path/to/session.jsonl
 tokprof handoff 3f951de0    # the line to start a new session with, instead of resuming this one
 ```
+
+A session's time is its last activity: the time of the last record in its log that carries one. The latest session is the one active last. Claude Code also writes records without a time, such as `cost-state`, when the IDE resumes a session that then does nothing, and those do not count.
 
 Below the spend, the X-ray says what the session did with its money:
 - `work` gives the spend by origin, by task, and by activity: what the agent was doing before each request (see [What triggered a request](#what-triggered-a-request)).
@@ -149,9 +151,11 @@ advice    ▸ Resuming writes the whole 817.6k context again (+$6.38), then $0.1
 - Thinking and cache misses: the thinking cost at the effort level used most, and the main cause of cache misses with what they could have saved.
 
 `tokprof ui` shows the sessions on the left and the X-ray of the selected one on the right. Costs fill in while it runs. The list follows the log directories:
-- a new session shows up at the top;
-- a session that is still being written moves to the top, and its cost and X-ray are computed again. The X-ray title shows `updating…` until the new one is ready;
+- a new session joins the list where the order puts it, at the top when sorted by time;
+- a session that is still being written keeps its row, and its time, cost and X-ray are computed again. The X-ray title shows `updating…` until the new one is ready;
 - a session whose log is deleted leaves the list.
+
+Rows move only when you sort or filter, so the list holds still while costs load and sessions work. When the order is out of date, the list title says `r re-sorts`.
 
 A session that keeps growing is read again after a pause as long as its last read took, so a big log being written uses at most half of a core.
 
@@ -164,6 +168,7 @@ The list's last column is the cost of one more request and its share of the sess
 | `←`, `h`, `esc` or backspace | Go back to the list |
 | `/` | Filter by project, agent or id; `esc` clears it |
 | `s` | Sort by time, cost, or next request |
+| `r` | Sort again in the same order |
 | `f` | Write the session's JFR for IntelliJ Profiler to `~/tokprof/<id>.jfr`, or into `$TOKPROF_DIR` if set |
 | `o` | Write the session's HTML flame graph to `~/tokprof/<id>.html`, or into `$TOKPROF_DIR`, and open it in the browser |
 | `c` | Copy the `tokprof handoff` line for the session, to continue it in a new session |
