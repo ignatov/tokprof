@@ -473,14 +473,21 @@ impl Parser {
     fn add_message(&mut self, msg: &Value, meta: bool) -> usize {
         let user = str_at(msg, "role") != Some("assistant");
         // Since 2.1.300 request-audit blobs carry Claude Code's reminders (environment, hook
-        // context, file-change notes) as messages of role `system`, without reminder tags.
-        let meta = meta || str_at(msg, "role") == Some("system");
+        // context, file-change notes) as messages of role `system`, without reminder tags. One such
+        // message joins the reminders of a turn, so it is split into them.
+        let system = str_at(msg, "role") == Some("system");
+        let meta = meta || system;
         let cwd = self.session.cwd.clone();
         let mut blocks = Vec::new();
         let (mut prompt, mut tool_result) = (false, false);
         let text = |blocks: &mut Vec<Block>, s: &str, prompt: &mut bool| {
             let (kind, target) = if !user {
                 (BlockKind::Text, None)
+            } else if system {
+                for (chars, label) in reminder_parts(s) {
+                    blocks.push(Block { class: Class::None, kind: BlockKind::Reminder, chars, tool: None, target: Some(label.to_string()) });
+                }
+                return;
             } else if meta || is_reminder(s) {
                 (BlockKind::Reminder, Some(reminder_label(s).to_string()))
             } else {
@@ -851,8 +858,71 @@ fn class_of(b: &Block) -> Class {
     }
 }
 
+/// The openings Claude Code gives the reminders it joins into one `system` message, seen in
+/// 2.1.300–2.1.316, with the source each opening names.
+const OPENINGS: &[(&str, &str)] = &[
+    ("[SYSTEM NOTIFICATION", "background notifications"),
+    ("<task-notification>", "background notifications"),
+    ("Background agent \"", "background notifications"),
+    ("The following deferred tools", "deferred tool lists"),
+    ("The following tools just became available", "deferred tool lists"),
+    ("The following skills are available", "skills"),
+    ("The following skills were invoked", "skills"),
+    ("Codebase and user instructions are shown below", "instructions"),
+    ("Instruction files were re-read", "instructions"),
+    ("# MCP Server Instructions\n\nThe following MCP servers", "other"),
+    ("# Environment\nYou have been invoked", "other"),
+    ("# Advisor Tool\n\nYou have access to an `advisor`", "other"),
+    ("You are powered by the model", "other"),
+    ("Available agent types", "other"),
+    ("While bypass permissions mode is active", "other"),
+    ("Today's date is", "other"),
+];
+
+/// The source of a reminder whose opening is known.
+fn opening_label(text: &str) -> Option<&'static str> {
+    if let Some((_, label)) = OPENINGS.iter().find(|(opening, _)| text.starts_with(opening)) {
+        return Some(label);
+    }
+    let line = text.lines().next().unwrap_or_default();
+    if (line.starts_with("Called the ") && line.contains(" tool with the following input"))
+        || (line.starts_with("Note: ") && line.contains("was read before the last conversation was summarized"))
+    {
+        Some("attached files")
+    } else if line.contains(" hook additional context:") {
+        Some("hook context")
+    } else {
+        None
+    }
+}
+
+/// A `system` message split into its reminders: a new one starts at each blank line followed by
+/// a known opening of another source. Each part has its characters, separators included, and its
+/// source.
+fn reminder_parts(text: &str) -> Vec<(u64, &'static str)> {
+    let mut starts = vec![(0, reminder_label(text))];
+    let mut from = 0;
+    while let Some(i) = text[from..].find("\n\n") {
+        let mut at = from + i + 2;
+        while text[at..].starts_with('\n') {
+            at += 1;
+        }
+        if let Some(label) = opening_label(&text[at..])
+            && starts.last().is_some_and(|(_, last)| *last != label)
+        {
+            starts.push((at, label));
+        }
+        from = at;
+    }
+    let ends = starts.iter().skip(1).map(|(at, _)| *at).chain([text.len()]);
+    starts.iter().zip(ends).map(|((at, label), end)| ((end - at) as u64, *label)).collect()
+}
+
 fn reminder_label(text: &str) -> &'static str {
     let body = text.trim_start().trim_start_matches("<system-reminder>").trim_start();
+    if let Some(label) = opening_label(body) {
+        return label;
+    }
     let head: String = body.chars().take(200).collect::<String>().to_ascii_lowercase();
     if head.contains("instruction") || head.contains("claude.md") || head.contains("claudemd") || head.contains("following context") {
         "instructions"
@@ -1235,6 +1305,39 @@ mod tests {
         assert_eq!(reminder_label("<system-reminder>[SYSTEM NOTIFICATION - NOT USER INPUT] This is an automated background"), "background notifications");
         assert_eq!(reminder_label("<system-reminder>The following deferred tools are now available"), "deferred tool lists");
         assert_eq!(reminder_label("<system-reminder>Attribution for git commits"), "other");
+        // A skill description that mentions a background task is still the skill listing.
+        assert_eq!(reminder_label("The following skills are available for use with the Skill tool:\n\n- profiler: attribute a background task"), "skills");
+        assert_eq!(reminder_label("# MCP Server Instructions\n\nThe following MCP servers have provided instructions"), "other");
+    }
+
+    /// The `system` message Claude Code 2.1.300 sent after a compaction, trimmed: background
+    /// agents' results, the hook context of each turn, restored files and the session's setup.
+    #[test]
+    fn a_system_message_is_split_into_its_reminders() {
+        let parts = [
+            "[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event.\n\n<task-notification>\n<result>Angle A found 2 bugs\n\nin two files</result>\n</task-notification>",
+            "UserPromptSubmit hook additional context: Any multi-step request needs a todo list.",
+            "Called the Read tool with the following input: {\"file_path\":\"/tmp/bt.log\"}\nResult of calling the Read tool:\n1\tPASS\n\n2\tPASS",
+            "Note: /w/Big.kt was read before the last conversation was summarized, but the contents are too large to include.",
+            "The following skills were invoked EARLIER in this session (before the conversation was compacted).\n\n### Skill: youtrack\n\n# YouTrack Integration",
+            "The following deferred tools are now available via ToolSearch:\nmcp__idea__search_symbol",
+            "# Environment\nYou have been invoked in the following environment:\n - Platform: darwin",
+            "The following skills are available for use with the Skill tool:\n\n- deploy: Any deploy work.",
+            "# Advisor Tool\n\nYou have access to an `advisor` tool.",
+        ];
+        let text = parts.join("\n\n");
+        let got = reminder_parts(&text);
+        let labels: Vec<&str> = got.iter().map(|(_, l)| *l).collect();
+        // Neighbours of one source stay one part: the restored file and the note on another.
+        assert_eq!(labels, [
+            "background notifications", "hook context", "attached files", "skills",
+            "deferred tool lists", "other", "skills", "other",
+        ]);
+        assert_eq!(got.iter().map(|(c, _)| c).sum::<u64>(), text.len() as u64);
+        assert_eq!(got[0].0, parts[0].len() as u64 + 2);
+        // A message with one reminder stays whole, even when its text has a heading of its own.
+        let one = "Codebase and user instructions are shown below.\n\n# Environment\nuse bazel";
+        assert_eq!(reminder_parts(one), [(one.len() as u64, "instructions")]);
     }
 
     #[test]

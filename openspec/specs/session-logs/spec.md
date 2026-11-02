@@ -205,6 +205,31 @@ Claude Code prompts SHALL be rebuilt from request-audit lines (seen in Claude Co
 - **WHEN** an `api-request-blob` message has role `system`, as Claude Code's environment notes, hook context and file-change notes do since 2.1.300
 - **THEN** its text is reminder content, labeled like a `<system-reminder>`, and it does not start a turn (see cost-attribution)
 
+### Requirement: Reminders joined in one message
+A Claude Code `api-request-blob` message of role `system` SHALL be split into the reminders it joins: a new reminder starts after a blank line, at a known opening of another source (seen in 2.1.300–2.1.316). Each part, its separators included, is labeled by its opening, and the parts add up to the whole text. A reminder whose opening is not known keeps the label its first words give.
+
+#### Scenario: Openings and their sources
+- **WHEN** a part starts with `[SYSTEM NOTIFICATION`, `<task-notification>` or `Background agent "`
+- **THEN** it is `background notifications`
+- **AND** `The following deferred tools` and `The following tools just became available` give `deferred tool lists`
+- **AND** `The following skills are available` and `The following skills were invoked` give `skills`
+- **AND** `Codebase and user instructions are shown below` and `Instruction files were re-read` give `instructions`
+- **AND** a first line that starts with `Called the ` and holds ` tool with the following input`, or starts with `Note: ` and holds `was read before the last conversation was summarized`, gives `attached files`
+- **AND** a first line that holds ` hook additional context:` gives `hook context`
+- **AND** `# MCP Server Instructions` followed by a blank line and `The following MCP servers`, `# Environment` followed by `You have been invoked`, `# Advisor Tool` followed by a blank line and ``You have access to an `advisor` ``, `You are powered by the model`, `Available agent types`, `While bypass permissions mode is active` and `Today's date is` give `other`
+
+#### Scenario: A message after a compaction
+- **WHEN** one `system` message holds 33 background agents' results, each followed by a hook's context, then files Claude Code restored after the compaction, the skills invoked before it, the deferred tool list and the environment
+- **THEN** each of these is its own reminder with its own source, instead of the whole message counting as background notifications
+
+#### Scenario: Neighbours of one source
+- **WHEN** two parts in a row have the same source, such as a background-task header and its `<task-notification>`
+- **THEN** they stay one reminder
+
+#### Scenario: A heading inside a reminder
+- **WHEN** an instructions reminder holds a paragraph that starts with `# Environment` but is not followed by `You have been invoked`
+- **THEN** the reminder is not split there
+
 ### Requirement: Codex requests and usage
 Each Codex API request SHALL come from a `token_usage_record` line (seen in Codex 0.152–0.166), counted once per `response_id`. A rollout without such lines uses `token_count` events (0.145–0.166) instead, counting `last_token_usage` only when `total_token_usage` changed. `input_tokens` includes cached and cache-written tokens: uncached input is `input_tokens` minus `cached_input_tokens` and `cache_write_input_tokens`, never below zero.
 
