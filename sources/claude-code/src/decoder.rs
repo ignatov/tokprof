@@ -108,6 +108,9 @@ pub(crate) struct Parser {
     pending: HashMap<(String, bool), Pending>,
     /// The trigger and activity each response's message id was first seen with.
     trigger_by_message: HashMap<String, (Option<Trigger>, Option<CallClass>)>,
+    /// The highest `totalCostUSD` of each run of Claude Code's counter, keyed by `startTime`. A resumed
+    /// process restores the counter with its `startTime`; a new `startTime` is a count from zero.
+    counter_runs: Vec<(Option<i64>, f64)>,
 }
 
 impl Parser {
@@ -135,6 +138,7 @@ impl Parser {
             after_boundary: false,
             pending: HashMap::new(),
             trigger_by_message: HashMap::new(),
+            counter_runs: Vec::new(),
         }
     }
 
@@ -187,7 +191,12 @@ impl Parser {
             }
             Some("cost-state") => {
                 if let Some(usd) = v.get("totalCostUSD").and_then(Value::as_f64) {
-                    self.session.reported_usd = Some(usd);
+                    let start = v.get("startTime").and_then(Value::as_i64);
+                    match self.counter_runs.iter_mut().find(|(s, _)| *s == start) {
+                        Some((_, top)) => *top = top.max(usd),
+                        None => self.counter_runs.push((start, usd)),
+                    }
+                    self.session.reported_usd = Some(self.counter_runs.iter().map(|(_, usd)| usd).sum());
                 }
             }
             Some("ai-title") => self.note_title(str_at(&v, "aiTitle"), false),
@@ -903,6 +912,21 @@ mod tests {
             p.line(&l.to_string());
         }
         p.into_session()
+    }
+
+    fn reported_cost(states: &[(i64, f64)]) -> Option<f64> {
+        let lines: Vec<Value> = states.iter()
+            .map(|(start, usd)| json!({"type": "cost-state", "startTime": start, "totalCostUSD": usd}))
+            .collect();
+        session_from(&lines).reported_usd.map(|usd| (usd * 100.0).round() / 100.0)
+    }
+
+    #[test]
+    fn sums_the_highest_value_of_each_counter_run() {
+        assert_eq!(reported_cost(&[(1, 10.0), (1, 30.0), (1, 28.0)]), Some(30.0));
+        assert_eq!(reported_cost(&[(1, 24.06), (2, 2.66), (2, 32.89)]), Some(56.95));
+        assert_eq!(reported_cost(&[(2, 1.34), (1, 1.41), (2, 24.70)]), Some(26.11));
+        assert_eq!(reported_cost(&[]), None);
     }
 
     #[test]

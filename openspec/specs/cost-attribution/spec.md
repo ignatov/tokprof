@@ -218,7 +218,7 @@ After the spend table, `tokprof summary` SHALL print `Total priced: <usd>   avoi
 - **THEN** the line reads `Total priced: $2,628   avoidable on cache misses: $506 (19.3%)`, the same $506 the cause table below it lists
 
 ### Requirement: Reconciliation with the agent's own cost counter
-When a reported session logged Claude Code's own cost counter (`totalCostUSD` in `cost-state` lines), `tokprof summary` SHALL print `Claude Code's own cost counter for <n> sessions: <usd>; tokprof for the same sessions: <usd>`: the sum of the last counter value of each such session, and tokprof's priced spend for the same sessions. With `--since` or `--until`, only sessions whose every request falls inside the window are compared.
+When a reported session logged Claude Code's own cost counter (`totalCostUSD` in `cost-state` lines), `tokprof summary` SHALL print `Claude Code's own cost counter for <n> sessions: <usd>; tokprof for the same sessions: <usd>`: the sum of the counters of those sessions, each taken as session-logs defines it, and tokprof's priced spend for the same sessions. With `--since` or `--until`, only sessions whose every request falls inside the window are compared.
 
 #### Scenario: All history
 - **WHEN** 275 sessions logged a counter, summing to $10,241, and tokprof prices the same sessions at $10,353
