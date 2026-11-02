@@ -29,9 +29,12 @@ use crate::tools::{call_class, tool_target};
 /// Size an image is counted as, in characters (roughly 1,400 tokens).
 const IMAGE_CHARS: u64 = 5_000;
 
-/// How Claude Code's notice after an idle compaction starts (seen in 2.1.302–2.1.310): "Compacted
-/// while idle, before the prompt cache expired · turn off with …".
-const IDLE_NOTICE: &str = "Compacted while idle";
+/// How Claude Code's notices after an idle compaction start. The terminal compacts during the
+/// break and writes "Compacted while idle, before the prompt cache expired · turn off with …"
+/// (seen in 2.1.302–2.1.310). A session without the terminal UI swaps in a summary written during
+/// the break at the next turn and writes "Compacted using a summary written while you were away ·
+/// turn off with …" (found in the 2.1.316 binary, not yet seen in a log).
+const IDLE_NOTICES: [&str; 2] = ["Compacted while idle", "Compacted using a summary written while you were away"];
 
 /// What `subagents/agent-<id>.meta.json` tells about a subagent.
 #[derive(Clone, Debug, Default)]
@@ -100,9 +103,9 @@ pub(crate) struct Parser {
     assistant: Option<(String, Vec<Value>)>,
     /// `compact_boundary` lines: time and `compactMetadata.trigger`.
     compactions: Vec<(i64, Option<String>)>,
-    /// Times of the notices Claude Code writes after compacting a conversation while it was idle.
+    /// Times of the notices Claude Code writes after an idle compaction, in either mode.
     idle_notices: Vec<i64>,
-    /// Between a `compact_boundary` and the next response, where the idle notice can come.
+    /// Between a `compact_boundary` and the next response, where an idle notice can come.
     after_boundary: bool,
     /// Per chain (agent id, sidechain): what it logged since its latest response.
     pending: HashMap<(String, bool), Pending>,
@@ -147,8 +150,8 @@ impl Parser {
             || line.contains("\"type\":\"user\"")
             || line.contains("\"type\":\"api-request")
             || line.contains("\"compact_boundary\"")
-            // The idle notice only follows a boundary, so other lines need no extra search.
-            || (self.after_boundary && line.contains(IDLE_NOTICE))
+            // An idle notice only follows a boundary, so other lines need no extra search.
+            || (self.after_boundary && IDLE_NOTICES.iter().any(|n| line.contains(n)))
             || line.contains("\"type\":\"cost-state\"")
             || line.contains("\"type\":\"ai-title\"")
             || line.contains("\"type\":\"custom-title\"");
@@ -184,7 +187,8 @@ impl Parser {
                     self.after_boundary = true;
                 }
             }
-            Some("system") if str_at(&v, "subtype") == Some("informational") && str_at(&v, "content").is_some_and(|c| c.starts_with(IDLE_NOTICE)) => {
+            Some("system") if str_at(&v, "subtype") == Some("informational")
+                && str_at(&v, "content").is_some_and(|c| IDLE_NOTICES.iter().any(|n| c.starts_with(n))) => {
                 if let Some(ts) = parse_ts_ms(v.get("timestamp")) {
                     self.idle_notices.push(ts);
                 }
@@ -1096,6 +1100,33 @@ mod tests {
         chains.sort();
         let marked: Vec<Vec<bool>> = chains.into_iter().map(|(_, m)| m).collect();
         assert_eq!(marked, [vec![false, true, false], vec![false]]);
+    }
+
+    /// Claude Code 2.1.316's second idle mode, in the order its binary emits the lines: the summary
+    /// written during the break is swapped in at the first turn after the return. Synthetic, since
+    /// no log has this notice yet.
+    #[test]
+    fn an_away_summary_notice_makes_the_compaction_idle() {
+        let reply = |id: &str, ts: &str| assistant_line(id, json!({"timestamp": ts}), json!([{"type": "text", "text": "ok"}]));
+        let mut prompt = user_line("go on");
+        prompt["timestamp"] = json!("2026-11-02T10:02:10Z");
+        let mut summary = user_line("This session is being continued from a previous conversation that ran out of context.");
+        summary["timestamp"] = json!("2026-11-02T10:02:11Z");
+        summary["isCompactSummary"] = json!(true);
+        let s = session_from(&[
+            reply("m1", "2026-11-02T07:01:40Z"),
+            prompt,
+            json!({"type": "system", "subtype": "compact_boundary", "timestamp": "2026-11-02T10:02:11Z",
+                   "compactMetadata": {"trigger": "auto", "preTokens": 512000, "postTokens": 9100}}),
+            summary,
+            json!({"type": "system", "subtype": "informational", "level": "notice", "isMeta": false, "timestamp": "2026-11-02T10:02:11Z",
+                   "content": "Compacted using a summary written while you were away ·\u{a0}turn off with \"idleCompaction\": false in settings.json"}),
+            reply("m2", "2026-11-02T10:02:30Z"),
+        ]);
+        let kinds: Vec<Option<&str>> = s.compactions.iter().map(|c| c.kind.name()).collect();
+        assert_eq!(kinds, [Some("idle")]);
+        let marked: Vec<bool> = s.chains[0].requests.iter().map(|r| r.compacted_before).collect();
+        assert_eq!(marked, [false, true]);
     }
 
     fn assistant_line(id: &str, extra: Value, content: Value) -> Value {
