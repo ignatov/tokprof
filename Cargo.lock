@@ -1913,16 +1913,70 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "flate2",
  "notify",
- "prost",
  "ratatui",
+ "rayon",
+ "serde_json",
+ "tokprof-core",
+ "tokprof-source-claude-code",
+ "tokprof-sources",
+]
+
+[[package]]
+name = "tokprof-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "flate2",
+ "prost",
  "rayon",
  "ruzstd",
  "serde",
  "serde_json",
  "sha2",
  "toml",
+]
+
+[[package]]
+name = "tokprof-logio"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "ruzstd",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "tokprof-source-claude-code"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "tokprof-core",
+ "tokprof-logio",
+]
+
+[[package]]
+name = "tokprof-source-codex"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "tokprof-core",
+ "tokprof-logio",
+]
+
+[[package]]
+name = "tokprof-sources"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tokprof-core",
+ "tokprof-source-claude-code",
+ "tokprof-source-codex",
 ]
 
 [[package]]

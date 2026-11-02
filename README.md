@@ -85,7 +85,7 @@ tokprof builds with a recent stable Rust; its dependencies need 1.89 or later.
 
 ```sh
 cargo install --git https://github.com/ignatov/tokprof --root ~/.local   # puts tokprof into ~/.local/bin
-cargo install --path . --root ~/.local                                    # the same, from a clone
+cargo install --path crates/tokprof --root ~/.local                       # the same, from a clone
 cargo uninstall tokprof --root ~/.local                                   # removes it
 ```
 
@@ -109,7 +109,7 @@ Paste it into a new session, followed by what to do next. The new agent reads wh
 
 `--note` adds a note built from the log without a model: the task, the latest prompts, where the work stopped, the task list, the files changed and read, and the latest commands. Use it when the new agent cannot read the log itself, for example a compressed Codex rollout or another agent's log.
 
-The `advice` lines come from deterministic rules in `src/advice.rs`. Each item says one thing: what it is about, the numbers behind it, and what to do. For session 3f951de0, with its cache cold:
+The `advice` lines come from deterministic rules in `crates/tokprof-core/src/advice.rs`. Each item says one thing: what it is about, the numbers behind it, and what to do. For session 3f951de0, with its cache cold:
 
 ```
 advice    ▸ Resuming writes the whole 817.6k context again (+$6.38), then $0.16 per request.
@@ -283,7 +283,7 @@ These fields were seen in Claude Code 2.1.284–2.1.312 and Codex 0.146–0.163.
 
 ## Prices
 
-The built-in prices are in `prices.toml`, with sources and dates. To add or override models, put entries in `~/.config/tokprof/prices.toml`:
+The built-in prices are in [`crates/tokprof-core/prices.toml`](crates/tokprof-core/prices.toml), with sources and dates. To add or override models, put entries in `~/.config/tokprof/prices.toml`:
 
 ```toml
 [models."codex-auto-review"]
@@ -315,6 +315,48 @@ output = 30.00
 
 Dollar figures are API-equivalent. On a subscription they measure usage, not a bill.
 
+## Library
+
+tokprof is a Cargo workspace. The CLI is one package; the rest is a library that other programs can use.
+
+| Package | What it holds |
+|---|---|
+| `crates/tokprof-core` | The session model, pricing, cost attribution, cache misses, the X-ray, advice and bench as data, and the profile writers. It reads no log itself and no environment variable or clock. |
+| `crates/tokprof-logio` | Reading logs without knowing any agent: compressed files, lines, JSON helpers. |
+| `sources/claude-code`, `sources/codex` | One crate per log source: where its logs are and how to read them. |
+| `crates/tokprof-sources` | The catalog of every source, a cargo feature each. |
+| `crates/tokprof` | The `tokprof` binary: the command line, the text reports and `tokprof ui`. |
+
+Spend of the last week, and the X-ray of the latest session, as `crates/tokprof-sources` documents it:
+
+```rust
+use tokprof_core::report::Collector;
+use tokprof_core::{OnUnreadable, Pricing, Query, analyze, scan, xray};
+
+let catalog = tokprof_sources::catalog();
+let now_ms = 1_793_620_800_000; // the caller's clock
+let query = Query { agents: catalog.agents(), since_ms: Some(now_ms - 7 * 86_400_000), ..Query::default() };
+let pricing = Pricing::defaults();
+let files = catalog.discover(&query.agents);
+let window = query.window();
+let (spend, stats) = scan(&catalog, &files, &query, OnUnreadable::Skip, Collector::default,
+    |c, session, _| analyze(session, &pricing, &window, c), |mut a, b| { a.merge(b); a })?;
+if let Some(latest) = xray::latest(&catalog, &query) {
+    let x = xray::xray(&catalog, &latest, &pricing, now_ms)?;
+    println!("{} {}: {} requests", x.agent, x.short_id, x.requests);
+}
+```
+
+As a git dependency:
+
+```toml
+[dependencies]
+tokprof-core = { git = "https://github.com/ignatov/tokprof" }
+tokprof-sources = { git = "https://github.com/ignatov/tokprof" }
+```
+
+The library is 0.x: its API can change between commits.
+
 ## License
 
-MIT, see [LICENSE](LICENSE). `assets/async-profiler/flame.html` is async-profiler's flame graph page, under the [Apache License 2.0](assets/async-profiler/LICENSE).
+MIT, see [LICENSE](LICENSE). `crates/tokprof-core/assets/async-profiler/flame.html` is async-profiler's flame graph page, under the [Apache License 2.0](crates/tokprof-core/assets/async-profiler/LICENSE).

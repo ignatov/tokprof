@@ -19,6 +19,15 @@ A fix that restores specified behavior needs no proposal. If the code is right a
 ## Build and check
 
 ```sh
-cargo test
-cargo install --path . --root ~/.local    # the binary the author runs
+cargo test --workspace
+cargo install --path crates/tokprof --root ~/.local    # the binary the author runs
 ```
+
+## Layout
+
+The framework is in `crates/`: `tokprof-core` (the library), `tokprof-logio` (neutral log reading), `tokprof-sources` (the registry) and `tokprof` (the CLI). Every agent's log source is its own crate under `sources/`. Only a source may name its agent, its tools or its log fields; `crates/tokprof/tests/architecture.rs` fails otherwise, and it also checks the dependency edges.
+
+A new log source:
+1. `sources/<name>/` with `Cargo.toml`, `src/lib.rs` (its `LogSource` and `Decoder`), `tests/fixtures/` with synthetic logs, and `tests/conformance.rs`, which runs `tokprof_core::testkit::conform` over the fixtures.
+2. A `README.md` in it that names the log locations, the fields it reads and the agent versions they were seen in.
+3. A feature and one line in `crates/tokprof-sources`.

@@ -1,0 +1,26 @@
+[package]
+name = "tokprof"
+description = "Token, cost and prompt-cache profiler for AI coding-agent session logs"
+readme = "../../README.md"
+keywords = ["claude-code", "codex", "prompt-cache", "profiler", "llm"]
+categories = ["command-line-utilities", "development-tools::profiling"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+tokprof-core.workspace = true
+tokprof-sources.workspace = true
+ansi-to-tui.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+notify.workspace = true
+ratatui.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+tokprof-source-claude-code.workspace = true
+serde_json.workspace = true

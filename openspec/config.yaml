@@ -53,7 +53,7 @@ operations:
   apply:
     guidance:
       - Run `cargo test` before marking a task done.
-      - Reinstall the binary the author runs with `cargo install --path . --root ~/.local`.
+      - Reinstall the binary the author runs with `cargo install --path crates/tokprof --root ~/.local`.
   archive:
     guidance:
       - Run `openspec validate --all --strict` after the specs are merged.
