@@ -645,6 +645,7 @@ mod tests {
             id: format!("id{i}"),
             session_id: format!("id{i}"),
             bytes: 1 + at,
+            active_ms: at as i64 * 1000,
         }
     }
 

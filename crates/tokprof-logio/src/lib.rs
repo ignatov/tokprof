@@ -2,11 +2,12 @@
 //! and the JSON helpers every log format needs.
 
 use std::fs::{File, Metadata};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::time::SystemTime;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -35,6 +36,59 @@ pub fn for_each_line(path: &Path, mut f: impl FnMut(&str)) -> Result<()> {
             Ok(s) => f(s),
             Err(_) => f(&String::from_utf8_lossy(&buf)),
         }
+    }
+}
+
+/// Calls `f` for the lines of a plain JSONL file from the last to the first, without their
+/// newlines, until `f` breaks. It reads blocks from the end of the file, so finding something
+/// near the end costs no more than reading that far back. Empty lines are skipped, a last line
+/// still being written is handed over like the others, and invalid UTF-8 is replaced. A
+/// compressed file cannot be read this way.
+pub fn for_each_line_back(path: &Path, f: impl FnMut(&str) -> ControlFlow<()>) -> Result<()> {
+    lines_back(path, 64 * 1024, f)
+}
+
+fn lines_back(path: &Path, mut block: u64, mut f: impl FnMut(&str) -> ControlFlow<()>) -> Result<()> {
+    if path.extension().is_some_and(|e| e == "zst") {
+        bail!("{} is compressed and cannot be read from its end", path.display());
+    }
+    let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut pos = file.metadata()?.len();
+    // The start of a line whose end is in the blocks already read.
+    let mut carry: Vec<u8> = Vec::new();
+    while pos > 0 {
+        let start = pos.saturating_sub(block);
+        let mut buf = vec![0u8; (pos - start) as usize];
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut buf).with_context(|| format!("reading {}", path.display()))?;
+        buf.extend_from_slice(&carry);
+        let mut end = buf.len();
+        while let Some(nl) = buf[..end].iter().rposition(|&b| b == b'\n') {
+            if hand_over(&buf[nl + 1..end], &mut f).is_break() {
+                return Ok(());
+            }
+            end = nl;
+        }
+        if end == buf.len() {
+            // A line longer than a block: read more at once, so that a long line costs no more
+            // than twice its length.
+            block = block.saturating_mul(2);
+        }
+        buf.truncate(end);
+        carry = buf;
+        pos = start;
+    }
+    let _ = hand_over(&carry, &mut f);
+    Ok(())
+}
+
+fn hand_over(line: &[u8], f: &mut impl FnMut(&str) -> ControlFlow<()>) -> ControlFlow<()> {
+    if line.is_empty() {
+        return ControlFlow::Continue(());
+    }
+    match std::str::from_utf8(line) {
+        Ok(s) => f(s),
+        Err(_) => f(&String::from_utf8_lossy(line)),
     }
 }
 
@@ -134,6 +188,39 @@ pub fn file_times(meta: &Metadata) -> (i128, Option<i64>) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The lines `lines_back` hands over for a file with this content, read in blocks of `block`
+    /// bytes, stopping after `take` lines.
+    fn back(name: &str, content: &[u8], block: u64, take: usize) -> Vec<String> {
+        let path = std::env::temp_dir().join(format!("tokprof-logio-{}-{name}.jsonl", std::process::id()));
+        std::fs::write(&path, content).unwrap();
+        let mut out = Vec::new();
+        lines_back(&path, block, |line| {
+            out.push(line.to_string());
+            if out.len() == take { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+        })
+        .unwrap();
+        std::fs::remove_file(&path).ok();
+        out
+    }
+
+    #[test]
+    fn lines_from_the_end() {
+        assert_eq!(back("cross", b"a\nbb\nccc\n", 4, 99), ["ccc", "bb", "a"], "lines that cross block boundaries");
+        assert_eq!(back("open", b"a\nb", 64, 99), ["b", "a"], "a last line without a newline");
+        assert!(back("empty", b"", 4, 99).is_empty(), "an empty file");
+        let long = format!("x\n{}\nz\n", "y".repeat(100));
+        assert_eq!(back("long", long.as_bytes(), 8, 99), ["z".to_string(), "y".repeat(100), "x".to_string()], "a line longer than a block");
+        assert_eq!(back("gaps", b"a\n\n\nb\n", 3, 99), ["b", "a"], "empty lines are skipped");
+        assert_eq!(back("stop", b"a\nb\nc\n", 2, 1), ["c"], "it stops when told to");
+        assert_eq!(back("utf8", "é\nя\n".as_bytes(), 2, 99), ["я", "é"], "a block may split a character");
+    }
+
+    #[test]
+    fn compressed_logs_are_not_read_from_the_end() {
+        let error = for_each_line_back(Path::new("/x/rollout-1.jsonl.zst"), |_| ControlFlow::Continue(())).unwrap_err();
+        assert!(error.to_string().contains("compressed"), "{error}");
+    }
 
     #[test]
     fn canonical_form_sorts_keys_and_keeps_unicode() {

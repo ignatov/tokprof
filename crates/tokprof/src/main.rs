@@ -118,6 +118,13 @@ enum Command {
     },
     /// Replay Claude requests under 5m and 1h cache lifetimes.
     Whatif,
+    /// Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent
+    /// do (trips), with a hint per row.
+    Tools {
+        /// Sort by rent or by trips.
+        #[arg(long, value_enum, default_value = "rent")]
+        by: By,
+    },
     /// What coming back to a big session after its prompt cache expired cost, and what the
     /// same work costs after /compact, in a new session that starts from a handoff note, or
     /// with heartbeats that keep the cache warm.
@@ -142,6 +149,12 @@ enum Command {
         #[arg(long)]
         at: Option<String>,
     },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum By {
+    Rent,
+    Trips,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -335,6 +348,7 @@ fn main() -> Result<()> {
         Command::Summary => print!("{}", render_report::summary(&collector, &filter, &paths::user_prices())),
         Command::Misses { top, expected } => print!("{}", render_report::misses(&collector, top, expected)),
         Command::Whatif => print!("{}", render_report::whatif(&collector, &catalog.agents())),
+        Command::Tools { by } => print!("{}", render_report::tools(&collector.tools, matches!(by, By::Trips), 25)),
         Command::Flame { output, value, stack, title, highlight, .. } => {
             let output = output.expect("set above");
             let shown = display_path(&output.to_string_lossy(), None, catalog.home());

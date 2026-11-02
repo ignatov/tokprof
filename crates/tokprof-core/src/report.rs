@@ -7,6 +7,7 @@ use crate::analysis::{Component, Fact, Filter, MissEvent, RequestRecord, Sink};
 use crate::model::{ChainKind, Session, Usage};
 use crate::profile::{Frame, Stacks, Tint, TimedStacks, Values};
 use crate::source::AgentId;
+use crate::tools::{BlockEntry, ToolShare, ToolTable};
 use crate::trigger::Trigger;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -446,6 +447,7 @@ pub struct Collector {
     pub misses: Vec<MissEvent>,
     pub whatif: WhatIf,
     pub work: Work,
+    pub tools: ToolTable,
 }
 
 impl Collector {
@@ -459,6 +461,7 @@ impl Collector {
         self.misses.extend(o.misses);
         self.whatif.merge(o.whatif);
         self.work.merge(o.work);
+        self.tools.merge(o.tools);
     }
 }
 
@@ -480,6 +483,15 @@ impl Sink for Collector {
     fn fact(&mut self, f: &Fact) {
         self.spend.fact(f);
         self.profile.fact(f);
+        self.tools.fact(f);
+    }
+
+    fn block_entered(&mut self, b: &BlockEntry) {
+        self.tools.block_entered(b);
+    }
+
+    fn tool_share(&mut self, t: &ToolShare) {
+        self.tools.tool_share(t);
     }
 }
 

@@ -53,6 +53,7 @@ pub fn text(x: &XRay, style: &Style, profile_dir: &Path, home: &Path) -> String 
     spend_lines(&mut out, x, style);
     work_lines(&mut out, x, style);
     prompt_lines(&mut out, x, style);
+    tool_lines(&mut out, x, style);
     if let Some(c) = &x.composition {
         out.push('\n');
         composition_lines(&mut out, x, c, style);
@@ -237,6 +238,18 @@ fn work_lines(out: &mut String, x: &XRay, style: &Style) {
     if rest.0 > 0 {
         let share = key(&rest.1) / total.max(1e-9);
         let _ = writeln!(out, "  {:<24} {}  {:5.1}%  {:>9}", format!("{} more", rest.0), style.paint("33", &bar(share)), 100.0 * share, show(&rest.1));
+    }
+}
+
+/// Spend by tool for the session: the top 8 rows by rent, then the rest and the total line.
+fn tool_lines(out: &mut String, x: &XRay, style: &Style) {
+    if !x.tools.rows.values().any(|r| r.calls > 0) {
+        return;
+    }
+    out.push('\n');
+    let _ = writeln!(out, "{} {}", style.dim(&format!("{:<9}", "tools")), style.dim("calls, sizes, rent and trips by tool (see tokprof tools)"));
+    for line in crate::render_report::tool_rows(&x.tools, false, 8).lines() {
+        let _ = writeln!(out, "  {line}");
     }
 }
 
@@ -429,6 +442,7 @@ mod tests {
             content: Vec::new(),
             calls: Default::default(),
             prompts,
+            tools: Default::default(),
             misses: Vec::new(),
         }
     }
@@ -467,6 +481,22 @@ mod tests {
         assert_eq!(numbers, ["23", "24", "25", "26", "27", "28", "29", "30"]);
         let shown: f64 = (23..=30).map(f64::from).sum();
         assert!(text.contains(&format!("22 more messages  {}  220 req", usd(total - shown))), "{text}");
+    }
+
+    #[test]
+    fn the_tools_block_shows_the_top_rows_and_their_hints() {
+        use tokprof_core::model::{Class, ToolClass};
+        use tokprof_core::tools::ToolRow;
+        let mut x = xray(Vec::new());
+        assert!(render(&x, tool_lines).is_empty(), "no tool calls, no block");
+        let v = |usd| Values { tokens: 1.0, usd, avoidable: 0.0 };
+        x.tools.rows.insert(("Bash".into(), Some("sed -n".into())), ToolRow { class: Class::Tool(ToolClass::Execute), calls: 56, single: 48, results: 56, result_tokens: 56.0 * 1_300.0, inputs: 56, input_tokens: 56.0 * 53.0, rent: v(5.21), trips: v(3.75) });
+        x.tools.spend = v(27.37);
+        let text = render(&x, tool_lines);
+        assert!(text.starts_with("\ntools     calls, sizes, rent and trips by tool (see tokprof tools)"), "{text}");
+        let row = text.lines().find(|l| l.contains("sed -n")).unwrap();
+        assert_eq!(row.split_whitespace().collect::<Vec<_>>(), ["Bash", "sed", "-n", "56", "1.3k", "53", "$5.21", "$3.75", "86%", "batch", "independent", "reads"]);
+        assert!(text.contains("spend $27.37 · rent of these tools $5.21 · trips of these tools $3.75 (two views of the same money; do not add them)"), "{text}");
     }
 
     #[test]

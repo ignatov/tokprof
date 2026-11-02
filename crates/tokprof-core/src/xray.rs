@@ -22,6 +22,7 @@ use crate::model::{BlockKind, ChainKind, CompactionTrigger, Session, TypedMessag
 use crate::pricing::{Price, Pricing};
 use crate::profile::Values;
 use crate::report::{Spend, Work};
+use crate::tools::{BlockEntry, ToolShare, ToolTable};
 use crate::trigger::Trigger;
 use crate::fmt::count;
 
@@ -90,6 +91,7 @@ struct Totals {
     /// One row per request, for the prompts block; the file's index among the session's logs.
     rows: Vec<RequestRow>,
     file: usize,
+    tools: ToolTable,
 }
 
 /// A request as the prompts block needs it.
@@ -130,7 +132,16 @@ impl Sink for Totals {
         self.misses.miss(miss);
     }
 
+    fn block_entered(&mut self, b: &BlockEntry) {
+        self.tools.block_entered(b);
+    }
+
+    fn tool_share(&mut self, t: &ToolShare) {
+        self.tools.tool_share(t);
+    }
+
     fn fact(&mut self, f: &Fact) {
+        self.tools.fact(f);
         let v = Values { tokens: f.tokens, usd: f.usd.unwrap_or(0.0), avoidable: f.avoidable_usd };
         let add = |a: &mut Values| {
             a.tokens += v.tokens;
@@ -177,6 +188,8 @@ pub struct XRay {
     pub calls: HashMap<(Option<String>, Option<String>), u64>,
     /// What each message the user typed cost; empty for fewer than two messages.
     pub prompts: Vec<PromptSpend>,
+    /// Spend by tool, the session's subagents included.
+    pub tools: ToolTable,
     pub misses: Vec<MissEvent>,
 }
 
@@ -291,6 +304,7 @@ pub fn xray(catalog: &Catalog, file: &SessionRef, pricing: &Pricing, now_ms: i64
         content: totals.content.into_iter().collect(),
         calls: call_counts(&sessions),
         prompts: prompts_of(&main.typed, &totals.rows),
+        tools: totals.tools,
         misses: totals.misses,
         work: totals.work,
     })
@@ -483,6 +497,9 @@ pub struct SessionRow {
     /// The whole id.
     pub session_id: String,
     pub bytes: u64,
+    /// When the session last did something, in epoch ms: the time of the last record of its
+    /// main log that carries one, never later than the log's last write.
+    pub active_ms: i64,
 }
 
 impl SessionRow {
@@ -493,7 +510,8 @@ impl SessionRow {
         subagents.sort_by(|a, b| a.path().cmp(b.path()));
         let bytes = file.size + subagents.iter().map(|s| s.size).sum::<u64>();
         let id = crate::model::short_id(&file.agent, &head.session_id).to_string();
-        SessionRow { file, subagents, project: head.project, id, session_id: head.session_id, bytes }
+        let active_ms = catalog.last_active(&file);
+        SessionRow { file, subagents, project: head.project, id, session_id: head.session_id, bytes, active_ms }
     }
 
     pub fn modified_ms(&self) -> i64 {
@@ -661,6 +679,7 @@ mod tests {
             id: crate::model::short_id(&crate::testing::codex(), id).to_string(),
             session_id: id.into(),
             bytes: 0,
+            active_ms: 0,
         };
         let rows: Vec<SessionRow> = (0..12).map(|i| row(&format!("01a197e1-4d{i:02}-76b1-b25d-cdd77b01e10f"))).collect();
         let text = ambiguous("01a197e1", &rows);

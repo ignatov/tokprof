@@ -26,6 +26,7 @@ pub mod scan;
 pub mod source;
 #[cfg(feature = "testkit")]
 pub mod testkit;
+pub mod tools;
 pub mod trigger;
 pub mod xray;
 

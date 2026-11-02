@@ -183,6 +183,7 @@ The X-ray shows:
 
 ```sh
 tokprof summary             # spend by model and component, by origin and task, by trigger and activity, misses by cause, reconciliation
+tokprof tools               # spend by tool and shell command, with a hint per row (--by trips)
 tokprof misses --top 20     # most expensive cache misses (--expected adds compactions and cleared tool results)
 tokprof whatif              # Claude input cost under 5m vs 1h cache lifetimes
 tokprof bench               # cold returns to big sessions: resume vs /compact vs a new session vs heartbeats
@@ -305,6 +306,35 @@ The task is what a subagent was asked to do, else the session title, else `untit
 A subagent's chain is named after its task, for example `subagent: Find handlers`.
 
 These fields were seen in Claude Code 2.1.284–2.1.312 and Codex 0.146–0.163.
+
+## Spend by tool
+
+`tokprof tools` gives one row per tool, and per command head for shell tools, such as `Bash sed -n`. The X-ray shows the session's top 8 rows under `tools`.
+
+```
+tool                              calls  avg result  avg input    rent   trips  single  hint
+Read                              14874        3.0k         48  $1,296  $1,154     46%
+Write                              1608          88       3.9k    $318    $240     50%  edit instead of rewriting the file
+Bash sed -n                        3819        2.1k        138    $292    $287     91%  batch independent reads
+Bash python3 -I                    2493        1.1k        877    $243    $306     91%  save long scripts to a file; edit files with the edit tool
+spend $9,236 · rent of these tools $4,988 · trips of these tools $6,510 (two views of the same money; do not add them)
+```
+
+- `calls`: how many times the agent called it.
+- `avg result` and `avg input`: tokens per call, of what the tool returned and of what the agent sent it, at their size in the first request that held them.
+- `rent`: what keeping the results and inputs in the context cost. A result is re-read by every request after it until a compaction, so a 2k-token result kept for 300 requests pays for 600k tokens of cache reads.
+- `trips`: what the calls made the agent do. That is the input of the request each result triggered, since that request re-reads the whole context, plus the output of the response that made the call. A response's spend is split equally between its calls.
+- `single`: the share of calls made alone in their response. Every such call costs one more pass over the context.
+- `hint`: the first of five fixed rules that applies, for rows with at least 5 calls and $1:
+  1. reads made one at a time, 60% or more single: batch independent reads;
+  2. shell calls with inputs of 400 tokens or more: save long scripts to a file, and edit files with the edit tool;
+  3. `Read` results of 5k tokens or more: read a range or search instead;
+  4. shell output of 2k tokens or more: filter it with head or grep;
+  5. whole-file writes of 2k tokens or more: edit instead.
+
+Rent and trips divide the same money in two ways: by what sat in the context, and by what made the agent go round again. Each adds up to the whole spend with the content and requests no tool caused, so the two are never added.
+
+`--by trips` sorts by trips. A Codex `exec` call whose code calls one tool shows as that tool, such as `exec_command sed -n`; one that calls several shows as `exec`.
 
 ## What triggered a request
 

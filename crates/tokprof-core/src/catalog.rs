@@ -108,6 +108,18 @@ impl Catalog {
         self.source(s).head(s)
     }
 
+    /// When a session last did something, in epoch ms: what its source reads from the end of the
+    /// log, or else the log's last write, and never later than the last write.
+    pub fn last_active(&self, s: &SessionRef) -> i64 {
+        let written = s.modified_ms();
+        match self.source(s).last_active(s) {
+            // A file system that keeps no modification time gives 0, which bounds nothing.
+            Some(t) if written > 0 => t.min(written),
+            Some(t) => t,
+            None => written,
+        }
+    }
+
     pub fn subagents(&self, s: &SessionRef) -> Vec<SessionRef> {
         self.source(s).subagents(s)
     }

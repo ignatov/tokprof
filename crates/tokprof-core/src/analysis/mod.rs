@@ -13,7 +13,8 @@ pub mod cache;
 use std::collections::HashMap;
 
 use crate::api::ApiId;
-use crate::model::{BlockKind, Chain, ChainKind, Request, Session, Usage};
+use crate::model::{BlockKind, Chain, ChainKind, Class, Request, Session, Usage};
+use crate::tools::{BlockEntry, ToolShare};
 use crate::source::AgentId;
 use crate::trigger::Trigger;
 use crate::pricing::{Price, Pricing};
@@ -88,6 +89,8 @@ pub struct Fact<'a> {
     pub kind: BlockKind,
     pub tool: Option<&'a str>,
     pub target: Option<&'a str>,
+    /// The class of the block's tool or reminder.
+    pub class: Class,
     pub tokens: f64,
     pub usd: Option<f64>,
     pub avoidable_usd: f64,
@@ -137,6 +140,10 @@ pub trait Sink {
     fn request(&mut self, request: &RequestRecord);
     fn miss(&mut self, miss: MissEvent);
     fn fact(&mut self, fact: &Fact);
+    /// A tool block the first time a request held it, with its size there.
+    fn block_entered(&mut self, _: &BlockEntry) {}
+    /// A share of a request's spend charged to a tool call or result, or to no tool.
+    fn tool_share(&mut self, _: &ToolShare) {}
 }
 
 /// Two sinks fed at once, so a command collects only what it shows.
@@ -159,6 +166,16 @@ impl<A: Sink, B: Sink> Sink for (A, B) {
     fn fact(&mut self, f: &Fact) {
         self.0.fact(f);
         self.1.fact(f);
+    }
+
+    fn block_entered(&mut self, b: &BlockEntry) {
+        self.0.block_entered(b);
+        self.1.block_entered(b);
+    }
+
+    fn tool_share(&mut self, t: &ToolShare) {
+        self.0.tool_share(t);
+        self.1.tool_share(t);
     }
 }
 
@@ -333,6 +350,10 @@ struct Walker<'a> {
     prev: Option<Prev>,
     block_turn: Vec<Option<u32>>,
     block_ts: Vec<Option<i64>>,
+    /// Whether a block has been in a prompt yet, for its size and the trips it triggers.
+    block_seen: Vec<bool>,
+    /// Blocks the latest request held for the first time, with their tokens there.
+    entered: Vec<(usize, f64)>,
     first_ts: Option<i64>,
     models: Vec<String>,
     /// Origin and trigger of the requests, which every share of a request carries.
@@ -360,6 +381,8 @@ impl<'a> Walker<'a> {
             prev: None,
             block_turn: vec![None; s.blocks.len()],
             block_ts: vec![None; s.blocks.len()],
+            block_seen: vec![false; s.blocks.len()],
+            entered: Vec::new(),
             first_ts: None,
             models: Vec::new(),
             origins: Vec::new(),
@@ -452,6 +475,7 @@ impl<'a> Walker<'a> {
                 composition: req.prompt.is_some(),
             });
             let premium = self.attribute(req, price, verdict.as_ref());
+            self.tool_shares(req, price, sink);
             if let Some(v) = &verdict {
                 sink.miss(MissEvent {
                     agent: s.agent.clone(),
@@ -488,6 +512,53 @@ impl<'a> Walker<'a> {
         }
     }
 
+    /// Reports the tool blocks the request held for the first time, and charges its input to
+    /// the tool results among them and its output to the calls its response made.
+    fn tool_shares(&mut self, req: &Request, price: Option<Price>, sink: &mut dyn Sink) {
+        let s = self.s;
+        let block = |b: usize| &s.blocks[b];
+        let mut triggers = Vec::new();
+        for &(b, tokens) in &self.entered {
+            let blk = block(b);
+            if matches!(blk.kind, BlockKind::ToolUse | BlockKind::ToolResult) {
+                sink.block_entered(&BlockEntry { kind: blk.kind, tool: blk.tool.as_deref(), target: blk.target.as_deref(), class: blk.class, tokens });
+            }
+            if blk.kind == BlockKind::ToolResult {
+                triggers.push(b);
+            }
+        }
+        let usage = req.usage;
+        let output_usd = price.map_or(0.0, |p| usage.output as f64 * p.output / 1e6);
+        let input_usd = price.map_or(0.0, |p| p.cost(&usage)) - output_usd;
+        let input_tokens = usage.prompt() as f64;
+        let share = |b: Option<usize>, tokens: f64, usd: f64, call: Option<bool>| {
+            let blk = b.map(block);
+            ToolShare {
+                tool: blk.and_then(|x| x.tool.as_deref()),
+                target: blk.and_then(|x| x.target.as_deref()),
+                class: blk.map_or(Class::None, |x| x.class),
+                tokens,
+                usd,
+                call,
+            }
+        };
+        if triggers.is_empty() {
+            sink.tool_share(&share(None, input_tokens, input_usd, None));
+        }
+        let n = triggers.len().max(1) as f64;
+        for &b in &triggers {
+            sink.tool_share(&share(Some(b), input_tokens / n, input_usd / n, None));
+        }
+        let calls: Vec<usize> = req.produced.map(|m| s.messages[m].blocks.clone().filter(|&b| block(b).kind == BlockKind::ToolUse).collect()).unwrap_or_default();
+        if calls.is_empty() {
+            sink.tool_share(&share(None, usage.output as f64, output_usd, None));
+        }
+        let n = calls.len().max(1) as f64;
+        for &b in &calls {
+            sink.tool_share(&share(Some(b), usage.output as f64 / n, output_usd / n, Some(calls.len() == 1)));
+        }
+    }
+
     /// Charges the request to the blocks of its prompt and response; returns the avoidable
     /// premium of its re-written prefix.
     fn attribute(&mut self, req: &'a Request, price: Option<Price>, verdict: Option<&cache::Verdict>) -> f64 {
@@ -503,19 +574,30 @@ impl<'a> Walker<'a> {
         let mut spans = std::mem::take(&mut self.spans);
         spans.clear();
         let mut turn = 0u32;
+        let mut entered = std::mem::take(&mut self.entered);
+        entered.clear();
         if req.prompt.is_some() {
-            let (block_turn, block_ts) = (&mut self.block_turn, &mut self.block_ts);
+            let (block_turn, block_ts, block_seen) = (&mut self.block_turn, &mut self.block_ts, &mut self.block_seen);
             turn = layout(s, self.msg_chars, self.shape, &self.list, &mut spans, |b, t| {
                 block_turn[b].get_or_insert(t);
                 block_ts[b].get_or_insert(req.ts_ms);
+                if !block_seen[b] {
+                    block_seen[b] = true;
+                    entered.push((b, 0.0));
+                }
             });
         }
         let total_chars: f64 = spans.iter().map(|(_, c)| c).sum();
         if total_chars <= 0.0 {
             spans.clear();
             spans.push((Slot::UnknownContext, 1.0));
+            entered.clear();
         }
         let scale = t / spans.iter().map(|(_, c)| c).sum::<f64>();
+        for e in &mut entered {
+            e.1 = s.blocks[e.0].chars as f64 * scale;
+        }
+        self.entered = entered;
 
         let (pr, pw, pu, po) = match price {
             Some(p) => {
@@ -610,14 +692,14 @@ impl<'a> Walker<'a> {
         let task = self.task;
         let fact = |(label, model, origin): (usize, usize, usize), slot: Slot, component: Component, tokens: f64, usd: f64, cause: Option<Cause>, avoidable: f64| {
             let first = self.first_ts.unwrap_or(0);
-            let (kind, tool, target, turn, ts_ms) = match slot {
+            let (kind, tool, target, turn, ts_ms, class) = match slot {
                 Slot::Block(b) => {
                     let blk = &s.blocks[b];
-                    (blk.kind, blk.tool.as_deref(), blk.target.as_deref(), self.block_turn[b], self.block_ts[b].unwrap_or(first))
+                    (blk.kind, blk.tool.as_deref(), blk.target.as_deref(), self.block_turn[b], self.block_ts[b].unwrap_or(first), blk.class)
                 }
-                Slot::UnknownContext => (BlockKind::Unknown, None, None, None, first),
-                Slot::Response => (BlockKind::Text, None, None, None, first),
-                Slot::HiddenThinking => (BlockKind::Thinking, None, None, None, first),
+                Slot::UnknownContext => (BlockKind::Unknown, None, None, None, first, Class::None),
+                Slot::Response => (BlockKind::Text, None, None, None, first, Class::None),
+                Slot::HiddenThinking => (BlockKind::Thinking, None, None, None, first, Class::None),
             };
             Fact {
                 agent: &s.agent,
@@ -635,6 +717,7 @@ impl<'a> Walker<'a> {
                 kind,
                 tool,
                 target,
+                class,
                 tokens,
                 usd: self.priced.get(&model).copied().unwrap_or(false).then_some(usd),
                 avoidable_usd: avoidable,
@@ -796,6 +879,49 @@ mod tests {
         assert_eq!((lookup.spend.requests, lookup.avg_prompt()), (1, 1000.0));
         let total: f64 = c.work.triggers().iter().map(|(_, t)| t.spend.usd).sum();
         assert!((total - 2.0 * one).abs() < 1e-12, "the triggers sum to the total");
+    }
+
+    #[test]
+    fn tool_blocks_get_their_size_once_and_their_trips() {
+        use crate::model::{Class, ToolClass};
+        use crate::tools::ToolTable;
+        let mut s = Session::new(crate::testing::claude(), "s".into());
+        let blk = |kind, tool: Option<&str>, target: Option<&str>, class, chars| Block { class, kind, chars, tool: tool.map(str::to_string), target: target.map(str::to_string) };
+        let read = Class::Tool(ToolClass::Read);
+        let shell = Class::Tool(ToolClass::Execute);
+        let prompt = s.push_message(vec![blk(BlockKind::Prompt, None, None, Class::None, 400)], true);
+        let calls = s.push_message(vec![blk(BlockKind::ToolUse, Some("Read"), Some("a.rs"), read, 100), blk(BlockKind::ToolUse, Some("Bash"), Some("grep -n"), shell, 100)], false);
+        let results = s.push_message(vec![blk(BlockKind::ToolResult, Some("Read"), Some("a.rs"), read, 300), blk(BlockKind::ToolResult, Some("Bash"), Some("grep -n"), shell, 100)], false);
+        let usage = |read, output| Usage { cache_read: read, output, ..Usage::default() };
+        let req = |ts_ms, keep, tail: Vec<usize>, u, produced| Request { ts_ms, model: "claude-opus-5-5".into(), usage: u, prompt: Some(PromptDelta { shape: None, keep, tail }), produced, ..Request::default() };
+        let requests = vec![req(1, 0, vec![prompt], usage(1_000, 100), Some(calls)), req(2, 1, vec![calls, results], usage(2_000, 50), None), req(3, 3, vec![], usage(2_000, 10), None)];
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+        let pricing = Pricing::defaults();
+        let mut t = ToolTable::default();
+        analyze(&s, &pricing, &Filter::default(), &mut t);
+        let p = pricing.get("claude-opus-5-5", 1000, 1).unwrap();
+        let read_row = &t.rows[&("Read".to_string(), None)];
+        let grep_row = &t.rows[&("Bash".to_string(), Some("grep -n".to_string()))];
+        assert_eq!((read_row.calls, read_row.single, read_row.results, read_row.inputs), (1, 0, 1, 1), "each block once");
+        assert!((read_row.result_tokens - 2_000.0 * 300.0 / 1_000.0).abs() < 1e-9, "its size in the first request that held it");
+        // The second request's input goes half to each result; the first response's output half to each call.
+        let input2 = p.cost(&usage(2_000, 0));
+        let output1 = p.cost(&usage(0, 100));
+        assert!((grep_row.trips.usd - (input2 + output1) / 2.0).abs() < 1e-12);
+        let rent: f64 = t.rows.values().map(|r| r.rent.usd).sum::<f64>() + t.other_rent.usd;
+        let trips: f64 = t.rows.values().map(|r| r.trips.usd).sum::<f64>() + t.other_trips.usd;
+        assert!((rent - t.spend.usd).abs() < 1e-12 && (trips - t.spend.usd).abs() < 1e-12, "both views add up to the spend");
+    }
+
+    #[test]
+    fn a_request_without_a_prompt_gives_no_trips() {
+        use crate::tools::ToolTable;
+        let mut s = Session::new(crate::testing::claude(), "s".into());
+        let requests = vec![Request { ts_ms: 1, model: "claude-opus-5-5".into(), usage: Usage { cache_read: 1_000, output: 10, ..Usage::default() }, ..Request::default() }];
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+        let mut t = ToolTable::default();
+        analyze(&s, &Pricing::defaults(), &Filter::default(), &mut t);
+        assert!(t.rows.is_empty() && (t.other_trips.usd - t.spend.usd).abs() < 1e-12);
     }
 
     #[test]

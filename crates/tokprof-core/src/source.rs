@@ -310,6 +310,13 @@ pub trait LogSource: Send + Sync {
     /// created or moved in.
     fn touched(&self, changed: &Path, arrived: bool) -> Touched;
     fn head(&self, s: &SessionRef) -> Head;
+    /// When the session last did something, in epoch ms: the time of the last record in its log
+    /// that carries one. Agents also write records that are not work, such as bookkeeping when a
+    /// session is resumed, and those carry no time. Read from the end of the log; `None` means
+    /// the log's last write tells it as well, or the source cannot tell.
+    fn last_active(&self, _s: &SessionRef) -> Option<i64> {
+        None
+    }
     /// The logs of the subagents a main session started, and of the ones they started in turn.
     fn subagents(&self, s: &SessionRef) -> Vec<SessionRef>;
     fn open(&self, s: &SessionRef) -> Result<Box<dyn Records>>;

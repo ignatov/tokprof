@@ -196,7 +196,7 @@ tokprof SHALL attribute requests to a model without a price (see pricing) in tok
 - **THEN** the request is attributed to model `unknown`, which has no price
 
 ### Requirement: Summary report
-`tokprof summary` SHALL print `Spend by model (API-equivalent USD; token counts where no price is known)` and a table with one row per agent and model: `agent`, `model`, `requests`, `prompt known`, the five components and `total`, sorted by total cost, highest first. Then come the totals line, the unpriced models (see pricing), the reconciliation line when there is one, the spend by origin, task and trigger, and the `Cache misses by cause` table (see cache-misses) without expected rebuilds.
+`tokprof summary` SHALL print `Spend by model (API-equivalent USD; token counts where no price is known)` and a table with one row per agent and model: `agent`, `model`, `requests`, `prompt known`, the five components and `total`, most expensive first. Then come the totals line, the unpriced models (see pricing), the reconciliation line when there is one, the spend by origin, task, trigger and activity, and the `Cache misses by cause` table (see cache-misses) without expected rebuilds.
 
 #### Scenario: A model row
 - **WHEN** the reported window holds 16,281 requests to `claude-opus-5-5`, all with a rebuilt prompt
@@ -208,7 +208,7 @@ tokprof SHALL attribute requests to a model without a price (see pricing) in tok
 
 #### Scenario: Order of the parts
 - **WHEN** the window holds priced requests and cache misses
-- **THEN** the spend by origin and task comes after the totals and reconciliation lines, the spend by trigger comes after it, and both come before `Cache misses by cause`
+- **THEN** the spend by origin and task comes after the totals and reconciliation lines, then the spend by trigger and the spend by activity, all before `Cache misses by cause`
 
 ### Requirement: Summary totals line
 After the spend table, `tokprof summary` SHALL print `Total priced: <usd>   avoidable on cache misses: <usd> (<share>%)`: the cost summed over every priced model, and the avoidable premium of the misses that the cause table lists, so expected rebuilds are left out of it as they are left out of the table (see cache-misses). The share is the premium's share of the cost, to one decimal.
@@ -382,7 +382,7 @@ What the log does not show is `unknown`.
 - **THEN** the trigger is `edit`, since an edit counts before a subagent, a subagent before a run, and a run before lookups
 
 #### Scenario: Edits
-- **WHEN** the previous response called `Edit`, `MultiEdit`, `Write`, `NotebookEdit` or Codex `apply_patch`
+- **WHEN** the previous response called `Edit`, `MultiEdit`, `Write`, `NotebookEdit` or Codex `apply_patch`, or ran a shell command whose class is `editing` (see Activity of a shell command), such as `cat > notes.md <<'EOF'`
 - **THEN** the trigger is `edit`
 
 #### Scenario: Subagents
@@ -390,7 +390,7 @@ What the log does not show is `unknown`.
 - **THEN** the trigger is `subagent`
 
 #### Scenario: Other calls
-- **WHEN** the previous response called a tool that is neither read-only, an edit nor a subagent, such as a shell command that is not read-only or an MCP tool
+- **WHEN** the previous response called a tool that is neither read-only, an edit nor a subagent, such as a shell command that neither only reads nor writes a file, or an MCP tool
 - **THEN** the trigger is `run`
 
 #### Scenario: A typed prompt
@@ -480,3 +480,60 @@ A shell command SHALL be read-only when every part of it, split at `&&`, `||`, `
 #### Scenario: No price
 - **WHEN** no request in the window has a price
 - **THEN** the cost and per-request cells show tokens, and the shares are of tokens
+
+### Requirement: Activity of spend
+Every share of spend SHALL also carry the activity of the request it comes from: what the agent was doing that led to the request. The activity is one more dimension that profiles stack by (see profile-export). Every share of a request has the same activity, its output included.
+
+#### Scenario: Stacks by activity
+- **WHEN** the user passes `--stack activity,component`
+- **THEN** every stack starts with the request's activity, such as `reading` or `building and testing`
+
+### Requirement: Activity of a request
+A request's activity SHALL come from the same calls as its trigger (see Trigger of a request). Each call has a class, and the request takes the first class among its calls in this order: `editing`, `subagents`, `building and testing`, `version control`, `running scripts`, `file and system commands`, `other tools`, `web`, `reading`. A request whose trigger comes from no call takes its trigger's name.
+
+#### Scenario: Classes of tools
+- **WHEN** a call is an edit, a subagent, a fetch or web search, or a read-only call other than those (see Read-only calls)
+- **THEN** its class is `editing`, `subagents`, `web` or `reading`
+- **AND** a tool that is none of these and is not a shell is `other tools`, such as an MCP tool
+
+#### Scenario: Mixed calls
+- **WHEN** the previous response ran `cargo test` and read two files
+- **THEN** the request's activity is `building and testing`
+
+#### Scenario: No calls
+- **WHEN** a request's trigger is `prompt`, `notification`, `compaction`, `continuation`, `advisor` or `unknown`
+- **THEN** its activity has the same name
+
+### Requirement: Activity of a shell command
+A shell call's class SHALL be `reading` when its command is read-only (see Read-only commands). Otherwise the class comes from its first program, skipping `cd` parts, `NAME=value` assignments, shell keywords and the wrappers `time`, `timeout <duration>`, `env` and `nice`, with the program's path and a `.cmd` or `.exe` suffix dropped. A command that writes a file through `>`, `tee`, a heredoc or an in-place edit is `editing` when its first program reads or prints.
+
+#### Scenario: Building and testing
+- **WHEN** the first program is `cargo`, `npm`, `pnpm`, `yarn`, `gradle`, `gradlew`, `mvn`, `make`, `bazel`, `go`, `pytest`, `tsc`, `jest`, `vitest`, `swift`, `xcodebuild` or `dotnet`, or `bun` with anything but `-e`
+- **THEN** the class is `building and testing`
+
+#### Scenario: Version control
+- **WHEN** the first program is `git`, with a subcommand that is not read-only, or `gh`
+- **THEN** the class is `version control`
+
+#### Scenario: Running scripts
+- **WHEN** the first program is `python`, `python3`, `node`, `deno`, `ruby`, `perl`, `bash`, `sh`, `zsh`, `uv` or `bun -e`, or is given by a path, such as `scripts/report` or `./tools/build`, and is not a program the other lists name
+- **THEN** the class is `running scripts`
+
+#### Scenario: Writing files from the shell
+- **WHEN** the command is `cat > notes.md <<'EOF'`, `echo x >> log.txt`, `sed -i 's/a/b/' f.rs` or `printf x | tee out.txt`
+- **THEN** the class is `editing`
+
+#### Scenario: Everything else
+- **WHEN** the first program is any other, such as `mkdir`, `rm`, `cp`, `curl` or `ffmpeg`
+- **THEN** the class is `file and system commands`
+
+### Requirement: Spend by activity
+`tokprof summary` SHALL print `Spend by activity: what the agent was doing before each request` and a table of whole requests with `activity`, `requests`, `avg prompt`, `cost`, `per request` and `share`, most expensive first, with every activity that has requests. Shares are of the cost, or of tokens when no request has a price.
+
+#### Scenario: The table sums to the total
+- **WHEN** the summary is printed
+- **THEN** the costs of the activity rows add up to the `Total priced` figure
+
+#### Scenario: Reading and lookups
+- **WHEN** every lookup of a window read files and none fetched a page
+- **THEN** the `reading` row has the requests and cost of the `lookup` and `lookups` rows of the trigger table together

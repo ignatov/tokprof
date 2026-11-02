@@ -201,6 +201,10 @@ Claude Code prompts SHALL be rebuilt from request-audit lines (seen in Claude Co
 - **WHEN** an `api-request` carries `params`
 - **THEN** `output_config.effort`, `thinking`, `betas` (in any order), `context_management`, `speed` and the line's `version` are kept for the cause rules of cache-misses
 
+#### Scenario: Reminders of role system
+- **WHEN** an `api-request-blob` message has role `system`, as Claude Code's environment notes, hook context and file-change notes do since 2.1.300
+- **THEN** its text is reminder content, labeled like a `<system-reminder>`, and it does not start a turn (see cost-attribution)
+
 ### Requirement: Codex requests and usage
 Each Codex API request SHALL come from a `token_usage_record` line (seen in Codex 0.152–0.166), counted once per `response_id`. A rollout without such lines uses `token_count` events (0.145–0.166) instead, counting `last_token_usage` only when `total_token_usage` changed. `input_tokens` includes cached and cache-written tokens: uncached input is `input_tokens` minus `cached_input_tokens` and `cache_write_input_tokens`, never below zero.
 
@@ -507,3 +511,18 @@ Wherever tokprof shows a session by a short id, the short id SHALL be the first 
 #### Scenario: Codex sessions launched in the same millisecond
 - **WHEN** four Codex threads launched together have ids that start `01a1978f-f718-7312`, `01a1978f-f718-7691`, `01a1978f-f718-7ff1` and `01a1978f-f718-7991`
 - **THEN** each keeps its own short id
+
+### Requirement: Messages the user typed
+Each source SHALL keep the messages the user typed in a session's main conversation, in order, with their time and text, for the prompts block of session-xray. A typed message is one that starts a turn: not a reminder, a tool result, an interruption, a background task's result, the summary after a compaction or a shell command run from the prompt.
+
+#### Scenario: Claude Code
+- **WHEN** a main transcript has a `user` line whose text is not a reminder and holds no tool result, outside a sidechain and with no `agentId`
+- **THEN** it is a typed message, and a slash command keeps its `<command-name>` and `<command-args>` as its text, such as `/goal finish the parser`
+
+#### Scenario: Codex
+- **WHEN** a main thread's `response_item` is a `message` of role `user` whose text is not injected context
+- **THEN** it is a typed message
+
+#### Scenario: Subagents
+- **WHEN** a subagent's log starts with its brief
+- **THEN** the brief is not a typed message of the session

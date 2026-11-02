@@ -11,6 +11,7 @@ use tokprof_core::fmt::{clip_end, table, tokens, usd};
 use tokprof_core::pricing::{Price, Pricing};
 use tokprof_core::profile::Values;
 use tokprof_core::report::{Collector, ModelTotals, Spend, TriggerSpend, Work};
+use tokprof_core::tools::{ToolTable, hint};
 use tokprof_core::source::AgentId;
 
 /// `window` is the time filter the requests were selected by; it limits the reconciliation to
@@ -137,6 +138,61 @@ fn request_table(title: &str, label: &str, rows_in: Vec<(&str, TriggerSpend)>) -
         rows.push(vec![name.to_string(), s.requests.to_string(), tokens(t.avg_prompt()), cost, per, format!("{:.1}%", 100.0 * key(&s) / total.max(1e-9))]);
     }
     out.push_str(&table(&rows, 1));
+    out
+}
+
+/// Spend by tool: the table of `tokprof tools`, its top `limit` rows by rent or trips.
+pub fn tools(t: &ToolTable, by_trips: bool, limit: usize) -> String {
+    let mut out = String::from("Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent do (trips)\n\n");
+    out.push_str(&tool_rows(t, by_trips, limit));
+    out
+}
+
+/// The tool table's rows, `<n> more` and the total line.
+pub fn tool_rows(t: &ToolTable, by_trips: bool, limit: usize) -> String {
+    let priced = t.spend.usd > 0.0;
+    let amount = |v: &Values| if priced { usd(v.usd) } else { format!("{} tok", tokens(v.tokens)) };
+    let size = |v: Option<f64>| v.map_or("–".to_string(), tokens);
+    let rows = t.sorted(by_trips);
+    let mut table_rows = vec![["tool", "calls", "avg result", "avg input", "rent", "trips", "single"].map(str::to_string).to_vec()];
+    let mut hints = vec!["hint"];
+    for (key, r) in rows.iter().take(limit) {
+        let name = match &key.1 {
+            Some(head) => format!("{} {head}", key.0),
+            None => key.0.clone(),
+        };
+        table_rows.push(vec![
+            clip_end(&name, 32),
+            r.calls.to_string(),
+            size(r.avg_result()),
+            size(r.avg_input()),
+            amount(&r.rent),
+            amount(&r.trips),
+            format!("{:.0}%", 100.0 * r.single_share()),
+        ]);
+        hints.push(hint(key, r).unwrap_or(""));
+    }
+    // The hint is text, so it goes after the aligned columns.
+    let mut out = String::new();
+    for (line, h) in table(&table_rows, 1).lines().zip(hints) {
+        let _ = writeln!(out, "{}", format!("{line}  {h}").trim_end());
+    }
+    if rows.len() > limit {
+        let _ = writeln!(out, "{} more", rows.len() - limit);
+    }
+    let mut rent = Values::default();
+    let mut trips = Values::default();
+    for (_, r) in &rows {
+        rent.add(r.rent);
+        trips.add(r.trips);
+    }
+    let _ = writeln!(
+        out,
+        "spend {} · rent of these tools {} · trips of these tools {} (two views of the same money; do not add them)",
+        amount(&t.spend),
+        amount(&rent),
+        amount(&trips)
+    );
     out
 }
 
@@ -300,6 +356,7 @@ fn day(ts_ms: i64) -> String {
 mod tests {
     use super::*;
     use tokprof_core::model::{ChainKind, Session, Usage};
+    use tokprof_core::profile::Values;
     use tokprof_core::source::AgentInfo;
 
     fn claude() -> AgentId {
@@ -320,6 +377,26 @@ mod tests {
         assert_eq!(line.split_whitespace().collect::<Vec<_>>(), ["lookup", "31833", "263.0k", "$3,393", "$0.11", "37.3%"]);
         let first = text.lines().nth(3).unwrap();
         assert!(first.starts_with("prompt"), "most expensive first: {first}");
+    }
+
+    #[test]
+    fn the_tools_table_lists_rows_hints_and_the_total() {
+        use tokprof_core::model::{Class, ToolClass};
+        use tokprof_core::tools::ToolRow;
+        let v = |usd| Values { tokens: 1.0, usd, avoidable: 0.0 };
+        let mut t = ToolTable::default();
+        t.rows.insert(("Bash".into(), Some("python3 -I".into())), ToolRow { class: Class::Tool(ToolClass::Execute), calls: 60, single: 50, results: 60, result_tokens: 60.0 * 120.0, inputs: 60, input_tokens: 60.0 * 702.0, rent: v(4.32), trips: v(7.04) });
+        t.rows.insert(("Read".into(), None), ToolRow { class: Class::Tool(ToolClass::Read), calls: 1, single: 1, results: 1, result_tokens: 16_900.0, inputs: 1, input_tokens: 20.0, rent: v(1.16), trips: v(0.2) });
+        t.spend = v(27.37);
+        let text = tools(&t, false, 25);
+        assert!(text.starts_with("Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent do (trips)\n\n"));
+        let py = text.lines().find(|l| l.contains("python3")).unwrap();
+        assert!(py.ends_with("$4.32  $7.04     83%  save long scripts to a file; edit files with the edit tool"), "{py}");
+        let read = text.lines().find(|l| l.starts_with("Read")).unwrap();
+        assert!(read.ends_with("$1.16  $0.20    100%"), "a large read once has no hint: {read}");
+        let by_trips = tools(&t, true, 1);
+        assert!(by_trips.contains("1 more") && by_trips.lines().nth(3).unwrap().contains("python3"), "{by_trips}");
+        assert!(text.contains("spend $27.37 · rent of these tools $5.48 · trips of these tools $7.24 (two views of the same money; do not add them)"), "{text}");
     }
 
     #[test]
