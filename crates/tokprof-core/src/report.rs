@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 use crate::analysis::{Component, Fact, Filter, MissEvent, RequestRecord, Sink};
 use crate::model::{ChainKind, Session, Usage};
 use crate::profile::{Frame, Stacks, Tint, TimedStacks, Values};
+use crate::setup::SetupSpend;
 use crate::source::AgentId;
 use crate::tools::{BlockEntry, ToolShare, ToolTable};
 use crate::trigger::Trigger;
@@ -448,6 +449,7 @@ pub struct Collector {
     pub whatif: WhatIf,
     pub work: Work,
     pub tools: ToolTable,
+    pub setup: SetupSpend,
 }
 
 impl Collector {
@@ -462,6 +464,7 @@ impl Collector {
         self.whatif.merge(o.whatif);
         self.work.merge(o.work);
         self.tools.merge(o.tools);
+        self.setup.merge(o.setup);
     }
 }
 
@@ -484,6 +487,7 @@ impl Sink for Collector {
         self.spend.fact(f);
         self.profile.fact(f);
         self.tools.fact(f);
+        self.setup.add(f);
     }
 
     fn block_entered(&mut self, b: &BlockEntry) {

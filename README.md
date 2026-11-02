@@ -112,6 +112,27 @@ prompts   what each message you typed cost, subagents included
 ```
 
 - `what cost the most to keep in the context` ranks content with every request that re-read it, and says how many calls a tool row stands for, such as `Bash sed -n  54 calls`.
+- `setup` gives what every request carries before the work: tool schemas, the system prompt, and the reminders the agent adds, such as instruction files, skill listings and deferred tool lists. Background agents' results and restored files bring the work back, so they are not setup. The block shows when the setup cost at least $1 and 5% of the session, subagents included. For a code review that ran 96 subagents:
+
+```
+setup     what every request carries before the work, subagents included: $73.89, 14% of the session
+  source                        cost  subagents  main starts  each subagent
+  instructions                $23.55     $22.10        11.1k          10.9k
+  skills                      $21.92     $21.03         7.1k           9.4k
+  tool schemas                 $9.29      $8.67        12.1k           6.1k
+  deferred tool lists          $6.16      $5.92         3.1k           2.9k
+  hook context                 $5.81      $5.75           98              –
+  other                        $5.26      $5.04         2.1k           1.3k
+  system prompt                $1.89      $1.72         2.4k           1.1k
+  total                       $73.89     $70.24        38.0k          31.7k   96 subagents on average, and a 2.1k brief
+  ▸ Instructions cost the most of the setup: trim CLAUDE.md and AGENTS.md, and keep
+    the auto-memory MEMORY.md to short index lines.
+```
+
+  - `cost` is what re-reading each source cost over the session, and `subagents` is the part of it in subagents.
+  - `main starts` is what the main conversation's first request held of it, and `each subagent` is the mean of what the subagents' first requests held. Each subagent re-reads its start in every request, so many subagents pay for it many times.
+  - When the main conversation was compacted, a line says what the next prompt held, such as `after the compaction at 10-23 11:00, the next prompt held 46.1k: tool schemas 14.2k · instructions 12.0k · attached files 5.3k · user prompt 5.1k · 6 more 9.4k`.
+  - The last line names the agent's own remedy for the costliest source. For Claude Code skill listings it is `skillListingBudgetFraction` (default 0.01 of the context window) or `skillOverrides` in settings.json; for instructions, CLAUDE.md, AGENTS.md and the auto-memory MEMORY.md; for deferred tool lists, `/mcp`.
 
 `tokprof handoff` prints a line with the session's id and the path of its log:
 
@@ -180,6 +201,7 @@ The X-ray shows:
 - whether the prompt cache is still warm, and what the next request will cost: warm, and once the cache is cold, as a share of what the session has cost so far. When the agent compacted the session after its last request, the `cache` line says when and how, as in `compacted while idle at 19:13 · the next request re-builds ~55.8k`, and the forecast prices that smaller prompt;
 - spend by cost component;
 - where the money went: by origin, such as a skill, a subagent type or typed prompts, and by task, such as the session title or what each subagent was asked to do (see [Origin and task](#origin-and-task));
+- what every request carries before the work, what the main conversation and its subagents start with, and which setting shrinks the largest part;
 - what the context holds now and its largest blocks;
 - the content that cost the most over the session;
 - cache misses with their causes.
@@ -187,7 +209,7 @@ The X-ray shows:
 ## Reports over all sessions
 
 ```sh
-tokprof summary             # spend by model and component, by origin and task, by trigger and activity, misses by cause, reconciliation
+tokprof summary             # spend by model and component, by origin and task, by trigger and activity, setup, misses by cause, reconciliation
 tokprof tools               # spend by tool and shell command, with a hint per row (--by trips)
 tokprof misses --top 20     # most expensive cache misses (--expected adds compactions and cleared tool results)
 tokprof whatif              # Claude input cost under 5m vs 1h cache lifetimes
@@ -204,6 +226,17 @@ run              22512      355.3k  $2,668        $0.12  28.9%
 prompt            1939      263.5k    $977        $0.50  10.6%
 lookups           4378      199.6k    $854        $0.20   9.2%
 edit              3564      382.7k    $469        $0.13   5.1%
+```
+
+`Setup: what every request carries before the work` sums the setup by agent and source over the reported requests: the tool schemas, the system prompt and the reminders the agent adds (see the `setup` block of the X-ray). `subagents` is the part subagents paid, `share` is of the agent's spend, and `hint` names the agent's own remedy. Rows are grouped by agent, the costliest first, and an agent's sources after its 8th fold into one `<n> more` row. The first rows of 30 days of Claude Code:
+
+```
+agent   source                              cost  subagents  share  hint
+claude  instructions                        $249       $150   2.7%  trim CLAUDE.md and AGENTS.md, and keep the auto-memory MEMORY.md to short index lines
+claude  tool schemas                        $199     $64.88   2.2%
+claude  skills                              $197       $114   2.1%  lower skillListingBudgetFraction (default 0.01 of the context window), or turn unused skills off with skillOverrides in settings.json
+
+Claude Code setup: $915, 10.0% of its spend
 ```
 
 `tokprof bench` takes these options:

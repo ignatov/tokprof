@@ -1367,7 +1367,9 @@ mod tests {
         assert_eq!(tool(BlockKind::ToolResult, "Glob"), Class::Tool(ToolClass::Search));
         assert_eq!(tool(BlockKind::ToolUse, "Agent"), Class::Tool(ToolClass::Other));
         assert_eq!(tool(BlockKind::Reminder, "hook context"), Class::Reminder(ReminderKind::HookContext));
-        assert_eq!(tool(BlockKind::Reminder, "task list"), Class::Reminder(ReminderKind::Other));
+        assert_eq!(tool(BlockKind::Reminder, "task list"), Class::Reminder(ReminderKind::TaskList));
+        assert_eq!(tool(BlockKind::Reminder, "attached files"), Class::Reminder(ReminderKind::AttachedFiles));
+        assert_eq!(tool(BlockKind::Reminder, "other"), Class::Reminder(ReminderKind::Other));
         assert_eq!(tool(BlockKind::Text, "Bash"), Class::None);
     }
 }

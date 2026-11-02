@@ -9,5 +9,6 @@ tokprof's source of Codex rollouts.
 - **Triggers:** `function_call` and `custom_tool_call` items: `exec_command` and `shell` commands, `apply_patch`, `spawn_agent`, and the `tools.<name>(...)` calls inside the JavaScript of `exec`, with string-literal `cmd:` values; user messages, and assistant messages with no call. Seen in 0.146–0.164.
 - **Handoff note:** user and assistant messages, `update_plan`, `exec_command` and `shell` commands, and `apply_patch` file paths, also inside the JavaScript of the `exec` tool.
 - **API:** every request goes to the OpenAI API; Codex's configured provider is not read yet.
+- **Setup hints:** `AGENTS.md` for instructions. Codex logs no tool schemas other than `additional_tools`, so it gives no hint for them.
 
 The fields are the ones the session-logs spec names; `tests/fixtures` holds a synthetic rollout and a compressed child thread.

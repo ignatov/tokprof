@@ -23,6 +23,7 @@ pub mod profile;
 pub mod query;
 pub mod report;
 pub mod scan;
+pub mod setup;
 pub mod source;
 #[cfg(feature = "testkit")]
 pub mod testkit;
@@ -53,6 +54,10 @@ pub(crate) mod testing {
             title: "Claude Code".into(),
             instruction_files: vec!["CLAUDE.md".into()],
             ttl_settings: Some(("promptCacheTtl".into(), "subagentPromptCacheTtl".into())),
+            setup_hints: vec![(
+                "skills".into(),
+                "lower skillListingBudgetFraction (default 0.01 of the context window), or turn unused skills off with skillOverrides in settings.json".into(),
+            )],
             cost_counter: Some("Claude Code's own cost counter".into()),
             harness: Harness { pickup: Some(Pickup { taken_tokens: 8_000.0, requests: 4.0, output_tokens: 2_000.0 }) },
             ..AgentInfo::named("claude")

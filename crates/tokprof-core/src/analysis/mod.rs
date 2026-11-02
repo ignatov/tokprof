@@ -13,7 +13,7 @@ pub mod cache;
 use std::collections::HashMap;
 
 use crate::api::ApiId;
-use crate::model::{BlockKind, Chain, ChainKind, Class, Request, Session, Usage};
+use crate::model::{BlockKind, Chain, ChainKind, Class, PromptDelta, Request, Session, Usage};
 use crate::tools::{BlockEntry, ToolShare};
 use crate::source::AgentId;
 use crate::trigger::Trigger;
@@ -74,6 +74,8 @@ pub struct Fact<'a> {
     pub project: &'a str,
     pub session: &'a str,
     pub chain: &'a str,
+    /// The kind of the chain: `Advisor` for an advisor call, whatever chain made it.
+    pub chain_kind: ChainKind,
     /// What kind of work the request was part of (see `Request::origin`).
     pub origin: &'a str,
     /// What made the agent send the request (see `Request::trigger`).
@@ -210,7 +212,7 @@ pub fn analyze(s: &Session, pricing: &Pricing, filter: &Filter, sink: &mut dyn S
     }
 }
 
-fn message_chars(s: &Session) -> Vec<u64> {
+pub fn message_chars(s: &Session) -> Vec<u64> {
     s.messages.iter().map(|m| s.blocks[m.blocks.clone()].iter().map(|b| b.chars).sum()).collect()
 }
 
@@ -261,40 +263,123 @@ pub struct LiveContext {
     pub requests_per_prompt: f64,
 }
 
-pub fn live_context(s: &Session) -> Option<LiveContext> {
-    let billed = |r: &Request| r.usage.prompt() > 0 && !r.advisor;
+/// The prompt of one request, laid out: block index, or `None` for content the log does not
+/// show; tokens; turn. And the number of turns it holds.
+pub struct PromptLayout {
+    pub blocks: Vec<(Option<usize>, f64, u32)>,
+    pub turns: u32,
+}
+
+/// A chain's prompt as its deltas are replayed: the messages, the shape and the turn starts in
+/// `list[..i]`, so each prompt's turns are known as it is replayed.
+struct Replay {
+    list: Vec<usize>,
+    shape: Option<usize>,
+    starts: Vec<u32>,
+}
+
+impl Replay {
+    fn new() -> Replay {
+        Replay { list: Vec::new(), shape: None, starts: vec![0] }
+    }
+
+    fn apply(&mut self, s: &Session, d: &PromptDelta) {
+        self.list.truncate(d.keep.min(self.list.len()));
+        self.starts.truncate(self.list.len() + 1);
+        for &m in &d.tail {
+            self.starts.push(self.starts[self.starts.len() - 1] + u32::from(s.messages[m].starts_turn));
+        }
+        self.list.extend_from_slice(&d.tail);
+        if d.shape.is_some() {
+            self.shape = d.shape;
+        }
+    }
+
+    fn turns(&self) -> u32 {
+        self.starts[self.starts.len() - 1]
+    }
+
+    /// The prompt of `req` as replayed so far. Each block gets its share of the characters,
+    /// scaled to the request's prompt tokens. A request whose prompt the log does not show is one
+    /// `None` block of its whole prompt.
+    fn lay_out(&self, s: &Session, msg_chars: &[u64], req: &Request) -> PromptLayout {
+        let (mut spans, mut turns) = (Vec::new(), HashMap::new());
+        let mut count = 0;
+        if req.prompt.is_some() {
+            count = layout(s, msg_chars, self.shape, &self.list, &mut spans, |b, t| {
+                turns.insert(b, t);
+            });
+        }
+        let total: f64 = spans.iter().map(|(_, c)| c).sum();
+        let prompt = req.usage.prompt() as f64;
+        let blocks = if total <= 0.0 {
+            vec![(None, prompt, 0)]
+        } else {
+            spans
+                .iter()
+                .map(|&(slot, c)| match slot {
+                    Slot::Block(b) => (Some(b), c * prompt / total, turns.get(&b).copied().unwrap_or(0)),
+                    _ => (None, c * prompt / total, 0),
+                })
+                .collect()
+        };
+        PromptLayout { blocks, turns: count }
+    }
+}
+
+/// The prompt of the request at `upto` in `chain`, laid out by replaying the chain's prompt
+/// deltas up to it. `msg_chars` is `message_chars(s)`.
+pub fn prompt_of(s: &Session, chain: &Chain, upto: usize, msg_chars: &[u64]) -> PromptLayout {
+    let mut replay = Replay::new();
+    for r in &chain.requests[..=upto] {
+        if let Some(d) = &r.prompt {
+            replay.apply(s, d);
+        }
+    }
+    replay.lay_out(s, msg_chars, &chain.requests[upto])
+}
+
+/// Whether `chain` is a main chain that continues an earlier main chain of its name, which
+/// ended before it started (see `Session::main_conversations`).
+pub fn continues_earlier_chain(s: &Session, chain: &Chain) -> bool {
+    let first_ts = chain.requests.iter().map(|r| r.ts_ms).min().unwrap_or(0);
+    chain.kind == ChainKind::Main
+        && s.chains.iter().any(|c| {
+            c.kind == ChainKind::Main
+                && c.name == chain.name
+                && !std::ptr::eq(c, chain)
+                && c.requests.iter().map(|r| r.ts_ms).max().is_some_and(|end| end < first_ts)
+        })
+}
+
+/// The main chain that holds the session's latest request with a prompt, advisor calls left
+/// out, and that request's index.
+pub fn live_chain(s: &Session) -> Option<(&Chain, usize)> {
     let chain = s
         .chains
         .iter()
         .filter(|c| c.kind == ChainKind::Main)
         .max_by_key(|c| c.requests.iter().filter(|r| billed(r)).map(|r| r.ts_ms).max().unwrap_or(i64::MIN))?;
-    let last = chain.requests.iter().rposition(billed)?;
-    let (mut list, mut shape) = (Vec::new(), None);
-    // Turn starts in `list[..i]`, so each prompt's turns are known as it is replayed.
-    let mut starts = vec![0u32];
+    Some((chain, chain.requests.iter().rposition(billed)?))
+}
+
+/// A request that sent a prompt and is not an advisor call.
+pub fn billed(r: &Request) -> bool {
+    r.usage.prompt() > 0 && !r.advisor
+}
+
+pub fn live_context(s: &Session) -> Option<LiveContext> {
+    let (chain, last) = live_chain(s)?;
+    let mut replay = Replay::new();
     let (mut requests, mut prompts, mut held) = (0u32, 0u32, 0u32);
-    // A chain that continues an earlier main chain of its name (see `Session::main_conversations`)
-    // starts with turns typed in that chain: its first known prompt sets the count off.
-    let first_ts = chain.requests.iter().map(|r| r.ts_ms).min().unwrap_or(0);
-    let mut baseline = s.chains.iter().any(|c| {
-        c.kind == ChainKind::Main
-            && c.name == chain.name
-            && !std::ptr::eq(c, chain)
-            && c.requests.iter().map(|r| r.ts_ms).max().is_some_and(|end| end < first_ts)
-    });
+    // A chain that continues an earlier main chain of its name starts with turns typed in that
+    // chain: its first known prompt sets the count off.
+    let mut baseline = continues_earlier_chain(s, chain);
     for r in &chain.requests[..=last] {
         if let Some(d) = &r.prompt {
-            list.truncate(d.keep.min(list.len()));
-            starts.truncate(list.len() + 1);
-            for &m in &d.tail {
-                starts.push(starts[starts.len() - 1] + u32::from(s.messages[m].starts_turn));
-            }
-            list.extend_from_slice(&d.tail);
-            if d.shape.is_some() {
-                shape = d.shape;
-            }
+            replay.apply(s, d);
             if billed(r) {
-                let turns = starts[starts.len() - 1];
+                let turns = replay.turns();
                 if !r.compacted_before && !baseline {
                     prompts += turns.saturating_sub(held);
                 }
@@ -305,34 +390,15 @@ pub fn live_context(s: &Session) -> Option<LiveContext> {
         }
     }
     let req = &chain.requests[last];
-    let (mut spans, mut turns) = (Vec::new(), HashMap::new());
-    let mut count = 0;
-    if req.prompt.is_some() {
-        count = layout(s, &message_chars(s), shape, &list, &mut spans, |b, t| {
-            turns.insert(b, t);
-        });
-    }
-    let total: f64 = spans.iter().map(|(_, c)| c).sum();
-    let prompt = req.usage.prompt() as f64;
-    let blocks = if total <= 0.0 {
-        vec![(None, prompt, 0)]
-    } else {
-        spans
-            .iter()
-            .map(|&(slot, c)| match slot {
-                Slot::Block(b) => (Some(b), c * prompt / total, turns.get(&b).copied().unwrap_or(0)),
-                _ => (None, c * prompt / total, 0),
-            })
-            .collect()
-    };
+    let laid = replay.lay_out(s, &message_chars(s), req);
     Some(LiveContext {
         chain: chain.name.clone(),
         ts_ms: req.ts_ms,
         model: req.model.clone(),
         usage: req.usage,
         context_window: req.context_window,
-        blocks,
-        turns: count,
+        blocks: laid.blocks,
+        turns: laid.turns,
         requests_per_prompt: f64::from(requests) / f64::from(prompts.max(1)),
     })
 }
@@ -716,6 +782,7 @@ impl<'a> Walker<'a> {
                 project: &s.project,
                 session: s.short_id(),
                 chain: chain_name(label),
+                chain_kind: if label == ADVISOR { ChainKind::Advisor } else { self.chain.kind },
                 origin: &self.origins[origin].0,
                 trigger: self.origins[origin].1,
                 activity: self.origins[origin].2,
@@ -887,6 +954,40 @@ mod tests {
         assert!((spend("prompt") - one).abs() < 1e-12 && (spend("skill:code-review") - one).abs() < 1e-12);
         assert!(c.profile.stacks.keys().all(|k| k[1].name == "Fix the parser"));
         assert!((c.work.by_origin["skill:code-review"].usd - one).abs() < 1e-12, "whole requests agree with the facts");
+    }
+
+    #[test]
+    fn shares_carry_the_kind_of_their_chain() {
+        #[derive(Default)]
+        struct Kinds(Vec<(String, ChainKind)>);
+        impl Sink for Kinds {
+            fn session(&mut self, _: &Session) {}
+            fn request(&mut self, _: &RequestRecord) {}
+            fn miss(&mut self, _: MissEvent) {}
+            fn fact(&mut self, f: &Fact) {
+                self.0.push((f.chain.to_string(), f.chain_kind));
+            }
+        }
+        let mut s = Session::new(crate::testing::claude(), "s".into());
+        let prompt = s.push_message(vec![Block { class: crate::model::Class::None, kind: BlockKind::Prompt, chars: 400, tool: None, target: None }], true);
+        let usage = Usage { cache_read: 1000, output: 100, ..Usage::default() };
+        let request = |ts_ms, advisor| Request {
+            ts_ms,
+            model: "claude-opus-5-5".into(),
+            usage,
+            prompt: Some(PromptDelta { shape: None, keep: 0, tail: vec![prompt] }),
+            advisor,
+            ..Request::default()
+        };
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests: vec![request(1, false), request(2, true)] });
+        s.chains.push(Chain { name: "subagent: Find handlers".into(), kind: ChainKind::Subagent, requests: vec![request(3, false)] });
+
+        let mut kinds = Kinds::default();
+        analyze(&s, &Pricing::defaults(), &Filter::default(), &mut kinds);
+        let of = |chain: &str| kinds.0.iter().filter(|(c, _)| c == chain).map(|(_, k)| *k).collect::<Vec<_>>();
+        assert!(!of("main").is_empty() && of("main").iter().all(|k| *k == ChainKind::Main));
+        assert!(!of("subagent: Find handlers").is_empty() && of("subagent: Find handlers").iter().all(|k| *k == ChainKind::Subagent));
+        assert!(!of("advisor").is_empty() && of("advisor").iter().all(|k| *k == ChainKind::Advisor));
     }
 
     #[test]

@@ -51,6 +51,16 @@ impl ClaudeCode {
             short_id_len: 8,
             instruction_files: vec!["CLAUDE.md".to_string()],
             ttl_settings: Some(("promptCacheTtl".to_string(), "subagentPromptCacheTtl".to_string())),
+            // Settings seen in the settings schema of Claude Code 2.1.316 (see README.md).
+            setup_hints: [
+                ("skills", "lower skillListingBudgetFraction (default 0.01 of the context window), or turn unused skills off with skillOverrides in settings.json"),
+                ("instructions", "trim CLAUDE.md and AGENTS.md, and keep the auto-memory MEMORY.md to short index lines"),
+                ("deferred tool lists", "turn off the MCP servers this project does not use, with /mcp"),
+                ("hook context", "make the hooks print less"),
+            ]
+            .into_iter()
+            .map(|(source, hint)| (source.to_string(), hint.to_string()))
+            .collect(),
             cost_counter: Some("Claude Code's own cost counter".to_string()),
             // Measured by the reference bench (docs/reference-bench.md).
             harness: Harness { pickup: Some(Pickup { taken_tokens: 8_000.0, requests: 4.0, output_tokens: 2_000.0 }) },
@@ -302,5 +312,16 @@ mod tests {
 
         let untimed = [r#"{"type":"cost-state","sessionId":"s","totalCostUSD":0.5}"#, r#"{"type":"mode","sessionId":"s","mode":"default"}"#];
         assert_eq!(last("untimed", &untimed), None, "no timed line gives nothing");
+    }
+
+    #[test]
+    fn setup_hints_name_claude_code_settings() {
+        let info = ClaudeCode::agent();
+        let hint = |source: &str| info.info().setup_hints.iter().find(|(s, _)| s == source).map(|(_, h)| h.clone());
+        assert!(hint("skills").is_some_and(|h| h.contains("skillListingBudgetFraction") && h.contains("skillOverrides")));
+        assert!(hint("instructions").is_some_and(|h| h.contains("MEMORY.md")));
+        assert!(hint("deferred tool lists").is_some_and(|h| h.contains("/mcp")));
+        assert_eq!(hint("hook context").as_deref(), Some("make the hooks print less"));
+        assert_eq!(hint("tool schemas"), None);
     }
 }

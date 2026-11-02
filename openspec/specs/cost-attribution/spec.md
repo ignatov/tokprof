@@ -196,7 +196,7 @@ tokprof SHALL attribute requests to a model without a price (see pricing) in tok
 - **THEN** the request is attributed to model `unknown`, which has no price
 
 ### Requirement: Summary report
-`tokprof summary` SHALL print `Spend by model (API-equivalent USD; token counts where no price is known)` and a table with one row per agent and model: `agent`, `model`, `requests`, `prompt known`, the five components and `total`, most expensive first. Then come the totals line, the unpriced models (see pricing), the reconciliation line when there is one, the spend by origin, task, trigger and activity, and the `Cache misses by cause` table (see cache-misses) without expected rebuilds.
+`tokprof summary` SHALL print `Spend by model (API-equivalent USD; token counts where no price is known)` and a table, one row per agent and model, most expensive first: `agent`, `model`, `requests`, `prompt known`, five components and `total`. Then come the totals line, the unpriced models (see pricing), the reconciliation line if any, the spend by origin, task, trigger and activity, the setup table (see setup-breakdown), and `Cache misses by cause` (see cache-misses) minus expected rebuilds.
 
 #### Scenario: A model row
 - **WHEN** the reported window holds 16,281 requests to `claude-opus-5-5`, all with a rebuilt prompt
@@ -208,7 +208,7 @@ tokprof SHALL attribute requests to a model without a price (see pricing) in tok
 
 #### Scenario: Order of the parts
 - **WHEN** the window holds priced requests and cache misses
-- **THEN** the spend by origin and task comes after the totals and reconciliation lines, then the spend by trigger and the spend by activity, all before `Cache misses by cause`
+- **THEN** the spend by origin and task comes after the totals and reconciliation lines, then the spend by trigger, the spend by activity and the setup table, all before `Cache misses by cause`
 
 ### Requirement: Summary totals line
 After the spend table, `tokprof summary` SHALL print `Total priced: <usd>   avoidable on cache misses: <usd> (<share>%)`: the cost summed over every priced model, and the avoidable premium of the misses that the cause table lists, so expected rebuilds are left out of it as they are left out of the table (see cache-misses). The share is the premium's share of the cost, to one decimal.

@@ -9,5 +9,6 @@ tokprof's source of Claude Code transcripts.
 - **Triggers:** the `tool_use` items of each response, grouped by `message.id` (the tool `name`, and `input.command` for `Bash`), and the user lines after them: typed prompts and slash commands, `<task-notification>` and `[Request interrupted`. Seen in 2.1.284–2.1.312.
 - **Handoff note:** user prompts, the `TodoWrite` list, `Edit`, `Write`, `MultiEdit` and `NotebookEdit` file paths, `Read`, and `Bash` commands.
 - **API:** every request goes to the Anthropic API.
+- **Setup hints:** they name `skillListingBudgetFraction` (default 0.01 of the context window) and `skillOverrides` for skill listings, both in the settings schema of 2.1.316; `CLAUDE.md`, `AGENTS.md` and the auto-memory `MEMORY.md` for instructions; `/mcp` for deferred tool lists.
 
 The fields and versions are the ones the session-logs spec names; `tests/fixtures` holds a synthetic transcript with a subagent and a compaction.

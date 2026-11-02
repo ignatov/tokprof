@@ -10,6 +10,7 @@ use tokprof_core::labels::display_path;
 use tokprof_core::model::{BlockKind, CompactionTrigger};
 use tokprof_core::profile::Values;
 use tokprof_core::report::Spend;
+use tokprof_core::setup::SetupCost;
 use tokprof_core::xray::{Composition, ContextNow, XRay};
 
 const BAR: usize = 32;
@@ -54,6 +55,7 @@ pub fn text(x: &XRay, style: &Style, profile_dir: &Path, home: &Path) -> String 
     work_lines(&mut out, x, style);
     prompt_lines(&mut out, x, style);
     tool_lines(&mut out, x, style);
+    setup_lines(&mut out, x, style);
     if let Some(c) = &x.composition {
         out.push('\n');
         composition_lines(&mut out, x, c, style);
@@ -253,6 +255,79 @@ fn tool_lines(out: &mut String, x: &XRay, style: &Style) {
     }
 }
 
+/// What every request carries before the work: the setup by source with what the main
+/// conversation and the subagents start with, what the latest compaction left, and the hint for
+/// the costliest source.
+fn setup_lines(out: &mut String, x: &XRay, style: &Style) {
+    let Some(v) = &x.setup else { return };
+    out.push('\n');
+    let show = |c: &Values| if v.priced { usd(c.usd) } else { format!("{} tok", tokens(c.tokens)) };
+    let _ = writeln!(
+        out,
+        "{} what every request carries before the work, subagents included: {}, {:.0}% of the session",
+        style.dim(&format!("{:<9}", "setup")),
+        show(&v.total.all),
+        100.0 * v.share
+    );
+    let starts = |start: Option<f64>| start.filter(|t| *t > 0.0).map_or_else(|| "–".to_string(), tokens);
+    let main_of = |source: &str| v.main.as_ref().and_then(|m| m.by_source.get(source).copied());
+    let sub_of = |source: &str| v.subagents.as_ref().and_then(|m| m.by_source.get(source).copied());
+    let row = |name: &str, cost: &SetupCost, main: Option<f64>, sub: Option<f64>| {
+        if v.has_subagents {
+            format!("  {:<24} {:>9} {:>10}  {:>11}  {:>13}", clip_end(name, 24), show(&cost.all), show(&cost.subagents), starts(main), starts(sub))
+        } else {
+            format!("  {:<24} {:>9}  {:>11}", clip_end(name, 24), show(&cost.all), starts(main))
+        }
+    };
+    let head = if v.has_subagents {
+        format!("  {:<24} {:>9} {:>10}  {:>11}  {:>13}", "source", "cost", "subagents", "main starts", "each subagent")
+    } else {
+        format!("  {:<24} {:>9}  {:>11}", "source", "cost", "main starts")
+    };
+    let _ = writeln!(out, "{}", style.dim(&head));
+    let sum = |names: &[&str], of: &dyn Fn(&str) -> Option<f64>| {
+        let parts: Vec<f64> = names.iter().filter_map(|n| of(n)).collect();
+        (!parts.is_empty()).then(|| parts.iter().sum::<f64>())
+    };
+    for (name, cost) in v.rows.iter().take(8) {
+        let _ = writeln!(out, "{}", row(name, cost, main_of(name), sub_of(name)));
+    }
+    if v.rows.len() > 8 {
+        let rest: Vec<&str> = v.rows[8..].iter().map(|(n, _)| n.as_str()).collect();
+        let mut cost = SetupCost::default();
+        for (_, c) in &v.rows[8..] {
+            cost.all.add(c.all);
+            cost.subagents.add(c.subagents);
+        }
+        let _ = writeln!(out, "{}", row(&format!("{} more", rest.len()), &cost, sum(&rest, &main_of), sum(&rest, &sub_of)));
+    }
+    let mut total = row("total", &v.total, v.main.as_ref().map(|m| m.setup()), v.subagents.as_ref().map(|m| m.setup()));
+    if let (true, Some(m)) = (v.has_subagents, &v.subagents) {
+        let _ = write!(total, "   {} on average, and a {} brief", count(m.count as u64, "subagent", "subagents"), tokens(m.brief));
+    }
+    let _ = writeln!(out, "{}", style.bold(&total));
+    if let Some(left) = &v.leftover {
+        let _ = writeln!(out, "  after the compaction at {}, the next prompt held {}:", local_time(left.at_ms, "%m-%d %H:%M"), tokens(left.size_tokens as f64));
+        let mut parts: Vec<String> = left.parts.iter().take(4).map(|(name, t)| format!("{name} {}", tokens(*t))).collect();
+        if left.parts.len() > 4 {
+            let rest: f64 = left.parts[4..].iter().map(|(_, t)| t).sum();
+            parts.push(format!("{} more {}", left.parts.len() - 4, tokens(rest)));
+        }
+        let _ = writeln!(out, "    {}", style.dim(&parts.join(" · ")));
+    }
+    if let Some((source, hint)) = &v.hint {
+        let mut name = source.clone();
+        if let Some(first) = name.get(..1) {
+            name = first.to_uppercase() + &name[1..];
+        }
+        let text = format!("{name} cost the most of the setup: {hint}.");
+        for (j, part) in wrap(&text, advice::WIDTH).iter().enumerate() {
+            let lead = if j == 0 { format!("  {} ", style.paint("33", "▸")) } else { " ".repeat(4) };
+            let _ = writeln!(out, "{lead}{part}");
+        }
+    }
+}
+
 /// What each typed message cost: the 8 most expensive in session order, then the rest together.
 fn prompt_lines(out: &mut String, x: &XRay, style: &Style) {
     if x.prompts.is_empty() {
@@ -443,6 +518,7 @@ mod tests {
             calls: Default::default(),
             prompts,
             tools: Default::default(),
+            setup: None,
             misses: Vec::new(),
         }
     }
@@ -525,5 +601,69 @@ mod tests {
         assert!(text.starts_with("what cost the most to keep in the context (each source with every request that re-read it)"), "{text}");
         assert!(text.lines().any(|l| l.contains("sed -n") && l.trim_end().ends_with("412 calls")), "{text}");
         assert!(text.lines().any(|l| l.contains("cat >") && l.trim_end().ends_with("1 call")), "{text}");
+    }
+
+    fn setup_view(has_subagents: bool) -> tokprof_core::setup::SetupView {
+        use tokprof_core::setup::{MeanStart, SetupCost, SetupView, Start};
+        let cost = |all: f64, sub: f64| SetupCost {
+            all: Values { tokens: all * 5_000.0, usd: all, avoidable: 0.0 },
+            subagents: Values { tokens: sub * 5_000.0, usd: sub, avoidable: 0.0 },
+        };
+        let by = |pairs: &[(&str, f64)]| pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        SetupView {
+            total: cost(73.90, if has_subagents { 70.23 } else { 0.0 }),
+            share: 73.90 / 526.0,
+            priced: true,
+            rows: vec![("instructions".into(), cost(23.56, 22.10)), ("skills".into(), cost(21.92, 21.03)), ("tool schemas".into(), cost(28.42, 27.10))],
+            has_subagents,
+            main: has_subagents.then(|| Start { by_source: by(&[("instructions", 11_100.0), ("skills", 7_100.0)]), brief: 600.0 }),
+            subagents: has_subagents.then(|| MeanStart { count: 96, by_source: by(&[("instructions", 9_700.0), ("skills", 9_600.0), ("tool schemas", 11_900.0)]), brief: 1_800.0 }),
+            leftover: None,
+            hint: Some(("skills".into(), "lower skillListingBudgetFraction (default 0.01 of the context window), or turn unused skills off with skillOverrides in settings.json".into())),
+        }
+    }
+
+    #[test]
+    fn the_setup_block_shows_sources_starts_and_the_hint() {
+        let mut x = xray(Vec::new());
+        x.setup = Some(setup_view(true));
+        let text = render(&x, setup_lines);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[1], "setup     what every request carries before the work, subagents included: $73.90, 14% of the session");
+        assert!(lines[2].contains("source") && lines[2].contains("subagents") && lines[2].contains("main starts") && lines[2].contains("each subagent"), "{text}");
+        assert!(lines[3].contains("instructions") && lines[3].contains("$23.56") && lines[3].contains("$22.10") && lines[3].contains("11.1k") && lines[3].contains("9.7k"), "{text}");
+        assert!(lines[5].contains("tool schemas") && lines[5].contains("–"), "no tool schemas in the main start: {text}");
+        let total = lines.iter().find(|l| l.trim_start().starts_with("total")).unwrap();
+        assert!(total.contains("$73.90") && total.contains("$70.23") && total.contains("31.2k"), "{text}");
+        assert!(total.ends_with("96 subagents on average, and a 1.8k brief"), "{text}");
+        assert!(text.contains("  ▸ Skills cost the most of the setup: lower skillListingBudgetFraction"), "{text}");
+        assert!(text.lines().last().unwrap().starts_with("    ") && text.trim_end().ends_with("settings.json."), "the hint wraps: {text}");
+    }
+
+    #[test]
+    fn a_setup_without_subagents_has_no_subagent_columns() {
+        let mut x = xray(Vec::new());
+        x.setup = Some(setup_view(false));
+        let text = render(&x, setup_lines);
+        assert!(!text.contains("each subagent") && !text.contains("subagents on average"), "{text}");
+        assert!(text.lines().nth(3).unwrap().trim_end().ends_with('–'), "an unknown main start: {text}");
+    }
+
+    #[test]
+    fn the_setup_block_says_what_a_compaction_left() {
+        let mut v = setup_view(true);
+        let at = 1_791_905_499_953;
+        let parts = [("background notifications", 37_100.0), ("attached files", 20_300.0), ("user prompt", 13_200.0), ("skills", 11_400.0), ("tool schemas", 8_300.0), ("other", 1_200.0)];
+        v.leftover = Some(tokprof_core::setup::Leftover { at_ms: at, size_tokens: 134_857, parts: parts.iter().map(|(k, t)| (k.to_string(), *t)).collect() });
+        let mut x = xray(Vec::new());
+        x.setup = Some(v);
+        let text = render(&x, setup_lines);
+        assert!(text.contains(&format!("  after the compaction at {}, the next prompt held 134.9k:", local_time(at, "%m-%d %H:%M"))), "{text}");
+        assert!(text.contains("    background notifications 37.1k · attached files 20.3k · user prompt 13.2k · skills 11.4k · 2 more 9.5k"), "{text}");
+    }
+
+    #[test]
+    fn no_setup_block_below_its_thresholds() {
+        assert_eq!(render(&xray(Vec::new()), setup_lines), "");
     }
 }

@@ -92,6 +92,9 @@ pub struct AgentInfo {
     pub instruction_files: Vec<String>,
     /// The settings that choose the cache lifetime of the main conversation and of subagents.
     pub ttl_settings: Option<(String, String)>,
+    /// What shrinks each setup source the agent can name a remedy for: the source, as the
+    /// reminders are labeled, and the hint, in the agent's own terms.
+    pub setup_hints: Vec<(String, String)>,
     /// What the agent's own cost counter is called, for the reconciliation line.
     pub cost_counter: Option<String>,
     pub harness: Harness,
@@ -107,6 +110,7 @@ impl AgentInfo {
             short_id_len: 8,
             instruction_files: Vec::new(),
             ttl_settings: None,
+            setup_hints: Vec::new(),
             cost_counter: None,
             harness: Harness::default(),
             capabilities: Capabilities::default(),

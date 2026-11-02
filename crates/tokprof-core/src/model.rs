@@ -121,6 +121,11 @@ pub enum ReminderKind {
     HookContext,
     DeferredToolLists,
     Skills,
+    /// Files the agent put into the context itself, such as the files it reads back after a
+    /// compaction.
+    AttachedFiles,
+    /// The agent's own task list.
+    TaskList,
     #[default]
     Other,
 }
@@ -134,8 +139,30 @@ impl ReminderKind {
             "hook context" => ReminderKind::HookContext,
             "deferred tool lists" => ReminderKind::DeferredToolLists,
             "skills" => ReminderKind::Skills,
+            "attached files" => ReminderKind::AttachedFiles,
+            "task list" => ReminderKind::TaskList,
             _ => ReminderKind::Other,
         }
+    }
+
+    /// Whether a reminder of this kind brings the work's own results back rather than set up
+    /// the request.
+    pub fn carries_work(self) -> bool {
+        matches!(self, ReminderKind::BackgroundNotifications | ReminderKind::AttachedFiles | ReminderKind::TaskList)
+    }
+}
+
+/// The setup source of a piece of content: `tool schemas`, `system prompt`, or the source of a
+/// reminder that sets up the request (see `ReminderKind::carries_work`). Setup is what the agent
+/// adds to a request besides the work; other content has no setup source.
+pub fn setup_source(kind: BlockKind, class: Class, target: Option<&str>) -> Option<&str> {
+    match kind {
+        BlockKind::Tools | BlockKind::System => Some(kind.name()),
+        BlockKind::Reminder => match class {
+            Class::Reminder(r) if r.carries_work() => None,
+            _ => Some(target.unwrap_or("other")),
+        },
+        _ => None,
     }
 }
 
@@ -530,6 +557,24 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_is_what_the_agent_adds_besides_the_work() {
+        fn reminder(label: &str) -> Option<&str> {
+            setup_source(BlockKind::Reminder, Class::Reminder(ReminderKind::of_label(label)), Some(label))
+        }
+        assert_eq!(setup_source(BlockKind::Tools, Class::None, Some("Read")), Some("tool schemas"));
+        assert_eq!(setup_source(BlockKind::System, Class::None, None), Some("system prompt"));
+        assert_eq!(reminder("skills"), Some("skills"));
+        assert_eq!(reminder("instructions"), Some("instructions"));
+        assert_eq!(reminder("app context"), Some("app context"));
+        assert_eq!(reminder("background notifications"), None);
+        assert_eq!(reminder("attached files"), None);
+        assert_eq!(reminder("task list"), None);
+        assert_eq!(setup_source(BlockKind::Reminder, Class::None, None), Some("other"));
+        assert_eq!(setup_source(BlockKind::ToolResult, Class::None, Some("src/main.rs")), None);
+        assert_eq!(setup_source(BlockKind::Prompt, Class::None, None), None);
+    }
 
     #[test]
     fn the_first_changed_setting_is_named() {

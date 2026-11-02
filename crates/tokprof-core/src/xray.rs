@@ -21,6 +21,7 @@ use crate::forecast::{CacheState, cache_state, conversation, long_ttl, pace};
 use crate::model::{BlockKind, ChainKind, CompactionTrigger, Session, TypedMessage, Usage};
 use crate::pricing::{Price, Pricing};
 use crate::profile::Values;
+use crate::setup::{self, MeanStart, SetupSpend, SetupView, Start};
 use crate::report::{Spend, Work};
 use crate::tools::{BlockEntry, ToolShare, ToolTable};
 use crate::trigger::Trigger;
@@ -112,6 +113,22 @@ struct Totals {
     rows: Vec<RequestRow>,
     file: usize,
     tools: ToolTable,
+    setup: SetupSpend,
+}
+
+/// The setup block of a session: what it cost, what the main conversation and the subagents
+/// start with, and what the latest compaction left.
+fn setup_of(main: &Session, sessions: &[Session], totals: &Totals, spend_usd: f64) -> Option<SetupView> {
+    let msg_chars = analysis::message_chars(main);
+    let starts: Vec<Start> = sessions
+        .par_iter()
+        .flat_map_iter(|s| {
+            let chars = analysis::message_chars(s);
+            s.chains.iter().filter(|c| c.kind == ChainKind::Subagent).filter_map(|c| setup::start_of(s, c, &chars)).collect::<Vec<_>>()
+        })
+        .collect();
+    let spend = Values { tokens: totals.components.iter().map(|v| v.tokens).sum(), usd: spend_usd, avoidable: 0.0 };
+    setup::setup_view(&totals.setup, &main.agent, spend, setup::main_start(main, &msg_chars), MeanStart::of(&starts), setup::leftover(main, &msg_chars))
 }
 
 /// A request as the prompts block needs it.
@@ -162,6 +179,7 @@ impl Sink for Totals {
 
     fn fact(&mut self, f: &Fact) {
         self.tools.fact(f);
+        self.setup.add(f);
         let v = Values { tokens: f.tokens, usd: f.usd.unwrap_or(0.0), avoidable: f.avoidable_usd };
         let add = |a: &mut Values| {
             a.tokens += v.tokens;
@@ -210,6 +228,8 @@ pub struct XRay {
     pub prompts: Vec<PromptSpend>,
     /// Spend by tool, the session's subagents included.
     pub tools: ToolTable,
+    /// What every request carries before the work; `None` below the block's thresholds.
+    pub setup: Option<SetupView>,
     pub misses: Vec<MissEvent>,
 }
 
@@ -305,6 +325,7 @@ pub fn xray(catalog: &Catalog, file: &SessionRef, pricing: &Pricing, now_ms: i64
         advice = advice_of(main, shown, &cache, &totals, pricing, now_ms, &instruction_files);
         context = Some(context_of(live, cache, trailing.as_ref(), spend_usd, pricing, now_ms));
     }
+    let setup = setup_of(main, &sessions, &totals, spend_usd);
     Ok(XRay {
         agent: main.agent.clone(),
         project: main.project.clone(),
@@ -325,6 +346,7 @@ pub fn xray(catalog: &Catalog, file: &SessionRef, pricing: &Pricing, now_ms: i64
         calls: call_counts(&sessions),
         prompts: prompts_of(&main.typed, &totals.rows),
         tools: totals.tools,
+        setup,
         misses: totals.misses,
         work: totals.work,
     })
@@ -830,6 +852,41 @@ mod tests {
             requests_per_prompt: 3.0,
         };
         (s, live)
+    }
+
+    #[test]
+    fn the_setup_total_is_the_setup_content() {
+        use crate::model::{Class, PromptDelta, ReminderKind, setup_source};
+        let class = |kind, target: Option<&str>| match kind {
+            BlockKind::Reminder => Class::Reminder(ReminderKind::of_label(target.unwrap_or_default())),
+            _ => Class::None,
+        };
+        let block = |kind, target: Option<&str>, chars| Block { class: class(kind, target), kind, chars, tool: None, target: target.map(str::to_string) };
+        let mut s = Session::new(crate::testing::claude(), "s".into());
+        let first = s.push_message(
+            vec![block(BlockKind::Reminder, Some("instructions"), 4_000), block(BlockKind::Reminder, Some("skills"), 3_000), block(BlockKind::Prompt, None, 500)],
+            true,
+        );
+        let notice = s.push_message(vec![block(BlockKind::Reminder, Some("background notifications"), 2_000)], false);
+        let req = |ts_ms, keep, tail| Request {
+            ts_ms,
+            model: "claude-opus-5-5".into(),
+            usage: Usage { cache_read: 2_000, write_long: 7_500, output: 100, ..Usage::default() },
+            prompt: Some(PromptDelta { shape: None, keep, tail }),
+            ..Request::default()
+        };
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests: vec![req(1, 0, vec![first]), req(2, 1, vec![notice])] });
+
+        let mut totals = Totals::default();
+        analysis::analyze(&s, &Pricing::defaults(), &Filter::default(), &mut totals);
+        let in_content: f64 = totals
+            .content
+            .iter()
+            .filter(|((kind, _, target), _)| setup_source(*kind, class(*kind, target.as_deref()), target.as_deref()).is_some())
+            .map(|(_, v)| v.usd)
+            .sum();
+        assert!(in_content > 0.0);
+        assert!((totals.setup.total(&crate::testing::claude()).all.usd - in_content).abs() < 1e-9);
     }
 
     #[test]

@@ -11,6 +11,7 @@ use tokprof_core::fmt::{clip_end, table, tokens, usd};
 use tokprof_core::pricing::{Price, Pricing};
 use tokprof_core::profile::Values;
 use tokprof_core::report::{Collector, ModelTotals, Spend, TriggerSpend, Work};
+use tokprof_core::setup::SetupSpend;
 use tokprof_core::tools::{ToolTable, hint};
 use tokprof_core::source::AgentId;
 
@@ -73,8 +74,64 @@ pub fn summary(c: &Collector, window: &Filter, price_file: &Path) -> String {
     out.push_str(&triggers(&c.work));
     out.push('\n');
     out.push_str(&activities(&c.work));
+    let setup = setup(&c.setup);
+    if !setup.is_empty() {
+        out.push('\n');
+        out.push_str(&setup);
+    }
     out.push('\n');
     out.push_str(&miss_causes(c, false));
+    out
+}
+
+/// Setup: what every request carries before the work, one row per agent and source with the
+/// agent's hint, and a line per agent. Empty when no request held setup with a cost.
+pub fn setup(s: &SetupSpend) -> String {
+    /// The sources of an agent shown as rows; the rest fold into one `<n> more` row.
+    const ROWS_PER_AGENT: usize = 8;
+    let rows = s.rows();
+    if rows.is_empty() {
+        return String::new();
+    }
+    let amount = |v: &Values| if s.priced { usd(v.usd) } else { format!("{} tok", tokens(v.tokens)) };
+    let share = |agent: &AgentId, v: &Values| 100.0 * s.amount(v) / s.spend.get(agent).map_or(0.0, |w| s.amount(w)).max(1e-9);
+    // Agents by their whole setup, the costliest first.
+    let mut agents: Vec<&AgentId> = Vec::new();
+    for (agent, _, _) in &rows {
+        if !agents.contains(agent) {
+            agents.push(agent);
+        }
+    }
+    agents.sort_by(|a, b| s.amount(&s.total(b).all).total_cmp(&s.amount(&s.total(a).all)).then_with(|| a.cmp(b)));
+    let mut out = String::from("Setup: what every request carries before the work\n\n");
+    let mut table_rows = vec![["agent", "source", "cost", "subagents", "share"].map(str::to_string).to_vec()];
+    let mut hints = vec!["hint".to_string()];
+    for agent in &agents {
+        let mine: Vec<_> = rows.iter().filter(|(a, _, _)| a == agent).collect();
+        for (_, source, cost) in mine.iter().take(ROWS_PER_AGENT) {
+            table_rows.push(vec![agent.name().to_string(), clip_end(source, 32), amount(&cost.all), amount(&cost.subagents), format!("{:.1}%", share(agent, &cost.all))]);
+            hints.push(agent.info().setup_hints.iter().find(|(src, _)| src == source).map_or_else(String::new, |(_, h)| h.clone()));
+        }
+        if mine.len() > ROWS_PER_AGENT {
+            let (mut all, mut subagents) = (Values::default(), Values::default());
+            for (_, _, cost) in &mine[ROWS_PER_AGENT..] {
+                all.add(cost.all);
+                subagents.add(cost.subagents);
+            }
+            let more = format!("{} more", mine.len() - ROWS_PER_AGENT);
+            table_rows.push(vec![agent.name().to_string(), more, amount(&all), amount(&subagents), format!("{:.1}%", share(agent, &all))]);
+            hints.push(String::new());
+        }
+    }
+    // The hint is text, so it goes after the aligned columns.
+    for (line, h) in table(&table_rows, 2).lines().zip(&hints) {
+        let _ = writeln!(out, "{}", format!("{line}  {h}").trim_end());
+    }
+    out.push('\n');
+    for agent in agents {
+        let total = s.total(agent);
+        let _ = writeln!(out, "{} setup: {}, {:.1}% of its spend", agent.info().title, amount(&total.all), share(agent, &total.all));
+    }
     out
 }
 
@@ -399,6 +456,60 @@ mod tests {
         assert!(text.contains("spend $27.37 · rent of these tools $5.48 · trips of these tools $7.24 (two views of the same money; do not add them)"), "{text}");
     }
 
+    fn claude_with_hints() -> AgentId {
+        AgentId::new(AgentInfo {
+            title: "Claude Code".into(),
+            setup_hints: vec![("skills".into(), "lower skillListingBudgetFraction".into())],
+            ..AgentInfo::named("claude")
+        })
+    }
+
+    #[test]
+    fn the_setup_table_lists_sources_hints_and_agent_lines() {
+        use tokprof_core::setup::SetupCost;
+        let claude = claude_with_hints();
+        let v = |usd: f64| Values { tokens: usd * 5_000.0, usd, avoidable: 0.0 };
+        let mut s = SetupSpend { priced: true, ..SetupSpend::default() };
+        s.by_source.insert((claude.clone(), "skills".into()), SetupCost { all: v(197.0), subagents: v(150.0) });
+        s.by_source.insert((claude.clone(), "instructions".into()), SetupCost { all: v(249.0), subagents: v(180.0) });
+        s.spend.insert(claude.clone(), v(9_174.0));
+        let text = setup(&s);
+        assert!(text.starts_with("Setup: what every request carries before the work\n\n"), "{text}");
+        let first = text.lines().nth(3).unwrap();
+        assert!(first.starts_with("claude") && first.contains("instructions"), "most expensive first: {text}");
+        let skills = text.lines().find(|l| l.contains("skills")).unwrap();
+        assert_eq!(skills.split_whitespace().collect::<Vec<_>>(), ["claude", "skills", "$197", "$150", "2.1%", "lower", "skillListingBudgetFraction"]);
+        assert!(text.contains("\nClaude Code setup: $446, 4.9% of its spend\n"), "{text}");
+    }
+
+    #[test]
+    fn the_setup_table_groups_agents_and_folds_small_sources() {
+        use tokprof_core::setup::SetupCost;
+        let claude = claude_with_hints();
+        let codex = AgentId::new(AgentInfo { title: "Codex".into(), ..AgentInfo::named("codex") });
+        let v = |usd: f64| Values { tokens: usd * 5_000.0, usd, avoidable: 0.0 };
+        let mut s = SetupSpend { priced: true, ..SetupSpend::default() };
+        for (i, usd) in [40.0, 15.0, 14.0, 6.0, 5.0, 4.0, 3.0, 2.5, 2.0, 1.0].into_iter().enumerate() {
+            s.by_source.insert((codex.clone(), format!("source {i}")), SetupCost { all: v(usd), subagents: Values::default() });
+        }
+        s.by_source.insert((claude.clone(), "instructions".into()), SetupCost { all: v(249.0), subagents: v(150.0) });
+        s.by_source.insert((claude.clone(), "system prompt".into()), SetupCost { all: v(36.0), subagents: v(11.0) });
+        s.spend.insert(claude.clone(), v(9_174.0));
+        s.spend.insert(codex.clone(), v(1_930.0));
+        let text = setup(&s);
+        let rows: Vec<&str> = text.lines().skip(3).take_while(|l| !l.is_empty()).collect();
+        assert_eq!(rows.len(), 2 + 8 + 1, "{text}");
+        assert!(rows[0].starts_with("claude") && rows[0].contains("instructions") && rows[1].contains("system prompt"), "Claude Code first, though Codex has a $40 source: {text}");
+        assert!(rows[2].starts_with("codex") && rows[2].contains("source 0"), "{text}");
+        assert_eq!(rows[10].split_whitespace().collect::<Vec<_>>(), ["codex", "2", "more", "$3.00", "$0.00", "0.2%"]);
+        assert!(text.find("Claude Code setup:").unwrap() < text.find("Codex setup:").unwrap(), "{text}");
+    }
+
+    #[test]
+    fn no_setup_table_without_setup() {
+        assert_eq!(setup(&SetupSpend::default()), "");
+    }
+
     #[test]
     fn an_activity_row() {
         let mut w = Work::default();
@@ -453,5 +564,20 @@ mod tests {
         // No session lies wholly inside a window that ends before the last request.
         let early = Filter { since_ms: None, until_ms: Some(15) };
         assert!(!summary(&c, &early, Path::new("prices.toml")).contains("own cost counter"));
+    }
+
+    #[test]
+    fn the_setup_table_comes_after_the_activities_and_before_the_misses() {
+        use tokprof_core::setup::SetupCost;
+        let mut c = Collector::new(None, None);
+        assert!(!summary(&c, &Filter::default(), Path::new("prices.toml")).contains("Setup:"), "no setup, no section");
+        let v = Values { tokens: 5_000.0, usd: 1.0, avoidable: 0.0 };
+        c.setup.priced = true;
+        c.setup.by_source.insert((claude(), "instructions".into()), SetupCost { all: v, subagents: Values::default() });
+        c.setup.spend.insert(claude(), Values { tokens: 50_000.0, usd: 10.0, avoidable: 0.0 });
+        let out = summary(&c, &Filter::default(), Path::new("prices.toml"));
+        let at = |title: &str| out.find(title).unwrap_or_else(|| panic!("{title} in {out}"));
+        assert!(at("Spend by activity") < at("Setup: what every request carries before the work"));
+        assert!(at("Setup: what every request carries before the work") < at("Cache misses by cause"));
     }
 }

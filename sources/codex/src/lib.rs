@@ -57,6 +57,7 @@ impl Codex {
             short_id_len: 18,
             instruction_files: vec!["AGENTS.md".to_string()],
             ttl_settings: None,
+            setup_hints: vec![("instructions".to_string(), "trim AGENTS.md".to_string())],
             cost_counter: None,
             // Measured by the reference bench (docs/reference-bench.md).
             harness: Harness { pickup: Some(Pickup { taken_tokens: 30_000.0, requests: 6.0, output_tokens: 4_000.0 }) },
@@ -446,5 +447,11 @@ mod tests {
         assert_eq!(from_a, ["01a19a00-0000-7000-8000-0000000000a1"]);
         assert!(from_b.is_empty(), "{from_b:?}");
         assert_eq!(found_a.len(), 2);
+    }
+
+    #[test]
+    fn the_setup_hint_names_agents_md() {
+        let agent = Codex::agent();
+        assert_eq!(agent.info().setup_hints, [("instructions".to_string(), "trim AGENTS.md".to_string())]);
     }
 }
