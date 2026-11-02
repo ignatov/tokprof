@@ -615,9 +615,28 @@ impl Parser {
 
         self.compactions.sort_unstable();
         let marks: Vec<i64> = self.compactions.iter().map(|(t, _)| *t).collect();
-        for chain in &mut chains {
-            let mut prev_ts = i64::MIN;
-            for r in &mut chain.requests {
+        // A main chain that starts after an earlier main chain of its name has ended continues that
+        // conversation (see `Session::main_conversations`), so its first request comes after the
+        // earlier chain's last answered request, not after every compaction logged before it.
+        let span = |c: &Chain| {
+            let ts = c.requests.iter().map(|r| r.ts_ms);
+            (ts.clone().min().unwrap_or(0), ts.max().unwrap_or(0))
+        };
+        let mut order: Vec<usize> = (0..chains.len()).collect();
+        order.sort_by_key(|&ci| span(&chains[ci]).0);
+        let mut ended: Vec<(usize, i64, i64)> = Vec::new(); // (chain, end, its last answered request)
+        for ci in order {
+            let (first, last) = span(&chains[ci]);
+            let continued = ended
+                .iter()
+                .filter(|(cj, end, _)| {
+                    let (a, b) = (&chains[*cj], &chains[ci]);
+                    a.kind == ChainKind::Main && b.kind == ChainKind::Main && a.name == b.name && *end < first
+                })
+                .max_by_key(|(_, end, _)| *end)
+                .map(|(_, _, answered)| *answered);
+            let mut prev_ts = continued.unwrap_or(i64::MIN);
+            for r in &mut chains[ci].requests {
                 let start = marks.partition_point(|&t| t <= prev_ts);
                 r.compacted_before = marks.get(start).is_some_and(|&t| t <= r.ts_ms);
                 // A request that got no response (cancelled, retried) passes the compaction on
@@ -626,6 +645,7 @@ impl Parser {
                     prev_ts = r.ts_ms;
                 }
             }
+            ended.push((ci, last, prev_ts));
         }
         session.title = self.title.take().map(|(title, _)| title);
         session.task = self.agent.as_ref().and_then(|a| a.description.clone());
@@ -984,6 +1004,28 @@ mod tests {
         assert_eq!(kinds, [Some("idle"), Some("auto"), Some("manual")]);
         let marked: Vec<bool> = s.chains[0].requests.iter().map(|r| r.compacted_before).collect();
         assert_eq!(marked, [false, true, true, true]);
+    }
+
+    /// A session that ran without request-audit lines, was compacted, and went on after an upgrade
+    /// that added them: its main conversation sits in two chains named `main`.
+    #[test]
+    fn a_main_chain_that_continues_an_earlier_one_follows_its_last_request() {
+        let reply = |id: &str, ts: &str| assistant_line(id, json!({"timestamp": ts}), json!([{"type": "text", "text": "ok"}]));
+        let s = session_from(&[
+            reply("m1", "2026-10-12T18:06:00Z"),
+            json!({"type": "system", "subtype": "compact_boundary", "timestamp": "2026-10-13T15:31:39Z", "compactMetadata": {"trigger": "auto"}}),
+            reply("m2", "2026-10-13T15:32:31Z"),
+            reply("m3", "2026-10-13T16:00:00Z"),
+            json!({"type": "api-request", "id": "r1", "querySource": "sdk", "timestamp": "2026-10-19T15:07:22Z", "keep": 0, "tail": []}),
+            assistant_line("m4", json!({"requestRef": "r1", "timestamp": "2026-10-19T15:07:30Z"}), json!([{"type": "text", "text": "ok"}])),
+        ]);
+        let mut chains: Vec<(i64, Vec<bool>)> = s.chains.iter()
+            .filter(|c| c.kind == ChainKind::Main)
+            .map(|c| (c.requests[0].ts_ms, c.requests.iter().map(|r| r.compacted_before).collect()))
+            .collect();
+        chains.sort();
+        let marked: Vec<Vec<bool>> = chains.into_iter().map(|(_, m)| m).collect();
+        assert_eq!(marked, [vec![false, true, false], vec![false]]);
     }
 
     fn assistant_line(id: &str, extra: Value, content: Value) -> Value {

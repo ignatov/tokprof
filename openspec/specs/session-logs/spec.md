@@ -276,7 +276,7 @@ Content that the log does not show as text SHALL count with fixed or derived siz
 - **THEN** it counts as 3,000 characters
 
 ### Requirement: Compaction markers
-A request SHALL be marked as following a compaction when a compaction marker comes after the previous answered request of its chain and no later than the request. Markers are Claude Code `system` lines with subtype `compact_boundary` (seen in 2.1.284–2.1.312), which apply to every chain of the transcript, and Codex `compacted` lines or `event_msg` events whose type contains `compact` (none seen yet). cache-misses counts the rebuild as expected.
+A request SHALL be marked as following a compaction when a compaction marker comes after the previous answered request of its conversation (see Main conversations across chains) and no later than the request. Markers are Claude Code `system` lines with subtype `compact_boundary` (seen in 2.1.284–2.1.312), which apply to every chain of the transcript, and Codex `compacted` lines or `event_msg` events whose type contains `compact` (none seen yet). cache-misses counts the rebuild as expected.
 
 #### Scenario: Claude Code compaction
 - **WHEN** a `compact_boundary` line at 10:05 falls between answered requests at 10:00 and 10:10
@@ -285,6 +285,10 @@ A request SHALL be marked as following a compaction when a compaction marker com
 #### Scenario: Unanswered request after the boundary
 - **WHEN** the first request after the boundary got no response
 - **THEN** the next answered request is still marked
+
+#### Scenario: Main chain that continues an earlier one
+- **WHEN** unaudited `main` requests answered at 10:00 and 10:10 have a `compact_boundary` at 10:05 between them, and an audited `main` chain starts at 11:00
+- **THEN** the 10:10 request is marked and the 11:00 request is not, since its conversation's previous answered request came after the boundary
 
 #### Scenario: Codex compaction
 - **WHEN** a `compacted` line comes before a rollout's next usage line

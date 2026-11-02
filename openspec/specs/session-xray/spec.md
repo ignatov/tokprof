@@ -404,6 +404,7 @@ When the model has a price today and the latest prompt holds at least 200,000 to
 - **THEN** the item reads "The context fills 95% of the window. At 30 requests per prompt, each prompt costs ≈ $5.70 in reads alone. Auto-compaction is close."
 - **AND** requests per prompt are the conversation's requests whose prompt the log shows, divided by the prompts the user sent in them, and a prompt's cost is that many reads of the whole prompt
 - **AND** each request adds as many prompts as its prompt holds turns beyond the previous request's, while the first request after a compaction adds none, since the compaction re-sends earlier prompts
+- **AND** the first request with a prompt in a main chain that continues an earlier main chain of its name (see session-logs) adds none either, since its turns were sent in the earlier chain
 
 #### Scenario: After a compaction
 - **WHEN** a Codex conversation sent 700 requests over 300 prompts, its compaction re-sent 20 of those prompts, and it then sent 20 requests over 2 new prompts

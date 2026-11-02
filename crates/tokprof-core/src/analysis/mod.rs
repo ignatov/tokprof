@@ -273,6 +273,15 @@ pub fn live_context(s: &Session) -> Option<LiveContext> {
     // Turn starts in `list[..i]`, so each prompt's turns are known as it is replayed.
     let mut starts = vec![0u32];
     let (mut requests, mut prompts, mut held) = (0u32, 0u32, 0u32);
+    // A chain that continues an earlier main chain of its name (see `Session::main_conversations`)
+    // starts with turns typed in that chain: its first known prompt sets the count off.
+    let first_ts = chain.requests.iter().map(|r| r.ts_ms).min().unwrap_or(0);
+    let mut baseline = s.chains.iter().any(|c| {
+        c.kind == ChainKind::Main
+            && c.name == chain.name
+            && !std::ptr::eq(c, chain)
+            && c.requests.iter().map(|r| r.ts_ms).max().is_some_and(|end| end < first_ts)
+    });
     for r in &chain.requests[..=last] {
         if let Some(d) = &r.prompt {
             list.truncate(d.keep.min(list.len()));
@@ -286,9 +295,10 @@ pub fn live_context(s: &Session) -> Option<LiveContext> {
             }
             if billed(r) {
                 let turns = starts[starts.len() - 1];
-                if !r.compacted_before {
+                if !r.compacted_before && !baseline {
                     prompts += turns.saturating_sub(held);
                 }
+                baseline = false;
                 held = turns;
                 requests += 1;
             }
@@ -822,6 +832,34 @@ mod tests {
         let live = live_context(&s).unwrap();
         assert_eq!(live.turns, 22);
         assert_eq!(live.requests_per_prompt, 720.0 / 302.0);
+    }
+
+    /// A session resumed after the upgrade that added request-audit lines: the audited chain's
+    /// first prompt holds 5 turns typed before it, then the user types one more.
+    #[test]
+    fn a_continued_chain_does_not_count_the_turns_typed_before_it() {
+        let mut s = Session::new(crate::testing::claude(), "s".into());
+        let mut message = |kind, starts_turn| s.push_message(vec![Block { class: crate::model::Class::None, kind, chars: 10, tool: None, target: None }], starts_turn);
+        let earlier: Vec<usize> = (0..5).map(|_| message(BlockKind::Prompt, true)).collect();
+        let output = message(BlockKind::Text, false);
+        let typed = message(BlockKind::Prompt, true);
+        let request = |ts_ms, keep, tail: Vec<usize>| Request {
+            ts_ms,
+            model: "claude-opus-5-5".into(),
+            usage: Usage { cache_read: 100, ..Usage::default() },
+            prompt: Some(PromptDelta { shape: None, keep, tail }),
+            ..Request::default()
+        };
+        let unaudited = Request { ts_ms: 1, model: "claude-opus-5-5".into(), usage: Usage { cache_read: 100, ..Usage::default() }, ..Request::default() };
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests: vec![unaudited] });
+        let mut first = earlier.clone();
+        first.push(output);
+        let requests = vec![request(10, 0, first), request(11, 6, vec![output]), request(12, 7, vec![typed]), request(13, 8, vec![output])];
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+
+        let live = live_context(&s).unwrap();
+        assert_eq!(live.turns, 6);
+        assert_eq!(live.requests_per_prompt, 4.0);
     }
 
     #[test]
