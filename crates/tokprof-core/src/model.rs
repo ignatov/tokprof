@@ -10,7 +10,7 @@ use std::ops::Range;
 
 use crate::api::ApiId;
 use crate::source::AgentId;
-use crate::trigger::Trigger;
+use crate::trigger::{CallClass, Trigger};
 
 /// Token counts the provider reported for one API request.
 #[derive(Clone, Copy, Debug, Default)]
@@ -240,6 +240,8 @@ pub struct Request {
     pub origin: Option<Origin>,
     /// What made the agent send the request, as its source saw it; see [`Request::trigger`].
     pub trigger: Option<Trigger>,
+    /// The class of the calls that gave the trigger; see [`Request::activity`].
+    pub activity: Option<CallClass>,
 }
 
 impl Request {
@@ -252,6 +254,17 @@ impl Request {
             Trigger::Compaction
         } else {
             self.trigger.unwrap_or_default()
+        }
+    }
+
+    /// What the agent was doing before the request: the class of the calls that triggered it, or
+    /// the trigger's name when no call did.
+    pub fn activity(&self) -> &'static str {
+        let trigger = self.trigger();
+        if trigger.from_calls() {
+            self.activity.map_or(CallClass::OtherTools.name(), CallClass::name)
+        } else {
+            trigger.name()
         }
     }
 }
@@ -311,9 +324,18 @@ pub struct Session {
     /// Compactions the agent logged, in time order. Claude Code's apply to every chain of the
     /// transcript.
     pub compactions: Vec<Compaction>,
+    /// The messages the user typed in the main conversation, in order.
+    pub typed: Vec<TypedMessage>,
 }
 
 /// A compaction the agent logged: when, and what started it.
+/// A message the user typed: when, and its label (see `labels::message_label`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypedMessage {
+    pub ts_ms: i64,
+    pub label: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Compaction {
     pub ts_ms: i64,
@@ -427,6 +449,7 @@ impl Session {
             title: None,
             task: None,
             compactions: Vec::new(),
+            typed: Vec::new(),
         }
     }
 

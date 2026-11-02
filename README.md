@@ -99,6 +99,18 @@ tokprof scan 3f951de0       # X-ray one session by id prefix, or: tokprof scan p
 tokprof handoff 3f951de0    # the line to start a new session with, instead of resuming this one
 ```
 
+Below the spend, the X-ray says what the session did with its money:
+- `work` gives the spend by origin, by task, and by activity: what the agent was doing before each request (see [What triggered a request](#what-triggered-a-request)).
+- `prompts` gives what each message you typed cost: the requests from it to your next message, and the subagents started in that time. Each message is shown by its last paragraph, since a long message usually starts with pasted text. With many messages, the 8 most expensive are listed in their order, then the rest together.
+
+```
+prompts   what each message you typed cost, subagents included
+    2     $8.89   144 req  Think it over, check the competitors, …  reading $3.11 · file and system commands $2.13
+    3     $8.53    74 req  approved, apply it after the split        reading $3.01 · running scripts $2.46
+```
+
+- `what cost the most to keep in the context` ranks content with every request that re-read it, and says how many calls a tool row stands for, such as `Bash sed -n  54 calls`.
+
 `tokprof handoff` prints a line with the session's id and the path of its log:
 
 ```
@@ -170,7 +182,7 @@ The X-ray shows:
 ## Reports over all sessions
 
 ```sh
-tokprof summary             # spend by model and component, by origin and task, by trigger, misses by cause, reconciliation
+tokprof summary             # spend by model and component, by origin and task, by trigger and activity, misses by cause, reconciliation
 tokprof misses --top 20     # most expensive cache misses (--expected adds compactions and cleared tool results)
 tokprof whatif              # Claude input cost under 5m vs 1h cache lifetimes
 tokprof bench               # cold returns to big sessions: resume vs /compact vs a new session vs heartbeats
@@ -228,7 +240,7 @@ A session id can be shortened to its start. Codex ids are shown by their first t
 | other | Folded stacks for speedscope or flamegraph.pl. |
 
 Options:
-- `--stack` sets the stack dimensions, root first. Available: `agent`, `project`, `session`, `chain`, `origin`, `task`, `trigger`, `model`, `turn`, `component`, `cause`, `kind`, `tool`, `target`. Default: `agent,project,session,chain,turn,kind,tool,target,component`.
+- `--stack` sets the stack dimensions, root first. Available: `agent`, `project`, `session`, `chain`, `origin`, `task`, `trigger`, `activity`, `model`, `turn`, `component`, `cause`, `kind`, `tool`, `target`. Default: `agent,project,session,chain,turn,kind,tool,target,component`.
 - `--value` picks the measure: `cost` (micro-dollars), `tokens`, or `avoidable` (the miss premium).
 - `--component` keeps only some components: `read,write,rewrite,uncached,output`.
 - `--threads` applies to `.jfr` and sets the dimensions that name a thread. Default: `agent,project,session`.
@@ -307,6 +319,14 @@ Every request also carries its trigger, what made the agent send it:
 - `unknown`: the log does not show it.
 
 A call is read-only when its tool only reads, searches or fetches. A shell command is read-only when every part of it starts with a program that only reads, such as `cat`, `sed -n`, `rg`, `ls` or `git show`, and nothing writes to a file. Loops and conditions around such commands count too. Codex code in `exec` counts by the calls inside it. The full rule is in `openspec/specs/cost-attribution/spec.md`.
+
+Every request also has an activity, a finer view of the same calls:
+- `reading`, `editing`, `web`, `subagents` and `other tools`, by the tool;
+- for shell commands, by the program: `building and testing` (`cargo`, `npm`, `gradle`, `make` and the like), `version control` (`git`, `gh`), `running scripts` (`python3`, `node`, or a program called by its path), and `file and system commands` for the rest.
+- A shell command that writes a file, such as `cat > notes.md <<'EOF'`, is `editing`, and its trigger is `edit`.
+- When the calls of a response have several activities, the first of these wins: editing, subagents, building and testing, version control, running scripts, file and system commands, other tools, web, reading. A request no call triggered takes its trigger's name, such as `prompt`.
+
+`Spend by activity` in `tokprof summary` and `--stack activity` show it.
 
 All of a request's spend goes to its trigger, its output included. Every request reads the whole context, so at 600k tokens on Opus one lookup costs $0.12 in cache reads alone, however little it returns.
 

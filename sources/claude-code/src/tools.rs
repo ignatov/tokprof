@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde_json::Value;
 use tokprof_core::labels::{command_head, display_path, url_host};
-use tokprof_core::trigger::{CallKind, read_only_command};
+use tokprof_core::trigger::{CallClass, command_class};
 
 pub(crate) fn tool_target(tool: &str, input: &Value, cwd: Option<&str>, home: &Path) -> Option<String> {
     let s = |k: &str| input.get(k).and_then(Value::as_str);
@@ -25,13 +25,14 @@ pub(crate) fn tool_target(tool: &str, input: &Value, cwd: Option<&str>, home: &P
     target.filter(|t| !t.is_empty())
 }
 
-/// What a Claude Code tool call did, for the trigger of the request after it.
-pub(crate) fn call_kind(tool: &str, input: &Value) -> CallKind {
+/// What a Claude Code tool call did, for the trigger and activity of the request after it.
+pub(crate) fn call_class(tool: &str, input: &Value) -> CallClass {
     match tool {
-        "Read" | "NotebookRead" | "Grep" | "Glob" | "LS" | "WebFetch" | "WebSearch" => CallKind::ReadOnly,
-        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => CallKind::Edit,
-        "Agent" | "Task" => CallKind::Subagent,
-        "Bash" if input.get("command").and_then(Value::as_str).is_some_and(read_only_command) => CallKind::ReadOnly,
-        _ => CallKind::Run,
+        "Read" | "NotebookRead" | "Grep" | "Glob" | "LS" => CallClass::Reading,
+        "WebFetch" | "WebSearch" => CallClass::Web,
+        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => CallClass::Editing,
+        "Agent" | "Task" => CallClass::Subagents,
+        "Bash" => input.get("command").and_then(Value::as_str).map_or(CallClass::System, command_class),
+        _ => CallClass::OtherTools,
     }
 }

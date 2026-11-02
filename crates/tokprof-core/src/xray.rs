@@ -18,10 +18,10 @@ use crate::analysis::cache::Cause;
 use crate::analysis::{self, Component, Fact, Filter, LiveContext, MissEvent, RequestRecord, Sink};
 use crate::fmt::local_time;
 use crate::forecast::{CacheState, cache_state, conversation, long_ttl, pace};
-use crate::model::{BlockKind, CompactionTrigger, Session, Usage};
+use crate::model::{BlockKind, ChainKind, CompactionTrigger, Session, TypedMessage, Usage};
 use crate::pricing::{Price, Pricing};
 use crate::profile::Values;
-use crate::report::Work;
+use crate::report::{Spend, Work};
 use crate::trigger::Trigger;
 use crate::fmt::count;
 
@@ -87,12 +87,39 @@ struct Totals {
     models: BTreeMap<String, u64>,
     requests: u64,
     work: Work,
+    /// One row per request, for the prompts block; the file's index among the session's logs.
+    rows: Vec<RequestRow>,
+    file: usize,
+}
+
+/// A request as the prompts block needs it.
+#[derive(Clone, Debug)]
+struct RequestRow {
+    file: usize,
+    chain: String,
+    main: bool,
+    ts_ms: i64,
+    usd: f64,
+    tokens: f64,
+    activity: &'static str,
 }
 
 impl Sink for Totals {
-    fn session(&mut self, _: &Session) {}
+    fn session(&mut self, _: &Session) {
+        self.file += 1;
+    }
 
     fn request(&mut self, r: &RequestRecord) {
+        self.rows.push(RequestRow {
+            file: self.file,
+            chain: r.chain.to_string(),
+            // An advisor call counts when it was made, like the main request it was part of.
+            main: self.file == 1 && (r.chain_kind == ChainKind::Main || r.advisor),
+            ts_ms: r.ts_ms,
+            usd: r.price.map_or(0.0, |p| p.cost(&r.usage)),
+            tokens: (r.usage.prompt() + r.usage.output) as f64,
+            activity: r.activity,
+        });
         self.requests += 1;
         *self.models.entry(r.model.to_string()).or_default() += 1;
         self.priced |= r.price.is_some();
@@ -146,7 +173,23 @@ pub struct XRay {
     pub composition: Option<Composition>,
     /// What each piece of content cost over every request it was part of: kind, tool, target.
     pub content: Vec<(ContentKey, Values)>,
+    /// Tool calls by tool and target, the session's subagents included.
+    pub calls: HashMap<(Option<String>, Option<String>), u64>,
+    /// What each message the user typed cost; empty for fewer than two messages.
+    pub prompts: Vec<PromptSpend>,
     pub misses: Vec<MissEvent>,
+}
+
+/// What one typed message cost: the requests from it to the next typed message, and the
+/// subagents started in that time.
+#[derive(Clone, Debug)]
+pub struct PromptSpend {
+    /// Its number among the session's typed messages, from 1.
+    pub number: usize,
+    pub label: String,
+    pub spend: Spend,
+    /// Activities, most expensive first, with their spend.
+    pub activities: Vec<(&'static str, Spend)>,
 }
 
 /// A piece of content: its kind, tool and target.
@@ -246,9 +289,58 @@ pub fn xray(catalog: &Catalog, file: &SessionRef, pricing: &Pricing, now_ms: i64
         chains: totals.chains.iter().map(|(n, v)| (n.clone(), *v)).collect(),
         composition: live.as_ref().map(|l| composition_of(main, l, trailing.as_ref())),
         content: totals.content.into_iter().collect(),
+        calls: call_counts(&sessions),
+        prompts: prompts_of(&main.typed, &totals.rows),
         misses: totals.misses,
         work: totals.work,
     })
+}
+
+/// Tool calls by tool and target: the calls in the messages the requests produced, so each call
+/// counts once however many prompts held it.
+fn call_counts(sessions: &[Session]) -> HashMap<(Option<String>, Option<String>), u64> {
+    let mut out = HashMap::new();
+    for s in sessions {
+        for m in s.chains.iter().flat_map(|c| &c.requests).filter_map(|r| r.produced) {
+            for b in s.blocks[s.messages[m].blocks.clone()].iter().filter(|b| b.kind == BlockKind::ToolUse) {
+                *out.entry((b.tool.clone(), b.target.clone())).or_default() += 1;
+            }
+        }
+    }
+    out
+}
+
+/// What each typed message cost. A main request counts with the latest message at or before it,
+/// a request before the first message with the first; every other chain counts, whole, with the
+/// message before its first request.
+fn prompts_of(typed: &[TypedMessage], rows: &[RequestRow]) -> Vec<PromptSpend> {
+    if typed.len() < 2 {
+        return Vec::new();
+    }
+    let at = |ts: i64| typed.partition_point(|m| m.ts_ms <= ts).saturating_sub(1);
+    let mut first: HashMap<(usize, &str), i64> = HashMap::new();
+    for r in rows.iter().filter(|r| !r.main) {
+        let t = first.entry((r.file, r.chain.as_str())).or_insert(r.ts_ms);
+        *t = (*t).min(r.ts_ms);
+    }
+    let mut out: Vec<PromptSpend> = typed
+        .iter()
+        .enumerate()
+        .map(|(i, m)| PromptSpend { number: i + 1, label: m.label.clone(), spend: Spend::default(), activities: Vec::new() })
+        .collect();
+    let mut by: Vec<HashMap<&'static str, Spend>> = vec![HashMap::new(); typed.len()];
+    for r in rows {
+        let i = if r.main { at(r.ts_ms) } else { at(first[&(r.file, r.chain.as_str())]) };
+        let s = Spend { requests: 1, tokens: r.tokens, usd: r.usd };
+        out[i].spend.add(s);
+        by[i].entry(r.activity).or_default().add(s);
+    }
+    for (p, acts) in out.iter_mut().zip(by) {
+        let mut acts: Vec<(&'static str, Spend)> = acts.into_iter().collect();
+        acts.sort_by(|a, b| b.1.usd.total_cmp(&a.1.usd).then(b.1.tokens.total_cmp(&a.1.tokens)).then(a.0.cmp(b.0)));
+        p.activities = acts;
+    }
+    out
 }
 
 fn context_of(live: &LiveContext, cache: CacheState, trailing: Option<&Trailing>, spend_usd: f64, pricing: &Pricing, now_ms: i64) -> ContextNow {
@@ -505,6 +597,30 @@ pub fn export(catalog: &Catalog, row: &SessionRow, pricing: &Pricing, path: &Pat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row(file: usize, chain: &str, main: bool, ts_ms: i64, usd: f64, activity: &'static str) -> RequestRow {
+        RequestRow { file, chain: chain.into(), main, ts_ms, usd, tokens: 1.0, activity }
+    }
+
+    #[test]
+    fn each_typed_message_gets_its_requests_and_subagents() {
+        let typed: Vec<TypedMessage> = [(10, "first"), (100, "second"), (200, "third")].iter().map(|&(ts_ms, l)| TypedMessage { ts_ms, label: l.into() }).collect();
+        let rows = [
+            row(1, "main", true, 5, 1.0, "prompt"),
+            row(1, "main", true, 20, 2.0, "reading"),
+            row(1, "main", true, 120, 3.0, "editing"),
+            // A subagent started after the second message runs on past the third.
+            row(2, "subagent: survey", false, 150, 4.0, "web"),
+            row(2, "subagent: survey", false, 250, 5.0, "web"),
+            row(1, "main", true, 210, 0.5, "prompt"),
+        ];
+        let p = prompts_of(&typed, &rows);
+        let costs: Vec<f64> = p.iter().map(|p| p.spend.usd).collect();
+        assert_eq!(costs, [3.0, 12.0, 0.5], "a request before the first message counts with the first");
+        assert_eq!(p[1].activities[0], ("web", Spend { requests: 2, tokens: 2.0, usd: 9.0 }));
+        assert_eq!((p[1].number, p[1].spend.requests), (2, 3));
+        assert!(prompts_of(&typed[..1], &rows).is_empty(), "one message gives no block");
+    }
 
     fn log(agent: AgentId, path: &str) -> SessionRef {
         SessionRef {

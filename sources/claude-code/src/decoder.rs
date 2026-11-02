@@ -18,13 +18,13 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 use tokprof_core::api::ApiId;
-use tokprof_core::labels::display_path;
-use tokprof_core::model::{Block, BlockKind, Class, CompactionTrigger, Origin, ReminderKind, ToolClass, Chain, ChainKind, Compaction, Params, PromptDelta, Request, Session, Shape, Usage};
+use tokprof_core::labels::{display_path, message_label};
+use tokprof_core::model::{Block, BlockKind, Class, CompactionTrigger, Origin, ReminderKind, ToolClass, Chain, ChainKind, Compaction, Params, PromptDelta, Request, Session, Shape, TypedMessage, Usage};
 use tokprof_core::source::{AgentId, Decoder};
-use tokprof_core::trigger::{Pending, Trigger};
+use tokprof_core::trigger::{CallClass, Pending, Trigger};
 use tokprof_logio::{canonical_hash, canonical_string, json_len, parse_ts_ms, str_at, u64_at};
 
-use crate::tools::{call_kind, tool_target};
+use crate::tools::{call_class, tool_target};
 
 /// Size an image is counted as, in characters (roughly 1,400 tokens).
 const IMAGE_CHARS: u64 = 5_000;
@@ -70,6 +70,7 @@ struct Response {
     origin: Option<String>,
     /// What the chain logged since its previous response.
     trigger: Option<Trigger>,
+    activity: Option<CallClass>,
 }
 
 /// Reads a Claude Code transcript, one line at a time.
@@ -105,8 +106,8 @@ pub(crate) struct Parser {
     after_boundary: bool,
     /// Per chain (agent id, sidechain): what it logged since its latest response.
     pending: HashMap<(String, bool), Pending>,
-    /// The trigger each response's message id was first seen with.
-    trigger_by_message: HashMap<String, Option<Trigger>>,
+    /// The trigger and activity each response's message id was first seen with.
+    trigger_by_message: HashMap<String, (Option<Trigger>, Option<CallClass>)>,
 }
 
 impl Parser {
@@ -233,6 +234,15 @@ impl Parser {
             && let Some(origin) = prompt_text(msg).and_then(|t| self.turn_origin(t)) {
                 self.turn = Some(origin);
             }
+        let main = !meta && !sidechain && !self.subagent_file && str_at(v, "agentId").is_none_or(str::is_empty);
+        if main
+            && let Some(text) = prompt_text(msg).filter(|t| user_event(t) == Some(Trigger::Prompt)) {
+                let ts_ms = parse_ts_ms(v.get("timestamp")).unwrap_or(0);
+                let label = typed_label(text);
+                if self.session.typed.last().is_none_or(|m| m.ts_ms != ts_ms || m.label != label) {
+                    self.session.typed.push(TypedMessage { ts_ms, label });
+                }
+            }
     }
 
     /// The chain a line belongs to: its agent id and whether it is a sidechain. A subagent's
@@ -254,11 +264,11 @@ impl Parser {
         let pending = self.pending.entry(chain).or_default();
         if let Some(id) = message_id
             && !self.trigger_by_message.contains_key(id) {
-                self.trigger_by_message.insert(id.to_string(), pending.trigger());
+                self.trigger_by_message.insert(id.to_string(), (pending.trigger(), pending.activity()));
                 *pending = Pending::default();
             }
         for item in content.iter().filter(|i| str_at(i, "type") == Some("tool_use")) {
-            pending.call(call_kind(str_at(item, "name").unwrap_or_default(), item.get("input").unwrap_or(&Value::Null)));
+            pending.call(call_class(str_at(item, "name").unwrap_or_default(), item.get("input").unwrap_or(&Value::Null)));
         }
     }
 
@@ -348,7 +358,7 @@ impl Parser {
         let sidechain = v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false);
         let main = !self.subagent_file && agent_id.is_empty() && !sidechain;
         let origin = attribution(v).or_else(|| if main { self.turn.clone() } else { None });
-        let trigger = message_id.as_ref().and_then(|id| self.trigger_by_message.get(id).copied().flatten());
+        let (trigger, activity) = message_id.as_ref().and_then(|id| self.trigger_by_message.get(id).copied()).unwrap_or_default();
         self.responses.push(Response {
             ts_ms: parse_ts_ms(v.get("timestamp")).unwrap_or(0),
             model: model.to_string(),
@@ -360,6 +370,7 @@ impl Parser {
             request_ref,
             origin,
             trigger,
+            activity,
         });
     }
 
@@ -567,7 +578,7 @@ impl Parser {
                     used[ri] = true;
                     let resp = &self.responses[ri];
                     let produced = resp.message_id.as_ref().and_then(|id| self.msg_by_assistant_id.get(id).copied());
-                    let base = Request { origin: origin_of(resp, &chains[ci], self.agent.as_ref()).map(|o| Origin::parse(&o)), trigger: resp.trigger, ..base };
+                    let base = Request { origin: origin_of(resp, &chains[ci], self.agent.as_ref()).map(|o| Origin::parse(&o)), trigger: resp.trigger, activity: resp.activity, ..base };
                     push_response(&mut chains[ci], base, resp, Some(delta), produced);
                 }
                 // Keep the request so later deltas still apply; it has no usage to attribute.
@@ -588,7 +599,7 @@ impl Parser {
             };
             let ci = chain_for((resp.agent_id.clone(), format!("legacy:{name}")), name, kind, &mut chains);
             let origin = origin_of(resp, &chains[ci], self.agent.as_ref());
-            let base = Request { ts_ms: resp.ts_ms, version: resp.version.clone(), origin: origin.map(|o| Origin::parse(&o)), trigger: resp.trigger, ..Request::default() };
+            let base = Request { ts_ms: resp.ts_ms, version: resp.version.clone(), origin: origin.map(|o| Origin::parse(&o)), trigger: resp.trigger, activity: resp.activity, ..Request::default() };
             let produced = resp.message_id.as_ref().and_then(|id| self.msg_by_assistant_id.get(id).copied());
             push_response(&mut chains[ci], base, resp, None, produced);
         }
@@ -676,6 +687,17 @@ fn prompt_text(msg: &Value) -> Option<&str> {
         }
         _ => None,
     }
+}
+
+/// The label of a typed message: a slash command as its name and arguments, anything else by
+/// its last paragraph.
+fn typed_label(text: &str) -> String {
+    let t = text.trim_start();
+    if t.starts_with("<command-") && let Some(name) = tag_text(t, "command-name") {
+        let args = tag_text(t, "command-args").unwrap_or_default();
+        return message_label(&format!("/{} {args}", name.trim_start_matches('/')));
+    }
+    message_label(text)
 }
 
 /// What a user message's text tells about the next request: a typed prompt or command, a
@@ -996,6 +1018,33 @@ mod tests {
         ]);
         use Trigger::*;
         assert_eq!(triggers(&s, 0), [Prompt, Lookup, Lookups, Edit, Run, Subagent, Continuation, Prompt, Notification]);
+    }
+
+    #[test]
+    fn requests_carry_the_activity_and_typed_messages_are_kept() {
+        let call = |id: &str, name: &str, input: Value| json!({"type": "tool_use", "id": id, "name": name, "input": input});
+        let mut typed = user_line("Tool results take 47%\n  advice ▸ trim\n\nwhat else can we analyze?");
+        typed["timestamp"] = json!("2026-10-01T10:00:00Z");
+        let mut command = user_line("<command-message>goal</command-message>\n<command-name>/goal</command-name>\n<command-args>finish the parser</command-args>");
+        command["timestamp"] = json!("2026-10-01T10:10:00Z");
+        let s = session_from(&[
+            typed,
+            assistant_line("m1", json!({}), json!([call("t1", "Bash", json!({"command": "cargo test"})), call("t2", "Read", json!({"file_path": "a"}))])),
+            results_line(&["t1", "t2"], None),
+            assistant_line("m2", json!({}), json!([call("t3", "Bash", json!({"command": "cat > notes.md <<'EOF'\nx\nEOF"}))])),
+            results_line(&["t3"], None),
+            assistant_line("m3", json!({}), json!([{"type": "text", "text": "ok"}])),
+            command,
+            assistant_line("m4", json!({}), json!([{"type": "text", "text": "ok"}])),
+        ]);
+        let activities: Vec<&str> = s.chains[0].requests.iter().map(Request::activity).collect();
+        assert_eq!(activities, ["prompt", "building and testing", "editing", "prompt"]);
+        let labels: Vec<&str> = s.typed.iter().map(|m| m.label.as_str()).collect();
+        assert_eq!(labels, ["what else can we analyze?", "/goal finish the parser"]);
+
+        let mut p = parser("agent-a1", true);
+        p.line(&user_line("Find the handlers").to_string());
+        assert!(p.into_session().typed.is_empty(), "a subagent's brief is not typed by the user");
     }
 
     #[test]

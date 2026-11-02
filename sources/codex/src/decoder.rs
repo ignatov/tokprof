@@ -19,10 +19,10 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use tokprof_core::api::ApiId;
-use tokprof_core::labels::{command_head, display_path};
-use tokprof_core::model::{Block, BlockKind, Class, CompactionTrigger, Origin, ReminderKind, ToolClass, Chain, ChainKind, Compaction, Params, PromptDelta, Request, Session, Shape, Usage};
+use tokprof_core::labels::{command_head, display_path, message_label};
+use tokprof_core::model::{Block, BlockKind, Class, CompactionTrigger, Origin, ReminderKind, ToolClass, Chain, ChainKind, Compaction, Params, PromptDelta, Request, Session, Shape, TypedMessage, Usage};
 use tokprof_core::source::{AgentId, Decoder};
-use tokprof_core::trigger::{CallKind, Pending, Trigger, read_only_command};
+use tokprof_core::trigger::{CallClass, Pending, Trigger, command_class};
 use tokprof_logio::{json_len, parse_ts_ms, str_at, u64_at};
 
 use crate::tools::tool_target;
@@ -66,9 +66,9 @@ pub(crate) struct Parser {
     trailing_outputs: usize,
     tools_by_call: HashMap<String, (String, Option<String>)>,
     /// What the calls of a conversation item did, by message index.
-    call_kinds: HashMap<usize, Vec<CallKind>>,
+    call_kinds: HashMap<usize, Vec<CallClass>>,
     /// The calls of the item being read, until it gets its message index.
-    item_calls: Vec<CallKind>,
+    item_calls: Vec<CallClass>,
     shape: Option<usize>,
     streams: [Stream; 2],
     seen: HashSet<String>,
@@ -120,8 +120,9 @@ impl Parser {
                 let items: Vec<Value> = payload.get("replacement_history").and_then(Value::as_array).cloned().unwrap_or_default();
                 self.history.clear();
                 self.trailing_outputs = 0;
+                // The replacement history repeats old messages; none of them is typed anew.
                 for item in &items {
-                    self.push_item(item);
+                    self.push_item(item, None);
                 }
                 self.trailing_outputs = 0;
                 for s in &mut self.streams {
@@ -134,7 +135,7 @@ impl Parser {
                 if ptype == "message" && str_at(payload, "role") == Some("assistant") {
                     self.streams.iter_mut().for_each(|s| s.after_assistant = true);
                 }
-                self.push_item(payload);
+                self.push_item(payload, Some(ts));
             }
             "token_usage_record" => {
                 let fresh = str_at(payload, "response_id").is_none_or(|id| self.seen.insert(id.to_string()));
@@ -209,7 +210,8 @@ impl Parser {
         }
     }
 
-    fn push_item(&mut self, item: &Value) {
+    /// Adds a conversation item; `ts_ms` is `None` for items replayed from a compaction.
+    fn push_item(&mut self, item: &Value, ts_ms: Option<i64>) {
         let (blocks, output) = self.blocks(item);
         if blocks.is_empty() {
             return;
@@ -217,6 +219,17 @@ impl Parser {
         let starts_turn = blocks.iter().any(|b| b.kind == BlockKind::Prompt);
         if starts_turn {
             self.streams.iter_mut().for_each(|s| s.pending.event(Trigger::Prompt));
+            if let (Some(ts_ms), None) = (ts_ms, &self.subagent) {
+                let text: Vec<&str> = item
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|c| str_at(c, "text"))
+                    .filter(|t| context_label(t).is_none())
+                    .collect();
+                self.session.typed.push(TypedMessage { ts_ms, label: message_label(&text.join("\n\n")) });
+            }
         }
         let idx = self.session.push_message(blocks, starts_turn);
         let calls = std::mem::take(&mut self.item_calls);
@@ -276,7 +289,7 @@ impl Parser {
                 } else {
                     let args = str_at(item, "arguments").unwrap_or_default();
                     let parsed: Value = serde_json::from_str(args).unwrap_or(Value::Null);
-                    self.item_calls = vec![call_kind(name, &parsed)];
+                    self.item_calls = vec![call_class(name, &parsed)];
                     (name.to_string(), call_target(name, &parsed, cwd, &self.home), args.len() as u64)
                 };
                 if let Some(id) = str_at(item, "call_id") {
@@ -325,10 +338,11 @@ impl Parser {
             self.session.push_message(blocks, false)
         });
         let outputs = &self.history[prompt_len..];
-        let calls: Vec<CallKind> = outputs.iter().filter_map(|m| self.call_kinds.get(m)).flatten().copied().collect();
+        let calls: Vec<CallClass> = outputs.iter().filter_map(|m| self.call_kinds.get(m)).flatten().copied().collect();
         let text = outputs.iter().any(|&m| self.session.blocks[self.session.messages[m].blocks.clone()].iter().any(|b| b.kind == BlockKind::Text));
         let s = &mut self.streams[stream];
         let trigger = s.pending.trigger().or((s.ended_with_text && !s.requests.is_empty()).then_some(Trigger::Continuation));
+        let activity = s.pending.activity();
         s.pending = Pending::default();
         calls.iter().for_each(|&k| s.pending.call(k));
         s.ended_with_text = text && calls.is_empty();
@@ -359,6 +373,7 @@ impl Parser {
             after_assistant_message: s.after_assistant,
             context_window: s.context_window,
             trigger,
+            activity,
             ..Request::default()
         });
         s.compacted = false;
@@ -468,8 +483,8 @@ fn code_target(name: &str, code: &str, cwd: Option<&str>, home: &Path) -> (Strin
     }
 }
 
-/// What a Codex function call did, for the trigger of the request after it.
-fn call_kind(name: &str, args: &Value) -> CallKind {
+/// What a Codex function call did, for the trigger and activity of the request after it.
+fn call_class(name: &str, args: &Value) -> CallClass {
     match name {
         "exec_command" | "shell" | "container.exec" => {
             let cmd = match args.get("cmd").or(args.get("command")) {
@@ -483,19 +498,20 @@ fn call_kind(name: &str, args: &Value) -> CallKind {
                 }
                 _ => None,
             };
-            if cmd.is_some_and(|c| read_only_command(&c)) { CallKind::ReadOnly } else { CallKind::Run }
+            cmd.map_or(CallClass::System, |c| command_class(&c))
         }
-        "apply_patch" => CallKind::Edit,
-        "spawn_agent" => CallKind::Subagent,
-        _ => CallKind::Run,
+        "apply_patch" => CallClass::Editing,
+        "spawn_agent" => CallClass::Subagents,
+        _ => CallClass::OtherTools,
     }
 }
 
 /// What the calls of a custom tool did. The `exec` tool's JavaScript is read by its inner
-/// `tools.<name>(...)` calls, one kind each; a command that is not a plain string literal runs.
-fn code_calls(name: &str, code: &str) -> Vec<CallKind> {
+/// `tools.<name>(...)` calls, one class each; a command that is not a plain string literal is
+/// a file and system command.
+fn code_calls(name: &str, code: &str) -> Vec<CallClass> {
     if name == "apply_patch" {
-        return vec![CallKind::Edit];
+        return vec![CallClass::Editing];
     }
     let starts: Vec<usize> = code.match_indices("tools.").map(|(at, _)| at).collect();
     let mut kinds = Vec::new();
@@ -504,16 +520,14 @@ fn code_calls(name: &str, code: &str) -> Vec<CallKind> {
         let ident: String = segment[6..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
         kinds.push(match ident.as_str() {
             "" => continue,
-            "exec_command" => {
-                if js_string(segment, "cmd").is_some_and(|c| read_only_command(&c)) { CallKind::ReadOnly } else { CallKind::Run }
-            }
-            "apply_patch" => CallKind::Edit,
-            "spawn_agent" => CallKind::Subagent,
-            _ => CallKind::Run,
+            "exec_command" => js_string(segment, "cmd").map_or(CallClass::System, |c| command_class(&c)),
+            "apply_patch" => CallClass::Editing,
+            "spawn_agent" => CallClass::Subagents,
+            _ => CallClass::OtherTools,
         });
     }
     if kinds.is_empty() {
-        kinds.push(CallKind::Run);
+        kinds.push(CallClass::OtherTools);
     }
     kinds
 }
@@ -615,6 +629,33 @@ mod tests {
         let s = p.into_session();
         use Trigger::*;
         assert_eq!(s.chains[0].requests.iter().map(Request::trigger).collect::<Vec<_>>(), [Prompt, Lookups, Edit, Run, Lookup, Continuation]);
+    }
+
+    #[test]
+    fn requests_carry_the_activity_and_compactions_replay_no_typed_message() {
+        use serde_json::json;
+        let mut p = parser("t");
+        let item = |payload: Value| json!({"type": "response_item", "timestamp": "2026-10-01T10:00:00Z", "payload": payload});
+        let record = |n: u32| json!({"type": "token_usage_record", "payload": {"response_id": format!("r{n}"), "usage": {"input_tokens": 100, "output_tokens": 1}}});
+        let user = |t: &str| item(json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": t}]}));
+        for v in [
+            user("run the tests"),
+            item(json!({"type": "custom_tool_call", "name": "exec", "call_id": "c", "input": "text(await tools.exec_command({cmd: \"cargo test\"}))"})),
+            record(1),
+            item(json!({"type": "custom_tool_call_output", "call_id": "c", "output": "ok"})),
+            item(json!({"type": "custom_tool_call", "name": "apply_patch", "call_id": "d", "input": "*** Begin Patch"})),
+            record(2),
+            item(json!({"type": "custom_tool_call_output", "call_id": "d", "output": "ok"})),
+            record(3),
+            json!({"type": "compacted", "payload": {"replacement_history": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "run the tests"}]}]}}),
+            record(4),
+        ] {
+            p.line(&v.to_string());
+        }
+        let s = p.into_session();
+        let activities: Vec<&str> = s.chains[0].requests.iter().map(Request::activity).collect();
+        assert_eq!(activities, ["prompt", "building and testing", "editing", "compaction"]);
+        assert_eq!(s.typed.iter().map(|m| m.label.as_str()).collect::<Vec<_>>(), ["run the tests"]);
     }
 
     #[test]

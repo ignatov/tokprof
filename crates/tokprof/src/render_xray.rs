@@ -52,6 +52,7 @@ pub fn text(x: &XRay, style: &Style, profile_dir: &Path, home: &Path) -> String 
     out.push('\n');
     spend_lines(&mut out, x, style);
     work_lines(&mut out, x, style);
+    prompt_lines(&mut out, x, style);
     if let Some(c) = &x.composition {
         out.push('\n');
         composition_lines(&mut out, x, c, style);
@@ -186,11 +187,11 @@ fn spend_lines(out: &mut String, x: &XRay, style: &Style) {
     }
 }
 
-/// Where the money went: by the kind of work, then by what the work was. Left out when the
-/// session is a single task of typed prompts.
+/// Where the money went: by the kind of work, by what the work was, and by what the agent was
+/// doing. Left out when the session is a single task of typed prompts with no tool call.
 fn work_lines(out: &mut String, x: &XRay, style: &Style) {
-    let (origins, tasks) = (x.work.origins(), x.work.tasks());
-    if origins.len() < 2 && tasks.len() < 2 {
+    let (origins, tasks, activities) = (x.work.origins(), x.work.tasks(), x.work.activities());
+    if origins.len() < 2 && tasks.len() < 2 && activities.len() < 2 {
         return;
     }
     out.push('\n');
@@ -220,6 +221,52 @@ fn work_lines(out: &mut String, x: &XRay, style: &Style) {
         if tasks.len() > 6 {
             let _ = writeln!(out, "  {}", style.dim(&format!("{} more tasks", tasks.len() - 6)));
         }
+    }
+    let _ = writeln!(out, "  {}", style.dim("by activity: what the agent was doing before each request"));
+    let total: f64 = activities.iter().map(|(_, t)| key(&t.spend)).sum();
+    let mut rest = (0, Spend::default());
+    for (i, (activity, t)) in activities.iter().enumerate() {
+        if i >= 6 {
+            rest.0 += 1;
+            rest.1.add(t.spend);
+            continue;
+        }
+        let share = key(&t.spend) / total.max(1e-9);
+        let _ = writeln!(out, "  {:<24} {}  {:5.1}%  {:>9}", clip_end(activity, 24), style.paint("33", &bar(share)), 100.0 * share, show(&t.spend));
+    }
+    if rest.0 > 0 {
+        let share = key(&rest.1) / total.max(1e-9);
+        let _ = writeln!(out, "  {:<24} {}  {:5.1}%  {:>9}", format!("{} more", rest.0), style.paint("33", &bar(share)), 100.0 * share, show(&rest.1));
+    }
+}
+
+/// What each typed message cost: the 8 most expensive in session order, then the rest together.
+fn prompt_lines(out: &mut String, x: &XRay, style: &Style) {
+    if x.prompts.is_empty() {
+        return;
+    }
+    let key = |s: &Spend| if x.priced { s.usd } else { s.tokens };
+    let show = |s: &Spend| if x.priced { usd(s.usd) } else { format!("{} tok", tokens(s.tokens)) };
+    let mut ranked: Vec<usize> = (0..x.prompts.len()).collect();
+    ranked.sort_by(|&a, &b| key(&x.prompts[b].spend).total_cmp(&key(&x.prompts[a].spend)).then(a.cmp(&b)));
+    let mut shown: Vec<usize> = ranked.iter().copied().take(8).collect();
+    shown.sort_unstable();
+    out.push('\n');
+    let _ = writeln!(out, "{} {}", style.dim(&format!("{:<9}", "prompts")), style.dim("what each message you typed cost, subagents included"));
+    for &i in &shown {
+        let p = &x.prompts[i];
+        let acts = p.activities.iter().take(2).map(|(a, s)| format!("{a} {}", show(s))).collect::<Vec<_>>().join(" · ");
+        let _ = writeln!(out, "  {:>3}  {:>8}  {:>4} req  {:<40}  {}", p.number, show(&p.spend), p.spend.requests, clip_end(&p.label, 40), style.dim(&acts));
+    }
+    if x.prompts.len() > shown.len() {
+        let mut rest = Spend::default();
+        for (i, p) in x.prompts.iter().enumerate() {
+            if !shown.contains(&i) {
+                rest.add(p.spend);
+            }
+        }
+        let n = x.prompts.len() - shown.len();
+        let _ = writeln!(out, "  {}", style.dim(&format!("{n} more messages  {}  {} req", show(&rest), rest.requests)));
     }
 }
 
@@ -256,14 +303,18 @@ fn composition_lines(out: &mut String, x: &XRay, c: &Composition, style: &Style)
 }
 
 fn costly_content_lines(out: &mut String, x: &XRay, style: &Style) {
-    let _ = writeln!(out, "{}", style.dim("what cost the most (every request it was part of, re-reads included)"));
+    let _ = writeln!(out, "{}", style.dim("what cost the most to keep in the context (each source with every request that re-read it)"));
     let mut rows: Vec<_> = x.content.iter().collect();
     let key = |v: &Values| if x.priced { v.usd } else { v.tokens };
     rows.sort_by(|a, b| key(&b.1).total_cmp(&key(&a.1)));
     for ((kind, tool, target), v) in rows.into_iter().take(8) {
         let what = [tool.as_deref(), target.as_deref()].into_iter().flatten().collect::<Vec<_>>().join("  ");
         let amount = if x.priced { usd(v.usd) } else { tokens(v.tokens) };
-        let _ = writeln!(out, "  {amount:>9}  {:<14} {}", kind.name(), clip(&what, 60));
+        let calls = match kind {
+            BlockKind::ToolUse | BlockKind::ToolResult => x.calls.get(&(tool.clone(), target.clone())).map_or(String::new(), |&n| count(n, "call", "calls")),
+            _ => String::new(),
+        };
+        let _ = writeln!(out, "  {amount:>9}  {:<14} {:<60} {}", kind.name(), clip(&what, 60), style.dim(&calls));
     }
 }
 
@@ -355,5 +406,94 @@ mod tests {
         assert!(!idle.contains("warm") && !idle.contains("cold"), "{idle}");
         let auto = render(CompactionTrigger::Auto);
         assert!(auto.contains(&format!("cache     compacted at {when} (auto) · the next request re-builds ~55.8k")), "{auto}");
+    }
+
+    fn xray(prompts: Vec<tokprof_core::xray::PromptSpend>) -> XRay {
+        XRay {
+            agent: tokprof_core::source::AgentId::new(tokprof_core::source::AgentInfo::named("claude")),
+            project: "~/p".into(),
+            id: "s".into(),
+            short_id: "s".into(),
+            title: None,
+            models: Vec::new(),
+            span_ms: None,
+            requests: 0,
+            subagents: 0,
+            context: None,
+            advice: Vec::new(),
+            priced: true,
+            components: Default::default(),
+            chains: Vec::new(),
+            work: Default::default(),
+            composition: None,
+            content: Vec::new(),
+            calls: Default::default(),
+            prompts,
+            misses: Vec::new(),
+        }
+    }
+
+    fn spend(requests: u64, usd: f64) -> Spend {
+        Spend { requests, tokens: 1.0, usd }
+    }
+
+    fn prompt(number: usize, label: &str, usd: f64, activities: Vec<(&'static str, Spend)>) -> tokprof_core::xray::PromptSpend {
+        tokprof_core::xray::PromptSpend { number, label: label.into(), spend: spend(10, usd), activities }
+    }
+
+    fn render(x: &XRay, f: fn(&mut String, &XRay, &Style)) -> String {
+        let mut out = String::new();
+        f(&mut out, x, &Style::with_color(false));
+        out
+    }
+
+    #[test]
+    fn a_prompt_line_names_its_two_costliest_activities() {
+        let acts = vec![("reading", spend(30, 3.10)), ("editing", spend(20, 2.90)), ("prompt", spend(1, 0.5))];
+        let x = xray(vec![prompt(1, "first", 1.0, Vec::new()), prompt(3, "одобряю add-request-trigger, применяй после сплита", 8.53, acts)]);
+        let text = render(&x, prompt_lines);
+        assert!(text.contains("prompts   what each message you typed cost, subagents included"), "{text}");
+        let line = text.lines().find(|l| l.contains("$8.53")).unwrap();
+        assert!(line.contains("  3     $8.53    10 req  одобряю add-request-trigger, применяй п…  reading $3.10 · editing $2.90"), "{line}");
+        assert!(render(&xray(Vec::new()), prompt_lines).is_empty(), "no block for fewer than two messages");
+    }
+
+    #[test]
+    fn many_prompts_show_the_eight_costliest_in_order_and_the_rest_together() {
+        let prompts: Vec<_> = (1..=30).map(|n| prompt(n, &format!("message {n}"), n as f64, Vec::new())).collect();
+        let total: f64 = prompts.iter().map(|p| p.spend.usd).sum();
+        let text = render(&xray(prompts), prompt_lines);
+        let numbers: Vec<&str> = text.lines().filter(|l| l.contains(" req  message ")).map(|l| l.split_whitespace().next().unwrap()).collect();
+        assert_eq!(numbers, ["23", "24", "25", "26", "27", "28", "29", "30"]);
+        let shown: f64 = (23..=30).map(f64::from).sum();
+        assert!(text.contains(&format!("22 more messages  {}  220 req", usd(total - shown))), "{text}");
+    }
+
+    #[test]
+    fn the_work_block_lists_activities() {
+        use tokprof_core::report::TriggerSpend;
+        let mut x = xray(Vec::new());
+        for (a, u) in [("reading", 5.42), ("editing", 4.71), ("prompt", 2.14)] {
+            x.work.by_activity.insert(a, TriggerSpend { spend: spend(1, u), prompt_tokens: 1.0 });
+        }
+        let text = render(&x, work_lines);
+        let names: Vec<&str> = text.lines().skip_while(|l| !l.contains("by activity")).skip(1).map(|l| l.split_whitespace().next().unwrap()).collect();
+        assert_eq!(names, ["reading", "editing", "prompt"]);
+        let mut one = xray(Vec::new());
+        one.work.by_activity.insert("prompt", TriggerSpend { spend: spend(1, 1.0), prompt_tokens: 1.0 });
+        assert!(render(&one, work_lines).is_empty(), "typed prompts only, with no tool call");
+    }
+
+    #[test]
+    fn tool_rows_of_what_cost_the_most_count_their_calls() {
+        let mut x = xray(Vec::new());
+        let key = |t: &str| (Some("Bash".to_string()), Some(t.to_string()));
+        x.content = vec![((BlockKind::ToolResult, key("sed -n").0, key("sed -n").1), Values { tokens: 1.0, usd: 2.75, avoidable: 0.0 }), ((BlockKind::ToolUse, key("cat >").0, key("cat >").1), Values { tokens: 1.0, usd: 1.0, avoidable: 0.0 })];
+        x.calls.insert(key("sed -n"), 412);
+        x.calls.insert(key("cat >"), 1);
+        let text = render(&x, costly_content_lines);
+        assert!(text.starts_with("what cost the most to keep in the context (each source with every request that re-read it)"), "{text}");
+        assert!(text.lines().any(|l| l.contains("sed -n") && l.trim_end().ends_with("412 calls")), "{text}");
+        assert!(text.lines().any(|l| l.contains("cat >") && l.trim_end().ends_with("1 call")), "{text}");
     }
 }

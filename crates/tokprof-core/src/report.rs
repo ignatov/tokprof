@@ -18,6 +18,7 @@ pub enum Dim {
     Origin,
     Task,
     Trigger,
+    Activity,
     Model,
     Turn,
     Component,
@@ -37,7 +38,7 @@ pub fn dims(list: &str) -> Vec<Dim> {
 }
 
 impl Dim {
-    pub const NAMES: &str = "agent, project, session, chain, origin, task, trigger, model, turn, component, cause, kind, tool, target";
+    pub const NAMES: &str = "agent, project, session, chain, origin, task, trigger, activity, model, turn, component, cause, kind, tool, target";
 
     /// Short name, used as the class name of JFR frames.
     pub fn name(self) -> &'static str {
@@ -49,6 +50,7 @@ impl Dim {
             Dim::Origin => "origin",
             Dim::Task => "task",
             Dim::Trigger => "trigger",
+            Dim::Activity => "activity",
             Dim::Model => "model",
             Dim::Turn => "turn",
             Dim::Component => "component",
@@ -68,6 +70,7 @@ impl Dim {
             "origin" => Dim::Origin,
             "task" => Dim::Task,
             "trigger" => Dim::Trigger,
+            "activity" => Dim::Activity,
             "model" => Dim::Model,
             "turn" => Dim::Turn,
             "component" => Dim::Component,
@@ -89,6 +92,7 @@ impl Dim {
             Dim::Origin => (f.origin.to_string(), Tint::Structure),
             Dim::Task => (f.task.to_string(), Tint::Structure),
             Dim::Trigger => (f.trigger.name().to_string(), Tint::Structure),
+            Dim::Activity => (f.activity.to_string(), Tint::Structure),
             Dim::Model => (f.model.to_string(), Tint::Structure),
             Dim::Turn => (
                 match f.turn {
@@ -120,7 +124,7 @@ impl Dim {
 }
 
 /// Spend of whole requests: how many, their tokens and their cost.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Spend {
     pub requests: u64,
     pub tokens: f64,
@@ -162,6 +166,7 @@ pub struct Work {
     /// Task, then origin.
     pub by_task: HashMap<String, HashMap<String, Spend>>,
     pub by_trigger: HashMap<Trigger, TriggerSpend>,
+    pub by_activity: HashMap<&'static str, TriggerSpend>,
 }
 
 impl Work {
@@ -172,7 +177,9 @@ impl Work {
             self.by_task.insert(r.task.to_string(), HashMap::new());
         }
         add_spend(self.by_task.get_mut(r.task).expect("inserted above"), r.origin, s);
-        self.by_trigger.entry(r.trigger).or_default().add(TriggerSpend { spend: s, prompt_tokens: r.usage.prompt() as f64 });
+        let t = TriggerSpend { spend: s, prompt_tokens: r.usage.prompt() as f64 };
+        self.by_trigger.entry(r.trigger).or_default().add(t);
+        self.by_activity.entry(r.activity).or_default().add(t);
     }
 
     pub fn merge(&mut self, o: Work) {
@@ -188,6 +195,16 @@ impl Work {
         for (trigger, s) in o.by_trigger {
             self.by_trigger.entry(trigger).or_default().add(s);
         }
+        for (activity, s) in o.by_activity {
+            self.by_activity.entry(activity).or_default().add(s);
+        }
+    }
+
+    /// Activities, most expensive first.
+    pub fn activities(&self) -> Vec<(&'static str, TriggerSpend)> {
+        let mut rows: Vec<(&'static str, TriggerSpend)> = self.by_activity.iter().map(|(a, s)| (*a, *s)).collect();
+        rows.sort_by(|a, b| b.1.spend.usd.total_cmp(&a.1.spend.usd).then(b.1.spend.tokens.total_cmp(&a.1.spend.tokens)).then(a.0.cmp(b.0)));
+        rows
     }
 
     /// Triggers, most expensive first.
@@ -528,11 +545,14 @@ mod tests {
         for (origin, task, read) in [("prompt", "Fix the parser", 1_000), ("skill:code-review", "Fix the parser", 5_000), ("agent:Explore", "Scan docs", 2_000)] {
             w.add(&RequestRecord {
                 agent: &crate::testing::claude(),
+                ts_ms: 0,
+                chain: "main",
                 api: crate::api::ApiId::Anthropic,
                 chain_kind: ChainKind::Main,
                 advisor: false,
                 origin,
                 trigger: crate::trigger::Trigger::Prompt,
+                activity: "prompt",
                 task,
                 model: "claude-opus-5-5",
                 price,

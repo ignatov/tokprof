@@ -77,6 +77,8 @@ pub struct Fact<'a> {
     pub origin: &'a str,
     /// What made the agent send the request (see `Request::trigger`).
     pub trigger: Trigger,
+    /// What the agent was doing before the request (see `Request::activity`).
+    pub activity: &'static str,
     /// What the work was: a subagent's task or the session title (see `Session::task_label`).
     pub task: &'a str,
     pub model: &'a str,
@@ -111,12 +113,16 @@ pub struct MissEvent {
 
 pub struct RequestRecord<'a> {
     pub agent: &'a AgentId,
+    pub ts_ms: i64,
+    /// The chain's name, as profiles show it.
+    pub chain: &'a str,
     /// The API the request was sent to.
     pub api: ApiId,
     pub chain_kind: ChainKind,
     pub advisor: bool,
     pub origin: &'a str,
     pub trigger: Trigger,
+    pub activity: &'static str,
     pub task: &'a str,
     pub model: &'a str,
     pub price: Option<Price>,
@@ -330,7 +336,7 @@ struct Walker<'a> {
     first_ts: Option<i64>,
     models: Vec<String>,
     /// Origin and trigger of the requests, which every share of a request carries.
-    origins: Vec<(String, Trigger)>,
+    origins: Vec<(String, Trigger, &'static str)>,
     /// (label, model, origin) -> per block [read, read $, write, write $, uncached, uncached $].
     input: HashMap<(usize, usize, usize), Vec<[f64; 6]>>,
     unknown_input: HashMap<(usize, usize, usize), [f64; 6]>,
@@ -376,11 +382,11 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn origin_idx(&mut self, origin: String, trigger: Trigger) -> usize {
-        match self.origins.iter().position(|(o, t)| *o == origin && *t == trigger) {
+    fn origin_idx(&mut self, origin: String, trigger: Trigger, activity: &'static str) -> usize {
+        match self.origins.iter().position(|(o, t, a)| *o == origin && *t == trigger && *a == activity) {
             Some(i) => i,
             None => {
-                self.origins.push((origin, trigger));
+                self.origins.push((origin, trigger, activity));
                 self.origins.len() - 1
             }
         }
@@ -429,11 +435,14 @@ impl<'a> Walker<'a> {
             let origin = origin_name(req);
             sink.request(&RequestRecord {
                 agent: &s.agent,
+                ts_ms: req.ts_ms,
+                chain: &self.chain.name,
                 api: req.api,
                 chain_kind: if req.advisor { ChainKind::Advisor } else { self.chain.kind },
                 advisor: req.advisor,
                 origin: &origin,
                 trigger: req.trigger(),
+                activity: req.activity(),
                 task: self.task,
                 model: &req.model,
                 price,
@@ -486,7 +495,7 @@ impl<'a> Walker<'a> {
         self.first_ts.get_or_insert(req.ts_ms);
         let label = if req.advisor { ADVISOR } else { 0 };
         let model = self.model_idx(&req.model);
-        let origin = self.origin_idx(origin_name(req), req.trigger());
+        let origin = self.origin_idx(origin_name(req), req.trigger(), req.activity());
         self.priced.insert(model, price.is_some());
         let usage = req.usage;
         let t = usage.prompt() as f64;
@@ -617,6 +626,7 @@ impl<'a> Walker<'a> {
                 chain: chain_name(label),
                 origin: &self.origins[origin].0,
                 trigger: self.origins[origin].1,
+                activity: self.origins[origin].2,
                 task,
                 model: &self.models[model],
                 turn,
@@ -786,6 +796,23 @@ mod tests {
         assert_eq!((lookup.spend.requests, lookup.avg_prompt()), (1, 1000.0));
         let total: f64 = c.work.triggers().iter().map(|(_, t)| t.spend.usd).sum();
         assert!((total - 2.0 * one).abs() < 1e-12, "the triggers sum to the total");
+    }
+
+    #[test]
+    fn every_share_of_a_request_carries_its_activity() {
+        use crate::trigger::{CallClass, Trigger};
+        let mut s = Session::new(crate::testing::claude(), "s".into());
+        let usage = Usage { cache_read: 1000, output: 100, ..Usage::default() };
+        let request = |ts_ms, trigger, activity| Request { ts_ms, model: "claude-opus-5-5".into(), usage, trigger: Some(trigger), activity, ..Request::default() };
+        let requests = vec![request(1, Trigger::Prompt, None), request(2, Trigger::Run, Some(CallClass::Building))];
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+        let mut c = crate::report::Collector::new(Some(crate::report::dims("activity,component")), None);
+        analyze(&s, &Pricing::defaults(), &Filter::default(), &mut c);
+        let mut names: Vec<&str> = c.profile.stacks.keys().map(|k| k[0].name.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names, ["building and testing", "prompt"]);
+        assert_eq!(c.work.activities().len(), 2);
     }
 
     #[test]

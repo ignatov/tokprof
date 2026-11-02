@@ -49,6 +49,15 @@ pub fn url_host(url: &str) -> Option<String> {
     rest.split(['/', '?', '#']).next().filter(|h| !h.is_empty()).map(str::to_string)
 }
 
+/// How a typed message is shown: its last paragraph, since a long message usually starts with
+/// pasted text and ends with the request, with its whitespace joined and cut to 200 characters.
+pub fn message_label(text: &str) -> String {
+    let paragraphs: Vec<&str> = text.split("\n\n").map(str::trim).filter(|p| !p.is_empty()).collect();
+    let last = paragraphs.last().copied().unwrap_or_default();
+    let joined = last.split_whitespace().collect::<Vec<_>>().join(" ");
+    joined.chars().take(200).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +73,13 @@ mod tests {
         assert_eq!(display_path("/w/p/src/a.rs", Some("/w/p"), Path::new("/h")), "src/a.rs");
         assert_eq!(display_path("/w/p", Some("/w/p"), Path::new("/h")), ".");
         assert_eq!(display_path("/etc/hosts", Some("/w/p"), Path::new("/h")), "/etc/hosts");
+    }
+
+    #[test]
+    fn a_message_is_labeled_by_its_last_paragraph() {
+        assert_eq!(message_label("Tool results take 47%…\n  advice ▸ trim\n\nwhat else can we\n analyze?"), "what else can we analyze?");
+        assert_eq!(message_label("  fix the parser  "), "fix the parser");
+        assert_eq!(message_label(&"x".repeat(300)).len(), 200);
+        assert_eq!(message_label(""), "");
     }
 }
