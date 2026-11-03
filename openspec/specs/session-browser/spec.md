@@ -6,11 +6,15 @@
 ## Requirements
 
 ### Requirement: Session list
-`tokprof sessions` SHALL print a header and one row per session that the filters select (see session-logs), newest first by the last write to its main log, at most `--limit` rows (default 20). A row shows when the main log was modified (local `YYYY-MM-DD HH:MM`), the agent, the session (its short id, see session-logs), the size of its main and subagent logs (`X.X MB`), the project, and `+N subagents` when it has any.
+`tokprof sessions` SHALL print a header and one row per session that the filters select (see session-logs), newest first by last activity (see session-logs), at most `--limit` rows (default 20). A row shows the last activity (local `YYYY-MM-DD HH:MM`, under the header `active`), the agent, the session (its short id, see session-logs), the size of its main and subagent logs (`X.X MB`), the project, and `+N subagents` when it has any.
 
 #### Scenario: Default list
 - **WHEN** the user runs `tokprof sessions`
-- **THEN** it prints at most 20 rows, newest first, under a header that names the columns
+- **THEN** it prints at most 20 rows, newest first, under a header that names the columns, the first of them `active`
+
+#### Scenario: A session resumed without work
+- **WHEN** an idle session's transcript got only records without a time at 16:01, and its last record with a time is from 09:27
+- **THEN** its row shows `09:27`, below the sessions that were active after 09:27
 
 #### Scenario: A session with subagents
 - **WHEN** a session spawned 5 subagents
@@ -84,7 +88,7 @@ The next-request cell, in `tokprof ui` and `tokprof sessions --cost`, SHALL show
 
 #### Scenario: A list row
 - **WHEN** the list is shown
-- **THEN** each row has the main log's last write time (local `MM-DD HH:MM`), the agent, the project clipped from the left with `…`, the session's cost in bold, and the next-request cell
+- **THEN** each row has the session's last activity (local `MM-DD HH:MM`), the agent, the project clipped from the left with `…`, the session's cost in bold, and the next-request cell
 
 #### Scenario: Pane titles
 - **WHEN** the ui is drawn
@@ -169,7 +173,7 @@ In the list, `↑` or `k` and `↓` or `j` SHALL move the selection by one sessi
 - **THEN** the right pane reads `no session matches the filter`
 
 ### Requirement: Sort
-`s` SHALL cycle the order of the list from time (newest main log first, the order it starts in) to cost (most expensive session first) to next request (dearest next request now first) and back to time. Sessions whose value is not known yet go last, the list re-sorts as costs arrive, and the selected session stays selected.
+`s` SHALL cycle the order of the list from time (latest last activity first, the order it starts in) to cost (most expensive session first) to next request (dearest next request now first) and back to time, and sort the list in the new order. Sessions whose value is not known yet go last, and the selected session stays selected. Values that arrive later move no row (see Rows in place).
 
 #### Scenario: By cost
 - **WHEN** `s` is pressed once
@@ -231,15 +235,15 @@ In the list, `↑` or `k` and `↓` or `j` SHALL move the selection by one sessi
 - **THEN** nothing is copied and the footer reads `no clipboard tool (pbcopy, wl-copy, xclip); run: tokprof handoff <id>`
 
 ### Requirement: Live updates
-While it runs, `tokprof ui` SHALL follow the agents' log directories: a new session joins the list, a session whose main or subagent logs change is costed and X-rayed again, and a session whose main log is deleted or moved away leaves the list. Until the new X-ray is ready, the old one stays, with `· updating…` in its title.
+While it runs, `tokprof ui` SHALL follow the agents' log directories: a new session joins the list, a session whose main or subagent logs change is costed and X-rayed again, and a session whose main log is deleted or moved away leaves the list. Until the new X-ray is ready, the old one stays, with `· updating…` in its title. Where rows go when this happens belongs to Rows in place.
 
 #### Scenario: A new session
 - **WHEN** an agent starts a new session
-- **THEN** it shows up on top of the list sorted by time, and the selection stays on the session it was on
+- **THEN** it shows up where the current order puts it, at the top of the list sorted by time, and the selection stays on the session it was on
 
 #### Scenario: A growing session
 - **WHEN** the selected session's log grows
-- **THEN** its cost updates, the X-ray title reads `· updating…` until the new X-ray replaces the old one, and in time order the session moves to the top
+- **THEN** its cost and time update, the X-ray title reads `· updating…` until the new X-ray replaces the old one, and the session keeps its row
 
 #### Scenario: A deleted session
 - **WHEN** a session's main log is deleted
@@ -247,7 +251,7 @@ While it runs, `tokprof ui` SHALL follow the agents' log directories: a new sess
 
 #### Scenario: Dropped change events
 - **WHEN** the file system reports that it dropped change events
-- **THEN** the ui scans every log directory again, removes the sessions that are gone and adds the ones that are there
+- **THEN** the ui scans every log directory again, removes the sessions that are gone and adds the ones that are there, and the sessions still listed keep their rows
 
 #### Scenario: A directory created later
 - **WHEN** a log directory such as `~/.codex/archived_sessions` does not exist yet
@@ -275,3 +279,50 @@ The hidden option `tokprof ui --dump <width>x<height>` SHALL render one frame of
 #### Scenario: Not in the help
 - **WHEN** the user runs `tokprof ui --help`
 - **THEN** `--dump` is not listed
+
+### Requirement: Rows in place
+`tokprof ui` SHALL put its rows in order only when it starts, when `s` or `r` is pressed and when the filter changes. Costs, X-rays and log changes that arrive in between update a row's cells, not its place. A new session is put where the current order puts it, and a session that leaves takes its row with it. Rows on the screen keep their places, except that a session joining or leaving among them moves the rows below it by one.
+
+#### Scenario: Records without a time
+- **WHEN** Claude Code appends `cost-state` lines to 20 idle sessions, five each within 100 seconds
+- **THEN** no row moves, and each row keeps the time of its session's last activity
+
+#### Scenario: Work in a session down the list
+- **WHEN** the session in row 12 makes a request while the list is in time order
+- **THEN** it stays in row 12, and its time and cost update there
+
+#### Scenario: Costs that arrive in cost order
+- **WHEN** `s` sorted the list by cost while 396 sessions were still being costed, and their costs arrive
+- **THEN** each cost fills its row's cell where the row is, and no row moves
+
+#### Scenario: A cache goes cold
+- **WHEN** the list is by next request and a session's cache goes cold
+- **THEN** its next-request cell turns to the cold cost in red, and the row stays where it is
+
+#### Scenario: A new session above the screen
+- **WHEN** the list is scrolled down and a new session's place in time order is the top
+- **THEN** the session is put at the top, and the rows on the screen stay where they are
+
+#### Scenario: A new session on the screen
+- **WHEN** a new session's place is among the rows on the screen
+- **THEN** it shows there, and the rows below it move down by one
+
+#### Scenario: A session leaves
+- **WHEN** a session above the rows on the screen leaves the list
+- **THEN** the rows on the screen stay where they are
+- **AND** when a session on the screen leaves, the rows below it move up by one
+
+### Requirement: Re-sort key
+`r` SHALL sort the list again in its current order and keep the selected session selected. While sorting again would change the order, the list title reads `by <order>, r re-sorts` in place of `by <order>`. The footer lists `r re-sort` after the sort key.
+
+#### Scenario: The order goes out of date
+- **WHEN** the session in row 12 makes a request while the list is in time order
+- **THEN** the list title reads like ` 765 sessions · $16,206 · by time, r re-sorts · next = one more request `
+
+#### Scenario: Re-sorting
+- **WHEN** the session in row 12 made a request in time order and `r` is pressed
+- **THEN** that session is in row 1, the selected session is still selected, and the list title reads `by time` again
+
+#### Scenario: In order
+- **WHEN** sorting again would not change the order
+- **THEN** the list title reads `by <order>` without `r re-sorts`, and `r` changes nothing
