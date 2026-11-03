@@ -217,6 +217,7 @@ tokprof tools               # spend by tool and shell command, with a hint per r
 tokprof misses --top 20     # most expensive cache misses (--expected adds compactions and cleared tool results)
 tokprof whatif              # Claude input cost under 5m vs 1h cache lifetimes
 tokprof pauses              # pauses before typed messages, cold returns by pause, sessions by largest context
+tokprof share               # one JSON file of these numbers with no names, to compare with other users
 tokprof bench               # cold returns to big sessions: resume vs /compact vs a new session vs heartbeats, with or without a compaction after them
 tokprof prices              # prices in effect and where each came from
 ```
@@ -307,6 +308,34 @@ Every command but `tokprof prices` takes these filters:
 The reports count the requests the filters select. `tokprof`, `scan`, `handoff`, `sessions` and `ui` pick or list the sessions they select: `--since` keeps sessions written since that day, `--until` sessions started before it, and `--client` sessions whose log first names a matching client. An X-ray still covers its session's whole log. With `--since`, `--until` or `--client`, the reconciliation line compares only the sessions whose every request the filters keep.
 
 A session id can be shortened to its start. Codex ids are shown by their first three groups, such as `01a197e1-4d9f-76b1`, because threads launched together share the first two. A start that several sessions share is an error that lists them.
+
+## Sharing the numbers
+
+`tokprof share` writes one JSON file of aggregates over the selected requests, with the usual filters, to `~/tokprof/share-<date>.json` or the file `-o` names. It is for comparing or pooling numbers with other users without showing your work, and it sends nothing anywhere.
+
+```sh
+tokprof --since 30d share                 # ~/tokprof/share-2026-11-03.json
+tokprof --since 30d share -o pilot.json
+```
+
+Per agent, the file holds:
+
+| field | what it is |
+|---|---|
+| `sessions`, `main_sessions` | logs with a selected request, subagent logs included, and the main sessions among them |
+| `spend` | per model: requests and the five cost components, in dollars and tokens, as in `Spend by model` |
+| `clients` | per client: requests, cost and avoidable dollars, as in `Spend by client` |
+| `cache_writes` | tokens written with the short and the long lifetime, for main conversations and for subagents |
+| `misses` | per cause: misses, re-processed tokens and avoidable dollars, as in `Cache misses by cause` |
+| `origins` | spend by kind of origin only: `prompt`, `skill`, `agent`, `command`, `notification`, `mcp`, `plugin` |
+| `triggers`, `activities` | spend by trigger and by activity |
+| `setup` | setup by source: `tool schemas`, `system prompt`, `instructions`, `hook context`, `deferred tool lists`, `skills`, `other` |
+| `effort` | requests and output tokens per effort level, for main conversations and for subagents |
+| `pauses` | the parts of `tokprof pauses`: typed messages by pause, how many came after each cache lifetime, cold returns by pause, who started them, what followed them, and sessions by largest context |
+
+The file also names its format, the tokprof version and the first and last day of the requests. It holds no project, path, session id, title, task, prompt or tool text, and no skill, MCP server, plugin, command, subagent-type or tool name. Model and client names stay. Dollars have 4 decimals and tokens are whole, so files from several users can be summed.
+
+For a pilot, ask each person to run `tokprof --since 30d share`, read the file, and send it. With only a few sessions in the window, the file still describes those sessions, so a longer window shares less about any one piece of work.
 
 ## Flame graphs and profiles
 

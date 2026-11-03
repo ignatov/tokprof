@@ -25,6 +25,7 @@ pub mod query;
 pub mod report;
 pub mod scan;
 pub mod setup;
+pub mod share;
 pub mod source;
 #[cfg(feature = "testkit")]
 pub mod testkit;

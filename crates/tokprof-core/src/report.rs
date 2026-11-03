@@ -701,6 +701,7 @@ mod tests {
                 prev_prompt: None,
                 composition: true,
                 client: "unknown",
+                effort: None,
             });
         }
         let tasks = w.tasks();

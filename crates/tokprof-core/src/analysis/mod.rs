@@ -153,6 +153,8 @@ pub struct RequestRecord<'a> {
     pub composition: bool,
     /// The program that ran the agent (see `Request::client_name`).
     pub client: &'a str,
+    /// The reasoning effort the request asked for, as the log names it.
+    pub effort: Option<&'a str>,
 }
 
 pub trait Sink {
@@ -568,6 +570,7 @@ impl<'a> Walker<'a> {
                 prev_prompt: self.prev.as_ref().map(|p| p.prompt),
                 composition: req.prompt.is_some(),
                 client: req.client_name(),
+                effort: req.params.as_ref().and_then(|p| p.effort.as_deref()),
             });
             let premium = self.attribute(req, price, verdict.as_ref());
             self.tool_shares(req, price, sink);

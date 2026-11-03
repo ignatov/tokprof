@@ -707,6 +707,16 @@ mod tests {
     }
 
     #[test]
+    fn a_turns_effort_reaches_its_requests() {
+        let mut p = parser("t");
+        p.line(&serde_json::json!({"type": "session_meta", "payload": {"id": "t", "cwd": "/w"}}).to_string());
+        p.line(&serde_json::json!({"type": "turn_context", "payload": {"model": "gpt-6-astra", "effort": "xhigh"}}).to_string());
+        p.line(&serde_json::json!({"type": "token_usage_record", "payload": {"response_id": "r1", "usage": {"input_tokens": 100, "output_tokens": 1}}}).to_string());
+        let s = p.into_session();
+        assert_eq!(s.chains[0].requests[0].params.as_ref().and_then(|x| x.effort.as_deref()), Some("xhigh"));
+    }
+
+    #[test]
     fn every_request_of_a_rollout_has_its_originator() {
         let clients = |meta: Value| {
             let mut p = parser("t");

@@ -15,6 +15,7 @@ use tokprof_core::export;
 use tokprof_core::profile::Measure;
 use tokprof_core::report::{self, Collector, Dim};
 use tokprof_core::pauses::Pauses;
+use tokprof_core::share::{self, Share};
 use tokprof_core::{bench, fmt, handoff, xray};
 
 mod clipboard;
@@ -127,6 +128,13 @@ enum Command {
     /// pauses before typed messages, the share after each cache lifetime, cold returns by pause,
     /// and sessions by their largest context.
     Pauses,
+    /// Write one JSON file of aggregates over the selected requests that holds no names, to
+    /// compare or pool with other users. Nothing is sent anywhere.
+    Share {
+        /// Output file; by default share-<date>.json in ~/tokprof (or $TOKPROF_DIR).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent
     /// do (trips), with a hint per row.
     Tools {
@@ -316,6 +324,49 @@ fn main() -> Result<()> {
         print!("{}", render_report::pauses(&p));
         return Ok(());
     }
+    if let Command::Share { output } = &command {
+        let started = Instant::now();
+        let mut files = catalog.discover(&agents);
+        // A session's subagent logs go with it.
+        files.retain(|f| select.holds(f));
+        if files.is_empty() {
+            bail!("no session logs found for {}", cli.agent.join(", "));
+        }
+        let (sink, stats) = scan(
+            &catalog,
+            &files,
+            &select,
+            OnUnreadable::Skip,
+            || (Collector::new(None, None), (Pauses::new(filter.clone()), Share::default())),
+            |t, session, _| analysis::analyze(session, &pricing, &filter, t),
+            |mut a, b| {
+                a.0.merge(b.0);
+                a.1.0.merge(b.1.0);
+                a.1.1.merge(b.1.1);
+                a
+            },
+        )?;
+        let (collector, (mut p, s)) = sink;
+        p.finish();
+        eprintln!("{}", sources(&catalog, &files, started.elapsed().as_secs_f64()));
+        warn(&stats.unreadable);
+        if s.span_ms.is_none() {
+            bail!("no requests found for these filters; nothing written");
+        }
+        let value = share::to_json(&collector, &p, &s, env!("CARGO_PKG_VERSION"), |ms| fmt::local_time(ms, "%Y-%m-%d"));
+        let path = output.clone().unwrap_or_else(|| paths::profile_dir().join(format!("share-{}.json", chrono::Local::now().format("%Y-%m-%d"))));
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        }
+        std::fs::write(&path, share::pretty(&value)).with_context(|| format!("writing {}", path.display()))?;
+        println!("wrote {}", display_path(&path.to_string_lossy(), None, catalog.home()));
+        println!(
+            "Per agent it holds: spend by model and component, clients, cache writes by lifetime, misses by cause, spend by kind of origin, trigger and activity, setup by source, effort levels, the pause report and session counts."
+        );
+        println!("It holds no project, path, session id, title, task, prompt, tool, skill or server name.");
+        println!("Nothing was sent anywhere: review the file, then send it yourself.");
+        return Ok(());
+    }
 
     let parse_dims = |names: &[String]| {
         names
@@ -380,7 +431,8 @@ fn main() -> Result<()> {
         | Command::Ui { .. }
         | Command::Prices { .. }
         | Command::Bench { .. }
-        | Command::Pauses => {
+        | Command::Pauses
+        | Command::Share { .. } => {
             unreachable!("handled before reading logs")
         }
         Command::Summary => print!("{}", render_report::summary(&collector, &filter, &paths::user_prices())),
