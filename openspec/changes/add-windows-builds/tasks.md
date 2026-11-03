@@ -44,8 +44,8 @@ The Windows commits 12ae95a, 219b4c5 and 9b36bde on the branch `windows-build` a
 
 ## 6. On GitHub
 
-- [ ] 6.1 Land the commits and this change with `bd pick`. Once the author says so, push `main` and delete the branch `windows-build`. Verify: the CI run of that push passes on Linux, macOS and Windows.
-- [ ] 6.2 Once the author says so, run the release workflow by hand on `main`. Verify: the run ends with six archives as artifacts, five smoke runs and a passing comparison. Record the archive sizes and the job times in the results table.
+- [x] 6.1 Land the commits and this change with `bd pick`. Once the author says so, push `main` and delete the branch `windows-build`. Verify: the CI run of that push passes on Linux, macOS and Windows.
+- [x] 6.2 Once the author says so, run the release workflow by hand on `main`. Verify: the run ends with six archives as artifacts, five smoke runs and a passing comparison. Record the archive sizes and the job times in the results table.
 
 ## Results
 
@@ -56,7 +56,8 @@ The Windows commits 12ae95a, 219b4c5 and 9b36bde on the branch `windows-build` a
 | 2.1 smoke run of a zip on the author's Mac: time, comparison with the `.tar.gz` | 2026-11-03: the Apple silicon release binary, packed as `.tar.gz` and as a zip; `tokprof 0.1.0` from both, share files with `claude` and `codex` in 0.76 s and 0.36 s; `--compare`: `the 2 files hold the same numbers` |
 | 5.1 `tokprof handoff` in a terminal on the author's Mac: message, `pbpaste` | 2026-11-03, on a pty over the real logs: stderr `copied to the clipboard: paste it into a new session`; `pbpaste` equals the printed line (176 characters) |
 | 5.2 the clipboard round trip on `windows-latest` | first run (CI 41676489941): Cyrillic survived, but `clip.exe` kept the byte order mark, and the clipboard read back `\u{feff}tokprof · Привет`. The text now goes without one. Second run (CI 41677241892): `Get-Clipboard` read back `tokprof · Привет` unchanged; 301 of 301 tests on `windows-latest`, 300 of 300 on Linux and macOS, the opener test included on all three |
-| 6.2 run by hand on `main`: archives, smoke runs, comparison | |
+| 6.1 the push of `main` | 2026-11-03: `main` went to GitHub as 5f9001d with the Windows commits. Its CI 41677783741 passed the tests on Linux, macOS and Windows (301 there), and failed clippy on two lints from be2e70b, which 8587e0f fixed. CI 41678652349 on 8587e0f passed everything. The branch `windows-build` is deleted. |
+| 6.2 run by hand on `main`: archives, smoke runs, comparison | run 41678761426 on 8587e0f: six archives, in bytes `aarch64-apple-darwin.tar.gz` 2,365,400, `x86_64-apple-darwin.tar.gz` 2,539,580, `x86_64-unknown-linux-gnu.tar.gz` 2,671,909, `aarch64-unknown-linux-gnu.tar.gz` 2,560,413, `x86_64-pc-windows-msvc.zip` 2,182,153, `aarch64-pc-windows-msvc.zip` 2,011,999. Five smoke runs; the comparison: `smoke: the 5 files hold the same numbers`. Builds took 1m23s and 1m18s (Macs), 46s and 58s (Linux), 2m48s and 2m27s (Windows). On the first attempt GitHub cancelled the Intel Mac build after 15 minutes in the queue ("The job was not acquired by Runner of type hosted even after multiple attempts", with a notice of capacity constraints on macOS arm64 runners); `gh run rerun --failed` passed it. |
 
 There is no run of the Windows binaries on the real logs: the author's logs are on a Mac. The comparison over the fixtures stands in for it. The code that changes only copies and opens files, and 5.1 checks it on the Mac.
 
