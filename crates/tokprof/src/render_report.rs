@@ -639,8 +639,8 @@ mod tests {
             follows: vec![20, 2],
             cold_returns_by_client: Default::default(),
             sessions: [
-                ("a".to_string(), SessionSize { largest: 966_000, usd: 412.0, tokens: 1.0, cold_returns: 2, span: None }),
-                ("b".to_string(), SessionSize { largest: 30_000, usd: 8.0, tokens: 1.0, cold_returns: 0, span: None }),
+                ("a".to_string(), SessionSize { largest: 966_000, usd: 412.0, tokens: 1.0, cold_returns: 2, span: None, typed: 0 }),
+                ("b".to_string(), SessionSize { largest: 30_000, usd: 8.0, tokens: 1.0, cold_returns: 0, span: None, typed: 0 }),
             ]
             .into_iter()
             .collect(),
@@ -656,7 +656,7 @@ mod tests {
         p.agents.insert(claude(), claude_pauses);
         let codex = AgentPauses {
             lifetimes: [30 * minute].into_iter().collect(),
-            sessions: [("c".to_string(), SessionSize { largest: 50_000, usd: 1.0, tokens: 1.0, cold_returns: 0, span: None })].into_iter().collect(),
+            sessions: [("c".to_string(), SessionSize { largest: 50_000, usd: 1.0, tokens: 1.0, cold_returns: 0, span: None, typed: 0 })].into_iter().collect(),
             priced: true,
             ..AgentPauses::default()
         };

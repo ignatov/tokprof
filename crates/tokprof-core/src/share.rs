@@ -191,7 +191,37 @@ const FIELDS: &[&str] = &[
     "elsewhere",
     "pings",
     "compaction_usd",
+    "distributions",
+    "n",
+    "p25",
+    "p50",
+    "p75",
+    "p90",
+    "prevalence",
 ];
+
+/// The fewest values a distribution gives quantiles for; with fewer it gives only their number,
+/// so that no single session's value can be read from it.
+pub const MIN_QUANTILE_N: usize = 5;
+
+/// The quantiles of a distribution, in percent, by key.
+pub const QUANTILES: [(&str, usize); 4] = [("p25", 25), ("p50", 50), ("p75", 75), ("p90", 90)];
+
+/// The measures of the distributions part, in the file's order (see share-export, Distribution
+/// parts).
+pub const DISTRIBUTIONS: [&str; 6] = ["session_usd", "cold_return_usd", "typed_per_session", "turn_ms", "answer_ms", "largest_context"];
+
+/// The counts of the prevalence part: the days first, then the main sessions.
+pub const PREVALENCE_DAYS: [&str; 3] = ["days_with_cold_return", "days_with_retry_wait", "days_with_interrupt"];
+pub const PREVALENCE_SESSIONS: [&str; 5] =
+    ["sessions_with_cold_return", "sessions_with_failure_window", "sessions_over_400k", "sessions_over_1d", "sessions_with_question"];
+
+/// A main session is large from this largest context on, in tokens: the lower bound of the
+/// `400–800k` range of the pause parts.
+pub const LARGE_CONTEXT: u64 = 400_000;
+
+/// A main session is long from this span on, in ms: the lower bound of the `1–3d` span range.
+pub const LONG_SPAN_MS: i64 = 24 * HOUR;
 
 /// The names of the bench's ways in the file, in the bench's order (see return-bench).
 pub const BENCH_WAYS: [&str; 5] = ["resume", "compact", "handoff", "heartbeats", "heartbeats_then_compaction"];
@@ -247,6 +277,12 @@ pub struct AgentShare {
     /// [`OUTCOMES`]): of the agent, and of each client.
     pub outcomes: [u64; 3],
     pub client_outcomes: BTreeMap<String, [u64; 3]>,
+    /// The main sessions, by short id, in which the agent asked a question inside the window, and
+    /// those in which a failure window opened.
+    pub question_sessions: HashSet<String>,
+    pub failure_sessions: HashSet<String>,
+    /// When the user stopped the agent inside the window, in epoch ms.
+    pub interrupts_at: Vec<i64>,
 }
 
 impl AgentShare {
@@ -320,6 +356,9 @@ impl AgentShare {
                 *mine += theirs;
             }
         }
+        self.question_sessions.extend(o.question_sessions);
+        self.failure_sessions.extend(o.failure_sessions);
+        self.interrupts_at.extend(o.interrupts_at);
     }
 }
 
@@ -334,6 +373,8 @@ struct Current {
     /// Hand-off kinds and wake sources inside the window, one entry each.
     handoffs: Vec<&'static str>,
     wakes: Vec<&'static str>,
+    /// When the user stopped the agent inside the window.
+    interrupts: Vec<i64>,
     ids: Vec<String>,
     title: Option<String>,
     /// The client of the latest selected request, whose calls the shares after it are.
@@ -455,9 +496,12 @@ impl Sink for Share {
         } else {
             Vec::new()
         };
-        let (mut handoffs, mut wakes) = (Vec::new(), Vec::new());
+        let (mut handoffs, mut wakes, mut interrupts) = (Vec::new(), Vec::new(), Vec::new());
         if main {
             for h in s.handoffs.iter().filter(|h| self.filter.accepts(h.ts_ms)) {
+                if h.kind == HandoffKind::Interrupt {
+                    interrupts.push(h.ts_ms);
+                }
                 match handoff_name(h.kind) {
                     Some((name, true)) => wakes.push(name),
                     Some((name, false)) => handoffs.push(name),
@@ -472,6 +516,7 @@ impl Sink for Share {
             compactions,
             handoffs,
             wakes,
+            interrupts,
             ids: vec![s.id.clone(), s.short_id().to_string()],
             title: s.title.clone(),
             client: String::new(),
@@ -482,12 +527,18 @@ impl Sink for Share {
     }
 
     fn request(&mut self, r: &RequestRecord) {
-        if let Some(t) = self.current_table() {
+        // A failure window opens at the request that carries the failure.
+        let opened = self.current_table().is_some_and(|t| {
+            let before = t.opened;
             t.request(r);
-        }
+            t.opened > before
+        });
         let Share { agents, span_ms, current, ids, titles, .. } = self;
         let Some(cur) = current else { return };
         let a = agents.entry(cur.agent.clone()).or_default();
+        if opened {
+            a.failure_sessions.insert(cur.session.clone());
+        }
         if !cur.counted {
             cur.counted = true;
             a.logs += 1;
@@ -495,6 +546,10 @@ impl Sink for Share {
             for t in cur.compactions.drain(..) {
                 *a.compactions.entry(t).or_default() += 1;
             }
+            if cur.handoffs.contains(&HANDOFF_KINDS[3]) {
+                a.question_sessions.insert(cur.session.clone());
+            }
+            a.interrupts_at.append(&mut cur.interrupts);
             for h in cur.handoffs.drain(..) {
                 *a.handoffs.entry(h).or_default() += 1;
             }
@@ -676,6 +731,8 @@ fn outcome_part(n: [u64; 3]) -> Value {
 pub struct Extra {
     pub rhythm: Option<Summary>,
     pub client_rhythm: BTreeMap<(AgentId, String), Summary>,
+    /// The rhythm of each agent's main sessions, for the turns and answers of its distributions.
+    pub agent_rhythm: BTreeMap<AgentId, Summary>,
     pub bench: Option<Bench>,
 }
 
@@ -690,6 +747,77 @@ pub fn rhythms(timelines: Vec<(String, Timeline)>, now_ms: i64, offset: Offset, 
     let all = View::new(timelines.into_iter().map(|(_, t)| t).collect(), now_ms, offset).summary(window);
     let clients = by_client.into_iter().map(|(key, ts)| (key, View::new(ts, now_ms, offset).summary(window))).collect();
     (all, clients)
+}
+
+/// The rhythm of each agent's main sessions inside `window`, as [`rhythms`] reads them, with the
+/// days of all of them together: an answer counts in its agent's part when it counts in the file's.
+pub fn agent_rhythms(timelines: &[(String, Timeline)], now_ms: i64, offset: Offset, window: (i64, i64)) -> BTreeMap<AgentId, Summary> {
+    let view = View::new(timelines.iter().map(|(_, t)| t.clone()).collect(), now_ms, offset);
+    let mut by_agent: BTreeMap<AgentId, Vec<&crate::rhythm::Lane>> = BTreeMap::new();
+    for (t, lane) in view.timelines.iter().zip(&view.lanes).filter(|(t, _)| !t.left_out) {
+        by_agent.entry(t.agent.clone()).or_default().push(lane);
+    }
+    by_agent.into_iter().map(|(agent, lanes)| (agent, Summary::of(&lanes, window, &view.days))).collect()
+}
+
+/// A distribution of some values: `n`, and from [`MIN_QUANTILE_N`] values on the quantiles of
+/// [`QUANTILES`], each the value at position `n · p / 100` of the sorted values, counting from 0,
+/// so that `p50` is the upper of two middle values, as the file's medians are. `value` writes one
+/// value as the file rounds it.
+fn distribution<T: Copy + PartialOrd>(mut values: Vec<T>, value: impl Fn(T) -> Value) -> Value {
+    let n = values.len();
+    let mut part = Map::new();
+    part.insert("n".into(), json!(n));
+    if n >= MIN_QUANTILE_N {
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        for (key, p) in QUANTILES {
+            part.insert(key.into(), value(values[(n * p / 100).min(n - 1)]));
+        }
+    }
+    Value::Object(part)
+}
+
+/// An agent's distributions: per main session, per cold return, per turn and per answer.
+fn distribution_part(p: &AgentPauses, rhythm: Option<&Summary>) -> Value {
+    let sessions: Vec<&crate::pauses::SessionSize> = p.sessions.values().collect();
+    let mut part = Map::new();
+    part.insert(DISTRIBUTIONS[0].into(), distribution(sessions.iter().map(|s| s.usd).collect(), dollars));
+    part.insert(DISTRIBUTIONS[1].into(), distribution(p.returns.iter().map(|r| r.usd).collect(), dollars));
+    part.insert(DISTRIBUTIONS[2].into(), distribution(sessions.iter().map(|s| s.typed).collect(), |n| json!(n)));
+    if let Some(r) = rhythm {
+        part.insert(DISTRIBUTIONS[3].into(), distribution(r.turns.clone(), |ms| json!(ms)));
+        part.insert(DISTRIBUTIONS[4].into(), distribution(r.answers.iter().map(|a| a.1).collect(), |ms| json!(ms)));
+    }
+    part.insert(DISTRIBUTIONS[5].into(), distribution(sessions.iter().map(|s| s.largest).collect(), |n| json!(n)));
+    Value::Object(part)
+}
+
+/// The days of an agent's prevalence counts, each among its active days: with a cold return,
+/// with a request that waited for retries, and with an interrupt.
+fn prevalence_days(p: Option<&AgentPauses>, a: &AgentShare, active: &BTreeSet<String>, day: &impl Fn(i64) -> String) -> [BTreeSet<String>; 3] {
+    let among = |ts: &mut dyn Iterator<Item = i64>| -> BTreeSet<String> { ts.map(day).filter(|d| active.contains(d)).collect() };
+    [
+        among(&mut p.into_iter().flat_map(|p| p.returns.iter().map(|r| r.ts_ms))),
+        among(&mut p.into_iter().flat_map(|p| p.busy.retried_at.iter().copied())),
+        among(&mut a.interrupts_at.iter().copied()),
+    ]
+}
+
+/// An agent's prevalence part: its days from [`prevalence_days`], and its main sessions with a
+/// cold return, a failure window, a context of [`LARGE_CONTEXT`] or more, a span of
+/// [`LONG_SPAN_MS`] or more, and a question.
+fn prevalence_part(p: Option<&AgentPauses>, a: &AgentShare, days: &[BTreeSet<String>; 3]) -> Value {
+    let sessions = |f: &dyn Fn(&crate::pauses::SessionSize) -> bool| p.map_or(0, |p| p.sessions.values().filter(|s| f(s)).count());
+    let counts = [
+        sessions(&|s| s.cold_returns > 0),
+        a.failure_sessions.len(),
+        sessions(&|s| s.largest >= LARGE_CONTEXT),
+        sessions(&|s| s.span_ms() >= LONG_SPAN_MS),
+        a.question_sessions.len(),
+    ];
+    let mut part: Map<String, Value> = PREVALENCE_DAYS.iter().zip(days).map(|(k, d)| (k.to_string(), json!(d.len()))).collect();
+    part.extend(PREVALENCE_SESSIONS.iter().zip(counts).map(|(k, n)| (k.to_string(), json!(n))));
+    Value::Object(part)
 }
 
 /// A wait of the rhythm parts: how many, their median as the rhythm takes it, and their counts
@@ -916,6 +1044,8 @@ pub fn to_json(c: &Collector, p: &Pauses, s: &Share, h: &Header, day: impl Fn(i6
 /// The file, with what the share command's own pass adds.
 pub fn to_json_with(c: &Collector, p: &Pauses, s: &Share, h: &Header, x: &Extra, day: impl Fn(i64) -> String) -> Value {
     let mut agents = Map::new();
+    // The days of the prevalence counts, every agent together.
+    let mut all_days: [BTreeSet<String>; 3] = Default::default();
     for (agent, a) in &s.agents {
         let names = &agent.info().public_names;
         // Spend by model and component, as the summary's model table counts it.
@@ -1057,6 +1187,12 @@ pub fn to_json_with(c: &Collector, p: &Pauses, s: &Share, h: &Header, x: &Extra,
             e.insert("pauses".into(), pause_parts(pauses));
             e.insert("session_spans".into(), span_parts(pauses));
             e.insert("time".into(), time_part(&pauses.busy));
+            e.insert("distributions".into(), distribution_part(pauses, x.agent_rhythm.get(agent)));
+        }
+        let prevalent = prevalence_days(pauses, a, &days, &day);
+        e.insert("prevalence".into(), prevalence_part(pauses, a, &prevalent));
+        for (all, mine) in all_days.iter_mut().zip(prevalent) {
+            all.extend(mine);
         }
         if let (Some((short, long)), true) = (a.whatif_lifetimes, a.whatif.requests.iter().any(|n| *n > 0)) {
             let w = &a.whatif;
@@ -1085,6 +1221,8 @@ pub fn to_json_with(c: &Collector, p: &Pauses, s: &Share, h: &Header, x: &Extra,
     let days: BTreeSet<String> = hours.iter().map(|h| day(h * HOUR_MS)).collect();
     let busy_ms: i64 = s.agents.keys().filter_map(|agent| p.agents.get(agent)).map(|a| a.busy.total_ms()).sum();
     file.insert("activity".into(), json!({"active_days": days.len(), "active_hours": hours.len(), "busy_ms": busy_ms}));
+    // A day counts once however many agents had it; an agent's active day is the file's too.
+    file.insert("prevalence".into(), Value::Object(PREVALENCE_DAYS.iter().zip(&all_days).map(|(k, d)| (k.to_string(), json!(d.len()))).collect()));
     if let Some(r) = &x.rhythm {
         file.insert("rhythm".into(), rhythm_part(r));
     }
@@ -1147,6 +1285,9 @@ pub fn own_words(agents: &[AgentId]) -> HashSet<String> {
         .chain(ORIGIN_KINDS)
         .chain(HANDOFF_KINDS)
         .chain(WAKE_SOURCES)
+        .chain(DISTRIBUTIONS)
+        .chain(PREVALENCE_DAYS)
+        .chain(PREVALENCE_SESSIONS)
         .chain([crate::busy::MODEL, crate::busy::API_RETRIES, crate::busy::SUBAGENTS, crate::busy::COMPACTION, crate::busy::BACKGROUND, crate::busy::NOTHING])
         .chain(["other", "unknown"])
         .chain(known_programs());
@@ -1192,8 +1333,9 @@ pub fn words(v: &Value, own: &HashSet<String>) -> Vec<Word> {
             // The tokprof version, the platform, the window's days and the activity counts are
             // tokprof's own.
             ("format" | "tokprof" | "platform" | "window" | "activity", _) => {}
-            // The rhythm is tokprof's own part: its keys are field names and pause ranges.
-            ("rhythm", value) => walk(value, "rhythm", own, &mut out),
+            // The rhythm and the prevalence are tokprof's own parts: their keys are field names and
+            // pause ranges.
+            ("rhythm" | "prevalence", value) => walk(value, key, own, &mut out),
             (other, value) => {
                 out.push(Word { kind: WordKind::Other, text: other.to_string(), field: String::new() });
                 walk(value, other, own, &mut out);
@@ -1970,7 +2112,7 @@ mod tests {
             let (c, p, sh) = collect(&[s]);
             let client = c.clients.rows.keys().next().unwrap().1.clone();
             let (summary, mut clients) = rhythms(vec![(client.clone(), tl("s", vec![(at(10, 0), Event::Typed)]))], at(23, 0), &utc, (i64::MIN, i64::MAX));
-            let extra = Extra { rhythm: Some(summary), client_rhythm: std::mem::take(&mut clients), bench: None };
+            let extra = Extra { rhythm: Some(summary), client_rhythm: std::mem::take(&mut clients), bench: None, ..Extra::default() };
             let v = to_json_with(&c, &p, &sh, &HEADER, &extra, |_| "2026-11-03".into());
             assert_eq!(v["agents"]["claude"]["clients"][&client]["rhythm"]["messages"], json!(1));
             assert_eq!(v["rhythm"]["sittings"], json!(1));
@@ -2093,7 +2235,12 @@ mod tests {
                 &utc,
                 (i64::MIN, i64::MAX),
             );
-            let extra = Extra { rhythm: Some(summary), client_rhythm: clients, bench: Some(bench(vec![ret([10.0, 8.0, 3.0, 4.0, 5.0], true)])) };
+            let extra = Extra {
+                rhythm: Some(summary),
+                client_rhythm: clients,
+                agent_rhythm: BTreeMap::new(),
+                bench: Some(bench(vec![ret([10.0, 8.0, 3.0, 4.0, 5.0], true)])),
+            };
             let own = own_words(&agents());
             let texts = |v: &Value| words(v, &own).into_iter().map(|w| w.text).collect::<BTreeSet<String>>();
             let with = to_json_with(&c, &p, &sh, &HEADER, &extra, |_| "2026-11-03".into());
@@ -2223,5 +2370,212 @@ mod tests {
     fn a_whole_word_counts_for_user_and_host_names() {
         assert!(holds_word("sdk-ts", "sdk") && !holds_word("sdk-ts", "sd") && holds_word("a_b-C", "c"));
         assert!(holds_word("walrus-mbp-proxy", "walrus-mbp") && !holds_word("walrus-mbpx", "walrus-mbp"));
+    }
+
+    mod spread {
+        use super::*;
+        use crate::rhythm::{Event, Timeline};
+
+        const T0: i64 = 1_793_620_800_000; // 2026-11-02 12:00 UTC
+
+        fn at(min: i64) -> i64 {
+            T0 + min * 60_000
+        }
+
+        fn typed(min: i64, usage: Usage) -> Request {
+            Request { trigger: Some(crate::trigger::Trigger::Prompt), ..request(min, None, usage) }
+        }
+
+        fn small() -> Usage {
+            Usage { cache_read: 1_000, output: 1, ..Usage::default() }
+        }
+
+        #[test]
+        fn quantiles_only_from_five_values() {
+            assert_eq!(distribution(vec![1u64, 2, 3, 4], |n| json!(n)), json!({"n": 4}));
+            assert_eq!(distribution(vec![5u64, 1, 4, 2, 3], |n| json!(n)), json!({"n": 5, "p25": 2, "p50": 3, "p75": 4, "p90": 5}));
+            // Of an even number, `p50` is the upper of the two middle values, as the file's medians.
+            assert_eq!(distribution(vec![1u64, 2, 3, 4, 5, 6], |n| json!(n))["p50"], 4);
+            assert_eq!(distribution(Vec::<f64>::new(), dollars), json!({"n": 0}));
+            // Dollars are rounded as everywhere in the file.
+            assert_eq!(distribution(vec![0.123_456; 5], dollars)["p90"], json!(0.1235));
+        }
+
+        /// Three main sessions: a big one with a cold return after 2 hours, a question and an
+        /// interrupt; one of 57 hours with a cold return; and a small one.
+        fn three() -> Vec<Session> {
+            let mut big = session(
+                crate::testing::claude(),
+                "big",
+                vec![(
+                    "main",
+                    ChainKind::Main,
+                    vec![
+                        typed(0, Usage { write_long: 500_000, output: 100, ..Usage::default() }),
+                        typed(120, Usage { cache_read: 10_000, write_long: 492_000, output: 100, ..Usage::default() }),
+                    ],
+                )],
+            );
+            big.push_handoff(at(1), HandoffKind::Question);
+            big.push_handoff(at(2), HandoffKind::Question);
+            big.push_handoff(at(3), HandoffKind::Interrupt);
+            let long = session(
+                crate::testing::claude(),
+                "long",
+                vec![(
+                    "main",
+                    ChainKind::Main,
+                    vec![
+                        typed(0, Usage { write_long: 200_000, output: 100, ..Usage::default() }),
+                        request(57 * 60, None, Usage { cache_read: 10_000, write_long: 192_000, output: 100, ..Usage::default() }),
+                    ],
+                )],
+            );
+            let small = session(crate::testing::claude(), "small", vec![("main", ChainKind::Main, vec![request(30, None, small())])]);
+            vec![big, long, small]
+        }
+
+        #[test]
+        fn prevalence_agrees_with_the_other_parts() {
+            let (c, p, sh) = collect(&three());
+            let v = to_json(&c, &p, &sh, &HEADER, day_at(0));
+            let a = &v["agents"]["claude"];
+            let n = |x: &Value| x.as_u64().unwrap_or(0);
+            let pr = &a["prevalence"];
+            // Cold returns: the sessions with one, their count, and the days.
+            let returns: u64 = a["pauses"]["cold_returns_by_pause"].as_object().unwrap().values().map(|r| n(&r["returns"])).sum();
+            assert_eq!((n(&pr["sessions_with_cold_return"]), returns), (2, 2), "{a}");
+            assert_eq!(n(&a["distributions"]["cold_return_usd"]["n"]), returns);
+            assert_eq!(n(&pr["days_with_cold_return"]), 2, "the second return is 57 hours later");
+            assert!(n(&pr["days_with_cold_return"]) <= n(&a["activity"]["active_days"]));
+            // Large and long sessions: the ranges of the pause and span parts from 400k and 1 day on.
+            let sizes = &a["pauses"]["sessions_by_largest_context"];
+            assert_eq!(n(&pr["sessions_over_400k"]), n(&sizes["400–800k"]["sessions"]) + n(&sizes["800k+"]["sessions"]));
+            assert_eq!(n(&pr["sessions_over_400k"]), 1);
+            let spans = &a["session_spans"];
+            assert_eq!(n(&pr["sessions_over_1d"]), n(&spans["1–3d"]["sessions"]) + n(&spans["over 3d"]["sessions"]));
+            assert_eq!(n(&pr["sessions_over_1d"]), 1);
+            // Two questions in one session; one interrupt on one day.
+            assert_eq!((n(&pr["sessions_with_question"]), n(&a["handoffs"]["questions"])), (1, 2));
+            assert_eq!((n(&pr["days_with_interrupt"]), n(&a["handoffs"]["interrupts"])), (1, 1));
+            assert_eq!((n(&pr["sessions_with_failure_window"]), n(&pr["days_with_retry_wait"])), (0, 0));
+            // The file counts the days of all agents once.
+            assert_eq!(v["prevalence"], json!({"days_with_cold_return": 2, "days_with_retry_wait": 0, "days_with_interrupt": 1}));
+            // Every main session is a value of the session distributions.
+            let main = n(&a["main_sessions"]);
+            for key in ["session_usd", "typed_per_session", "largest_context"] {
+                assert_eq!(n(&a["distributions"][key]["n"]), main, "{key}");
+            }
+            assert_eq!(a["distributions"]["session_usd"], json!({"n": 3}), "fewer than 5 values: no quantiles");
+        }
+
+        #[test]
+        fn a_day_of_two_agents_counts_once_in_the_file() {
+            let codex = |min| Request { api: crate::api::ApiId::OpenAi, model: "gpt-6-astra".into(), ..request(min, None, small()) };
+            let mut a = session(crate::testing::claude(), "a", vec![("main", ChainKind::Main, vec![request(0, None, small())])]);
+            a.push_handoff(at(1), HandoffKind::Interrupt);
+            let mut b = session(crate::testing::codex(), "b", vec![("main", ChainKind::Main, vec![codex(10)])]);
+            b.push_handoff(at(11), HandoffKind::Interrupt);
+            let v = file(&[a, b]);
+            assert_eq!(v["agents"]["claude"]["prevalence"]["days_with_interrupt"], 1);
+            assert_eq!(v["agents"]["codex"]["prevalence"]["days_with_interrupt"], 1);
+            assert_eq!(v["prevalence"]["days_with_interrupt"], 1);
+        }
+
+        #[test]
+        fn typed_messages_per_session_count_the_first_one_too() {
+            // Five sessions with 1 to 5 typed messages, a minute apart.
+            let sessions: Vec<Session> = (1..=5)
+                .map(|k| session(crate::testing::claude(), &format!("s{k}"), vec![("main", ChainKind::Main, (0..k).map(|i| typed(i, small())).collect())]))
+                .collect();
+            let v = file(&sessions);
+            let a = &v["agents"]["claude"];
+            assert_eq!(a["distributions"]["typed_per_session"], json!({"n": 5, "p25": 2, "p50": 3, "p75": 4, "p90": 5}));
+            // The pause parts count a message after an earlier request: all but each session's first.
+            assert_eq!(a["pauses"]["typed_messages"], 15 - 5);
+        }
+
+        #[test]
+        fn a_session_counts_once_with_a_failure_window() {
+            let agent = crate::testing::claude();
+            let price = Pricing::defaults().get("claude-opus-5-5", 100_000, T0);
+            let mut sink = (Collector::new(None, None), (Pauses::new(Filter::default()), Share::new(Filter::default())));
+            let fail = ToolShare {
+                tool: Some("Bash"),
+                target: Some("cargo test"),
+                class: Class::Tool(ToolClass::Execute),
+                tokens: 10.0,
+                usd: 0.01,
+                call: Some(true),
+                outcome: crate::model::Outcome::Failed,
+                error: None,
+                vcs: crate::trigger::VcsActions::default(),
+            };
+            // Session `a` fails twice, and a request carries each failure; session `b` fails in its
+            // last response, so no window opens.
+            sink.session(&session(agent.clone(), "a", vec![("main", ChainKind::Main, vec![])]));
+            for i in 0..4 {
+                sink.request(&record(&agent, i, price));
+                if i % 2 == 0 {
+                    sink.tool_share(&fail);
+                }
+            }
+            sink.session(&session(agent.clone(), "b", vec![("main", ChainKind::Main, vec![])]));
+            sink.request(&record(&agent, 10, price));
+            sink.tool_share(&fail);
+            let (c, (p, sh)) = sink;
+            let v = to_json(&c, &p, &sh, &HEADER, |_| "2026-11-02".into());
+            let a = &v["agents"]["claude"];
+            assert_eq!(a["prevalence"]["sessions_with_failure_window"], 1, "{a}");
+            assert_eq!(a["failures"]["failed"], 3);
+            assert!(a["failures"]["after"]["tokens"].as_u64().unwrap() > 0);
+        }
+
+        #[test]
+        fn a_day_with_a_retry_wait() {
+            let agent = crate::testing::claude();
+            let retried = Request { retries: 2, first_sent_ms: Some(T0), sent_ms: Some(T0 + 30_000), ended_ms: Some(T0 + 90_000), ..request(0, None, small()) };
+            let s = session(agent.clone(), "s", vec![("main", ChainKind::Main, vec![retried, request(60, None, small())])]);
+            let (c, mut p, sh) = collect(std::slice::from_ref(&s));
+            p.agents.get_mut(&agent).unwrap().busy = crate::busy::Parts::of_main_in(&s, None).finish();
+            let v = to_json(&c, &p, &sh, &HEADER, day_at(0));
+            assert_eq!(
+                (v["agents"]["claude"]["time"]["retried"].as_u64(), v["agents"]["claude"]["prevalence"]["days_with_retry_wait"].as_u64()),
+                (Some(1), Some(1))
+            );
+            assert_eq!(v["prevalence"]["days_with_retry_wait"], 1);
+        }
+
+        #[test]
+        fn each_agents_turns_and_answers_add_up_to_the_files() {
+            use Event::*;
+            let day = 1_793_577_600_000; // 2026-11-03 00:00 UTC
+            let t = |h: i64, m: i64| day + h * 3_600_000 + m * 60_000;
+            let lane = |agent: AgentId, id: &str, from: i64| {
+                let events = (0..6).flat_map(|i| [(t(14, from + i * 5), Typed), (t(14, from + i * 5 + 2), TurnEnd)]).collect();
+                Timeline { agent, id: id.into(), title: None, left_out: false, events }
+            };
+            let timelines = vec![("cli".to_string(), lane(crate::testing::claude(), "a", 0)), ("cli".to_string(), lane(crate::testing::codex(), "b", 1))];
+            let utc = |_: i64| 0;
+            let by_agent = agent_rhythms(&timelines, t(23, 0), &utc, (i64::MIN, i64::MAX));
+            let (all, _) = rhythms(timelines, t(23, 0), &utc, (i64::MIN, i64::MAX));
+            let turns: usize = by_agent.values().map(|s| s.turns.len()).sum();
+            let answers: usize = by_agent.values().map(|s| s.answers.len()).sum();
+            assert_eq!((turns, answers), (all.turns.len(), all.answers.len()));
+            assert_eq!(by_agent[&crate::testing::claude()].turns.len(), 6);
+            let claude = &by_agent[&crate::testing::claude()];
+            let part = distribution_part(&AgentPauses::default(), Some(claude));
+            assert_eq!(part["turn_ms"]["n"], 6);
+            assert_eq!(part["turn_ms"]["p50"], 120_000, "{part}");
+            assert_eq!(part["answer_ms"]["n"], claude.answers.len());
+        }
+
+        #[test]
+        fn the_new_parts_have_only_own_words() {
+            let v = file(&three());
+            assert!(v["prevalence"].is_object() && v["agents"]["claude"]["distributions"].is_object());
+            let w = words(&v, &own_words(&agents()));
+            assert!(w.iter().all(|w| w.kind != WordKind::Other), "{w:?}");
+        }
     }
 }

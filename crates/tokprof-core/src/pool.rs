@@ -11,13 +11,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::share::{FORMAT, PROMPT_RANGES, SPAN_RANGES};
+use crate::share::{DISTRIBUTIONS, FORMAT, PREVALENCE_DAYS, PREVALENCE_SESSIONS, PROMPT_RANGES, QUANTILES, SPAN_RANGES};
 
 /// A row is a habit or a saving of a file when it is at least this share of the file's spend.
 pub const NOTABLE_SHARE: f64 = 0.05;
 
 /// The costliest rows a table shows before it folds the rest into `<n> more`.
 pub const TOP_ROWS: usize = 8;
+
+/// A count of `How often it happens` is common in a file when it happened in at least this share
+/// of the file's active days or main sessions.
+pub const COMMON_SHARE: f64 = 0.25;
 
 /// The tools and programs the tool table shows.
 pub const TOP_TOOLS: usize = 12;
@@ -296,6 +300,62 @@ pub struct Unpriced {
     pub files: usize,
 }
 
+/// A row of `How often it happens`: a count of days or of main sessions with something, from the
+/// prevalence parts (see share-export, Prevalence parts).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct PrevalenceRow {
+    /// The key in the file, and the row's name.
+    pub key: &'static str,
+    pub name: &'static str,
+    /// Whether it counts active days, or main sessions.
+    pub days: bool,
+    /// The pooled count and its base: the active days or the main sessions of the same files.
+    pub count: f64,
+    pub base: f64,
+    /// The median of each file's own share.
+    pub median_file: Option<f64>,
+    /// The files where it happened at least once, and in at least [`COMMON_SHARE`] of the base.
+    pub files: usize,
+    pub common_files: usize,
+    /// The files that have the part and a base above zero.
+    pub files_with_part: usize,
+    /// Each file's share; `None` for a file without the part.
+    pub by_file: Vec<Option<f64>>,
+}
+
+/// What a row of `How the sessions spread` measures.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpreadUnit {
+    #[default]
+    Usd,
+    Count,
+    Ms,
+    Tokens,
+}
+
+/// A row of `How the sessions spread`: one agent's measure of the distribution parts (see
+/// share-export, Distribution parts).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct SpreadRow {
+    pub agent: String,
+    pub key: &'static str,
+    pub name: &'static str,
+    pub unit: SpreadUnit,
+    /// The values over all files: the sessions, returns, turns or answers.
+    pub n: f64,
+    /// The files' `p50`: their median and quarters, and the median of their `p90`.
+    pub median_p50: f64,
+    pub quarter_1_p50: f64,
+    pub quarter_3_p50: f64,
+    pub median_p90: f64,
+    /// The files with quantiles, and those with the agent's measure at all.
+    pub files: usize,
+    pub files_with_part: usize,
+    /// Each file's `p25`, `p50`, `p75` and `p90`; `None` for a file without quantiles.
+    pub by_file: Vec<Option<[f64; 4]>>,
+}
+
 /// The pooled report.
 #[derive(Clone, Debug, Serialize)]
 pub struct Pool {
@@ -329,6 +389,12 @@ pub struct Pool {
     /// The files whose clients have the rhythm part.
     pub client_work_files: usize,
     pub outcomes: Option<Outcomes>,
+    pub prevalence: Vec<PrevalenceRow>,
+    /// The files with the prevalence part.
+    pub prevalence_files: usize,
+    pub spread: Vec<SpreadRow>,
+    /// The files with the distribution parts.
+    pub spread_files: usize,
 }
 
 impl Pool {
@@ -898,6 +964,10 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
         client_work: client_work(&files, min_files),
         client_work_files: with_client_part(&files, "rhythm"),
         outcomes: outcomes(&files, &keyboard, &spends),
+        prevalence: prevalence(&files),
+        prevalence_files: files.iter().filter(|f| f.get("prevalence").is_some_and(Value::is_object)).count(),
+        spread: spread(&files, min_files),
+        spread_files: files.iter().filter(|f| part(f, "distributions", |_, _, _| {}).is_some()).count(),
         effort_by_client: effort_rows,
         effort_more,
         coverage: coverage(&files),
@@ -1261,6 +1331,126 @@ fn outcomes(files: &[Value], keyboard: &[Option<f64>], spends: &[f64]) -> Option
     ];
     let (usd, n) = commits.iter().zip(spends).filter_map(|(c, s)| c.map(|c| (*s, c))).fold((0.0, 0.0), |a, x| (a.0 + x.0, a.1 + x.1));
     Some(Outcomes { rows, files: with, usd_per_commit: (n > 0.0).then(|| usd / n) })
+}
+
+/// The names of the prevalence rows, by key, in the report's order.
+const PREVALENCE_NAMES: [(&str, &str); 8] = [
+    ("days_with_cold_return", "days with a cold return"),
+    ("days_with_retry_wait", "days a request waited for retries"),
+    ("days_with_interrupt", "days you stopped the agent"),
+    ("sessions_with_cold_return", "sessions with a cold return"),
+    ("sessions_with_failure_window", "sessions with spend after a failure"),
+    ("sessions_over_400k", "sessions with a context of 400k+"),
+    ("sessions_over_1d", "sessions longer than a day"),
+    ("sessions_with_question", "sessions where the agent asked"),
+];
+
+/// A file's count of days and its active days, from the file's own prevalence part, where a day
+/// counts once for all agents; `None` without the part.
+fn days_of(file: &Value, key: &str) -> Option<(f64, f64)> {
+    let count = file.get("prevalence")?.get(key)?.as_f64()?;
+    Some((count, file.pointer("/activity/active_days")?.as_f64()?))
+}
+
+/// A file's count of main sessions and its main sessions, over the agents with the prevalence
+/// part; `None` when none has it.
+fn sessions_of(file: &Value, key: &str) -> Option<(f64, f64)> {
+    let mut found = None;
+    for (_, a) in agents(file) {
+        let Some(n) = a.get("prevalence").and_then(|p| p.get(key)).and_then(Value::as_f64) else { continue };
+        let e = found.get_or_insert((0.0, 0.0));
+        e.0 += n;
+        e.1 += a["main_sessions"].as_f64().unwrap_or(0.0);
+    }
+    found
+}
+
+/// The rows of `How often it happens`: per count, the pooled share of days or sessions, the
+/// median file's share, and the files where it happened at all and in [`COMMON_SHARE`] or more.
+/// Empty when no file has the parts.
+fn prevalence(files: &[Value]) -> Vec<PrevalenceRow> {
+    let mut rows = Vec::new();
+    for (key, name) in PREVALENCE_NAMES {
+        let days = PREVALENCE_DAYS.contains(&key);
+        debug_assert!(days || PREVALENCE_SESSIONS.contains(&key));
+        let per_file: Vec<Option<(f64, f64)>> =
+            files.iter().map(|f| if days { days_of(f, key) } else { sessions_of(f, key) }.filter(|(_, base)| *base > 0.0)).collect();
+        let with: Vec<(f64, f64)> = per_file.iter().flatten().copied().collect();
+        if with.is_empty() {
+            continue;
+        }
+        let by_file: Vec<Option<f64>> = per_file.iter().map(|x| x.map(|(n, base)| n / base)).collect();
+        rows.push(PrevalenceRow {
+            key,
+            name,
+            days,
+            count: with.iter().map(|x| x.0).sum(),
+            base: with.iter().map(|x| x.1).sum(),
+            median_file: Some(median_of(by_file.iter().flatten().copied())),
+            files: with.iter().filter(|x| x.0 > 0.0).count(),
+            common_files: by_file.iter().flatten().filter(|s| **s >= COMMON_SHARE).count(),
+            files_with_part: with.len(),
+            by_file,
+        });
+    }
+    rows
+}
+
+/// The names and units of the distribution rows, in the file's order.
+const SPREAD_NAMES: [(&str, &str, SpreadUnit); 6] = [
+    ("session_usd", "cost of a session", SpreadUnit::Usd),
+    ("cold_return_usd", "first request after a cold return", SpreadUnit::Usd),
+    ("typed_per_session", "typed messages per session", SpreadUnit::Count),
+    ("turn_ms", "the agent's turn", SpreadUnit::Ms),
+    ("answer_ms", "your answer to an end of turn", SpreadUnit::Ms),
+    ("largest_context", "largest context of a session", SpreadUnit::Tokens),
+];
+
+/// The rows of `How the sessions spread`: per agent and measure, the median and quarters of the
+/// files' `p50` and the median of their `p90`. A row needs one file with quantiles, and with
+/// `min_files` above 1 that many, so that no row shows one person's sessions in a pool that asks
+/// for more.
+fn spread(files: &[Value], min_files: usize) -> Vec<SpreadRow> {
+    let names: BTreeSet<&String> = files.iter().flat_map(agents).filter(|(_, a)| a.get("distributions").is_some()).map(|(n, _)| n).collect();
+    let mut rows = Vec::new();
+    for agent in names {
+        for (key, name, unit) in SPREAD_NAMES {
+            debug_assert!(DISTRIBUTIONS.contains(&key));
+            let parts: Vec<Option<&Value>> =
+                files.iter().map(|f| f.get("agents").and_then(|a| a.get(agent)).and_then(|a| a.pointer(&format!("/distributions/{key}")))).collect();
+            let by_file: Vec<Option<[f64; 4]>> = parts
+                .iter()
+                .map(|d| {
+                    let d = (*d)?;
+                    let q = QUANTILES.map(|(k, _)| d.get(k).and_then(Value::as_f64));
+                    Some([q[0]?, q[1]?, q[2]?, q[3]?])
+                })
+                .collect();
+            let p50: Vec<f64> = {
+                let mut v: Vec<f64> = by_file.iter().flatten().map(|q| q[1]).collect();
+                v.sort_by(f64::total_cmp);
+                v
+            };
+            if p50.is_empty() || p50.len() < min_files {
+                continue;
+            }
+            rows.push(SpreadRow {
+                agent: agent.clone(),
+                key,
+                name,
+                unit,
+                n: parts.iter().flatten().filter_map(|d| d["n"].as_f64()).sum(),
+                median_p50: at_quarter(&p50, 2),
+                quarter_1_p50: at_quarter(&p50, 1),
+                quarter_3_p50: at_quarter(&p50, 3),
+                median_p90: median_of(by_file.iter().flatten().map(|q| q[3])),
+                files: p50.len(),
+                files_with_part: parts.iter().flatten().count(),
+                by_file,
+            });
+        }
+    }
+    rows
 }
 
 /// The busy time by kind: pooled, and each file's share of its own busy time.

@@ -416,6 +416,8 @@ Per agent, the file holds:
 | `prompts` | the requests and dollars whose prompts the logs hold, and all of them: what is not held shows as `unknown` content |
 | `outcomes` | the shell calls that worked and ran `git commit`, `git push` or `gh pr create`, in any part of the command but not inside a heredoc's body: `commits`, `pushes` and `pull_requests` |
 | `bench` | the cold returns of `tokprof bench` with its defaults (60 requests, 100k context, 6h of heartbeats): per way of coming back (`resume`, `compact`, `handoff`, `heartbeats`, `heartbeats_then_compaction`) the dollars over all returns and in how many it was the cheapest, the returns heartbeats kept warm, their pings, and the pings and compactions of breaks that were no return |
+| `distributions` | per measure, `n` and, from 5 values on, `p25`, `p50`, `p75` and `p90`: the cost of each main session with its subagents (`session_usd`), of the first request after each cold return (`cold_return_usd`), the typed messages per main session (`typed_per_session`), each turn you started (`turn_ms`), each answer to an end of turn (`answer_ms`), and the largest context of each main session (`largest_context`) |
+| `prevalence` | how often things happened: the active days with a cold return, with a request that waited for retries, and with an interrupt; and the main sessions with a cold return, with spend after a failure, with a context of 400k tokens or more, longer than a day, and with a question from the agent; the file also has the day counts for all its agents together, a day counted once |
 
 The file also names its format (2), the tokprof version, the platform, the first and last day of the requests, and the survey label when `--survey` gives one. Its `rhythm` is the person's time with all the agents together, as the rhythm section of `tokprof pauses` counts it: the time at the keyboard, sittings and breaks, messages, ends of turn while the person was there, interrupts and questions, and four waits with their counts, medians and pause ranges: answers to an end of turn, answers to a question, the turns the person started, and how long the agents stood still after the person left.
 
@@ -429,6 +431,8 @@ It holds no project, path, session id, title, task, prompt or tool text, and no 
 - where the money went, with the models without a price under the model table, and the share of spend whose prompts the logs hold under the content table;
 - what could have been saved, per active hour too, the cold returns of each client and their avoidable dollars per active hour, and what coming back after a cold break would have cost in each way that `tokprof bench` replays;
 - problems: failed, refused and denied calls, the spend after failures, the waits for retries by the class of their last error, and slow requests, per active hour;
+- how often it happens: the share of active days and main sessions with a cold return, a retry wait, an interrupt, spend after a failure, a big context, a long span or a question, and for a pool how many files had it at all and in a quarter of their days or sessions;
+- how the sessions spread: the quarters and the 90th percentile of the cost of a session, of the first request after a cold return, of the typed messages, turns and answers, and of the largest context, and for a pool the median and quarters of the files' medians;
 - the habits that cost the most;
 - where the agent's time went, by what it waited on;
 - your time with the agents: the time at the keyboard, sittings, answers, turns, and what the agents did after you left;

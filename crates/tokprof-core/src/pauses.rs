@@ -77,8 +77,9 @@ pub struct ColdReturn {
     pub starter: Starter,
 }
 
-/// One session: its largest main prompt, what all its requests spent, its cold returns, and the
-/// times of its first and last request, subagents included.
+/// One session: its largest main prompt, what all its requests spent, its cold returns, the
+/// times of its first and last request, subagents included, and the requests of its main
+/// conversations that a typed message started.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SessionSize {
     pub largest: u64,
@@ -86,6 +87,7 @@ pub struct SessionSize {
     pub tokens: f64,
     pub cold_returns: u64,
     pub span: Option<(i64, i64)>,
+    pub typed: u64,
 }
 
 impl SessionSize {
@@ -158,6 +160,7 @@ impl AgentPauses {
             e.tokens += s.tokens;
             e.cold_returns += s.cold_returns;
             e.span = join_span(e.span, s.span);
+            e.typed += s.typed;
         }
         for (client, (n, usd)) in o.cold_returns_by_client {
             let e = self.cold_returns_by_client.entry(client).or_default();
@@ -377,10 +380,12 @@ impl Sink for Pauses {
                 conv.follow = Some(n + 1);
             }
         }
-        if r.trigger == Trigger::Prompt
-            && let Some(p) = pause
-        {
-            agent.typed.push((p, r.usage.prompt()));
+        if r.trigger == Trigger::Prompt {
+            // The first message of a conversation counts in its session, but has no pause.
+            size.typed += 1;
+            if let Some(p) = pause {
+                agent.typed.push((p, r.usage.prompt()));
+            }
         }
         // The lifetime the next request is judged by, as cache-misses keeps it.
         if r.usage.write_long > r.usage.write_short {

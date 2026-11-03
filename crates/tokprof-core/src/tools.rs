@@ -169,6 +169,8 @@ pub struct ToolTable {
     pub denied: u64,
     /// The spend of the failure windows of all rows, each request once.
     pub after: Values,
+    /// The failure windows that opened: each starts at the request that carried a failure.
+    pub opened: u64,
     /// The windows of the chain being walked.
     windows: Windows,
 }
@@ -212,6 +214,7 @@ impl ToolTable {
         self.refused += o.refused;
         self.denied += o.denied;
         self.after.add(o.after);
+        self.opened += o.opened;
     }
 
     /// Rows, by rent or by trips, most first: dollars when priced, tokens otherwise.
@@ -300,6 +303,7 @@ impl Sink for ToolTable {
         for key in opening {
             if !self.windows.open.contains_key(&key) {
                 self.windows.open.insert(key.clone(), Vec::new());
+                self.opened += 1;
                 self.commit(&key, (index, cost));
             }
         }

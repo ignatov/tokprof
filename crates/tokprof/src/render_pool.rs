@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use tokprof_core::fmt::{count, int, table, tokens, usd};
-use tokprof_core::pool::{Pool, RateRow, RhythmRow, RhythmUnit, Row, Table, Unit};
+use tokprof_core::pool::{Pool, PrevalenceRow, RateRow, RhythmRow, RhythmUnit, Row, SpreadRow, SpreadUnit, Table, Unit};
 use tokprof_core::rhythm::duration;
 
 fn pct(share: f64) -> String {
@@ -281,12 +281,14 @@ const SPEND_TABLES: [(&str, &[&str]); 8] = [
 ];
 
 /// The note under each section's title (see share-pool, Section notes).
-const NOTES: [(&str, &str); 14] = [
+const NOTES: [(&str, &str); 16] = [
     ("Where the money went", "what the spend paid for: model, content, origin, activity, prompt size, session length and client"),
     ("What could have been saved", "dollars the prompt cache lost to misses, by cause, and what the cheaper cache lifetime would have kept"),
     ("Cold returns by client", "returns to a session after its cache expired, per active hour"),
     ("Coming back after a cold break", "what the cold returns cost as resumed, against the other ways to come back (see tokprof bench)"),
     ("Problems", "calls that failed, requests that waited for retries, and slow requests, per active hour"),
+    ("How often it happens", "the active days and main sessions in which each happened at least once"),
+    ("How the sessions spread", "per session, cold return, turn or answer: the quarters and the 90th percentile, given from 5 values on"),
     ("Habits that cost the most", "where to look, not what could be saved; the rows overlap"),
     ("Where the agent's time went", "what the agents waited on while busy; after turns: while their own background work ran on"),
     ("Your time with the agents", "your sittings and answers, and what the agents did after you left"),
@@ -304,6 +306,8 @@ fn section_head(out: &mut String, title: &str, coverage: &str, one: bool) {
     let extra = match (title, one) {
         ("Where the money went", false) => "; median file: the median of each file's own share",
         ("What could have been saved", false) => "; files 5%+: the files where a row is 5% of their spend or more",
+        ("How often it happens", false) => "; files: where it happened at all; files 25%+: in a quarter of their days or sessions or more",
+        ("How the sessions spread", false) => "; p50 and q1–q3: the median and quarters of the files' own p50; p90: the median of their p90",
         _ => "",
     };
     let _ = write!(out, "\n{title}{coverage}\n{note}{extra}\n");
@@ -478,6 +482,88 @@ fn rhythm_table(p: &Pool, rows: &[RhythmRow], by_file: bool) -> String {
     table(&out, 1)
 }
 
+/// A count of files, with its share of the files that have the row.
+fn files_cell(k: usize, of: usize) -> String {
+    format!("{k} ({:.0}%)", 100.0 * k as f64 / of.max(1) as f64)
+}
+
+/// The table of `How often it happens`. One file shows its counts; a pool, the pooled counts, the
+/// median file's share and the files where it happened at all and often.
+fn prevalence_table(p: &Pool, rows: &[PrevalenceRow], by_file: bool) -> String {
+    let one = p.files.len() == 1;
+    let mut head = ["item", "count", "of", "share"].map(str::to_string).to_vec();
+    if !one {
+        head.extend(["median file", "files", "files 25%+"].map(str::to_string));
+    }
+    if by_file {
+        head.extend(p.files.iter().map(|f| f.name.clone()));
+    }
+    let mut out = vec![head];
+    for r in rows {
+        let mut name = r.name.to_string();
+        // The title says in how many files the part is; a row says so only when it differs.
+        if !one && r.files_with_part != p.prevalence_files {
+            name += &format!(" (in {} of {} files)", r.files_with_part, p.files.len());
+        }
+        let base = int(r.base.round() as u64) + if r.days { " days" } else { " sessions" };
+        let mut cells = vec![name, int(r.count.round() as u64), base, pct(r.count / r.base.max(1e-9))];
+        if !one {
+            cells.push(r.median_file.map_or("–".to_string(), pct));
+            cells.push(files_cell(r.files, r.files_with_part));
+            cells.push(files_cell(r.common_files, r.files_with_part));
+        }
+        if by_file {
+            cells.extend(r.by_file.iter().map(|x| x.map_or("–".to_string(), pct)));
+        }
+        out.push(cells);
+    }
+    table(&out, 1)
+}
+
+/// A value of `How the sessions spread`, in its row's unit.
+fn spread_cell(unit: SpreadUnit, x: f64) -> String {
+    match unit {
+        SpreadUnit::Usd => usd(x),
+        SpreadUnit::Count => int(x.round() as u64),
+        SpreadUnit::Ms => span(x),
+        SpreadUnit::Tokens => tokens(x),
+    }
+}
+
+/// The table of `How the sessions spread`. One file shows its values and quantiles; a pool, the
+/// values of all files, the median and quarters of the files' `p50`, and the median `p90`.
+fn spread_table(p: &Pool, rows: &[SpreadRow], by_file: bool) -> String {
+    let one = p.files.len() == 1;
+    let mut head = ["agent", "measure", "values"].map(str::to_string).to_vec();
+    if one {
+        head.extend(["p25", "p50", "p75", "p90"].map(str::to_string));
+    } else {
+        head.extend(["p50", "q1–q3", "p90", "files"].map(str::to_string));
+    }
+    if by_file {
+        head.extend(p.files.iter().map(|f| format!("{} p50", f.name)));
+    }
+    let mut out = vec![head];
+    for r in rows {
+        let cell = |x: f64| spread_cell(r.unit, x);
+        let mut cells = vec![r.agent.clone(), r.name.to_string(), int(r.n.round() as u64)];
+        if one {
+            let q = r.by_file.iter().flatten().next();
+            cells.extend((0..4).map(|i| q.map_or("–".to_string(), |q| cell(q[i]))));
+        } else {
+            cells.push(cell(r.median_p50));
+            cells.push(format!("{}–{}", cell(r.quarter_1_p50), cell(r.quarter_3_p50)));
+            cells.push(cell(r.median_p90));
+            cells.push(if r.files_with_part > r.files { format!("{} of {}", r.files, r.files_with_part) } else { r.files.to_string() });
+        }
+        if by_file {
+            cells.extend(r.by_file.iter().map(|q| q.map_or("–".to_string(), |q| cell(q[1]))));
+        }
+        out.push(cells);
+    }
+    table(&out, 2)
+}
+
 /// The report over the pool. With one file, the columns about files are left out.
 pub fn text(p: &Pool, by_file: bool) -> String {
     let mut out = header(p);
@@ -568,6 +654,16 @@ pub fn text(p: &Pool, by_file: bool) -> String {
         section_head(&mut out, "Problems", "", one);
         out.push('\n');
         out.push_str(&rate_table(p, &p.problems, "measure", "per active hour", by_file));
+    }
+    if !p.prevalence.is_empty() {
+        section_head(&mut out, "How often it happens", &coverage(p.prevalence_files, n), one);
+        out.push('\n');
+        out.push_str(&prevalence_table(p, &p.prevalence, by_file));
+    }
+    if !p.spread.is_empty() {
+        section_head(&mut out, "How the sessions spread", &coverage(p.spread_files, n), one);
+        out.push('\n');
+        out.push_str(&spread_table(p, &p.spread, by_file));
     }
     if let Some(t) = p.table("habits").filter(present) {
         section_head(&mut out, "Habits that cost the most", "", one);
@@ -981,6 +1077,8 @@ mod tests {
             "Cold returns by client",
             "Coming back after a cold break",
             "Problems",
+            "How often it happens",
+            "How the sessions spread",
             "Habits that cost the most",
             "Where the agent's time went",
             "Your time with the agents",
@@ -1017,7 +1115,14 @@ mod tests {
             json!({"handoffs": {"turn_ends": 3, "interrupts": 1, "typed_while_working": 0, "questions": 0, "answers": 0, "wakes": {"subagent": 0, "command": 0, "other": 0}}}),
         );
         let t2 = text(&pool_of(vec![before]), false);
-        for title in ["Your time with the agents", "Coming back after a cold break", "Commits and pull requests", "Working with the agent"] {
+        for title in [
+            "Your time with the agents",
+            "Coming back after a cold break",
+            "Commits and pull requests",
+            "Working with the agent",
+            "How often it happens",
+            "How the sessions spread",
+        ] {
             assert!(!t2.contains(title), "{title} in {t2}");
         }
     }
@@ -1061,7 +1166,20 @@ mod tests {
             "stood_still": {"count": 180, "median_ms": 480_000, "by_pause": {"5–15m": 180}},
             "worked_share_median": 0.42});
         f["agents"]["codex"] = json!({"bench": bench(18, [77.89, 55.82, 32.22, 90.29, 62.98], 2)});
+        spread_parts(&mut f, 12.0, 0.5);
         f
+    }
+
+    /// Adds the prevalence and distribution parts: cold returns on `days` of the file's active
+    /// days, and sessions whose median cost is `p50`.
+    fn spread_parts(f: &mut Value, days: f64, p50: f64) {
+        f["prevalence"] = json!({"days_with_cold_return": days, "days_with_retry_wait": 0, "days_with_interrupt": 3});
+        let a = &mut f["agents"]["claude"];
+        a["main_sessions"] = json!(100);
+        a["prevalence"] = json!({"days_with_cold_return": days, "days_with_retry_wait": 0, "days_with_interrupt": 3, "sessions_with_cold_return": 20,
+            "sessions_with_failure_window": 30, "sessions_over_400k": 10, "sessions_over_1d": 5, "sessions_with_question": 0});
+        a["distributions"] = json!({"session_usd": {"n": 100, "p25": 0.01, "p50": p50, "p75": 15.0, "p90": 67.0},
+            "cold_return_usd": {"n": 4}, "largest_context": {"n": 100, "p25": 24_000, "p50": 54_000, "p75": 362_000, "p90": 691_000}});
     }
 
     /// A bench part: the returns, each way's dollars, and the way cheapest in all of them.
@@ -1251,5 +1369,74 @@ mod tests {
         let text = text(&p, true);
         let head = text.lines().find(|l| l.starts_with("agent   model") || l.starts_with("agent  model")).unwrap_or_else(|| panic!("{text}"));
         assert!(head.trim_end().ends_with("f0     f1     f2") || head.split_whitespace().rev().take(3).collect::<Vec<_>>() == ["f2", "f1", "f0"], "{head}");
+    }
+
+    #[test]
+    fn how_often_it_happens_in_one_file() {
+        let t = text(&pool_of(vec![rich_file()]), false);
+        let section = &t[t.find("\nHow often it happens\n").unwrap()..t.find("\nHow the sessions spread").unwrap()];
+        assert!(section.contains("\nthe active days and main sessions in which each happened at least once\n"), "{section}");
+        let row = |name: &str| {
+            section.lines().find(|l| l.starts_with(name)).unwrap_or_else(|| panic!("{name}: {section}")).split_whitespace().rev().take(4).collect::<Vec<_>>()
+        };
+        assert_eq!(row("days with a cold return"), ["40.0%", "days", "30", "12"]);
+        assert_eq!(row("sessions with a cold return"), ["20.0%", "sessions", "100", "20"]);
+        assert!(!section.contains("files 25%+"), "{section}");
+    }
+
+    #[test]
+    fn how_often_it_happens_in_a_pool() {
+        // Cold returns on 15, 0, 6 and 30 of 30 days, and a file from before this change.
+        let mut files: Vec<Value> = [15.0, 0.0, 6.0, 30.0]
+            .iter()
+            .map(|d| {
+                let mut f = friction_file(1_000.0, 100.0, 30.0, json!({}));
+                spread_parts(&mut f, *d, 1.0);
+                f
+            })
+            .collect();
+        files.push(friction_file(1_000.0, 100.0, 30.0, json!({})));
+        let p = pool_of(files);
+        let r = p.prevalence.iter().find(|r| r.key == "days_with_cold_return").unwrap();
+        assert_eq!((r.count, r.base, r.files, r.common_files, r.files_with_part), (51.0, 120.0, 3, 2, 4));
+        assert_eq!(r.median_file, Some(0.5), "the upper of 20% and 50%");
+        let t = text(&p, false);
+        assert!(t.contains("\nHow often it happens, in 4 of 5 files\n"), "{t}");
+        assert!(t.contains("; files: where it happened at all; files 25%+: in a quarter of their days or sessions or more\n"), "{t}");
+        let line = t.lines().find(|l| l.starts_with("days with a cold return")).unwrap();
+        assert!(line.split_whitespace().collect::<Vec<_>>().ends_with(&["51", "120", "days", "42.5%", "50.0%", "3", "(75%)", "2", "(50%)"]), "{line}");
+    }
+
+    #[test]
+    fn how_the_sessions_spread_in_one_file_and_in_a_pool() {
+        let t = text(&pool_of(vec![rich_file()]), false);
+        let section = &t[t.find("\nHow the sessions spread\n").unwrap()..t.find("\nHabits that cost the most").unwrap()];
+        assert!(section.contains("agent   measure                       values    p25    p50     p75     p90\n"), "{section}");
+        assert!(section.contains("claude  cost of a session                100  $0.01  $0.50  $15.00  $67.00\n"), "{section}");
+        assert!(section.contains("claude  largest context of a session     100  24.0k  54.0k  362.0k  691.0k\n"), "{section}");
+        assert!(!section.contains("first request after a cold return"), "4 returns give no quantiles: {section}");
+        // Five files whose median session cost $1 to $5, and one with too few sessions.
+        let mut files: Vec<Value> = (1..=5)
+            .map(|k| {
+                let mut f = friction_file(1_000.0, 100.0, 30.0, json!({}));
+                spread_parts(&mut f, 3.0, k as f64);
+                f
+            })
+            .collect();
+        let mut few = friction_file(1_000.0, 100.0, 30.0, json!({}));
+        spread_parts(&mut few, 3.0, 1.0);
+        few["agents"]["claude"]["distributions"]["session_usd"] = json!({"n": 3});
+        files.push(few);
+        let p = pool_of(files.clone());
+        let r = p.spread.iter().find(|r| r.key == "session_usd").unwrap();
+        assert_eq!((r.median_p50, r.quarter_1_p50, r.quarter_3_p50, r.median_p90, r.files, r.files_with_part, r.n), (3.0, 2.0, 4.0, 67.0, 5, 6, 503.0));
+        let t = text(&p, false);
+        assert!(t.contains("; p50 and q1–q3: the median and quarters of the files' own p50; p90: the median of their p90\n"), "{t}");
+        let line = t.lines().find(|l| l.starts_with("claude  cost of a session")).unwrap();
+        assert!(line.split_whitespace().collect::<Vec<_>>().ends_with(&["503", "$3.00", "$2.00–$4.00", "$67.00", "5", "of", "6"]), "{line}");
+        // With --min-files 6, no row has quantiles from 6 files, and the section is left out.
+        let named: Vec<(String, Value)> = files.into_iter().enumerate().map(|(i, f)| (format!("f{i}"), f)).collect();
+        let p = pool::build(&named, 6);
+        assert!(p.spread.iter().all(|r| r.key != "session_usd") && p.spread.iter().any(|r| r.key == "largest_context"), "{:?}", p.spread);
     }
 }

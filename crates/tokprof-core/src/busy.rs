@@ -106,6 +106,8 @@ pub struct Busy {
     /// Main requests that waited for retries after API errors, and their last errors.
     pub retried: u64,
     pub retry_errors: BTreeMap<String, u64>,
+    /// When each of those requests was sent, in epoch ms.
+    pub retried_at: Vec<i64>,
 }
 
 /// What can be painted: the kinds, and the layers that decide whether a moment is busy.
@@ -266,6 +268,7 @@ impl Busy {
                 }
                 if counted && (r.retries > 0 || (!answered && r.retry_error.is_some())) {
                     self.retried += 1;
+                    self.retried_at.push(r.ts_ms);
                     if let Some(e) = &r.retry_error {
                         *self.retry_errors.entry(e.to_string()).or_default() += 1;
                     }
@@ -401,6 +404,7 @@ impl Busy {
             self.longest = Some(l);
         }
         self.retried += o.retried;
+        self.retried_at.extend(o.retried_at);
         for (e, n) in o.retry_errors {
             *self.retry_errors.entry(e).or_default() += n;
         }
