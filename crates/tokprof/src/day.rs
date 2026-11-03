@@ -59,11 +59,10 @@ pub fn window(date: Option<i64>, now_ms: i64, offset: Offset) -> (i64, i64) {
     }
 }
 
-/// The day view of a date, or of the day of the latest action, for a strip at most `columns`
-/// wide over the 24 hours from `axis_hour` on the day's date, by default from the hour the day
-/// starts in.
+/// The day view of a date, or of the day of the latest action, with its strip in `layout` over the
+/// 24 hours from `axis_hour` on the day's date, by default from the hour the day starts in.
 #[allow(clippy::too_many_arguments)]
-pub fn build(catalog: &Catalog, select: &Query, pricing: &Pricing, date: Option<i64>, now_ms: i64, columns: i64, axis_hour: Option<i64>, style: &Style) -> Result<Day> {
+pub fn build(catalog: &Catalog, select: &Query, pricing: &Pricing, date: Option<i64>, now_ms: i64, layout: rhythm::Layout, axis_hour: Option<i64>, style: &Style) -> Result<Day> {
     let started = Instant::now();
     let offset: Offset = &rhythm::local_offset;
     let (from, to) = window(date, now_ms, offset);
@@ -104,7 +103,7 @@ pub fn build(catalog: &Catalog, select: &Query, pricing: &Pricing, date: Option<
     let priced = cold.agents.values().any(|a| a.priced);
     let hour = axis_hour.unwrap_or_else(|| (bounds.0 + offset(bounds.0)).rem_euclid(24 * HOUR_MS) / HOUR_MS);
     let axis = axis_at(bounds.0, hour, offset);
-    let text = crate::render_rhythm::day(&view, date, bounds, offset, &returns, priced, columns, Some(axis), style);
+    let text = crate::render_rhythm::day(&view, date, bounds, offset, &returns, priced, layout, Some(axis), style);
     Ok(Day { date, text, read, warnings: crate::warnings(&stats.unreadable), axis_hour: hour })
 }
 

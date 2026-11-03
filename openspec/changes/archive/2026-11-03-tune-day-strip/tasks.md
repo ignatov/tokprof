@@ -28,5 +28,5 @@ Measured on 2026-11-03 at about 16:00 on the author's logs.
 | `tokprof day 2026-11-02`, strip | 08:00–23:00 in 15-minute columns, marks `= - * ? ! #` | 04:00–04:00 in 20-minute columns, 72; marks `█ ░ * ? ! ▓` |
 | its rhythm lines | 16 sittings, 4.1h, 59 messages to 12 sessions; 5 cold returns, $15.48 | the same |
 | `tokprof day 2026-11-02 \| cat` | – | no escape code |
-| `tokprof ui` at 200x50, `d` | the day in the right pane | the day on the whole screen after 0.61s, hours from 04; 10-minute columns, since 200 less 23 columns of labels and borders fit 144 |
+| `tokprof ui` at 200x50, `d` | the day in the right pane | the day on the whole screen after 0.61s, hours from 04; the 10-minute columns were inferred, not checked: a cap of 72 columns kept them at 20 minutes, fixed in fit-day-to-screen |
 | then `[` 7 times | – | 2026-10-27, which starts at 05:14, drawn from 04 as the first day; `tokprof day 2026-10-27` alone starts at 05 |

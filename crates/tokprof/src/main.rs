@@ -282,7 +282,7 @@ fn main() -> Result<()> {
     if let Command::Day { date } = &command {
         day_takes_no_time_filter(&cli)?;
         let date = date.as_deref().map(|d| parse_date(d).map(|ms| rhythm::date_of(ms + 12 * 3_600_000, &rhythm::local_offset))).transpose()?;
-        let day = day::build(&catalog, &select, &pricing, date, now_ms(), rhythm::STRIP_COLUMNS, None, &style)?;
+        let day = day::build(&catalog, &select, &pricing, date, now_ms(), rhythm::Layout::TERMINAL, None, &style)?;
         eprintln!("{}", day.read);
         for line in &day.warnings {
             eprintln!("{line}");

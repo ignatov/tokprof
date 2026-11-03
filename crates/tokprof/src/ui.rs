@@ -69,9 +69,9 @@ enum Note {
     Change(Change),
     Status(String),
     /// A day view: the day asked for (`None` for the day of the latest action), the date it shows,
-    /// the count of log changes and the width it was computed for, the local hour its strip starts
-    /// at, its text, and how long it took.
-    Day(Option<i64>, i64, u32, u16, i64, String, Duration),
+    /// the count of log changes and the screen size it was computed for, the local hour its strip
+    /// starts at, its text, and how long it took.
+    Day(Option<i64>, i64, u32, (u16, u16), i64, String, Duration),
 }
 
 /// A day the browser computed.
@@ -79,14 +79,14 @@ struct DayText {
     /// The local date it shows.
     date: i64,
     text: Text<'static>,
-    /// The count of log changes it was computed after, and the pane width it was laid out for.
+    /// The count of log changes it was computed after, and the screen size it was laid out for.
     changes: u32,
-    width: u16,
+    size: (u16, u16),
 }
 
-/// What the day worker is asked: the day, the count of log changes, the width, and the local hour
-/// the strip starts at once a first day set it.
-type DayJob = (Option<i64>, u32, u16, Option<i64>);
+/// What the day worker is asked: the day, the count of log changes, the screen size, and the local
+/// hour the strip starts at once a first day set it.
+type DayJob = (Option<i64>, u32, (u16, u16), Option<i64>);
 
 /// A listed session and what is known about it.
 struct Entry {
@@ -153,8 +153,8 @@ struct App {
     /// When the current day may be computed again, as for X-rays.
     day_after: Instant,
     day_tx: Sender<DayJob>,
-    /// The width of the right pane when it was last drawn.
-    pane_width: u16,
+    /// The size of the pane the day is drawn in, when it was last drawn.
+    pane: (u16, u16),
     /// The local hour the first day shown starts its strip at; later days start theirs there too.
     day_axis: Option<i64>,
 }
@@ -198,10 +198,10 @@ pub fn run(catalog: Arc<Catalog>, pricing: Pricing, dump: Option<(u16, u16)>, se
                 while let Ok(newer) = day_rx.try_recv() {
                     job = newer;
                 }
-                let (key, changes, width, axis) = job;
+                let (key, changes, size, axis) = job;
                 let started = Instant::now();
                 let style = tokprof_core::fmt::Style::with_color(true);
-                let build = || crate::day::build(&catalog, &select, &pricing, key, now_ms(), strip_columns(width), axis, &style);
+                let build = || crate::day::build(&catalog, &select, &pricing, key, now_ms(), day_layout(size), axis, &style);
                 let built = match &pool {
                     Some(pool) => pool.install(build),
                     None => build(),
@@ -210,7 +210,7 @@ pub fn run(catalog: Arc<Catalog>, pricing: Pricing, dump: Option<(u16, u16)>, se
                     Ok(day) => (day.date, day.axis_hour, day.text),
                     Err(e) => (key.unwrap_or_else(|| rhythm::date_of(now_ms(), &rhythm::local_offset)), axis.unwrap_or(0), format!("error: {e:#}")),
                 };
-                if tx.send(Note::Day(key, date, changes, width, hour, text, started.elapsed())).is_err() {
+                if tx.send(Note::Day(key, date, changes, size, hour, text, started.elapsed())).is_err() {
                     return;
                 }
             }
@@ -313,7 +313,7 @@ impl App {
             day_pending: None,
             day_after: Instant::now(),
             day_tx,
-            pane_width: 0,
+            pane: (0, 0),
             day_axis: None,
         };
         app.refilter();
@@ -348,11 +348,11 @@ impl App {
                     listed |= self.apply(change);
                 }
                 Note::Status(s) => self.status = s,
-                Note::Day(key, date, changes, width, hour, text, took) => {
+                Note::Day(key, date, changes, size, hour, text, took) => {
                     let text = text.into_text().unwrap_or_else(|_| Text::raw(text));
-                    self.days.insert(key, DayText { date, text, changes, width });
+                    self.days.insert(key, DayText { date, text, changes, size });
                     self.day_axis.get_or_insert(hour);
-                    if self.day_pending.is_some_and(|p| (p.0, p.1, p.2) == (key, changes, width)) {
+                    if self.day_pending.is_some_and(|p| (p.0, p.1, p.2) == (key, changes, size)) {
                         self.day_pending = None;
                     }
                     self.day_after = Instant::now() + took;
@@ -498,17 +498,17 @@ impl App {
     /// current day and a log changed since, once a pause as long as its last computation passed.
     fn request_day(&mut self) {
         let Some(key) = self.day else { return };
-        let width = self.pane_width;
-        if width == 0 || self.day_pending.is_some_and(|p| (p.0, p.1, p.2) == (key, self.changes, width)) {
+        let size = self.pane;
+        if size.0 == 0 || self.day_pending.is_some_and(|p| (p.0, p.1, p.2) == (key, self.changes, size)) {
             return;
         }
         if let Some(d) = self.days.get(&key)
-            && d.width == width
+            && d.size == size
             && (key.is_some() || d.changes == self.changes || Instant::now() < self.day_after)
         {
             return;
         }
-        let job = (key, self.changes, width, self.day_axis);
+        let job = (key, self.changes, size, self.day_axis);
         self.day_pending = Some(job);
         let _ = self.day_tx.send(job);
     }
@@ -698,7 +698,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         draw_list(frame, app, left);
         right
     };
-    app.pane_width = report.width;
+    app.pane = (report.width, report.height);
     if app.day.is_some() {
         draw_day(frame, app, report);
     } else {
@@ -707,10 +707,22 @@ fn draw(frame: &mut Frame, app: &mut App) {
     draw_footer(frame, app, footer);
 }
 
-/// The columns a day strip may take in a pane this wide: less the borders and the lane labels.
-fn strip_columns(width: u16) -> i64 {
-    (width as i64 - 23).clamp(12, rhythm::STRIP_COLUMNS)
+/// The day's layout in a pane of this size: labels a fifth of the width, from 20 to 40 characters;
+/// the strip in the rest, less a space and the borders; and the lanes in the rows the text above
+/// and below the strip leaves.
+fn day_layout((width, height): (u16, u16)) -> rhythm::Layout {
+    let label = (width as usize / 5).clamp(20, 40);
+    rhythm::Layout {
+        label,
+        columns: (width as i64 - label as i64 - 3).max(12),
+        rows: (height as usize).saturating_sub(DAY_TEXT_ROWS - 1).max(rhythm::STRIP_LANES + 1),
+        space: true,
+    }
 }
+
+/// The rows of the screen that the day view's text takes besides its lanes: the borders, the lines
+/// above and below the strip, and its hours, `you` and legend rows, with the footer.
+const DAY_TEXT_ROWS: usize = 18;
 
 fn draw_day(frame: &mut Frame, app: &App, area: Rect) {
     let key = app.day.flatten();
@@ -1061,7 +1073,7 @@ mod tests {
     /// The day view the worker would send for `key`, showing `date`.
     fn day_note(app: &mut App, key: Option<i64>, date: i64, changes: u32, text: &str) {
         let (tx, rx) = mpsc::channel();
-        tx.send(Note::Day(key, date, changes, app.pane_width, 4, text.to_string(), Duration::ZERO)).unwrap();
+        tx.send(Note::Day(key, date, changes, app.pane, 4, text.to_string(), Duration::ZERO)).unwrap();
         app.absorb(&rx);
     }
 
@@ -1092,7 +1104,7 @@ mod tests {
         assert!(body.contains(&format!("computing the day of {}…", label(today(), "%Y-%m-%d"))), "{body}");
         a.request_day();
         assert!(a.zoom, "the day takes the whole screen");
-        assert_eq!(a.day_pending, Some((None, 0, 160, None)), "the day is asked for at the screen's width");
+        assert_eq!(a.day_pending, Some((None, 0, (160, 19), None)), "the day is asked for at the screen's width");
         day_note(&mut a, None, today() - 1, 0, "tokprof · day\nday       …");
         let (title, body) = pane(&mut a);
         assert!(title.contains(&format!(" day · {} ", label(today() - 1, "%a %Y-%m-%d"))), "the latest action's day: {title}");
@@ -1101,6 +1113,16 @@ mod tests {
         press(&mut a, KeyCode::Char('d'));
         assert!(a.day.is_none() && !a.zoom, "d goes back to the list with the X-ray");
         assert!(!pane(&mut a).0.contains(" day · "));
+    }
+
+    #[test]
+    fn the_day_fits_the_screen() {
+        // 190x50: the pane is 190x49 above the footer.
+        assert_eq!(day_layout((190, 49)), rhythm::Layout { label: 38, columns: 149, rows: 32, space: true });
+        assert_eq!(day_layout((120, 29)), rhythm::Layout { label: 24, columns: 93, rows: 12, space: true });
+        assert_eq!(day_layout((80, 20)).label, 20, "at least 20 characters");
+        assert_eq!(day_layout((300, 60)).label, 40, "at most 40");
+        assert_eq!(day_layout((80, 10)).rows, 9, "at least the 8 lanes and the more line");
     }
 
     #[test]
@@ -1142,7 +1164,7 @@ mod tests {
         assert_eq!((a.day, a.zoom, a.scroll), (Some(Some(99)), true, 0), "[ works full screen");
         pane(&mut a);
         a.request_day();
-        assert_eq!(a.day_pending, Some((Some(99), 0, 160, Some(4))), "the day before starts its strip at the first day's hour");
+        assert_eq!(a.day_pending, Some((Some(99), 0, (160, 19), Some(4))), "the day before starts its strip at the first day's hour");
         for key in [KeyCode::Esc, KeyCode::Left, KeyCode::Char('h'), KeyCode::Backspace] {
             if a.day.is_none() {
                 press(&mut a, KeyCode::Char('d'));
@@ -1163,7 +1185,7 @@ mod tests {
         assert_eq!(a.day_pending, None, "fresh: nothing to ask");
         take(&mut a, Change::Session(Box::new(row(0, "~/src/a", 5))));
         a.request_day();
-        assert_eq!(a.day_pending, Some((None, 1, 160, Some(4))), "a log changed: computed again");
+        assert_eq!(a.day_pending, Some((None, 1, (160, 19), Some(4))), "a log changed: computed again");
         assert!(pane(&mut a).0.contains(" · updating…"), "the old view shows until the new one is ready");
         day_note(&mut a, None, 100, 1, "latest again");
         assert!(!pane(&mut a).0.contains("updating"));
@@ -1179,6 +1201,6 @@ mod tests {
         assert!(pane(&mut a).1.contains("the day before"), "and shows at once");
         press(&mut a, KeyCode::Char(']'));
         a.request_day();
-        assert_eq!(a.day_pending, Some((None, 2, 160, Some(4))), "the current day is, since logs changed");
+        assert_eq!(a.day_pending, Some((None, 2, (160, 19), Some(4))), "the current day is, since logs changed");
     }
 }

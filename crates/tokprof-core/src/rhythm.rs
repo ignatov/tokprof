@@ -28,9 +28,23 @@ const MIN_SITTING_MS: i64 = MINUTE;
 /// from, in minutes.
 pub const STRIP_COLUMNS: i64 = 72;
 const COLUMN_MINUTES: [i64; 5] = [10, 15, 20, 30, 60];
-/// Lanes the strip draws before it folds the rest into one line.
+/// Lanes the strip draws in a terminal before it folds the rest into one line.
 pub const STRIP_LANES: usize = 8;
-const LABEL_WIDTH: usize = 20;
+
+/// Where a strip is shown: the width of its labels, its columns, the rows its lane block may take
+/// (lanes, hour-mark rows and the `more sessions` line), and whether lanes may be spaced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Layout {
+    pub label: usize,
+    pub columns: i64,
+    pub rows: usize,
+    pub space: bool,
+}
+
+impl Layout {
+    /// `tokprof day`'s layout: 20-character labels, 72 columns, 8 lanes and the `more` line.
+    pub const TERMINAL: Layout = Layout { label: 20, columns: STRIP_COLUMNS, rows: STRIP_LANES + 1, space: false };
+}
 
 /// The offset of local time from UTC at an instant, both in ms.
 pub type Offset<'a> = &'a dyn Fn(i64) -> i64;
@@ -672,11 +686,11 @@ impl View {
         Summary::of(&lanes, window, &self.days)
     }
 
-    /// The strip of a day, at most `columns` wide, over the 24 hours from `axis`, by default the
-    /// whole hour at or before the day's start.
-    pub fn strip(&self, summary: &Summary, window: (i64, i64), columns: i64, axis: Option<i64>, style: &fmt::Style, offset: Offset) -> Option<Strip> {
+    /// The strip of a day in a layout, over the 24 hours from `axis`, by default the whole hour
+    /// at or before the day's start.
+    pub fn strip(&self, summary: &Summary, window: (i64, i64), layout: Layout, axis: Option<i64>, style: &fmt::Style, offset: Offset) -> Option<Strip> {
         let pairs: Vec<(&Timeline, &Lane)> = self.kept().collect();
-        Strip::of(&pairs, summary, window, &self.days, columns, axis, style, offset)
+        Strip::of(&pairs, summary, window, &self.days, layout, axis, style, offset)
     }
 }
 
@@ -814,7 +828,8 @@ impl Strip {
     /// each timeline with its lane. It covers 24 hours from `axis`, by default the whole hour at
     /// or before `from`, in the shortest column that fits `columns`.
     #[allow(clippy::too_many_arguments)]
-    pub fn of(lanes: &[(&Timeline, &Lane)], summary: &Summary, (from, to): (i64, i64), days: &Days, columns: i64, axis: Option<i64>, style: &fmt::Style, offset: Offset) -> Option<Strip> {
+    pub fn of(lanes: &[(&Timeline, &Lane)], summary: &Summary, (from, to): (i64, i64), days: &Days, layout: Layout, axis: Option<i64>, style: &fmt::Style, offset: Offset) -> Option<Strip> {
+        let (label_width, columns) = (layout.label, layout.columns);
         summary.sittings.first()?;
         let local = |ts: i64| ts + offset(ts);
         let begin = axis.unwrap_or_else(|| from - local(from).rem_euclid(HOUR));
@@ -848,19 +863,30 @@ impl Strip {
             }
             h += HOUR;
         }
-        let mut lines = vec![format!("{:w$} {}", "", hours.iter().collect::<String>().trim_end(), w = LABEL_WIDTH)];
+        let mut lines = vec![format!("{:w$} {}", "", hours.iter().collect::<String>().trim_end(), w = label_width)];
+        // A row of dim marks in the first column of each hour, between spaced lanes.
+        let mut ticks = vec![' '; n];
+        let mut h = begin;
+        while h < end {
+            ticks[at(h)] = '·';
+            h += HOUR;
+        }
+        let ticks = format!("{:w$} {}", "", style.dim(ticks.iter().collect::<String>().trim_end()), w = label_width);
         let mut you = vec![Cell::Empty; n];
         for &(a, b) in &summary.sittings {
             span(&mut you, a, b, Cell::Present);
         }
-        lines.push(format!("{:w$} {}", "you", paint(&you, style), w = LABEL_WIDTH));
+        lines.push(format!("{:w$} {}", "you", paint(&you, style), w = label_width));
         let mut shown: Vec<(&Timeline, &Lane, usize)> = lanes
             .iter()
             .map(|(t, l)| (*t, *l, l.actions.iter().filter(|(ts, _)| *ts >= from && *ts < to).count()))
             .filter(|(_, _, n)| *n > 0)
             .collect();
         shown.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.id.cmp(&b.0.id)));
-        for (t, l, _) in shown.iter().take(STRIP_LANES) {
+        // Lanes fill the rows, the most active first; the last row counts the rest.
+        let fit = if shown.len() <= layout.rows { shown.len() } else { layout.rows.saturating_sub(1).max(1) };
+        let spaced = layout.space && fit == shown.len() && 2 * fit <= layout.rows;
+        for (t, l, _) in shown.iter().take(fit) {
             let mut row = vec![Cell::Empty; n];
             for &(end, msg) in &l.answers {
                 if days.day_of(end) == days.day_of(msg) {
@@ -878,11 +904,14 @@ impl Strip {
                 span(&mut row, ts, ts, c);
             }
             let id: String = t.id.chars().take(6).collect();
-            let label = fmt::clip_end(&format!("{id} {}", t.title.as_deref().unwrap_or("")), LABEL_WIDTH);
-            lines.push(format!("{label:LABEL_WIDTH$} {}", paint(&row, style)));
+            let label = fmt::clip_end(&format!("{id} {}", t.title.as_deref().unwrap_or("")), label_width);
+            lines.push(format!("{label:label_width$} {}", paint(&row, style)));
+            if spaced {
+                lines.push(ticks.clone());
+            }
         }
-        if shown.len() > STRIP_LANES {
-            lines.push(fmt::count((shown.len() - STRIP_LANES) as u64, "more session", "more sessions"));
+        if shown.len() > fit {
+            lines.push(fmt::count((shown.len() - fit) as u64, "more session", "more sessions"));
         }
         lines.push(Strip::legend(style));
         Some(Strip { lines })
@@ -1230,7 +1259,8 @@ mod tests {
         let refs: Vec<&Lane> = lanes.iter().map(|(_, l)| l).collect();
         let day = night().bounds(nov2(), &off);
         let s = Summary::of(&refs, day, &night());
-        Strip::of(&pairs, &s, day, &night(), columns, None, &fmt::Style::with_color(color), &off).unwrap().lines
+        let layout = Layout { columns, ..Layout::TERMINAL };
+        Strip::of(&pairs, &s, day, &night(), layout, None, &fmt::Style::with_color(color), &off).unwrap().lines
     }
 
     fn lane(id: &str, title: &str, events: &[(i64, Event)]) -> (Timeline, Lane) {
@@ -1302,7 +1332,7 @@ mod tests {
         let refs: Vec<&Lane> = pairs_lanes.iter().map(|(_, l)| l).collect();
         let day = night().bounds(nov2(), &off);
         let s = Summary::of(&refs, day, &night());
-        let lines = Strip::of(&pairs, &s, day, &night(), 72, Some(t(4, 0)), &fmt::Style::with_color(false), &off).unwrap().lines;
+        let lines = Strip::of(&pairs, &s, day, &night(), Layout::TERMINAL, Some(t(4, 0)), &fmt::Style::with_color(false), &off).unwrap().lines;
         assert!(lines[0].starts_with(&format!("{:20} 04 05 06", "")), "{}", lines[0]);
     }
 
@@ -1316,11 +1346,48 @@ mod tests {
         assert!(strip(&[marked()]).iter().all(|l| !l.contains('\x1b')), "no escape code without color");
     }
 
+    fn strip_laid(lanes: &[(Timeline, Lane)], layout: Layout) -> Vec<String> {
+        let pairs: Vec<(&Timeline, &Lane)> = lanes.iter().map(|(t, l)| (t, l)).collect();
+        let refs: Vec<&Lane> = lanes.iter().map(|(_, l)| l).collect();
+        let day = night().bounds(nov2(), &off);
+        let s = Summary::of(&refs, day, &night());
+        Strip::of(&pairs, &s, day, &night(), layout, None, &fmt::Style::with_color(false), &off).unwrap().lines
+    }
+
+    fn sessions(n: i64) -> Vec<(Timeline, Lane)> {
+        (0..n).map(|k| lane(&format!("s{k:02}"), "a title that runs on for a while", &[(t(10, k), Typed)])).collect()
+    }
+
     #[test]
     fn many_sessions_fold_into_one_line() {
-        let lanes: Vec<(Timeline, Lane)> = (0..11).map(|k| lane(&format!("s{k:02}"), "t", &[(t(10, k), Typed)])).collect();
-        let lines = strip(&lanes);
+        let lines = strip(&sessions(11));
         assert_eq!(lines.iter().filter(|l| l.starts_with('s')).count(), 8);
         assert_eq!(lines[lines.len() - 2], "3 more sessions");
+        // With rows for 11 lanes, all of them show.
+        let lines = strip_laid(&sessions(11), Layout { rows: 11, ..Layout::TERMINAL });
+        assert_eq!(lines.iter().filter(|l| l.starts_with('s')).count(), 11);
+        assert!(!lines.iter().any(|l| l.contains("more session")));
+    }
+
+    #[test]
+    fn a_terminal_never_spaces_its_lanes() {
+        let lines = strip(&sessions(3));
+        assert!(!lines.iter().any(|l| l.contains('·')), "{lines:?}");
+        assert_eq!(lines[2], format!("{:20} {}*", "s00 a title that ru…", " ".repeat(15)), "labels of 20 characters; 10:00 is column 15 of 20 minutes from 05:00");
+    }
+
+    #[test]
+    fn spare_rows_space_the_lanes_with_hour_marks() {
+        let layout = Layout { label: 38, columns: 149, rows: 32, space: true };
+        let lines = strip_laid(&sessions(16), layout);
+        let lanes: Vec<usize> = (0..lines.len()).filter(|&i| lines[i].starts_with("s")).collect();
+        assert_eq!(lanes.len(), 16, "all 16 lanes in 32 rows");
+        let ticks = &lines[lanes[0] + 1];
+        assert!(ticks.starts_with(&format!("{:38} ·     ·", "")), "a mark in the first column of each hour: {ticks:?}");
+        assert_eq!(ticks.matches('·').count(), 24);
+        assert!(lines[lanes[0]].starts_with("s00 a title that runs on for a while   "), "labels of 38 characters: {}", lines[lanes[0]]);
+        // Rows for fewer than twice the lanes: no marks.
+        let tight = strip_laid(&sessions(16), Layout { rows: 20, ..layout });
+        assert!(!tight.iter().any(|l| l.contains('·')));
     }
 }
