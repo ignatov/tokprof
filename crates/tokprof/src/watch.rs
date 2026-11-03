@@ -170,7 +170,8 @@ mod tests {
     fn changed(d: &Path, events: &[(EventKind, PathBuf)]) -> Vec<String> {
         let roots = [Root { source: "claude", path: d.to_path_buf(), real: real_path(d) }];
         let events: Vec<Event> = events.iter().map(|(kind, path)| Event::new(*kind).add_path(path.clone())).collect();
-        let rel = |p: &Path| p.strip_prefix(d).unwrap().display().to_string();
+        // With `/` on Windows too, where the paths of a listed directory come with `\`.
+        let rel = |p: &Path| p.strip_prefix(d).unwrap().display().to_string().replace('\\', "/");
         changes(&catalog(d), &roots, &events)
             .iter()
             .map(|c| match c {

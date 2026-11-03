@@ -28,6 +28,8 @@ fn tokprof(home: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_tokprof"))
         .args(args)
         .env("HOME", home)
+        // Where Windows takes the home directory from.
+        .env("USERPROFILE", home)
         .env("TOKPROF_DIR", home.join("tokprof"))
         .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
         .env("CODEX_HOME", home.join(".codex"))
@@ -42,7 +44,8 @@ fn the_file_goes_to_the_profile_directory_by_default() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{stdout}{}", String::from_utf8_lossy(&out.stderr));
     let name = format!("share-{}.json", chrono::Local::now().format("%Y-%m-%d"));
-    assert!(stdout.starts_with(&format!("wrote ~/tokprof/{name}\n")), "{stdout}");
+    let sep = std::path::MAIN_SEPARATOR;
+    assert!(stdout.starts_with(&format!("wrote ~{sep}tokprof{sep}{name}\n")), "{stdout}");
     assert!(stdout.ends_with("Nothing was sent anywhere: review the file, then send it yourself.\n"), "{stdout}");
     let text = std::fs::read_to_string(home.join("tokprof").join(&name)).unwrap();
     assert!(text.contains("\"format\": 1") && text.contains("\"claude\""), "{text}");
