@@ -5,28 +5,31 @@ It reads the logs the agents already write. It needs no proxy and no account, an
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/bench-dark.svg">
-  <img alt="Mean cost per return to a big session after its prompt cache expired, over the next 60 requests. Claude Code, 210 returns: resume as is $8.27, /compact first $6.38, new session with a handoff note $2.58, heartbeats for up to 6 hours and then resume $6.37; the first request alone costs $3.98. Codex, 204 returns: $3.98, $2.77, $1.80 and $4.04." src="docs/bench.svg">
+  <img alt="Mean cost per return to a big session after its prompt cache expired, over the next 60 requests. Claude Code, 218 returns: resume as is $8.19, /compact first $6.33, new session with a handoff note $2.55, heartbeats for up to 6 hours and then resume $6.30, the same heartbeats and then a compaction $4.03; the first request alone costs $3.96. Codex, 204 returns: $3.98, $2.77, $1.80, $4.04 and $3.20." src="docs/bench.svg">
 </picture>
 
 ## Why
 
 A long session is cheap while its prompt cache is warm, because each request reads the context from the cache at a tenth of the input price or less. The cache lives 5 minutes or an hour in Claude Code and about 30 minutes in Codex. After a longer break, the first request writes the whole context again. For a 500k-token Claude Code session, that one request costs about $4, and every request after it still reads the old context.
 
-`tokprof bench` measured this on one developer's logs: 210 returns to Claude Code sessions and 204 returns to Codex sessions, each with a context of 100k+ tokens. It follows each return for up to 60 requests, until the next break or compaction, and replays the same requests three other ways:
+`tokprof bench` measured this on one developer's logs: 218 returns to Claude Code sessions and 204 returns to Codex sessions, each with a context of 100k+ tokens. It follows each return for up to 60 requests, until the next break or compaction, and replays the same requests four other ways:
 - **`/compact` first.** The compaction call writes the cold context again and outputs a summary. The requests then run on top of what a compaction leaves: a median of 53k tokens for Claude Code and 21k for Codex.
 - **A new session with a handoff note.** The old session writes the note before the break, while its cache is still warm. A new session then runs the requests on top of the same base.
 - **Heartbeats, then resume.** While the session is idle, a ping at 5/6 of the cache lifetime reads the context, which keeps the cache warm. That is every 50 minutes on Claude Code's 1-hour cache, for up to 6 hours after the last request. A return within the lifetime of the last ping reads its context from the cache. A later one is cold anyway, after the pings.
+- **Heartbeats, then compaction.** The same pings, and at the next ping time past the 6 hours a compaction instead, while the cache is still warm. A return before it is warm; a later one goes on from what the compaction leaves.
 
-| Mean per return over 60 requests, API-equivalent | resume as is | /compact first | new session + handoff note | heartbeats, then resume |
-|---|---:|---:|---:|---:|
-| Claude Code: 210 returns, median context 488k | $8.27 | $6.38 | $2.58 | $6.37 |
-| Codex: 204 returns, median context 163k | $3.98 | $2.77 | $1.80 | $4.04 |
+| Mean per return over 60 requests, API-equivalent | resume as is | /compact first | new session + handoff note | heartbeats, then resume | heartbeats, then compaction |
+|---|---:|---:|---:|---:|---:|
+| Claude Code: 218 returns, median context 488k | $8.19 | $6.33 | $2.55 | $6.30 | $4.03 |
+| Codex: 204 returns, median context 163k | $3.98 | $2.77 | $1.80 | $4.04 | $3.20 |
 
 What this means:
-- A handoff note written before the break would have saved 69% of what the Claude Code returns cost ($1,195 of $1,737), and 55% for Codex ($445 of $812).
-- The note was cheaper in every one of the 414 returns. The median return would have saved $5.09 (72%) in Claude Code and $2.13 (59%) in Codex.
+- A handoff note written before the break would have saved 69% of what the Claude Code returns cost ($1,229 of $1,786), and 55% for Codex ($445 of $812).
+- The note was cheaper in every one of the 422 returns. The median return would have saved $4.87 (72%) in Claude Code and $2.13 (59%) in Codex.
 - Once the cache is cold, `/compact` first pays off only from the 8th request in Claude Code and the 4th in Codex.
-- Heartbeats would have kept 129 of the 210 Claude Code returns warm, for $88 of pings, and saved 23% ($398). They save only the cold write of the first request: every request after it still reads the whole context, so the note was cheaper in 190 of the 210 returns. In Codex they would have cost $12 more than resuming. Its cache lives 30 minutes, so the pings go out every 25 minutes, and a cache write there costs 10 to 25 reads, against 40 on Opus 5.5's 1-hour cache.
+- Heartbeats would have kept 134 of the 218 Claude Code returns warm, for $90 of pings, and saved 23% ($412). They save only the cold write of the first request: every request after it still reads the whole context, so the note was cheaper in 197 of the 218 returns. In Codex they would have cost $12 more than resuming. Its cache lives 30 minutes, so the pings go out every 25 minutes, and a cache write there costs 10 to 25 reads, against 40 on Opus 5.5's 1-hour cache.
+- A program that pings cannot tell which breaks end in a cold return. It also pings after each conversation's last request, and through breaks the user came back from while the cache was still warm. In Claude Code those pings cost another $87, so heartbeats save 18% ($325).
+- Heartbeats, then compaction would have saved 51% in Claude Code ($907): 133 returns came back warm and 85 after a compaction. With what it sends through the other breaks, 44% ($783). In Codex it saves 20% on the returns ($159), and the pings through the other breaks make it cost $54 more than resuming.
 
 tokprof shows this for each session. The X-ray says when the cache goes cold, what the next request will cost and which way of carrying on is cheapest. Its forecast of the first request after a break was within 10% of the logged cost for 91% of the Claude Code returns and 96% of the Codex returns.
 
@@ -74,7 +77,7 @@ The runs, the way each agent found the other's log, and how the id runs were kep
 - **Give the session a finish line.** One task per session, with a result Claude can check itself: tests, a build, a page it opens in a browser. For very long tasks, Boris [has a Stop hook or a background agent check the work](https://x.com/bcherny/status/2007179858435281082), so Claude carries on without him. [`/goal`](https://code.claude.com/docs/en/goal) builds this in: a small model checks the condition after each turn, and Claude starts the next turn itself instead of waiting for you. A permission prompt still stops it. The cache stays warm until the task is done, and the next task starts in a new session. Such sessions are heavy, though: Boris [traced most fast usage](https://x.com/bcherny/status/2115592371224346734) to one or two sessions with xhigh effort, `/goal`, Workflows or Agent Teams.
 - **Send heartbeats.** A request that reads the cache resets its timer. A ping sent before the timer runs out reads the context at the cache-read price instead of writing it again. On Opus 5.5 with the 1-hour cache, a ping to the bench's median 488k-token context costs about $0.10, and writing that context again $3.91. With a ping every 50 minutes, pings pay off for breaks of up to 33 hours. Over the median break of 3.2 hours, three pings cost $0.29.
   - [cache-tax](https://github.com/karanb192/cache-tax) is a mod that does this. `/keepwarm` before a break arms six hours of pings, one every 50 idle minutes. Each ping is a fork of the session, so the conversation does not change. A `/loop` every 50 minutes keeps the cache warm too, but each run adds a turn.
-  - A heartbeat saves the cold write in the first request back, not the rest. In the bench above, heartbeats for up to 6 hours saved 23% of what the Claude Code returns cost, and 33% with `--keep-warm 24h`. The handoff note saved 69%.
+  - A heartbeat saves the cold write in the first request back, not the rest. In the bench above, heartbeats for up to 6 hours saved 23% of what the Claude Code returns cost, and 33% with `--keep-warm 24h`. Counting the pings sent through breaks that ended in no cold return, that is 18% and 15%. The handoff note saved 69%.
   - On the 5-minute cache, pings go out every few minutes. On Opus 5.5, 25 of them cost as much as the write they save, so they pay off only for breaks under two hours. `tokprof whatif` shows what the 1-hour cache would have cost on your logs.
   - Pings need Claude Code running and the machine awake.
 - **Let Claude Code compact the idle session.** Since [2.1.299](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21299), Claude Code compacts a terminal session of 200k+ tokens after about 54 idle minutes, while the 1-hour cache is still warm ([announcement](https://x.com/lydiahallie/status/2110484840256819380)). VS Code and the desktop app got it in 2.1.314. There, Claude Code writes the summary during the break and switches to it at the start of the first request after you return, with the notice "Compacted using a summary written while you were away". Sessions run through the Agent SDK, such as an IDE's agent integration, do not get it: in the logs behind the bench, it compacted 6 of 8 such breaks in the terminal and none of 132 in IntelliJ. In the bench, that is the handoff column, with the summary as the note. The session goes on from the summary instead of the full context. `"idleCompaction": false` in settings turns it off. tokprof marks these compactions: the rebuild after one is the miss cause `compaction: while idle`, and the X-ray of a session compacted since its last request says so and prices the next request from the smaller prompt. tokprof marks a compaction from a summary written during the break the same way, as `compaction: while idle`. That form logs nothing before you return, so the X-ray of a session that is still idle cannot see the waiting summary and forecasts a full re-write.
@@ -214,7 +217,7 @@ tokprof tools               # spend by tool and shell command, with a hint per r
 tokprof misses --top 20     # most expensive cache misses (--expected adds compactions and cleared tool results)
 tokprof whatif              # Claude input cost under 5m vs 1h cache lifetimes
 tokprof pauses              # pauses before typed messages, cold returns by pause, sessions by largest context
-tokprof bench               # cold returns to big sessions: resume vs /compact vs a new session vs heartbeats
+tokprof bench               # cold returns to big sessions: resume vs /compact vs a new session vs heartbeats, with or without a compaction after them
 tokprof prices              # prices in effect and where each came from
 ```
 
@@ -282,12 +285,12 @@ Claude Code setup: $915, 10.0% of its spend
 `tokprof bench` takes these options:
 - `--requests N` follows each return for up to N requests. The default is 60.
 - `--min-context T` counts only returns to contexts of at least T tokens. The default is 100000.
-- `--keep-warm 6h` sends heartbeats for up to this long after the last request, in hours or minutes (`90m`). The default is 6h, as in the cache-tax mod.
+- `--keep-warm 6h` sends heartbeats for up to this long after the last request, in hours or minutes (`90m`). The default is 6h, as in the cache-tax mod. Heartbeats then compaction compacts at the next ping time after it; with `--keep-warm 0` that is 50 minutes into the break on a 1-hour cache, close to Claude Code's own idle compaction.
 - `--svg FILE.svg` writes the chart to FILE.svg, and a dark-theme version to FILE-dark.svg.
 
 The bench replays the requests that followed each return; only the old conversation in each prompt shrinks to the base. Claude Code does not log the compaction call. tokprof models it as a fork that shares the conversation's cache, which is how Claude Code runs it, so on a cold cache it writes the context again and then outputs a 10k-token summary. The handoff note is 10k tokens, written while the cache was warm.
 
-Heartbeats go out at 5/6 of the cache lifetime: every 50 minutes on a 1-hour cache, every 4 minutes 10 seconds on a 5-minute one, and every 25 minutes in Codex. Each reads the context at the price of its time and outputs 100 tokens. A return within the lifetime of the last ping reads the previous prompt from the cache and writes only what is new; the requests after it run as logged. For Codex this assumes a ping resets OpenAI's cache timer as it resets Anthropic's.
+Heartbeats go out at 5/6 of the cache lifetime: every 50 minutes on a 1-hour cache, every 4 minutes 10 seconds on a 5-minute one, and every 25 minutes in Codex. Each reads the context at the price of its time and outputs 100 tokens. A return within the lifetime of the last ping reads the previous prompt from the cache and writes only what is new; the requests after it run as logged. For Codex this assumes a ping resets OpenAI's cache timer as it resets Anthropic's. The two heartbeat ways also price what they would send through the breaks that ended in no cold return: those after a prompt of `--min-context` tokens or more that the cache survived, or that ended in another kind of request, and the time from each conversation's last request to the end of the logs read. Those costs come in a line of their own, with the net saving.
 
 Every command but `tokprof prices` takes these filters:
 

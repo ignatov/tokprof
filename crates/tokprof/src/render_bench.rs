@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use tokprof_core::bench::{Bench, PING_OUTPUT, Return, Strategy, break_even, mean_curve, median, ping_every, window_name};
-use tokprof_core::fmt::{Style, human_duration, table, tokens, usd};
+use tokprof_core::fmt::{self, Style, human_duration, table, tokens, usd};
 use tokprof_core::forecast::SUMMARY_TOKENS;
 use tokprof_core::source::AgentId;
 
@@ -107,6 +107,46 @@ pub fn report(b: &Bench, style: &Style) -> String {
         );
         let below_note = returns.iter().filter(|r| r.after(Strategy::Heartbeats, n) < r.after(Strategy::Handoff, n)).count();
         let _ = writeln!(out, "  They cost less than a handoff note in {below_note} of {} returns.", returns.len());
+        // What the heartbeat ways also send during the breaks that were no cold return.
+        let elsewhere = b.elsewhere.get(&agent).copied().unwrap_or_default();
+        let net = |cost: f64, subject: &str| {
+            if cost <= resume {
+                format!("{subject} {} {} ({:.0}%)", if subject == "it" { "saves" } else { "save" }, usd(resume - cost), 100.0 * (resume - cost) / resume.max(1e-9))
+            } else {
+                format!("{subject} {} {} more than resuming", if subject == "it" { "costs" } else { "cost" }, usd(cost - resume))
+            }
+        };
+        let _ = writeln!(
+            out,
+            "  Breaks that were not cold returns would have taken another {} for {}; with them, {}.",
+            fmt::count(elsewhere.pings as u64, "ping", "pings"),
+            usd(elsewhere.ping_usd),
+            net(heartbeats + elsewhere.ping_usd, "heartbeats")
+        );
+        let then_compact = total(Strategy::WarmThenCompact);
+        let compacted = returns.iter().filter(|r| r.compacted).count();
+        let sent: f64 = returns.iter().map(|r| r.after(Strategy::WarmThenCompact, 0)).sum();
+        let change = if then_compact <= resume {
+            format!("saved {} of {} ({:.0}%)", usd(resume - then_compact), usd(resume), 100.0 * (resume - then_compact) / resume.max(1e-9))
+        } else {
+            format!("cost {} more than resuming", usd(then_compact - resume))
+        };
+        let _ = writeln!(
+            out,
+            "  Heartbeats for up to {}, then a compaction, would have kept {} of {} returns warm and compacted {compacted}, for {} of pings and compactions, and {change}.",
+            window_name(b.keep_warm_ms),
+            returns.len() - compacted,
+            returns.len(),
+            usd(sent)
+        );
+        let _ = writeln!(
+            out,
+            "  Breaks that were not cold returns would have taken another {} and {} for {}; with them, {}.",
+            fmt::count(elsewhere.pings as u64, "ping", "pings"),
+            fmt::count(elsewhere.compactions as u64, "compaction", "compactions"),
+            usd(elsewhere.ping_usd + elsewhere.compaction_usd),
+            net(then_compact + elsewhere.ping_usd + elsewhere.compaction_usd, "it")
+        );
         let errors: Vec<f64> = returns.iter().map(|r| (r.forecast - r.after(Strategy::Resume, 1)).abs() / r.after(Strategy::Resume, 1).max(1e-9)).collect();
         let within = errors.iter().filter(|e| **e <= 0.1).count();
         let _ = writeln!(
@@ -147,6 +187,14 @@ pub fn report(b: &Bench, style: &Style) -> String {
             assumption(b)
         ))
     );
+    let _ = writeln!(
+        out,
+        "{}",
+        style.dim(&format!(
+            "Heartbeats, then compaction sends the same pings and, at the next ping time past the window, a compaction that reads the warm context and outputs {} tokens.",
+            tokens(SUMMARY_TOKENS)
+        ))
+    );
     out
 }
 
@@ -158,9 +206,11 @@ struct Theme {
     ink: &'static str,
     ink2: &'static str,
     muted: &'static str,
-    series: [&'static str; 4],
+    series: [&'static str; 5],
 }
 
+// The categorical slots 1–5 of the dataviz palette, in its order: blue, orange, aqua, yellow,
+// magenta. Both sets pass its validator, adjacent pairs included.
 const LIGHT: Theme = Theme {
     surface: "#fcfcfb",
     grid: "#e1e0d9",
@@ -168,7 +218,7 @@ const LIGHT: Theme = Theme {
     ink: "#0b0b0b",
     ink2: "#52514e",
     muted: "#898781",
-    series: ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"],
+    series: ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"],
 };
 
 const DARK: Theme = Theme {
@@ -178,7 +228,7 @@ const DARK: Theme = Theme {
     ink: "#f0efec",
     ink2: "#c3c2b7",
     muted: "#898781",
-    series: ["#3987e5", "#d95926", "#199e70", "#c98500"],
+    series: ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181"],
 };
 
 /// Writes the chart of the mean cost per return to `path`, and a dark-theme version next to it
@@ -253,7 +303,7 @@ fn agent_title(agent: &AgentId) -> &str {
 struct Panel<'a> {
     agent: AgentId,
     returns: Vec<&'a Return>,
-    curves: [Vec<f64>; 4],
+    curves: [Vec<f64>; 5],
 }
 
 fn svg(b: &Bench, t: &Theme) -> String {
@@ -278,10 +328,12 @@ fn svg(b: &Bench, t: &Theme) -> String {
         .collect();
     let top = panels.iter().flat_map(|p| p.curves.iter().flatten()).fold(0.0f64, |m, v| m.max(*v));
     let (step, ymax) = nice_axis(top);
-    // Heartbeats sit next to /compact in hue, so their line is dotted, not dashed.
+    // Heartbeats sit next to /compact in hue, so their line is dotted, not dashed; heartbeats
+    // then compaction mixes the two, dash-dotted.
     let dash = |s: Strategy| match s {
         Strategy::Resume => "",
         Strategy::Heartbeats => " stroke-dasharray=\"1 4\"",
+        Strategy::WarmThenCompact => " stroke-dasharray=\"7 3 1 3\"",
         _ => " stroke-dasharray=\"6 4\"",
     };
     // The legend: one key per strategy, wrapped to the chart's width; the rows below it push
@@ -301,7 +353,7 @@ fn svg(b: &Bench, t: &Theme) -> String {
         keys
     };
     let below = keys.last().map_or(0.0, |k| k.3 - 80.0);
-    let h = 440.0 + below;
+    let h = 456.0 + below;
 
     let mut desc = String::new();
     for Panel { agent, returns, curves } in &panels {
@@ -483,16 +535,23 @@ fn svg(b: &Bench, t: &Theme) -> String {
     let _ = writeln!(
         o,
         r#"<text x="{PAD}" y="{}" font-size="11" fill="{}">tokprof bench · requests priced at their time · the compaction call is not logged: modeled as writing the cold context again plus a {}-token summary</text>"#,
-        h - 30.0,
+        h - 46.0,
         t.muted,
         round_tokens(SUMMARY_TOKENS as u64)
     );
     let _ = writeln!(
         o,
         r#"<text x="{PAD}" y="{}" font-size="11" fill="{}">heartbeats: a ping at 5/6 of the cache lifetime, every {} on a 1h cache, for up to {} after the last request; a return within the last ping's lifetime reads the cache</text>"#,
-        h - 14.0,
+        h - 30.0,
         t.muted,
         human_duration(ping_every(3_600_000) as f64 / 1000.0),
+        window_name(b.keep_warm_ms)
+    );
+    let _ = writeln!(
+        o,
+        r#"<text x="{PAD}" y="{}" font-size="11" fill="{}">heartbeats, then compaction: the same pings, then at the next ping time past {} a compaction that reads the warm context; a later return starts from what it leaves</text>"#,
+        h - 14.0,
+        t.muted,
         window_name(b.keep_warm_ms)
     );
     o.push_str("</svg>\n");
@@ -510,6 +569,64 @@ mod tests {
         assert_eq!(nice_axis(3.98).0, 1.0);
         assert_eq!(nice_axis(0.4).0, 0.1);
         assert_eq!(round_tokens(490_700), "491k");
+    }
+
+    /// Three returns followed for one request each, with what every way spends before the first
+    /// request and after it.
+    fn three_returns() -> Bench {
+        use tokprof_core::bench::{Base, Elsewhere};
+        let claude = AgentId::new(tokprof_core::source::AgentInfo { title: "Claude Code".into(), ..tokprof_core::source::AgentInfo::named("claude") });
+        // Per return: resume, /compact first, handoff, heartbeats, heartbeats then compaction,
+        // each as (before the first request, after it); then kept warm and compacted.
+        let ways = [
+            ([(0.0, 4.00), (4.1, 4.5), (0.3, 1.0), (0.30, 0.70), (0.30, 0.70)], true, false),
+            ([(0.0, 4.00), (4.1, 4.5), (0.3, 1.0), (0.31, 0.71), (0.31, 0.71)], true, false),
+            ([(0.0, 3.73), (4.0, 4.4), (0.3, 1.0), (0.00, 3.12), (0.30, 1.22)], false, true),
+        ];
+        let returns = ways
+            .iter()
+            .map(|(costs, kept_warm, compacted)| Return {
+                agent: claude.clone(),
+                api: tokprof_core::api::ApiId::Anthropic,
+                context: 500_000,
+                idle_ms: 3 * 3_600_000,
+                long_ttl: true,
+                cumulative: costs.map(|(before, after)| vec![before, after]),
+                forecast: 4.0,
+                pings: 2,
+                kept_warm: *kept_warm,
+                compacted: *compacted,
+            })
+            .collect();
+        let base = [(claude.clone(), Base { tokens: 52_500, compactions: 31 })].into_iter().collect();
+        let elsewhere = [(claude, Elsewhere { pings: 12, ping_usd: 1.20, compactions: 2, compaction_usd: 0.60 })].into_iter().collect();
+        Bench { requests: 1, min_context: 100_000, keep_warm_ms: 2 * 3_600_000, returns, base, elsewhere }
+    }
+
+    #[test]
+    fn the_report_prices_the_breaks_that_were_no_return() {
+        let out = report(&three_returns(), &Style::with_color(false));
+        assert!(out.contains("  heartbeats, then compaction "), "the fifth row: {out}");
+        assert!(out.contains("Heartbeats for up to 2h would have kept 2 of 3 returns warm, for $0.61 of pings, and saved $7.20 of $11.73 (61%)."), "{out}");
+        assert!(out.contains("They cost less than a handoff note in 2 of 3 returns.\n  Breaks that were not cold returns would have taken another 12 pings for $1.20; with them, heartbeats save $6.00 (51%)."), "{out}");
+        assert!(out.contains("Heartbeats for up to 2h, then a compaction, would have kept 2 of 3 returns warm and compacted 1, for $0.91 of pings and compactions, and saved $9.10 of $11.73 (78%)."), "{out}");
+        assert!(out.contains("Breaks that were not cold returns would have taken another 12 pings and 2 compactions for $1.80; with them, it saves $7.30 (62%)."), "{out}");
+        assert!(out.contains("Heartbeats, then compaction sends the same pings and, at the next ping time past the window, a compaction that reads the warm context and outputs 10.0k tokens."), "{out}");
+    }
+
+    #[test]
+    fn the_chart_draws_the_fifth_way_dash_dotted() {
+        let b = three_returns();
+        let light = svg(&b, &LIGHT);
+        let legend: Vec<&str> = Strategy::ALL.iter().map(|s| s.name()).collect();
+        assert_eq!(legend.len(), 5);
+        for name in legend {
+            assert!(light.contains(&format!(">{name} (")), "{name} in the legend");
+        }
+        assert!(light.contains("heartbeats, then compaction (replayed)"));
+        assert!(light.contains(r##"stroke="#e87ba4" stroke-width="2" stroke-linecap="round" stroke-dasharray="7 3 1 3""##), "the legend key is dash-dotted in slot 5");
+        assert!(svg(&b, &DARK).contains(r##"stroke="#d55181""##));
+        assert!(light.contains("heartbeats, then compaction: the same pings"), "the note");
     }
 
     #[test]

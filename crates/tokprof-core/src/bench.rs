@@ -6,7 +6,7 @@
 //! with a context of at least `min_context` tokens that came after an idle gap longer than the
 //! cache lifetime and had to write that context again. The bench takes it and the requests
 //! that followed, up to `requests` of them and until the next such return or a compaction, and
-//! prices the same requests four ways:
+//! prices the same requests five ways:
 //! - **resume as is**: as logged.
 //! - **/compact first**: a compaction call, then the requests on top of what a compaction
 //!   leaves. Claude Code does not log the call. It runs as a fork that shares the
@@ -18,6 +18,13 @@
 //!   lifetime reads the context, which resets the cache timer, for up to `keep_warm` after the
 //!   last request. A return within the lifetime of the last ping reads its context from the
 //!   cache and then goes on as logged. A later return is cold anyway, after the pings.
+//! - **heartbeats, then compaction**: the same pings, and at the next ping time past `keep_warm`
+//!   a compaction instead, while the cache is still warm. A return before it is warm; a later
+//!   one goes on from the base, as after /compact.
+//!
+//! An IDE that pinged would also ping through the breaks that were no cold return: those after
+//! which the cache was still warm, and the end of each conversation. The bench prices those
+//! breaks for the two heartbeat ways apart from the returns.
 //!
 //! The replay keeps each request's own cache behavior and changes only the old conversation
 //! in its prompt. That span shrinks to the base, and its read, written and uncached parts
@@ -40,10 +47,11 @@ pub enum Strategy {
     Compact,
     Handoff,
     Heartbeats,
+    WarmThenCompact,
 }
 
 impl Strategy {
-    pub const ALL: [Strategy; 4] = [Strategy::Resume, Strategy::Compact, Strategy::Handoff, Strategy::Heartbeats];
+    pub const ALL: [Strategy; 5] = [Strategy::Resume, Strategy::Compact, Strategy::Handoff, Strategy::Heartbeats, Strategy::WarmThenCompact];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -51,6 +59,7 @@ impl Strategy {
             Strategy::Compact => "/compact first",
             Strategy::Handoff => "new session + handoff note",
             Strategy::Heartbeats => "heartbeats, then resume",
+            Strategy::WarmThenCompact => "heartbeats, then compaction",
         }
     }
 }
@@ -67,6 +76,13 @@ fn heartbeats(idle_ms: i64, ttl_ms: i64, window_ms: i64) -> (Vec<i64>, bool) {
     let times: Vec<i64> = (1..).map(|k| k * every).take_while(|&t| t < idle_ms && t <= window_ms).collect();
     let warm = idle_ms - times.last().copied().unwrap_or(0) <= ttl_ms;
     (times, warm)
+}
+
+/// When heartbeats then compaction compacts, after the last request: at the first ping time past
+/// the window, which falls within the last ping's lifetime.
+pub fn compaction_at(ttl_ms: i64, window_ms: i64) -> i64 {
+    let every = ping_every(ttl_ms);
+    (window_ms.max(0) / every + 1) * every
 }
 
 /// How often heartbeats go out for a cache of lifetime `ttl_ms`: every 50 minutes on a 1-hour
@@ -110,23 +126,55 @@ struct Case {
     steps: Vec<Step>,
 }
 
-/// What the sessions of a bench run hold: cold returns, and the context sizes the
-/// alternatives start from.
+/// A break of a big main conversation that is no counted return: the heartbeat ways ping
+/// through it all the same.
+#[derive(Debug)]
+struct Break {
+    agent: AgentId,
+    api: crate::api::ApiId,
+    model: String,
+    long_ttl: bool,
+    /// The prompt before the break.
+    context: u64,
+    /// The last request before the break.
+    start_ms: i64,
+    /// The request after it; `None` for a conversation's last request, whose break lasts to the
+    /// end of the logs.
+    end_ms: Option<i64>,
+}
+
+/// What the sessions of a bench run hold: cold returns, the breaks that were none, and the
+/// context sizes the alternatives start from.
 #[derive(Default)]
 pub struct Found {
     cases: Vec<Case>,
+    breaks: Vec<Break>,
     /// Prompt size right after a compaction of a big context, per agent.
     compacted: Vec<(AgentId, u64)>,
     /// First prompt of each main conversation, per agent.
     starts: Vec<(AgentId, u64)>,
+    /// The latest request read, where open breaks end, and `--until`, when earlier.
+    latest_ms: Option<i64>,
+    until_ms: Option<i64>,
 }
 
 impl Found {
     pub fn merge(mut self, other: Found) -> Found {
         self.cases.extend(other.cases);
+        self.breaks.extend(other.breaks);
         self.compacted.extend(other.compacted);
         self.starts.extend(other.starts);
+        self.latest_ms = self.latest_ms.max(other.latest_ms);
+        self.until_ms = self.until_ms.or(other.until_ms);
         self
+    }
+
+    /// Where an open break ends: the latest request read, or `--until` when it is earlier.
+    fn end_of_logs(&self) -> Option<i64> {
+        match (self.latest_ms, self.until_ms) {
+            (Some(latest), Some(until)) => Some(latest.min(until)),
+            (latest, _) => latest,
+        }
     }
 }
 
@@ -135,25 +183,47 @@ fn cold_return(long_ttl: bool, prev: &Request, r: &Request) -> bool {
     r.api.ttl(long_ttl).is_some_and(|(ttl_ms, _)| r.ts_ms - prev.ts_ms > ttl_ms) && cache::rewritten(prev.usage.prompt(), &r.usage).is_some()
 }
 
-/// Finds the cold returns of a session's main conversations.
+/// Finds the cold returns of a session's main conversations, and the breaks that were none.
 pub fn scan(s: &Session, filter: &Filter, requests: usize, min_context: u64) -> Found {
-    let mut found = Found::default();
+    let mut found = Found { until_ms: filter.until_ms, ..Found::default() };
     for (_, conversation) in s.main_conversations() {
         let billed: Vec<usize> = (0..conversation.len()).filter(|&i| conversation[i].usage.prompt() > 0 && !conversation[i].advisor).collect();
         if let Some(&first) = billed.first() {
             found.starts.push((s.agent.clone(), conversation[first].usage.prompt()));
         }
+        found.latest_ms = found.latest_ms.max(billed.last().map(|&i| conversation[i].ts_ms));
+        // A break that is no counted return, after a big prompt the filters keep.
+        let mut breaks: Vec<Break> = Vec::new();
+        let mut no_return = |prev: &Request, end_ms: Option<i64>, long_ttl: bool| {
+            let lasts_a_ping = end_ms.is_none_or(|end| prev.api.ttl(long_ttl).is_some_and(|(ttl_ms, _)| end - prev.ts_ms >= ping_every(ttl_ms)));
+            if prev.usage.prompt() >= min_context && filter.keeps(prev) && lasts_a_ping {
+                breaks.push(Break {
+                    agent: s.agent.clone(),
+                    api: prev.api,
+                    model: prev.model.clone(),
+                    long_ttl,
+                    context: prev.usage.prompt(),
+                    start_ms: prev.ts_ms,
+                    end_ms,
+                });
+            }
+        };
+        if let Some(&last) = billed.last() {
+            no_return(&conversation[last], None, forecast::long_ttl(&conversation[..=last]));
+        }
         for (k, pair) in billed.windows(2).enumerate() {
             let (prev, r) = (&conversation[pair[0]], &conversation[pair[1]]);
+            let history = &conversation[..=pair[0]];
+            let long_ttl = forecast::long_ttl(history);
             if r.compacted_before {
                 if prev.usage.prompt() >= min_context {
                     found.compacted.push((s.agent.clone(), r.usage.prompt()));
                 }
+                no_return(prev, Some(r.ts_ms), long_ttl);
                 continue;
             }
-            let history = &conversation[..=pair[0]];
-            let long_ttl = forecast::long_ttl(history);
             if prev.usage.prompt() < min_context || r.model != prev.model || !filter.keeps(r) || !cold_return(long_ttl, prev, r) {
+                no_return(prev, Some(r.ts_ms), long_ttl);
                 continue;
             }
             let mut steps = vec![r];
@@ -179,11 +249,12 @@ pub fn scan(s: &Session, filter: &Filter, requests: usize, min_context: u64) -> 
                 steps: steps.into_iter().map(|x| Step { ts_ms: x.ts_ms, model: x.model.clone(), usage: x.usage }).collect(),
             });
         }
+        found.breaks.extend(breaks);
     }
     found
 }
 
-/// One measured return, priced four ways.
+/// One measured return, priced five ways.
 pub struct Return {
     pub agent: AgentId,
     /// The API of the return.
@@ -193,13 +264,15 @@ pub struct Return {
     pub long_ttl: bool,
     /// Cost after each request since the return, per strategy. `[0]` is what the strategy
     /// spends before the first request: the compaction call, the note, or the pings.
-    pub cumulative: [Vec<f64>; 4],
+    pub cumulative: [Vec<f64>; 5],
     /// The X-ray's forecast of the first request once the cache is cold.
     pub forecast: f64,
     /// How many heartbeats went out during the break, and whether they kept the cache warm
     /// until the return.
     pub pings: usize,
     pub kept_warm: bool,
+    /// Whether heartbeats then compaction compacted before the return.
+    pub compacted: bool,
 }
 
 impl Return {
@@ -223,6 +296,16 @@ pub struct Base {
     pub compactions: usize,
 }
 
+/// What the two heartbeat ways send during an agent's breaks that were no counted return: the
+/// pings both send, and the compactions heartbeats then compaction adds.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Elsewhere {
+    pub pings: usize,
+    pub ping_usd: f64,
+    pub compactions: usize,
+    pub compaction_usd: f64,
+}
+
 pub struct Bench {
     pub requests: usize,
     pub min_context: u64,
@@ -230,6 +313,8 @@ pub struct Bench {
     pub keep_warm_ms: i64,
     pub returns: Vec<Return>,
     pub base: BTreeMap<AgentId, Base>,
+    /// Per agent, what the heartbeat ways send during breaks that were no counted return.
+    pub elsewhere: BTreeMap<AgentId, Elsewhere>,
 }
 
 impl Bench {
@@ -251,7 +336,40 @@ pub fn median(mut v: Vec<u64>) -> Option<u64> {
     v.get(v.len() / 2).copied()
 }
 
-/// Prices every return four ways.
+/// What a warm read of a `context`-token prompt and `output` tokens of reply cost on `model` at
+/// a moment; `None` without a price.
+fn warm_call(pricing: &Pricing, model: &str, context: u64, output: f64, at_ms: i64) -> Option<f64> {
+    pricing.get(model, context, at_ms).map(|p| (context as f64 * p.read + output * p.output) / 1e6)
+}
+
+/// What the two heartbeat ways send during the breaks that were no counted return, per agent.
+fn price_elsewhere(found: &Found, pricing: &Pricing, keep_warm_ms: i64) -> BTreeMap<AgentId, Elsewhere> {
+    let mut out: BTreeMap<AgentId, Elsewhere> = BTreeMap::new();
+    let end_of_logs = found.end_of_logs();
+    for b in &found.breaks {
+        let Some(end) = b.end_ms.or(end_of_logs) else { continue };
+        let Some((ttl_ms, _)) = b.api.ttl(b.long_ttl) else { continue };
+        let idle = end - b.start_ms;
+        let (pings, _) = heartbeats(idle, ttl_ms, keep_warm_ms);
+        let e = out.entry(b.agent.clone()).or_default();
+        for t in &pings {
+            if let Some(usd) = warm_call(pricing, &b.model, b.context, PING_OUTPUT, b.start_ms + t) {
+                e.pings += 1;
+                e.ping_usd += usd;
+            }
+        }
+        let at = compaction_at(ttl_ms, keep_warm_ms);
+        if at < idle
+            && let Some(usd) = warm_call(pricing, &b.model, b.context, SUMMARY_TOKENS, b.start_ms + at)
+        {
+            e.compactions += 1;
+            e.compaction_usd += usd;
+        }
+    }
+    out
+}
+
+/// Prices every return five ways, and what the heartbeat ways send elsewhere.
 pub fn replay(found: Found, pricing: &Pricing, requests: usize, min_context: u64, keep_warm_ms: i64) -> Bench {
     let mut base = BTreeMap::new();
     let mut agents: Vec<AgentId> = found.compacted.iter().chain(&found.starts).map(|(a, _)| a.clone()).collect();
@@ -269,7 +387,8 @@ pub fn replay(found: Found, pricing: &Pricing, requests: usize, min_context: u64
         }
     }
     let returns = found.cases.iter().filter_map(|c| price(c, base.get(&c.agent)?.tokens, pricing, keep_warm_ms)).collect();
-    Bench { requests, min_context, keep_warm_ms, returns, base }
+    let elsewhere = price_elsewhere(&found, pricing, keep_warm_ms);
+    Bench { requests, min_context, keep_warm_ms, returns, base, elsewhere }
 }
 
 fn price(c: &Case, base: u64, pricing: &Pricing, keep_warm_ms: i64) -> Option<Return> {
@@ -282,24 +401,38 @@ fn price(c: &Case, base: u64, pricing: &Pricing, keep_warm_ms: i64) -> Option<Re
     let keep = if ctx > shared { ((base as f64).min(ctx) - shared).max(0.0) / (ctx - shared) } else { 1.0 };
     let write = if c.long_ttl { p.write_long } else { p.write_short };
     // Each ping reads the context at the price of its own time.
-    let (pings, kept_warm) = heartbeats(c.idle_ms, c.api.ttl(c.long_ttl).map_or(i64::MAX, |(ttl_ms, _)| ttl_ms), keep_warm_ms);
-    let pinged: f64 = pings
-        .iter()
-        .filter_map(|t| pricing.get(&first.model, c.context, c.before_ms + t))
-        .map(|at| (ctx * at.read + PING_OUTPUT * at.output) / 1e6)
-        .sum();
+    let ttl_ms = c.api.ttl(c.long_ttl).map_or(i64::MAX, |(ttl_ms, _)| ttl_ms);
+    let (pings, kept_warm) = heartbeats(c.idle_ms, ttl_ms, keep_warm_ms);
+    let pinged: f64 = pings.iter().filter_map(|t| warm_call(pricing, &first.model, c.context, PING_OUTPUT, c.before_ms + t)).sum();
+    // Heartbeats then compaction: the same pings, then a compaction while the cache is warm.
+    let compact_at = compaction_at(ttl_ms, keep_warm_ms);
+    let compacted = compact_at < c.idle_ms;
+    let compaction = if compacted { warm_call(pricing, &first.model, c.context, SUMMARY_TOKENS, c.before_ms + compact_at).unwrap_or(0.0) } else { 0.0 };
     let up_front = [
         0.0,
         (shared * p.read + (ctx - shared) * write + SUMMARY_TOKENS * p.output) / 1e6,
         (ctx * note.read + SUMMARY_TOKENS * note.output) / 1e6,
         pinged,
+        pinged + compaction,
     ];
     let cumulative = Strategy::ALL.map(|s| {
-        let keep = if matches!(s, Strategy::Resume | Strategy::Heartbeats) { 1.0 } else { keep };
+        // The ways that keep the whole context: resuming, heartbeats, and heartbeats then
+        // compaction while it has not compacted.
+        let whole = match s {
+            Strategy::Resume | Strategy::Heartbeats => true,
+            Strategy::WarmThenCompact => !compacted,
+            Strategy::Compact | Strategy::Handoff => false,
+        };
+        let warm_first = match s {
+            Strategy::Heartbeats => kept_warm,
+            Strategy::WarmThenCompact => !compacted,
+            _ => false,
+        };
+        let keep = if whole { 1.0 } else { keep };
         let mut total = up_front[s as usize];
         let mut out = vec![total];
         for (i, step) in c.steps.iter().enumerate() {
-            let u = if s == Strategy::Heartbeats && i == 0 && kept_warm { warmed(step.usage, c.context) } else { shrink(step.usage, shared, ctx, keep) };
+            let u = if warm_first && i == 0 { warmed(step.usage, c.context) } else { shrink(step.usage, shared, ctx, keep) };
             total += pricing.get(&step.model, u.prompt(), step.ts_ms).map_or(0.0, |p| p.cost(&u));
             out.push(total);
         }
@@ -316,6 +449,7 @@ fn price(c: &Case, base: u64, pricing: &Pricing, keep_warm_ms: i64) -> Option<Re
         forecast: forecast::next_request(ctx, added, output, p, c.long_ttl).1,
         pings: pings.len(),
         kept_warm,
+        compacted,
     })
 }
 
@@ -414,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cold_return_is_replayed_four_ways() {
+    fn a_cold_return_is_replayed_five_ways() {
         let found = scan(&session(), &Filter::default(), 60, 100_000);
         assert_eq!((found.cases.len(), found.compacted.len()), (1, 1));
         let case = &found.cases[0];
@@ -436,11 +570,110 @@ mod tests {
         let warm = (500_000.0 * 0.2 + 2_000.0 * 8.0 + 1_000.0 * 20.0) / 1e6;
         assert!((r.after(Strategy::Heartbeats, 1) - r.after(Strategy::Heartbeats, 0) - warm).abs() < 1e-9);
         // Three requests are too few for /compact to pay off: it saves only on reads. Over so few
-        // requests, keeping the full context warm costs less than the note.
+        // requests, keeping the full context warm costs less than the note. Within the 6h window,
+        // heartbeats then compaction never compacts, so it costs what heartbeats do.
         let costs = Strategy::ALL.map(|s| (cost(s) * 100.0).round() / 100.0);
-        assert_eq!(costs, [4.37, 4.62, 0.8, 0.75], "{costs:?}");
+        assert_eq!(costs, [4.37, 4.62, 0.8, 0.75, 0.75], "{costs:?}");
+        assert!(!r.compacted);
         // The X-ray forecast at the break: the 500k context and the pace before it, all written.
         assert!((r.forecast - ((500_000.0 + 250_000.0) * 8.0 + 1_000.0 * 20.0) / 1e6).abs() < 1e-9);
+    }
+
+    /// The example session with its return `idle_min` minutes after the last request before it.
+    fn session_back_after(idle_min: i64) -> Session {
+        let mut s = session();
+        let shift = idle_min * 60_000 - (2 * HOUR - 60_000);
+        for r in s.chains[0].requests.iter_mut().skip(2) {
+            r.ts_ms += shift;
+        }
+        s
+    }
+
+    #[test]
+    fn heartbeats_then_compaction_keeps_a_return_inside_the_window_warm() {
+        let b = replay(scan(&session_back_after(119), &Filter::default(), 60, 100_000), &Pricing::defaults(), 60, 100_000, 2 * HOUR);
+        let r = &b.returns[0];
+        let ping = (500_000.0 * 0.2 + 100.0 * 20.0) / 1e6;
+        assert!((r.after(Strategy::WarmThenCompact, 0) - 2.0 * ping).abs() < 1e-9, "two pings, no compaction");
+        assert!(!r.compacted);
+        for k in 0..=4 {
+            assert!((r.after(Strategy::WarmThenCompact, k) - r.after(Strategy::Heartbeats, k)).abs() < 1e-9, "priced as heartbeats at {k}");
+        }
+    }
+
+    #[test]
+    fn heartbeats_then_compaction_compacts_past_the_window() {
+        let b = replay(scan(&session_back_after(180), &Filter::default(), 60, 100_000), &Pricing::defaults(), 60, 100_000, 2 * HOUR);
+        let r = &b.returns[0];
+        let ping = (500_000.0 * 0.2 + 100.0 * 20.0) / 1e6;
+        let compaction: f64 = (500_000.0 * 0.2 + 10_000.0 * 20.0) / 1e6;
+        assert!((compaction - 0.30).abs() < 1e-9);
+        assert!(r.compacted);
+        assert!((r.after(Strategy::WarmThenCompact, 0) - (2.0 * ping + compaction)).abs() < 1e-9, "{}", r.after(Strategy::WarmThenCompact, 0));
+        // The requests after it run on the base, as they do for /compact first.
+        for k in 1..=4 {
+            let mine = r.after(Strategy::WarmThenCompact, k) - r.after(Strategy::WarmThenCompact, 0);
+            let compact = r.after(Strategy::Compact, k) - r.after(Strategy::Compact, 0);
+            assert!((mine - compact).abs() < 1e-9, "request {k}: {mine} vs {compact}");
+        }
+    }
+
+    #[test]
+    fn with_no_window_the_compaction_goes_out_at_the_first_ping_time() {
+        let minute = 60_000;
+        assert_eq!(compaction_at(HOUR, 0), 50 * minute);
+        assert_eq!(compaction_at(5 * minute, 0), 250_000);
+        assert_eq!(compaction_at(HOUR, 2 * HOUR), 150 * minute);
+        assert_eq!(compaction_at(HOUR, 6 * HOUR), 400 * minute, "6 hours 40 minutes");
+        let b = replay(scan(&session(), &Filter::default(), 60, 100_000), &Pricing::defaults(), 60, 100_000, 0);
+        let r = &b.returns[0];
+        assert_eq!((r.pings, r.compacted), (0, true));
+    }
+
+    /// A conversation of `context` tokens on the 1-hour cache whose second request comes
+    /// `idle_min` minutes later and reads all of the first prompt, then a third request.
+    fn warm_break(context: u64, idle_min: i64) -> Session {
+        let mut s = Session::new(crate::testing::claude(), "w".into());
+        let requests = vec![request(0, 0, context, 1_000), request(idle_min * 60_000, context, 1_000, 1_000), request(idle_min * 60_000 + 30_000, context + 1_000, 1_000, 1_000)];
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+        s
+    }
+
+    #[test]
+    fn breaks_that_were_no_return_are_priced_for_the_heartbeat_ways() {
+        let pricing = Pricing::defaults();
+        let claude = crate::testing::claude();
+        // The cache was still warm after 55 minutes: one ping at 50 minutes. The conversation's
+        // last request ends the logs, so its open break is empty.
+        let found = scan(&warm_break(300_000, 55), &Filter::default(), 60, 100_000);
+        assert!(found.cases.is_empty());
+        let e = price_elsewhere(&found, &pricing, 6 * HOUR)[&claude];
+        assert_eq!((e.pings, e.compactions), (1, 0));
+        assert!((e.ping_usd - (300_000.0 * 0.2 + 100.0 * 20.0) / 1e6).abs() < 1e-9);
+        // A small context and a short break price nothing.
+        let priced = |context, idle_min| price_elsewhere(&scan(&warm_break(context, idle_min), &Filter::default(), 60, 100_000), &pricing, 6 * HOUR).get(&claude).copied().unwrap_or_default();
+        assert_eq!(priced(60_000, 55), Elsewhere::default());
+        assert_eq!(priced(300_000, 40), Elsewhere::default());
+    }
+
+    #[test]
+    fn a_conversation_left_open_pings_until_the_end_of_the_logs() {
+        let pricing = Pricing::defaults();
+        let claude = crate::testing::claude();
+        // The last request of one conversation comes 10 hours before the latest one read.
+        let mut found = scan(&warm_break(300_000, 1), &Filter::default(), 60, 100_000);
+        let other = scan(&{
+            let mut s = warm_break(10_000, 1);
+            s.chains[0].requests.iter_mut().for_each(|r| r.ts_ms += 10 * HOUR + 90_000);
+            s
+        }, &Filter::default(), 60, 100_000);
+        found = found.merge(other);
+        let e = price_elsewhere(&found, &pricing, 6 * HOUR)[&claude];
+        assert_eq!((e.pings, e.compactions), (7, 1), "seven pings to 5h50m, then a compaction at 6h40m");
+        // An earlier --until ends the open break there.
+        found.until_ms = Some(3 * HOUR);
+        let e = price_elsewhere(&found, &pricing, 6 * HOUR)[&claude];
+        assert_eq!((e.pings, e.compactions), (3, 0));
     }
 
     #[test]
