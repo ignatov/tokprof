@@ -58,6 +58,9 @@ pub fn text(x: &XRay, style: &Style, profile_dir: &Path, home: &Path) -> String 
         let _ = writeln!(out, "{} {models}", label("models"));
     }
     let _ = writeln!(out, "{} {}", label("time"), time_line(x.span_ms, x.requests, x.subagents));
+    if let Some(r) = &x.rhythm {
+        let _ = writeln!(out, "{}", r.line());
+    }
     if let Some(context) = &x.context {
         out.push('\n');
         context_lines(&mut out, context, style);
@@ -534,6 +537,7 @@ mod tests {
             tools: Default::default(),
             setup: None,
             misses: Vec::new(),
+            rhythm: None,
         }
     }
 
@@ -699,5 +703,25 @@ mod tests {
         assert!(header(&[("unknown", 5)], None).contains("\nclient    unknown\n"));
         // A session without requests has no line.
         assert!(!header(&[], None).contains("client"));
+    }
+
+    #[test]
+    fn the_rhythm_line_follows_time() {
+        let mut x = xray(Vec::new());
+        let plain = text(&x, &Style::with_color(false), Path::new("/tmp"), Path::new("/h"));
+        assert!(!plain.contains("rhythm"), "no turns, no line: {plain}");
+        x.rhythm = Some(tokprof_core::rhythm::SessionRhythm {
+            turns: 34,
+            work_ms: 126 * 60_000,
+            turn_median: Some(210_000),
+            answer_median: Some(240_000),
+            self_started: 12,
+            interrupts: 2,
+            questions: 0,
+        });
+        let shown = text(&x, &Style::with_color(false), Path::new("/tmp"), Path::new("/h"));
+        let lines: Vec<&str> = shown.lines().collect();
+        let at = lines.iter().position(|l| l.starts_with("time")).unwrap();
+        assert_eq!(lines[at + 1], "rhythm    34 turns, 2.1h of work · the agent's turn median 3.5m · your answer median 4.0m · 12 it started itself · 2 interrupts");
     }
 }

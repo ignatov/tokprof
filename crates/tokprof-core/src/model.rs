@@ -365,6 +365,37 @@ pub struct Session {
     pub compactions: Vec<Compaction>,
     /// The messages the user typed in the main conversation, in order.
     pub typed: Vec<TypedMessage>,
+    /// When the work passed between the user and the agent in the main conversation, in log
+    /// order; a subagent's log has none.
+    pub handoffs: Vec<Handoff>,
+    /// A program ran the session with nobody typing in it, as its log tells.
+    pub scripted: bool,
+}
+
+/// A moment when the work passed between the user and the agent, or when something else gave
+/// the agent work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Handoff {
+    pub ts_ms: i64,
+    pub kind: HandoffKind,
+}
+
+/// What passed between the user and the agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum HandoffKind {
+    /// The agent ended its turn and waits for the user.
+    TurnEnd,
+    /// The user stopped the agent's turn.
+    Interrupt,
+    /// The user typed a message while the agent worked, and the agent read it in the same turn.
+    TypedWhileWorking,
+    /// The agent asked the user a question and waits for the answer.
+    Question,
+    /// The user answered the agent's question.
+    Answer,
+    /// A background task or another session gave the agent work.
+    Wake,
 }
 
 /// A compaction the agent logged: when, and what started it.
@@ -489,6 +520,16 @@ impl Session {
             task: None,
             compactions: Vec::new(),
             typed: Vec::new(),
+            handoffs: Vec::new(),
+            scripted: false,
+        }
+    }
+
+    /// Adds a hand-off, unless the one before it is the same: a line that a log repeats adds
+    /// nothing.
+    pub fn push_handoff(&mut self, ts_ms: i64, kind: HandoffKind) {
+        if self.handoffs.last() != Some(&Handoff { ts_ms, kind }) {
+            self.handoffs.push(Handoff { ts_ms, kind });
         }
     }
 

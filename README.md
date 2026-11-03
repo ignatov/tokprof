@@ -100,6 +100,7 @@ tokprof ui                  # browse all sessions interactively
 tokprof sessions            # list session logs, newest first by last activity (--cost adds each session's cost)
 tokprof scan 3f951de0       # X-ray one session by id prefix, or: tokprof scan path/to/session.jsonl
 tokprof handoff 3f951de0    # the line to start a new session with, instead of resuming this one
+tokprof day                 # today with the agents: when you sat at them and what they did meanwhile
 ```
 
 A session's time is its last activity: the time of the last record in its log that carries one. The latest session is the one active last. Claude Code also writes records without a time, such as `cost-state`, when the IDE resumes a session that then does nothing, and those do not count.
@@ -209,6 +210,8 @@ The X-ray shows:
 - the content that cost the most over the session;
 - cache misses with their causes.
 
+Under `time`, the `rhythm` line counts the session's turns as [Your day with the agents](#your-day-with-the-agents) defines them: `rhythm    34 turns, 2.1h of work · the agent's turn median 3.5m · your answer median 4.0m · 12 it started itself · 2 interrupts`. A session that a program ran has no such line.
+
 ## Reports over all sessions
 
 ```sh
@@ -216,7 +219,7 @@ tokprof summary             # spend by model and component, by client, by origin
 tokprof tools               # spend by tool and shell command, with a hint per row (--by trips)
 tokprof misses --top 20     # most expensive cache misses (--expected adds compactions and cleared tool results)
 tokprof whatif              # Claude input cost under 5m vs 1h cache lifetimes
-tokprof pauses              # pauses before typed messages, cold returns by pause, sessions by largest context
+tokprof pauses              # pauses before typed messages, cold returns by pause, sessions by largest context, your rhythm
 tokprof share               # one JSON file of these numbers with no names, to compare with other users
 tokprof bench               # cold returns to big sessions: resume vs /compact vs a new session vs heartbeats, with or without a compaction after them
 tokprof prices              # prices in effect and where each came from
@@ -293,7 +296,7 @@ The bench replays the requests that followed each return; only the old conversat
 
 Heartbeats go out at 5/6 of the cache lifetime: every 50 minutes on a 1-hour cache, every 4 minutes 10 seconds on a 5-minute one, and every 25 minutes in Codex. Each reads the context at the price of its time and outputs 100 tokens. A return within the lifetime of the last ping reads the previous prompt from the cache and writes only what is new; the requests after it run as logged. For Codex this assumes a ping resets OpenAI's cache timer as it resets Anthropic's. The two heartbeat ways also price what they would send through the breaks that ended in no cold return: those after a prompt of `--min-context` tokens or more that the cache survived, or that ended in another kind of request, and the time from each conversation's last request to the end of the logs read. Those costs come in a line of their own, with the net saving.
 
-Every command but `tokprof prices` takes these filters:
+Every command but `tokprof prices` takes these filters. `tokprof day` takes all but `--since` and `--until`, since its date picks the time:
 
 | Filter | Example |
 |---|---|
@@ -336,6 +339,76 @@ Per agent, the file holds:
 The file also names its format, the tokprof version and the first and last day of the requests. It holds no project, path, session id, title, task, prompt or tool text, and no skill, MCP server, plugin, command, subagent-type or tool name. Model and client names stay. Dollars have 4 decimals and tokens are whole, so files from several users can be summed.
 
 For a pilot, ask each person to run `tokprof --since 30d share`, read the file, and send it. With only a few sessions in the window, the file still describes those sessions, so a longer window shares less about any one piece of work.
+
+## Your day with the agents
+
+`tokprof day` shows one day of your work with the agents: when you sat at them, how long they worked, and what they did after you left. `tokprof day 2026-11-02` shows the day that begins on that date.
+
+```
+$ tokprof day 2026-11-02
+tokprof · day
+day       Mon 2026-11-02 05:00 → Tue 2026-11-03 05:00
+night     02:00–08:00 in the last 30 days, with no message then; days start at 05:00
+left out  11 sessions that nobody typed in: a program ran them, or they ran in a temporary folder
+
+                     08  09  10  11  12  13  14  15  16  17  18  19  20  21  22
+you                   ######   ###     ## # ###      ###  #   # #  ########   # #
+a1f3c9 Cache report             **==---*==*=*?*=-----***=-----*
+b27e40 Crate split      ****===**====--*
+c90d12 Idle notice                                                 **=*=-**
+d4e5f6 Setup view                                               *==*=*=***=
+e7a8b9 Cost counter                     *=*=*=-------**
+f0c1d2 Session list                                  ***==*
+0a1b2c Tool table        **
+1c2d3e Bench edges    **
+3 more sessions
+= agent working   - waiting for your answer   * your message   ? its question   ! you stopped it   # you were there
+
+sittings  16, 3.9h at the keyboard, 58 messages to 11 sessions; median sitting 11m, median break 28m
+left      the agents stood still a median 19m after you left, and worked through 68% of a median break
+present   an agent ended a turn every 6.3m while you were there; it started 3% of its turns itself
+answers   the agent's turn took a median 6.9m; you answered in a median 3.2m
+stops     1 interrupt, 0 messages typed while the agent worked, 3 questions from the agent answered in a median 2.7m
+cache     5 cold returns, $15.48 in their first requests, $14.91 of it avoidable
+```
+
+- The strip has a lane per session with your messages that day, most messages first, and folds the rest into one line. `=` is the agent at work, `-` a finished turn that waits for your answer, `*` your message, `?` the agent's question, `!` your interrupt. The `you` lane marks your sittings. A column is 10, 15 or 20 minutes, whichever fits the day into 72 columns.
+- A sitting is a run of your messages, answers and interrupts, across all sessions, each less than 15 minutes after the one before. A break is the time between two sittings of one day.
+- `left` says how soon after you left all agents stood still, and how much of a break at least one of them worked. A short time there means each message left the agents little work for the break.
+- `present` says how often an agent ended a turn while you sat there, and how many turns the agent started itself, after a background task or a message from another session.
+- `answers` gives how long the agent's turn took after your message, and how long you took to answer after its turn ended, within one day.
+- `stops` counts your interrupts, the messages you typed while the agent worked, and the agent's questions with how long you took to answer them.
+- `cache` gives the day's cold returns, as `tokprof pauses` counts them.
+
+The day starts in the middle of your night, and tokprof finds the night in the logs. For each half hour it counts the days of the last 30 on which you typed then. The night is the longest run of half hours with the lowest count; the `night` line says what it is and where the day starts. With messages on fewer than 7 days, the day starts at midnight.
+
+A session's work is its turns. A turn starts at your message, or at a background task that wakes the agent, and ends where the agent ends it or you stop it. Stretches of 15 minutes or more with no request inside a turn, and the time the agent waits for the answer to its question, are not work. Sessions that a program ran, such as `claude -p` and `codex exec`, and sessions in the temporary folder, such as an IDE's commit-message runs, are left out and counted on the `left out` line.
+
+`tokprof pauses` ends with the same lines over its time, for all agents together, and a table by hour of the day:
+
+```
+Your rhythm: when you sat at the agents and what they did meanwhile
+
+night     02:00–08:00 in the last 30 days, with no message then; days start at 05:00
+left out  127 sessions that nobody typed in: a program ran them, or they ran in a temporary folder
+
+sittings  312, 3.2d at the keyboard, 1330 messages to 187 sessions; median sitting 6.6m, median break 34m
+left      the agents stood still a median 6.5m after you left, and worked through 22% of a median break
+present   an agent ended a turn every 4.2m while you were there; it started 32% of its turns itself
+answers   the agent's turn took a median 3.2m; you answered in a median 2.9m
+stops     40 interrupts, 35 messages typed while the agent worked, 74 questions from the agent answered in a median 2.4m
+
+hour  messages  turn ends  median answer
+10          63         84           2.7m
+14          82        144           1.9m
+17         117        170           1.9m
+21          72        128           7.2m
+22         110        166           7.6m
+```
+
+The table here keeps five of its rows. Over these 30 days, the agents ran out of work a few minutes after each break began, and evening answers took three to four times as long as afternoon ones.
+
+The logs give the hand-offs as each source's README lists them: Claude Code's `stop_reason`, interrupt and notification texts, `queued_command` attachments and question tools; Codex's `task_complete` and `turn_aborted` events. Neither logs permission prompts, so a wait for one counts as work, or as silence after 15 minutes.
 
 ## Flame graphs and profiles
 

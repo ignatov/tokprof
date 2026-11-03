@@ -241,6 +241,8 @@ pub struct XRay {
     /// What every request carries before the work; `None` below the block's thresholds.
     pub setup: Option<SetupView>,
     pub misses: Vec<MissEvent>,
+    /// The session's turns, work and answers; `None` without turns or when nobody typed in it.
+    pub rhythm: Option<crate::rhythm::SessionRhythm>,
 }
 
 /// What one typed message cost: the requests from it to the next typed message, and the
@@ -364,6 +366,7 @@ pub fn xray(catalog: &Catalog, file: &SessionRef, pricing: &Pricing, now_ms: i64
         setup,
         misses: totals.misses,
         work: totals.work,
+        rhythm: crate::rhythm::SessionRhythm::of(main, &crate::rhythm::local_offset),
     })
 }
 

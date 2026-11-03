@@ -12,7 +12,7 @@
 //! by hashing transcript `user` messages and `assistant` messages merged by message id. Older
 //! transcripts have no request records; their requests keep `prompt: None`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,12 +20,12 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use tokprof_core::api::ApiId;
 use tokprof_core::labels::{display_path, message_label};
-use tokprof_core::model::{Block, BlockKind, Class, CompactionTrigger, Origin, ReminderKind, ToolClass, Chain, ChainKind, Compaction, Params, PromptDelta, Request, Session, Shape, TypedMessage, Usage};
+use tokprof_core::model::{Block, BlockKind, Class, CompactionTrigger, HandoffKind, Origin, ReminderKind, ToolClass, Chain, ChainKind, Compaction, Params, PromptDelta, Request, Session, Shape, TypedMessage, Usage};
 use tokprof_core::source::{AgentId, Decoder};
 use tokprof_core::trigger::{CallClass, Pending, Trigger};
 use tokprof_logio::{canonical_hash, canonical_string, json_len, parse_ts_ms, str_at, u64_at};
 
-use crate::tools::{call_class, tool_target};
+use crate::tools::{asks_the_user, call_class, tool_target};
 
 /// Size an image is counted as, in characters (roughly 1,400 tokens).
 const IMAGE_CHARS: u64 = 5_000;
@@ -119,6 +119,14 @@ pub(crate) struct Parser {
     counter_runs: Vec<(Option<i64>, f64)>,
     /// The latest `entrypoint` value, shared by the responses that repeat it.
     client: Option<Arc<str>>,
+    /// Whether a line has named an `entrypoint` yet: the first one tells whether a program ran
+    /// the session.
+    entrypoint_seen: bool,
+    /// The `message.id` of the response that ended the main conversation's latest turn, and where
+    /// that end is in the session's hand-offs: a later line of the response moves the end.
+    last_end: Option<(String, usize)>,
+    /// The questions the main conversation asked the user, by tool call id, until the answer.
+    questions: HashSet<String>,
 }
 
 impl Parser {
@@ -148,6 +156,9 @@ impl Parser {
             trigger_by_message: HashMap::new(),
             counter_runs: Vec::new(),
             client: None,
+            entrypoint_seen: false,
+            last_end: None,
+            questions: HashSet::new(),
         }
     }
 
@@ -160,13 +171,22 @@ impl Parser {
             || (self.after_boundary && IDLE_NOTICES.iter().any(|n| line.contains(n)))
             || line.contains("\"type\":\"cost-state\"")
             || line.contains("\"type\":\"ai-title\"")
-            || line.contains("\"type\":\"custom-title\"");
+            || line.contains("\"type\":\"custom-title\"")
+            // A message the user typed while the agent worked.
+            || line.contains("\"queued_command\"");
         if !interesting {
             return;
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else { return };
+        if !self.entrypoint_seen
+            && let Some(entrypoint) = str_at(&v, "entrypoint").filter(|e| !e.is_empty()) {
+                self.entrypoint_seen = true;
+                // `claude -p` runs as `sdk-cli`.
+                self.session.scripted = entrypoint == "sdk-cli";
+            }
         match str_at(&v, "type") {
             Some("user") => self.user(&v),
+            Some("attachment") => self.attachment(&v),
             Some("assistant") => {
                 self.after_boundary = false;
                 self.assistant(&v)
@@ -253,7 +273,7 @@ impl Parser {
             && let Some(origin) = prompt_text(msg).and_then(|t| self.turn_origin(t)) {
                 self.turn = Some(origin);
             }
-        let main = !meta && !sidechain && !self.subagent_file && str_at(v, "agentId").is_none_or(str::is_empty);
+        let main = !meta && self.main_line(v);
         if main
             && let Some(text) = prompt_text(msg).filter(|t| user_event(t) == Some(Trigger::Prompt)) {
                 let ts_ms = parse_ts_ms(v.get("timestamp")).unwrap_or(0);
@@ -262,6 +282,61 @@ impl Parser {
                     self.session.typed.push(TypedMessage { ts_ms, label });
                 }
             }
+        if main {
+            self.note_user_handoffs(v, msg);
+        }
+    }
+
+    /// Whether a line belongs to the main conversation: not in a subagent's transcript, not a
+    /// sidechain, and with no agent id.
+    fn main_line(&self, v: &Value) -> bool {
+        !self.subagent_file && !v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false) && str_at(v, "agentId").is_none_or(str::is_empty)
+    }
+
+    /// The hand-off of a main `user` line: the user stopped the agent, something woke it, or the
+    /// user answered its question. A line with a tool result has no text, so it is only an answer.
+    fn note_user_handoffs(&mut self, v: &Value, msg: &Value) {
+        let kind = prompt_text(msg).and_then(user_handoff);
+        let mut answered = false;
+        if !self.questions.is_empty()
+            && let Some(Value::Array(items)) = msg.get("content") {
+                for id in items.iter().filter(|i| str_at(i, "type") == Some("tool_result")).filter_map(|i| str_at(i, "tool_use_id")) {
+                    answered |= self.questions.remove(id);
+                }
+            }
+        let Some(kind) = kind.or(answered.then_some(HandoffKind::Answer)) else { return };
+        if let Some(ts_ms) = parse_ts_ms(v.get("timestamp")) {
+            self.session.push_handoff(ts_ms, kind);
+        }
+    }
+
+    /// An `attachment` line. A `queued_command` is a message the user typed while the agent
+    /// worked, which Claude Code hands the agent in the same turn; background tasks' results and
+    /// other sessions' messages come queued too, and their prompts start with a tag.
+    fn attachment(&mut self, v: &Value) {
+        let Some(queued) = v.get("attachment").filter(|a| str_at(a, "type") == Some("queued_command")) else { return };
+        if !self.main_line(v) {
+            return;
+        }
+        // `origin.kind` says who queued it: `human`, `peer`, `task-notification`. Without it, a
+        // prompt counts unless it is meta or its text starts with a tag.
+        let typed = match queued.get("origin").and_then(|o| str_at(o, "kind")) {
+            Some(kind) => kind == "human",
+            None if queued.get("isMeta").and_then(Value::as_bool).unwrap_or(false) => false,
+            None => match queued.get("prompt") {
+                Some(Value::String(text)) => !text.trim_start().starts_with('<'),
+                // A prompt can be a list of content blocks, as with pasted images; its text tells.
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .find(|i| str_at(i, "type") == Some("text"))
+                    .and_then(|i| str_at(i, "text"))
+                    .is_none_or(|text| !text.trim_start().starts_with('<')),
+                _ => false,
+            },
+        };
+        if typed && let Some(ts_ms) = parse_ts_ms(v.get("timestamp")) {
+            self.session.push_handoff(ts_ms, HandoffKind::TypedWhileWorking);
+        }
     }
 
     /// The chain a line belongs to: its agent id and whether it is a sidechain. A subagent's
@@ -358,6 +433,10 @@ impl Parser {
 
         let model = str_at(msg, "model").unwrap_or_default();
         self.note_calls(v, message_id.as_deref(), model, &content);
+        // Before the usage: a `<synthetic>` message that reports an API error ends a turn too.
+        if self.main_line(v) {
+            self.note_response_handoffs(v, msg, message_id.as_deref(), &content);
+        }
         let Some(usage) = msg.get("usage") else { return };
         if model.is_empty() || model == "<synthetic>" {
             return;
@@ -393,6 +472,52 @@ impl Parser {
             activity,
             client,
         });
+    }
+
+    /// The hand-offs of a main response line: the questions it asks the user, and the end of the
+    /// turn when the response stopped for anything but a tool call. The lines of one response give
+    /// one end, at the latest of their times.
+    fn note_response_handoffs(&mut self, v: &Value, msg: &Value, message_id: Option<&str>, content: &[Value]) {
+        let questions: Vec<Option<&str>> = content
+            .iter()
+            .filter(|i| str_at(i, "type") == Some("tool_use") && str_at(i, "name").is_some_and(asks_the_user))
+            .map(|i| str_at(i, "id"))
+            .collect();
+        let ends = str_at(msg, "stop_reason").is_some_and(|s| !s.is_empty() && s != "tool_use");
+        let same_response = matches!((&self.last_end, message_id), (Some((last, _)), Some(id)) if last == id);
+        if questions.is_empty() && !ends && !same_response {
+            return;
+        }
+        let Some(ts_ms) = parse_ts_ms(v.get("timestamp")) else { return };
+        for id in questions {
+            // A question is asked once, however often its line is repeated.
+            if id.is_none_or(|id| self.questions.insert(id.to_string())) {
+                self.session.push_handoff(ts_ms, HandoffKind::Question);
+            }
+        }
+        if same_response {
+            self.move_end(ts_ms);
+        } else if ends {
+            self.session.push_handoff(ts_ms, HandoffKind::TurnEnd);
+            self.last_end = message_id.map(|id| (id.to_string(), self.session.handoffs.len() - 1));
+        }
+    }
+
+    /// Moves the latest end of turn to the time of a later line of its response. When other
+    /// hand-offs came between its lines, the end moves behind them, so the order stays the log's.
+    fn move_end(&mut self, ts_ms: i64) {
+        let Some((_, at)) = &mut self.last_end else { return };
+        let handoffs = &mut self.session.handoffs;
+        if handoffs.get(*at).is_none_or(|end| end.ts_ms >= ts_ms) {
+            return;
+        }
+        if *at + 1 == handoffs.len() {
+            handoffs[*at].ts_ms = ts_ms;
+        } else {
+            handoffs.remove(*at);
+            self.session.push_handoff(ts_ms, HandoffKind::TurnEnd);
+            *at = self.session.handoffs.len() - 1;
+        }
     }
 
     /// The `entrypoint` of a line, reusing the previous string while the value repeats.
@@ -770,6 +895,20 @@ fn user_event(text: &str) -> Option<Trigger> {
         None
     } else {
         Some(Trigger::Prompt)
+    }
+}
+
+/// The hand-off a main user message's text tells: the user stopped the agent (`[Request
+/// interrupted by user]`, or `… for tool use]`), or a background task's result or another
+/// session's message woke it. Seen in 2.1.310–2.1.316.
+fn user_handoff(text: &str) -> Option<HandoffKind> {
+    let t = text.trim_start();
+    if t.starts_with("[Request interrupted") {
+        Some(HandoffKind::Interrupt)
+    } else if t.starts_with("<task-notification>") || t.starts_with("<cross-session-message") {
+        Some(HandoffKind::Wake)
+    } else {
+        None
     }
 }
 
@@ -1450,5 +1589,251 @@ mod tests {
         assert_eq!(tool(BlockKind::Reminder, "attached files"), Class::Reminder(ReminderKind::AttachedFiles));
         assert_eq!(tool(BlockKind::Reminder, "other"), Class::Reminder(ReminderKind::Other));
         assert_eq!(tool(BlockKind::Text, "Bash"), Class::None);
+    }
+
+    fn ms(ts: &str) -> i64 {
+        parse_ts_ms(Some(&Value::String(ts.to_string()))).unwrap()
+    }
+
+    /// A line written at `ts`.
+    fn at(mut line: Value, ts: &str) -> Value {
+        line["timestamp"] = json!(ts);
+        line
+    }
+
+    /// A response line written at `ts` that stopped for `stop`.
+    fn stopped(id: &str, ts: &str, stop: &str, content: Value) -> Value {
+        let mut v = assistant_line(id, json!({"timestamp": ts}), content);
+        v["message"]["stop_reason"] = json!(stop);
+        v
+    }
+
+    /// A queued prompt as logs without `origin` write it.
+    fn queued(ts: &str, prompt: Value) -> Value {
+        json!({"type": "attachment", "timestamp": ts, "attachment": {"type": "queued_command", "prompt": prompt, "commandMode": "prompt"}})
+    }
+
+    fn handoffs(s: &Session) -> Vec<(i64, HandoffKind)> {
+        s.handoffs.iter().map(|h| (h.ts_ms, h.kind)).collect()
+    }
+
+    #[test]
+    fn a_response_that_stops_for_the_user_ends_the_turn() {
+        let mut error = stopped("e1", "2026-10-01T10:05:00Z", "stop_sequence", json!([{"type": "text", "text": "API Error: Request timed out"}]));
+        error["message"]["model"] = json!("<synthetic>");
+        error["isApiErrorMessage"] = json!(true);
+        let s = session_from(&[
+            at(user_line("fix the parser"), "2026-10-01T10:00:00Z"),
+            stopped("m1", "2026-10-01T10:01:00Z", "end_turn", json!([{"type": "text", "text": "fixed"}])),
+            at(user_line("go on"), "2026-10-01T10:04:00Z"),
+            error.clone(),
+        ]);
+        use HandoffKind::*;
+        assert_eq!(handoffs(&s), [(ms("2026-10-01T10:01:00Z"), TurnEnd), (ms("2026-10-01T10:05:00Z"), TurnEnd)]);
+        assert_eq!(s.chains[0].requests.len(), 1, "the synthetic message is no request");
+
+        // A synthetic message without an id: each line is an end of its own, and a repeated line adds none.
+        error["message"].as_object_mut().unwrap().remove("id");
+        let later = at(error.clone(), "2026-10-01T10:06:00Z");
+        let s = session_from(&[error.clone(), error, later]);
+        assert_eq!(handoffs(&s), [(ms("2026-10-01T10:05:00Z"), TurnEnd), (ms("2026-10-01T10:06:00Z"), TurnEnd)]);
+    }
+
+    #[test]
+    fn the_lines_of_one_response_give_one_end_at_the_last_of_them() {
+        let lines = [
+            at(user_line("explain the parser"), "2026-10-01T10:00:00Z"),
+            stopped("m1", "2026-10-01T10:00:30Z", "end_turn", json!([{"type": "thinking", "thinking": "lines"}])),
+            stopped("m1", "2026-10-01T10:00:40Z", "end_turn", json!([{"type": "text", "text": "It reads lines."}])),
+            at(user_line("and then?"), "2026-10-01T10:02:00Z"),
+            stopped("m2", "2026-10-01T10:02:30Z", "end_turn", json!([{"type": "text", "text": "Then requests."}])),
+        ];
+        let s = session_from(&lines);
+        use HandoffKind::*;
+        let ends = [(ms("2026-10-01T10:00:40Z"), TurnEnd), (ms("2026-10-01T10:02:30Z"), TurnEnd)];
+        assert_eq!(handoffs(&s), ends);
+
+        // A snapshot between the lines of a response does not split its end.
+        let mut p = parser("s", false);
+        for (i, line) in lines.iter().enumerate() {
+            if i == 2 {
+                let _ = p.snapshot();
+            }
+            p.line(&line.to_string());
+        }
+        assert_eq!(handoffs(&p.into_session()), ends);
+
+        // An end whose response goes on after another hand-off moves behind it.
+        let s = session_from(&[
+            lines[1].clone(),
+            at(user_line("[Request interrupted by user]"), "2026-10-01T10:00:35Z"),
+            lines[2].clone(),
+        ]);
+        assert_eq!(handoffs(&s), [(ms("2026-10-01T10:00:35Z"), Interrupt), (ms("2026-10-01T10:00:40Z"), TurnEnd)]);
+    }
+
+    #[test]
+    fn a_response_that_calls_a_tool_ends_no_turn() {
+        let mut unknown = stopped("m3", "2026-10-01T10:02:00Z", "end_turn", json!([{"type": "text", "text": "ok"}]));
+        unknown["message"]["stop_reason"] = Value::Null;
+        let s = session_from(&[
+            at(user_line("run the tests"), "2026-10-01T10:00:00Z"),
+            stopped("m1", "2026-10-01T10:00:10Z", "tool_use", json!([{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "cargo test"}}])),
+            at(results_line(&["t1"], None), "2026-10-01T10:01:00Z"),
+            // Lines without a stop reason, as older versions wrote them.
+            assistant_line("m2", json!({"timestamp": "2026-10-01T10:01:10Z"}), json!([{"type": "text", "text": "ok"}])),
+            unknown,
+        ]);
+        assert_eq!(handoffs(&s), []);
+    }
+
+    #[test]
+    fn the_user_stopping_the_agent_is_an_interrupt() {
+        let text = |t: &str| json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": t}]}});
+        let s = session_from(&[
+            at(user_line("[Request interrupted by user]"), "2026-10-01T10:00:00Z"),
+            // A rejected call: its result first, then the interrupt.
+            at(results_line(&["t1"], None), "2026-10-01T10:01:00Z"),
+            at(text("[Request interrupted by user for tool use]"), "2026-10-01T10:01:00Z"),
+        ]);
+        use HandoffKind::*;
+        assert_eq!(handoffs(&s), [(ms("2026-10-01T10:00:00Z"), Interrupt), (ms("2026-10-01T10:01:00Z"), Interrupt)]);
+    }
+
+    #[test]
+    fn a_background_result_or_another_session_wakes_the_agent() {
+        let s = session_from(&[
+            at(user_line("<task-notification>\n<task-id>b7x2k9</task-id>\n<status>completed</status>\n</task-notification>"), "2026-10-01T10:00:00Z"),
+            at(user_line("<cross-session-message from=\"other\">the build is green</cross-session-message>"), "2026-10-01T10:05:00Z"),
+            at(user_line("thanks, go on"), "2026-10-01T10:06:00Z"),
+        ]);
+        use HandoffKind::*;
+        assert_eq!(handoffs(&s), [(ms("2026-10-01T10:00:00Z"), Wake), (ms("2026-10-01T10:05:00Z"), Wake)]);
+    }
+
+    #[test]
+    fn a_message_queued_by_the_user_is_typed_while_working() {
+        let s = session_from(&[
+            queued("2026-10-01T10:00:00Z", json!("also check the tests")),
+            // With pasted images the prompt is a list of content blocks.
+            queued("2026-10-01T10:01:00Z", json!([{"type": "text", "text": "like this"}, {"type": "image", "source": {"type": "base64", "data": "AA=="}}])),
+            // Background results and other sessions' messages are queued too.
+            queued("2026-10-01T10:02:00Z", json!("<task-notification>\n<task-id>b7x2k9</task-id>\n</task-notification>")),
+            queued("2026-10-01T10:03:00Z", json!("  <cross-session-message from=\"other\">done</cross-session-message>")),
+            queued("2026-10-01T10:04:00Z", json!([{"type": "text", "text": "<task-notification>\n<task-id>b7x2k9</task-id>"}])),
+        ]);
+        use HandoffKind::*;
+        assert_eq!(handoffs(&s), [(ms("2026-10-01T10:00:00Z"), TypedWhileWorking), (ms("2026-10-01T10:01:00Z"), TypedWhileWorking)]);
+        assert!(s.typed.is_empty(), "a queued message is no typed message of its own");
+    }
+
+    #[test]
+    fn the_origin_of_a_queued_message_tells_who_typed_it() {
+        let with = |ts: &str, prompt: Value, origin: Option<&str>, meta: bool| {
+            let mut a = json!({"type": "queued_command", "prompt": prompt, "commandMode": "prompt"});
+            if let Some(kind) = origin {
+                a["origin"] = json!({"kind": kind});
+            }
+            if meta {
+                a["isMeta"] = json!(true);
+            }
+            json!({"type": "attachment", "timestamp": ts, "attachment": a})
+        };
+        let s = session_from(&[
+            // A slash command the user typed starts with a tag, and its origin says it is theirs.
+            with("2026-10-01T10:00:00Z", json!("<command-name>/goal</command-name>"), Some("human"), false),
+            // Another session's message, and a notice Claude Code queued itself, as 2.1.310 writes them.
+            with("2026-10-01T10:01:00Z", json!("<cross-session-message from=\"x\">hi</cross-session-message>"), Some("peer"), true),
+            with("2026-10-01T10:02:00Z", json!("[Cross-session delivery notice] held"), None, true),
+            // A log without origins counts plain text.
+            with("2026-10-01T10:03:00Z", json!("and the docs"), None, false),
+        ]);
+        use HandoffKind::*;
+        assert_eq!(handoffs(&s), [(ms("2026-10-01T10:00:00Z"), TypedWhileWorking), (ms("2026-10-01T10:03:00Z"), TypedWhileWorking)]);
+    }
+
+    #[test]
+    fn a_question_to_the_user_and_its_answer() {
+        let call = |id: &str, ts: &str, name: &str, call: &str| {
+            stopped(id, ts, "tool_use", json!([{"type": "tool_use", "id": call, "name": name, "input": {}}]))
+        };
+        let s = session_from(&[
+            at(user_line("plan the parser"), "2026-10-01T10:00:00Z"),
+            call("m1", "2026-10-01T10:01:00Z", "AskUserQuestion", "q1"),
+            at(results_line(&["q1"], None), "2026-10-01T10:03:00Z"),
+            call("m2", "2026-10-01T10:04:00Z", "Read", "t1"),
+            at(results_line(&["t1"], None), "2026-10-01T10:04:10Z"),
+            call("m3", "2026-10-01T10:05:00Z", "ExitPlanMode", "q2"),
+            at(results_line(&["q2"], None), "2026-10-01T10:09:00Z"),
+            // The question's id is forgotten once answered.
+            at(results_line(&["q2"], None), "2026-10-01T10:09:30Z"),
+        ]);
+        use HandoffKind::*;
+        assert_eq!(
+            handoffs(&s),
+            [
+                (ms("2026-10-01T10:01:00Z"), Question),
+                (ms("2026-10-01T10:03:00Z"), Answer),
+                (ms("2026-10-01T10:05:00Z"), Question),
+                (ms("2026-10-01T10:09:00Z"), Answer),
+            ]
+        );
+    }
+
+    #[test]
+    fn sidechains_subagents_and_meta_lines_hand_off_nothing() {
+        // One line of each kind of hand-off, with `extra` fields on every line.
+        let lines = |extra: Value| -> Vec<Value> {
+            let mut meta = at(user_line("[Request interrupted by user]"), "2026-10-01T10:00:00Z");
+            meta["isMeta"] = json!(true);
+            let mut lines = vec![
+                meta,
+                stopped("m1", "2026-10-01T10:01:00Z", "end_turn", json!([{"type": "text", "text": "done"}])),
+                at(user_line("[Request interrupted by user]"), "2026-10-01T10:02:00Z"),
+                at(user_line("<task-notification>\n<task-id>b7x2k9</task-id>"), "2026-10-01T10:03:00Z"),
+                queued("2026-10-01T10:04:00Z", json!("also the docs")),
+                stopped("m2", "2026-10-01T10:05:00Z", "tool_use", json!([{"type": "tool_use", "id": "q1", "name": "AskUserQuestion", "input": {}}])),
+                at(results_line(&["q1"], None), "2026-10-01T10:06:00Z"),
+            ];
+            for line in &mut lines {
+                if let (Some(line), Value::Object(extra)) = (line.as_object_mut(), extra.clone()) {
+                    line.extend(extra);
+                }
+            }
+            lines
+        };
+        // The main conversation, also with an empty agent id: every line but the meta one hands off.
+        assert_eq!(session_from(&lines(json!({}))).handoffs.len(), 6);
+        assert_eq!(session_from(&lines(json!({"agentId": ""}))).handoffs.len(), 6);
+        assert_eq!(handoffs(&session_from(&lines(json!({"isSidechain": true})))), []);
+        assert_eq!(handoffs(&session_from(&lines(json!({"agentId": "a1"})))), []);
+        let mut p = parser("agent-a1", true);
+        for line in lines(json!({})) {
+            p.line(&line.to_string());
+        }
+        assert_eq!(handoffs(&p.into_session()), []);
+    }
+
+    #[test]
+    fn the_first_entrypoint_tells_whether_a_program_ran_the_session() {
+        let scripted = |entrypoints: &[Option<&str>]| {
+            let lines: Vec<Value> = entrypoints
+                .iter()
+                .map(|e| {
+                    let mut line = user_line("go");
+                    if let Some(e) = e {
+                        line["entrypoint"] = json!(e);
+                    }
+                    line
+                })
+                .collect();
+            session_from(&lines).scripted
+        };
+        assert!(scripted(&[Some("sdk-cli")]), "claude -p");
+        assert!(scripted(&[None, Some("sdk-cli"), Some("sdk-ts")]), "the first value tells");
+        assert!(!scripted(&[Some("sdk-ts")]));
+        assert!(!scripted(&[Some("cli")]));
+        assert!(!scripted(&[Some("sdk-ts"), Some("sdk-cli")]), "a program that resumed a session later");
+        assert!(!scripted(&[None]));
     }
 }

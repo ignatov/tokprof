@@ -68,6 +68,8 @@ impl Starter {
 /// context it came back to, and who started it.
 #[derive(Clone, Copy, Debug)]
 pub struct ColdReturn {
+    /// When the return's request was sent.
+    pub ts_ms: i64,
     pub pause_ms: i64,
     pub usd: f64,
     pub premium_usd: f64,
@@ -229,6 +231,7 @@ struct Conversation {
 /// The latest main-conversation request, until its miss comes or the next request does.
 #[derive(Clone, Copy, Debug)]
 struct Last {
+    ts_ms: i64,
     conversation: usize,
     pause_ms: Option<i64>,
     usd: f64,
@@ -356,7 +359,7 @@ impl Sink for Pauses {
             conv.long_ttl = false;
         }
         conv.last_ts = Some(r.ts_ms);
-        cur.last = Some(Last { conversation: k, pause_ms: pause, usd, context: r.prev_prompt.unwrap_or(r.usage.prompt()), trigger: r.trigger });
+        cur.last = Some(Last { ts_ms: r.ts_ms, conversation: k, pause_ms: pause, usd, context: r.prev_prompt.unwrap_or(r.usage.prompt()), trigger: r.trigger });
     }
 
     fn miss(&mut self, m: MissEvent) {
@@ -365,7 +368,7 @@ impl Sink for Pauses {
         let (Some(last), Cause::IdleTtl) = (cur.last.take(), m.cause) else { return };
         let Some(pause_ms) = last.pause_ms else { return };
         let agent = agents.entry(cur.agent.clone()).or_default();
-        agent.returns.push(ColdReturn { pause_ms, usd: last.usd, premium_usd: m.premium_usd.unwrap_or(0.0), context: last.context, starter: Starter::of(last.trigger) });
+        agent.returns.push(ColdReturn { ts_ms: last.ts_ms, pause_ms, usd: last.usd, premium_usd: m.premium_usd.unwrap_or(0.0), context: last.context, starter: Starter::of(last.trigger) });
         if let Some(size) = agent.sessions.get_mut(&cur.session) {
             size.cold_returns += 1;
         }

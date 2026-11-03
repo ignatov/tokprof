@@ -20,7 +20,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokprof_core::api::ApiId;
 use tokprof_core::labels::{command_head, display_path, message_label};
-use tokprof_core::model::{Block, BlockKind, Class, CompactionTrigger, Origin, ReminderKind, ToolClass, Chain, ChainKind, Compaction, Params, PromptDelta, Request, Session, Shape, TypedMessage, Usage};
+use tokprof_core::model::{Block, BlockKind, Class, CompactionTrigger, HandoffKind, Origin, ReminderKind, ToolClass, Chain, ChainKind, Compaction, Params, PromptDelta, Request, Session, Shape, TypedMessage, Usage};
 use tokprof_core::source::{AgentId, Decoder};
 use tokprof_core::trigger::{CallClass, Pending, Trigger, command_class};
 use tokprof_logio::{json_len, parse_ts_ms, str_at, u64_at};
@@ -106,7 +106,8 @@ impl Parser {
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else { return };
         let payload = v.get("payload").unwrap_or(&Value::Null);
-        let ts = parse_ts_ms(v.get("timestamp")).unwrap_or(0);
+        let at = parse_ts_ms(v.get("timestamp"));
+        let ts = at.unwrap_or(0);
         let ptype = str_at(payload, "type").unwrap_or_default();
         match str_at(&v, "type").unwrap_or_default() {
             "session_meta" => self.session_meta(payload),
@@ -163,7 +164,18 @@ impl Parser {
                 self.streams.iter_mut().for_each(|s| s.compacted = true);
                 self.session.compactions.push(Compaction { ts_ms: ts, kind: CompactionTrigger::Unknown });
             }
+            // Seen in 0.147–0.166.
+            "event_msg" if ptype == "task_complete" => self.handoff(at, HandoffKind::TurnEnd),
+            "event_msg" if ptype == "turn_aborted" => self.handoff(at, HandoffKind::Interrupt),
             _ => {}
+        }
+    }
+
+    /// A hand-off between the user and the agent, at the time of its line. A subagent thread's
+    /// turns are the agent's own work, so it has none.
+    fn handoff(&mut self, ts_ms: Option<i64>, kind: HandoffKind) {
+        if let (None, Some(ts_ms)) = (&self.subagent, ts_ms) {
+            self.session.push_handoff(ts_ms, kind);
         }
     }
 
@@ -173,6 +185,8 @@ impl Parser {
         }
         if let Some(originator) = str_at(payload, "originator") {
             self.client = Some(Arc::from(originator));
+            // `codex exec` ran the thread, with nobody typing in it.
+            self.session.scripted = originator == "codex_exec";
         }
         self.note_cwd(payload);
         if payload.get("parent_thread_id").is_some_and(|p| !p.is_null()) {
@@ -762,5 +776,61 @@ mod tests {
         // apply_patch keeps the default hint, as it had before classes.
         assert_eq!(tool(BlockKind::ToolUse, "apply_patch"), Class::Tool(ToolClass::Other));
         assert_eq!(tool(BlockKind::Reminder, "instructions"), Class::Reminder(ReminderKind::Instructions));
+    }
+
+    fn ms(ts: &str) -> i64 {
+        parse_ts_ms(Some(&Value::String(ts.to_string()))).unwrap()
+    }
+
+    /// The session of a rollout that starts with this `session_meta` payload and has these events.
+    fn rollout(meta: Value, events: &[(&str, Value)]) -> Session {
+        let mut p = parser("t");
+        p.line(&serde_json::json!({"timestamp": "2026-10-31T08:00:00Z", "type": "session_meta", "payload": meta}).to_string());
+        for (ts, payload) in events {
+            p.line(&serde_json::json!({"timestamp": ts, "type": "event_msg", "payload": payload}).to_string());
+        }
+        p.into_session()
+    }
+
+    fn handoffs(s: &Session) -> Vec<(i64, HandoffKind)> {
+        s.handoffs.iter().map(|h| (h.ts_ms, h.kind)).collect()
+    }
+
+    /// The events of two turns: one that ended, one the user stopped.
+    fn two_turns() -> Vec<(&'static str, Value)> {
+        use serde_json::json;
+        vec![
+            ("2026-10-31T08:00:01Z", json!({"type": "task_started", "turn_id": "u1"})),
+            ("2026-10-31T08:01:00Z", json!({"type": "task_complete", "turn_id": "u1", "last_agent_message": "Fixed."})),
+            ("2026-10-31T08:02:00Z", json!({"type": "task_started", "turn_id": "u2"})),
+            ("2026-10-31T08:03:00Z", json!({"type": "turn_aborted", "turn_id": "u2", "reason": "interrupted"})),
+        ]
+    }
+
+    #[test]
+    fn a_main_thread_hands_off_when_a_turn_completes_or_is_aborted() {
+        let s = rollout(serde_json::json!({"id": "t", "cwd": "/w/p", "originator": "codex-tui"}), &two_turns());
+        use HandoffKind::*;
+        assert_eq!(handoffs(&s), [(ms("2026-10-31T08:01:00Z"), TurnEnd), (ms("2026-10-31T08:03:00Z"), Interrupt)]);
+        // An event without a time hands off nothing.
+        let mut p = parser("t");
+        p.line(&serde_json::json!({"type": "event_msg", "payload": {"type": "task_complete"}}).to_string());
+        assert!(p.into_session().handoffs.is_empty());
+    }
+
+    #[test]
+    fn a_subagent_thread_hands_off_nothing() {
+        let meta = serde_json::json!({"id": "c", "parent_thread_id": "p", "cwd": "/w/p", "source": {"subagent": {"thread_spawn": {"parent_thread_id": "p", "agent_role": "explorer"}}}});
+        let s = rollout(meta, &two_turns());
+        assert!(s.handoffs.is_empty(), "{:?}", s.handoffs);
+    }
+
+    #[test]
+    fn a_thread_that_codex_exec_ran_is_scripted() {
+        let scripted = |meta: Value| rollout(meta, &[]).scripted;
+        assert!(scripted(serde_json::json!({"id": "t", "cwd": "/w/p", "originator": "codex_exec"})));
+        assert!(!scripted(serde_json::json!({"id": "t", "cwd": "/w/p", "originator": "codex-tui"})));
+        assert!(!scripted(serde_json::json!({"id": "t", "cwd": "/w/p", "originator": "Codex Desktop"})));
+        assert!(!scripted(serde_json::json!({"id": "t", "cwd": "/w/p"})));
     }
 }

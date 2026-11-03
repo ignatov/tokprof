@@ -8,6 +8,37 @@ fn the_fixtures_conform() {
     tokprof_core::testkit::conform(&tokprof_source_claude_code::ClaudeCode::at(fixtures.join("projects"), Path::new("/h"))).unwrap();
 }
 
+/// The fixture holds one hand-off of each kind, so the checks above run over all of them.
+#[test]
+fn the_fixtures_hand_off_once_of_each_kind() {
+    use tokprof_core::model::HandoffKind::*;
+    use tokprof_core::source::LogSource;
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let source = tokprof_source_claude_code::ClaudeCode::at(fixtures.join("projects"), Path::new("/h"));
+    let decode = |subagent: bool| {
+        let log = source.discover().into_iter().find(|s| s.subagent == subagent).unwrap();
+        let mut d = source.decoder(&log);
+        source.open(&log).unwrap().for_each(&mut |r| d.feed(r)).unwrap();
+        d.finish()
+    };
+    let main = decode(false);
+    let at = |ts: &str| tokprof_logio::parse_ts_ms(Some(&serde_json::Value::String(format!("2026-10-30T{ts}Z")))).unwrap();
+    let handoffs: Vec<_> = main.handoffs.iter().map(|h| (h.ts_ms, h.kind)).collect();
+    assert_eq!(handoffs, [
+        (at("09:01:10"), Question),
+        (at("09:03:00"), Answer),
+        (at("09:03:41"), TypedWhileWorking),
+        // The two lines of one response end the turn once, at the later.
+        (at("09:04:00"), TurnEnd),
+        (at("10:05:00"), Wake),
+        (at("10:06:00"), Interrupt),
+        // A `<synthetic>` API error ends the turn too.
+        (at("10:07:30"), TurnEnd),
+    ]);
+    assert!(!main.scripted, "an IDE session");
+    assert!(decode(true).handoffs.is_empty(), "a subagent has no hand-offs");
+}
+
 #[test]
 fn a_broken_fixture_fails() {
     // A transcript whose second response is older than its first: its chain goes back in time.

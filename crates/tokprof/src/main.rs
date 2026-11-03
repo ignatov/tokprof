@@ -15,6 +15,7 @@ use tokprof_core::export;
 use tokprof_core::profile::Measure;
 use tokprof_core::report::{self, Collector, Dim};
 use tokprof_core::pauses::Pauses;
+use tokprof_core::rhythm::{self, Timeline, View};
 use tokprof_core::share::{self, Share};
 use tokprof_core::{bench, fmt, handoff, xray};
 
@@ -22,6 +23,7 @@ mod clipboard;
 mod paths;
 mod render_bench;
 mod render_report;
+mod render_rhythm;
 mod render_sessions;
 mod render_xray;
 mod ui;
@@ -134,6 +136,14 @@ enum Command {
         /// Output file; by default share-<date>.json in ~/tokprof (or $TOKPROF_DIR).
         #[arg(short, long)]
         output: Option<PathBuf>,
+    },
+    /// One day of your work with the agents: a strip with a lane per session that shows when the
+    /// agent worked and when it waited for your answer, then your sittings, what the agents did
+    /// after you left, their ends of turn while you were there, your answers, your interrupts, and
+    /// the day's cold returns. The day starts in the middle of your night, as the logs show it.
+    Day {
+        /// The day that begins on this date (YYYY-MM-DD); by default the day that holds now.
+        date: Option<String>,
     },
     /// Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent
     /// do (trips), with a hint per row.
@@ -267,6 +277,65 @@ fn main() -> Result<()> {
         }
         _ => {}
     }
+    if let Command::Day { date } = &command {
+        day_takes_no_time_filter(&cli)?;
+        let started = Instant::now();
+        let now = now_ms();
+        let date_ms = date.as_deref().map(parse_date).transpose()?;
+        // The start of the day needs the 30 days before the day; it is found before the day is
+        // picked, so today's view reads one day more.
+        let base = date_ms.unwrap_or(now);
+        let files: Vec<SessionRef> = catalog
+            .discover(&agents)
+            .into_iter()
+            .filter(|f| !f.subagent && select.holds(f) && f.modified_ms() >= base - 31 * DAY_MS)
+            .collect();
+        if files.is_empty() {
+            bail!("{}", none_found());
+        }
+        // Cold returns of the two days around the one shown; the day's own are picked after.
+        let around = analysis::Filter { since_ms: Some(base - 2 * DAY_MS), until_ms: Some(base + 2 * DAY_MS), client: cli.client.clone() };
+        let temp = temp_folders();
+        let ((timelines, mut cold), stats) = scan(
+            &catalog,
+            &files,
+            &select,
+            OnUnreadable::Skip,
+            || (Vec::new(), Pauses::new(around.clone())),
+            |(timelines, cold): &mut (Vec<Timeline>, Pauses), s, _| {
+                if !keeps_client(s, &filter) {
+                    return;
+                }
+                timelines.push(Timeline::of(s, &temp));
+                if s.chains.iter().flat_map(|c| &c.requests).any(|r| around.keeps(r)) {
+                    analysis::analyze(s, &pricing, &around, cold);
+                }
+            },
+            |mut a, b| {
+                a.0.extend(b.0);
+                a.1.merge(b.1);
+                a
+            },
+        )?;
+        cold.finish();
+        eprintln!("{}", sources(&catalog, &files, started.elapsed().as_secs_f64()));
+        warn(&stats.unreadable);
+        let offset = &rhythm::local_offset;
+        let mut view = View::new(timelines, now, offset);
+        let bounds = match date_ms {
+            None => view.start.bounds(view.start.day_of(now, offset), offset),
+            Some(d) => {
+                // The day that begins on DATE, with the day found from the 30 days before its end.
+                let pick = |start: rhythm::DayStart| start.bounds(start.day_of(d + (start.minutes() + 1) * 60_000, offset), offset);
+                view.start = view.day_start(pick(view.start).1, offset);
+                pick(view.start)
+            }
+        };
+        let returns: Vec<_> = cold.agents.values().flat_map(|a| a.returns.iter().copied()).filter(|r| r.ts_ms >= bounds.0 && r.ts_ms < bounds.1).collect();
+        let priced = cold.agents.values().any(|a| a.priced);
+        print!("{}", render_rhythm::day(&view, bounds, offset, &returns, priced));
+        return Ok(());
+    }
     if let Command::Bench { requests, min_context, keep_warm, svg } = &command {
         let started = Instant::now();
         // Returns happen in main conversations, so subagent logs are left out.
@@ -306,15 +375,22 @@ fn main() -> Result<()> {
         if files.is_empty() {
             bail!("no session logs found for {}", cli.agent.join(", "));
         }
-        let (mut p, stats) = scan(
+        let temp = temp_folders();
+        let ((mut p, timelines), stats) = scan(
             &catalog,
             &files,
             &select,
             OnUnreadable::Skip,
-            || Pauses::new(filter.clone()),
-            |p, session, _| analysis::analyze(session, &pricing, &filter, p),
+            || (Pauses::new(filter.clone()), Vec::new()),
+            |(p, timelines): &mut (Pauses, Vec<Timeline>), session, f| {
+                analysis::analyze(session, &pricing, &filter, p);
+                if !f.subagent && keeps_client(session, &filter) {
+                    timelines.push(Timeline::of(session, &temp));
+                }
+            },
             |mut a, b| {
-                a.merge(b);
+                a.0.merge(b.0);
+                a.1.extend(b.1);
                 a
             },
         )?;
@@ -322,6 +398,9 @@ fn main() -> Result<()> {
         eprintln!("{}", sources(&catalog, &files, started.elapsed().as_secs_f64()));
         warn(&stats.unreadable);
         print!("{}", render_report::pauses(&p));
+        let offset = &rhythm::local_offset;
+        let view = View::new(timelines, filter.until_ms.unwrap_or_else(now_ms), offset);
+        print!("{}", render_rhythm::section(&view, (filter.since_ms.unwrap_or(i64::MIN), filter.until_ms.unwrap_or(i64::MAX)), offset));
         return Ok(());
     }
     if let Command::Share { output } = &command {
@@ -431,6 +510,7 @@ fn main() -> Result<()> {
         | Command::Ui { .. }
         | Command::Prices { .. }
         | Command::Bench { .. }
+        | Command::Day { .. }
         | Command::Pauses
         | Command::Share { .. } => {
             unreachable!("handled before reading logs")
@@ -536,6 +616,35 @@ fn sources(catalog: &Catalog, files: &[SessionRef], secs: f64) -> String {
     format!("read {} in {secs:.1}s", parts.join(", "))
 }
 
+const DAY_MS: i64 = 86_400_000;
+
+/// `day` picks its time by its date, so the time filters would contradict it.
+fn day_takes_no_time_filter(cli: &Cli) -> Result<()> {
+    if cli.since.is_some() || cli.until.is_some() {
+        bail!("day picks its time by DATE; drop --since and --until");
+    }
+    Ok(())
+}
+
+/// Whether a session has a request of the client the filter asks for; any session without one.
+fn keeps_client(s: &tokprof_core::Session, filter: &analysis::Filter) -> bool {
+    filter.client.is_none() || s.chains.iter().flat_map(|c| &c.requests).any(|r| filter.keeps_client(r.client_name()))
+}
+
+/// The temporary folders, whose sessions the rhythm leaves out: the system's, as it is written
+/// and as it resolves, and on Unix `/tmp` in both forms.
+fn temp_folders() -> Vec<String> {
+    let dir = std::env::temp_dir();
+    let mut out = vec![dir.to_string_lossy().to_string()];
+    if let Ok(real) = dir.canonicalize() {
+        out.push(real.to_string_lossy().to_string());
+    }
+    if cfg!(unix) {
+        out.extend(["/tmp".to_string(), "/private/tmp".to_string()]);
+    }
+    out
+}
+
 /// The clock: the library reads none, so the X-ray and the list get the time from here.
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
@@ -590,6 +699,14 @@ mod tests {
         let mut cli = Cli::parse_from(["tokprof", "--project", "~/src/billing/", "--since", "7d", "flame"]);
         cli.project = cli.project.as_deref().map(normalize_project);
         assert_eq!(default_name(&cli, Value::Cost), "billing-since-7d.jfr");
+    }
+
+    #[test]
+    fn day_fails_on_time_filters() {
+        let err = day_takes_no_time_filter(&Cli::parse_from(["tokprof", "--since", "7d", "day"])).unwrap_err();
+        assert_eq!(err.to_string(), "day picks its time by DATE; drop --since and --until");
+        assert!(day_takes_no_time_filter(&Cli::parse_from(["tokprof", "--until", "2026-11-01", "day", "2026-10-30"])).is_err());
+        assert!(day_takes_no_time_filter(&Cli::parse_from(["tokprof", "--project", "billing", "day"])).is_ok());
     }
 
     #[test]

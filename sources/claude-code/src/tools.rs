@@ -25,6 +25,12 @@ pub(crate) fn tool_target(tool: &str, input: &Value, cwd: Option<&str>, home: &P
     target.filter(|t| !t.is_empty())
 }
 
+/// Whether a Claude Code tool asks the user and waits for the answer: a question, or a plan to
+/// approve. Seen in 2.1.310–2.1.316.
+pub(crate) fn asks_the_user(tool: &str) -> bool {
+    matches!(tool, "AskUserQuestion" | "ExitPlanMode")
+}
+
 /// What a Claude Code tool call did, for the trigger and activity of the request after it.
 pub(crate) fn call_class(tool: &str, input: &Value) -> CallClass {
     match tool {
