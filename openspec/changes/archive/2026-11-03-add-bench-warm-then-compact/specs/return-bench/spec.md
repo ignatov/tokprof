@@ -38,6 +38,33 @@ For heartbeats and for heartbeats then compaction, the bench SHALL also price wh
 - **WHEN** a break on the 1-hour cache lasts 40 minutes
 - **THEN** neither way prices anything for it, since the first ping would go out at 50 minutes
 
+### Requirement: What heartbeats then compaction would have saved
+After the lines on heartbeats the report SHALL say how many returns heartbeats then compaction kept warm and how many it compacted, what its pings and compactions cost, and what it saved or added over all returns.
+
+#### Scenario: The reference run
+- **WHEN** the bench runs on the logs behind `docs/bench.txt`
+- **THEN** the Claude Code section prints `Heartbeats for up to 6h, then a compaction, would have kept 133 of 218 returns warm and compacted 85, for $116 of pings and compactions, and saved $907 of $1,786 (51%).`
+
+#### Scenario: The line for heartbeats then compaction
+- **WHEN** with `--keep-warm 2h` heartbeats then compaction kept 2 of 3 returns warm and compacted 1, for $0.91 of pings and compactions, and saved $9.10 of $11.73
+- **THEN** the report prints `Heartbeats for up to 2h, then a compaction, would have kept 2 of 3 returns warm and compacted 1, for $0.91 of pings and compactions, and saved $9.10 of $11.73 (78%).`
+
+### Requirement: What the breaks that were not cold returns add
+After the line on heartbeats against the note, and after the line on heartbeats then compaction, the report SHALL say how many more pings, and for the latter compactions, the breaks that were not cold returns would have taken, what they cost, and what the way saves or adds with them.
+
+#### Scenario: The reference run
+- **WHEN** the bench runs on the logs behind `docs/bench.txt`
+- **THEN** the Claude Code section prints `Breaks that were not cold returns would have taken another 1000 pings for $86.60; with them, heartbeats save $325 (18%).`
+- **AND** `Breaks that were not cold returns would have taken another 1000 pings and 133 compactions for $124; with them, it saves $783 (44%).`
+
+#### Scenario: The line for heartbeats
+- **WHEN** with `--keep-warm 2h` heartbeats kept 2 of 3 returns warm for $0.61 of pings and saved $7.20 of $11.73, and breaks that were not cold returns took 12 more pings for $1.20
+- **THEN** the line on heartbeats against the note is followed by `Breaks that were not cold returns would have taken another 12 pings for $1.20; with them, heartbeats save $6.00 (51%).`
+
+#### Scenario: The line for heartbeats then compaction
+- **WHEN** with `--keep-warm 2h` heartbeats then compaction saved $9.10 of $11.73, and breaks that were not cold returns took 12 more pings and 2 compactions for $1.80
+- **THEN** its line is followed by `Breaks that were not cold returns would have taken another 12 pings and 2 compactions for $1.80; with them, it saves $7.30 (62%).`
+
 ## MODIFIED Requirements
 
 ### Requirement: Only the old conversation shrinks
@@ -92,15 +119,13 @@ For each agent with returns, Claude Code first, the report SHALL give the number
 - **THEN** the table has the columns `mean per return`, `1st request` and `all returns`
 
 ### Requirement: What the alternatives would have saved
-After each agent's table the report SHALL compare the alternatives with resuming after N requests: what a handoff note would have saved over all returns, and per return as a median, in dollars and percent, and in how many returns it was cheaper; from which request on /compact first stays cheaper on average up to the Nth, and what it saves over all; how many returns heartbeats kept warm, what the pings cost and what they saved or added, and in how many returns heartbeats cost less than the note; then what the pings of breaks that were not cold returns add and the net saving; and the same two lines for heartbeats then compaction, with the returns it compacted.
+After each agent's table the report SHALL compare the alternatives with resuming after N requests: what a handoff note would have saved over all returns, and per return as a median, in dollars and percent, and in how many returns it was cheaper; from which request on /compact first stays cheaper on average up to the Nth, and what it saves over all; how many returns heartbeats kept warm, what the pings cost and what they saved or added; and in how many returns heartbeats cost less than the note.
 
 #### Scenario: The reference run
 - **WHEN** the bench runs on the logs behind `docs/bench.txt`
 - **THEN** below the Claude Code table it prints `A handoff note before the break would have saved $1,229 of $1,786 (69%).` and `Per return it saves a median of $4.87 (72%), and it is cheaper in 218 of 218 returns.`
 - **AND** `/compact first costs more up front and is cheaper than resuming from request 8 on ($405 over all).`
 - **AND** `Heartbeats for up to 6h would have kept 134 of 218 returns warm, for $90.23 of pings, and saved $412 of $1,786 (23%).` and `They cost less than a handoff note in 21 of 218 returns.`
-- **AND** `Breaks that were not cold returns would have taken another 1000 pings for $86.60; with them, heartbeats save $325 (18%).`
-- **AND** `Heartbeats for up to 6h, then a compaction, would have kept 133 of 218 returns warm and compacted 85, for $116 of pings and compactions, and saved $907 of $1,786 (51%).` and `Breaks that were not cold returns would have taken another 1000 pings and 133 compactions for $124; with them, it saves $783 (44%).`
 
 #### Scenario: Heartbeats that cost more than resuming
 - **WHEN** heartbeats cost more over all returns than resuming, as for the reference run's Codex returns
@@ -117,15 +142,6 @@ After each agent's table the report SHALL compare the alternatives with resuming
 #### Scenario: /compact first catches up and falls behind again
 - **WHEN** the mean cost of /compact first drops below that of resuming at request 8 and is above it again at request N
 - **THEN** the report says `/compact first does not pay off within <N> requests.`
-
-#### Scenario: The lines for pings on breaks that were not cold returns
-- **WHEN** with `--keep-warm 2h` heartbeats kept 2 of 3 returns warm for $0.61 of pings and saved $7.20 of $11.73, and breaks that were not cold returns took 12 more pings for $1.20
-- **THEN** the line on heartbeats against the note is followed by `Breaks that were not cold returns would have taken another 12 pings for $1.20; with them, heartbeats save $6.00 (51%).`
-
-#### Scenario: The lines for heartbeats then compaction
-- **WHEN** with `--keep-warm 2h` heartbeats then compaction kept 2 of 3 returns warm and compacted 1, for $0.91 of pings and compactions, and saved $9.10 of $11.73, and breaks that were not cold returns took 12 more pings and 2 compactions for $1.80
-- **THEN** the report prints `Heartbeats for up to 2h, then a compaction, would have kept 2 of 3 returns warm and compacted 1, for $0.91 of pings and compactions, and saved $9.10 of $11.73 (78%).`
-- **AND** `Breaks that were not cold returns would have taken another 12 pings and 2 compactions for $1.80; with them, it saves $7.30 (62%).`
 
 ### Requirement: The base the alternatives start from
 The /compact and handoff replays, and heartbeats then compaction after its compaction, SHALL start from a base per agent: the median prompt of the first request after a compaction of a context of at least `--min-context` tokens, over all main conversations read, whatever the date filters. An agent without such a compaction uses the median first prompt of its main conversations plus the estimated 10k-token note.
