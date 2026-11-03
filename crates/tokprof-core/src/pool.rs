@@ -224,6 +224,9 @@ pub struct Pool {
     pub tables: Vec<Table>,
     pub activity: Option<Activity>,
     pub cold_by_client: Vec<RateRow>,
+    /// The files with the client parts of the cold returns and of the effort.
+    pub cold_files: usize,
+    pub effort_files: usize,
     pub problems: Vec<RateRow>,
     pub time: Vec<TimeRow>,
     pub time_files: usize,
@@ -789,6 +792,8 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
     let (effort_rows, effort_more) = effort_by_client(&files, min_files, spends.iter().sum());
     Pool {
         cold_by_client: cold_by_client(&files, min_files),
+        cold_files: with_client_part(&files, "active_hours"),
+        effort_files: with_client_part(&files, "effort"),
         problems: problems(&files, &hours),
         time: time_rows(&files),
         time_files: files.iter().filter(|f| part(f, "time", |_, _, _| {}).is_some()).count(),
@@ -835,9 +840,10 @@ fn activity_of(infos: &[FileInfo], spends: &[f64]) -> Option<Activity> {
 }
 
 /// A rate row over the files: each file's value (`None` without the parts) and its base, such as
-/// its active hours; the pooled rate counts only the files with both.
+/// its active hours. Only the files with both, and a base above zero, count: in the pooled value,
+/// the rate, the median and the file counts.
 fn rate_row(name: &str, unit: Unit, values: &[Option<f64>], bases: &[Option<f64>], per: f64) -> RateRow {
-    let (mut value, mut base, mut with_part) = (0.0, 0.0, 0);
+    let (mut value, mut base, mut with_part, mut above) = (0.0, 0.0, 0, 0);
     let mut by_file = Vec::new();
     for (v, b) in values.iter().zip(bases) {
         match (v, b) {
@@ -845,12 +851,8 @@ fn rate_row(name: &str, unit: Unit, values: &[Option<f64>], bases: &[Option<f64>
                 value += v;
                 base += b;
                 with_part += 1;
+                above += usize::from(*v > 0.0);
                 by_file.push(Some(v / b * per));
-            }
-            (Some(v), _) => {
-                value += v;
-                with_part += 1;
-                by_file.push(None);
             }
             _ => by_file.push(None),
         }
@@ -861,7 +863,7 @@ fn rate_row(name: &str, unit: Unit, values: &[Option<f64>], bases: &[Option<f64>
         value,
         rate: (base > 0.0).then(|| value / base * per),
         median_rate: (base > 0.0).then(|| median_of(by_file.iter().flatten().copied())),
-        files: values.iter().flatten().filter(|v| **v > 0.0).count(),
+        files: above,
         files_with_part: with_part,
         by_file,
         ..RateRow::default()
@@ -989,7 +991,7 @@ fn working(files: &[Value], hours: &[Option<f64>]) -> Vec<RateRow> {
 
 /// The cold returns of each client per active hour, from the client parts.
 fn cold_by_client(files: &[Value], min_files: usize) -> Vec<RateRow> {
-    let mut by: BTreeMap<(String, String), (f64, f64, f64, usize)> = BTreeMap::new();
+    let mut by: BTreeMap<(String, String), ColdSums> = BTreeMap::new();
     for f in files {
         for (agent, a) in agents(f) {
             for (client, c) in entries(&a["clients"]) {
@@ -1002,25 +1004,42 @@ fn cold_by_client(files: &[Value], min_files: usize) -> Vec<RateRow> {
             }
         }
     }
-    let mut rows: Vec<RateRow> = by
-        .into_iter()
-        .filter(|(_, v)| v.0 > 0.0 && v.3 >= min_files.max(1))
-        .map(|((agent, client), (hours, cold, avoidable, n))| RateRow {
-            agent: Some(agent),
-            name: client,
-            value: cold,
-            hours: Some(hours),
-            rate: Some(cold / hours),
-            second_rate: Some(avoidable / hours),
-            files: n,
-            files_with_part: n,
-            ..RateRow::default()
-        })
-        .collect();
-    rows.sort_by(|a, b| b.hours.unwrap_or(0.0).total_cmp(&a.hours.unwrap_or(0.0)));
-    rows.truncate(TOP_ROWS);
+    let row = |agent: Option<String>, name: String, (hours, cold, avoidable, n): ColdSums| RateRow {
+        agent,
+        name,
+        value: cold,
+        hours: Some(hours),
+        rate: Some(cold / hours.max(1e-9)),
+        second_rate: Some(avoidable / hours.max(1e-9)),
+        files: n,
+        files_with_part: n,
+        ..RateRow::default()
+    };
+    let mut clients: Vec<((String, String), ColdSums)> = by.into_iter().filter(|(_, v)| v.0 > 0.0).collect();
+    clients.sort_by(|a, b| b.1.0.total_cmp(&a.1.0).then_with(|| a.0.1.cmp(&b.0.1)));
+    let (mut rows, mut rest) = (Vec::new(), (0, (0.0, 0.0, 0.0, 0)));
+    for ((agent, client), v) in clients {
+        if rows.len() < TOP_ROWS && v.3 >= min_files.max(1) {
+            rows.push(row(Some(agent), client, v));
+        } else {
+            let r = &mut rest.1;
+            (r.0, r.1, r.2, r.3) = (r.0 + v.0, r.1 + v.1, r.2 + v.2, r.3.max(v.3));
+            rest.0 += 1;
+        }
+    }
+    if rest.0 > 0 {
+        rows.push(row(None, format!("{} more", rest.0), rest.1));
+    }
     rows
 }
+
+/// The files where some client has this part.
+fn with_client_part(files: &[Value], key: &str) -> usize {
+    files.iter().filter(|f| agents(f).any(|(_, a)| entries(&a["clients"]).any(|(_, c)| c.get(key).is_some()))).count()
+}
+
+/// A client's active hours, cold returns, their avoidable dollars, and the files with it.
+type ColdSums = (f64, f64, f64, usize);
 
 /// A client's dollars at the highest effort and in all, then its requests the same way.
 type EffortSums = (f64, f64, f64, f64);

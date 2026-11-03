@@ -301,7 +301,7 @@ pub fn text(p: &Pool, by_file: bool) -> String {
         let _ = write!(out, "\nWhat could have been saved{}\n\n", if one { "" } else { " (files 5%+: the files where it is 5% of their spend or more)" });
         out.push_str(&money_table(p, t, &["item"], "avoidable", "files 5%+", true, by_file));
         if !p.cold_by_client.is_empty() {
-            out.push_str("\nCold returns by client\n\n");
+            let _ = write!(out, "\nCold returns by client{}\n\n", coverage(p.cold_files, n));
             let mut rows =
                 vec![["agent", "client", "active hours", "cold returns", "per active hour", "avoidable per active hour"].map(str::to_string).to_vec()];
             for r in &p.cold_by_client {
@@ -363,7 +363,11 @@ pub fn text(p: &Pool, by_file: bool) -> String {
         }
         let mut rows = vec![head];
         for r in &p.working {
-            let mut cells = vec![r.name.clone(), value_cell(r), rate_cell(r, r.rate), r.second_rate.map_or("–".to_string(), |x| format!("{x:.2}"))];
+            let mut name = r.name.clone();
+            if !one && r.files_with_part < p.files.len() {
+                name += &format!(" (in {} of {} files)", r.files_with_part, p.files.len());
+            }
+            let mut cells = vec![name, value_cell(r), rate_cell(r, r.rate), r.second_rate.map_or("–".to_string(), |x| format!("{x:.2}"))];
             if !one {
                 cells.push(rate_cell(r, r.median_rate));
                 cells.push(r.files.to_string());
@@ -380,7 +384,7 @@ pub fn text(p: &Pool, by_file: bool) -> String {
         out.push_str(&tools_table(p, t, by_file));
     }
     if !p.effort_by_client.is_empty() {
-        out.push_str("\nHighest effort by client: the share at max or xhigh\n\n");
+        let _ = write!(out, "\nHighest effort by client: the share at max or xhigh{}\n\n", coverage(p.effort_files, n));
         let mut head = ["agent", "client", "cost", "of spend", "of requests"].map(str::to_string).to_vec();
         if !one {
             head.extend(["median file", "files"].map(str::to_string));
@@ -574,6 +578,35 @@ mod tests {
         assert!(t.contains("prompts the logs hold: 88.2% of the spend; the rest is unknown\n"), "{t}");
         let git: Vec<&str> = t.lines().find(|l| l.starts_with("Bash git")).unwrap().split_whitespace().collect();
         assert_eq!(git[2..4], ["300", "120"]);
+    }
+
+    #[test]
+    fn a_file_without_the_activity_part_counts_in_no_rate() {
+        let client = json!({"requests": 10, "usd": 1_000.0, "avoidable_usd": 0.0, "main_sessions": 1, "cold_returns": 2, "cold_returns_avoidable_usd": 9.0, "cache_writes": {"short": 0, "long": 0}, "active_hours": 395,
+            "effort": {"max": {"requests": 10, "usd": 1_000.0}}});
+        let new = friction_file(1_000.0, 395.0, 30.0, json!({"pauses": {"typed_messages": 1_168}, "clients": {"sdk-ts": client}}));
+        let mut old = file(1_000.0, None);
+        old["agents"]["claude"]["pauses"] = json!({"typed_messages": 1_158});
+        let p = pool_of(vec![new, old]);
+        let typed = &p.working[0];
+        assert_eq!((typed.value, typed.files_with_part), (1_168.0, 1));
+        assert!((typed.rate.unwrap() - 1_168.0 / 395.0).abs() < 1e-9, "{typed:?}");
+        let t = text(&p, false);
+        let row: Vec<&str> = t.lines().find(|l| l.starts_with("typed messages")).unwrap().split_whitespace().collect();
+        assert_eq!(row[..9], ["typed", "messages", "(in", "1", "of", "2", "files)", "1,168", "2.96"]);
+        assert!(t.contains("\nCold returns by client, in 1 of 2 files\n"), "{t}");
+        assert!(t.contains("\nHighest effort by client: the share at max or xhigh, in 1 of 2 files\n"), "{t}");
+    }
+
+    #[test]
+    fn ten_clients_show_the_eight_with_the_most_active_hours() {
+        let client = |hours: u64| json!({"requests": 10, "usd": 10.0, "avoidable_usd": 0.0, "main_sessions": 1, "cold_returns": 1, "cold_returns_avoidable_usd": 1.0, "cache_writes": {"short": 0, "long": 0}, "active_hours": hours, "effort": {}});
+        let clients: serde_json::Map<String, Value> = (1..=10).map(|i| (format!("c{i:02}"), client(i * 10))).collect();
+        let p = pool_of(vec![friction_file(1_000.0, 400.0, 30.0, json!({"clients": clients}))]);
+        let names: Vec<&str> = p.cold_by_client.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["c10", "c09", "c08", "c07", "c06", "c05", "c04", "c03", "2 more"]);
+        let more = p.cold_by_client.last().unwrap();
+        assert_eq!((more.agent.as_deref(), more.hours, more.value), (None, Some(30.0), 2.0));
     }
 
     #[test]

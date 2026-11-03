@@ -14,7 +14,18 @@ The header SHALL have an `activity` line after `spend`. For one file it gives th
 - **THEN** the line reads `activity  700 active hours · $58.89 per active hour · per file: median 16 active days, 120 active hours, $68.20 per active hour`
 
 ### Requirement: Savings per active hour
-`What could have been saved` SHALL have a `per active hour` column, after `share`: the row's dollars over the active hours of the files that have both the row's part and the activity part. After that table, the report SHALL print `Cold returns by client`, one row per agent and client with `active hours`, `cold returns`, `per active hour`, and `avoidable per active hour`: the avoidable dollars of the client's cold returns.
+`What could have been saved` SHALL have a `per active hour` column, after `share`: the row's dollars over the active hours of the files that have both the row's part and the activity part.
+
+#### Scenario: Idle misses per hour
+- **WHEN** a file has $740 of `idle > TTL` misses and 312 active hours
+- **THEN** the row shows `$2.37` under `per active hour`
+
+### Requirement: Cold returns by client
+After `What could have been saved`, the report SHALL print `Cold returns by client`: one row per agent and client, the most active hours first, with `active hours`, `cold returns`, `per active hour`, and `avoidable per active hour`, the avoidable dollars of the client's cold returns. It shows at most 8 clients, then `<n> more` with the rest. A client that fewer files have than `--min-files` asks counts in `<n> more`.
+
+#### Scenario: Ten clients
+- **WHEN** a file has 10 clients with active hours
+- **THEN** the table shows the 8 with the most active hours, then `2 more` with the active hours and cold returns of the other two
 
 #### Scenario: A client's baseline
 - **WHEN** a client has 312 active hours and 206 cold returns that could have saved $740, and its other misses $150 more
@@ -44,6 +55,10 @@ The report SHALL print `Where the agent's time went`, one row per kind of busy t
 
 ### Requirement: Working with the agent
 The report SHALL print `Working with the agent`, with the rows of the scenario below. The columns are `pooled`, `per active hour`, `per 100 typed messages`, `median file` (of each file's value per active hour) and `files`. Only interrupts, messages typed while the agent worked, questions and answers have a value per 100 typed messages. Typed messages come from the pause parts.
+
+#### Scenario: A file without active hours
+- **WHEN** two files have 1,168 and 1,158 typed messages, and only the first has active hours, 395 of them
+- **THEN** the `typed messages` row counts the first file only: it shows `1,168` and `2.96`, and says `(in 1 of 2 files)`
 
 #### Scenario: The rows
 - **WHEN** the report is printed

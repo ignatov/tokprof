@@ -71,6 +71,12 @@ Apply after `add-team-survey`. Every group ends with `cargo test --workspace` an
 - [x] 8.3 Under the model table, the report names the models without a price with their tokens, from the `priced` flag that the file already wrote and that the spend parts of share-export now name. Verify: the unit tests for "Codex's auto-review" and "A pool", and that `--min-files 2` leaves out a model that one file has.
 - [x] 8.4 Render the author's file of 2026-11-03 with the binary before and after the fixes, and run `share` again. Verify: the report differs only in the three places, and the new file has the same keys and words to review. Record the numbers.
 
+## 9. Fixes found while pooling two files
+
+- [x] 9.1 A rate row counts only the files that have both its value and its base, for the pooled value, the rate, the median and the file counts, as its comment and the design said. Pooled with a format-2 file without the activity part, `typed messages` showed 5.89 per active hour: the typed messages of both files over the active hours of one. Verify: the unit test for "A file without active hours".
+- [x] 9.2 `Cold returns by client` and `Highest effort by client` say `in <k> of <n> files` after their titles when some files lack the client parts (see Parts some files lack). Verify: the same unit test.
+- [x] 9.3 `Cold returns by client` shows at most 8 clients, the most active hours first, then `<n> more`; it cut 2 of the author's 10 clients without a word. Verify: the unit test for "Ten clients".
+
 ## Results
 
 | check | before | after |
@@ -86,6 +92,7 @@ Apply after `add-team-survey`. Every group ends with `cargo test --workspace` an
 | 6.5 time and size | 23.93 s, 106,460 bytes | 30 days: 25.60, 24.92, 24.09 s, median 24.92 s (+4.1%); 134,111 bytes: the tools and programs carry `failed` and `after` now |
 | 7.4 the fixes on the real logs | 2026-10-04 to 11-03: `cache lifetime: main` $218 and `cache lifetime: subagents` $341; avoidable per active hour `sdk-ts` $2.78, `Codex Desktop` $2.14, `cli` $3.73; ends of turn 229.66 per 100 typed messages | the same window: `cache lifetime: main` $0, as the main conversations wrote 229M tokens with the 1-hour lifetime and 17k with the 5-minute one, and replay at $4,267 under 1h and $5,378 under 5m; `cache lifetime: subagents` $405, the $2,886 under 1h minus the $2,480 under 5m of `tokprof whatif`; avoidable per active hour from the cold returns: `sdk-ts` $2.35, `Codex Desktop` $0.22, `cli` $0.29; the clients' cold-return dollars add up to those of the pause parts: Claude Code $762.71 over 213 returns, Codex $30.98 over 38; ends of turn 6.78 per active hour and `–` per 100 typed messages, interrupts 0.11 and 3.77; 135,158 bytes |
 | 8.4 the second fixes on the real logs | `~/tokprof/share-2026-11-03.json` (2026-10-04 to 11-03) with f7c1bd9: `longest request 2.0h`; the effort table listed 8 of 10 clients by their share at max, a client of $0.91 second; `codex-auto-review` (101.3M tokens, $0) named nowhere | the same file: no longest request; the effort table lists `sdk-ts` $8,999, `Codex Desktop` $1,900 and `cli` $421, then `7 more` $35.93, which add up to the $11,356 of spend; under the model table `models without a price: codex-auto-review (101.3M tokens); their tokens count as $0`, and pooled with `/tmp/share-before.json` `(202.5M tokens, 2 files)`; a new `share` over 30 days has the same keys and words to review, 135,169 bytes |
+| 9 rates and coverage on the real logs | `~/tokprof/share-2026-11-03.json` pooled with `/tmp/share-before.json`, with 1ee4b43: `typed messages` 2,326 and 5.89 per active hour; `Cold returns by client` and `Highest effort by client` without `in 1 of 2 files`; the file alone listed 8 of its 10 clients with active hours | the same files: `typed messages (in 1 of 2 files)` 1,168 and 2.96 per active hour, and each hand-off row says `(in 1 of 2 files)`; both client tables say `in 1 of 2 files`; the file alone adds `2 more`, with 3 active hours and no cold returns |
 
 ## Workflow follow-up
 
