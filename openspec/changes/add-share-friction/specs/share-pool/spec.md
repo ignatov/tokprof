@@ -14,10 +14,10 @@ The header SHALL have an `activity` line after `spend`. For one file it gives th
 - **THEN** the line reads `activity  700 active hours · $58.89 per active hour · per file: median 16 active days, 120 active hours, $68.20 per active hour`
 
 ### Requirement: Savings per active hour
-`What could have been saved` SHALL have a `per active hour` column, after `share`: the row's dollars over the active hours of the files that have both the row's part and the activity part. After that table, the report SHALL print `Cold returns by client`, one row per agent and client with `active hours`, `cold returns`, `per active hour` and `avoidable per active hour`.
+`What could have been saved` SHALL have a `per active hour` column, after `share`: the row's dollars over the active hours of the files that have both the row's part and the activity part. After that table, the report SHALL print `Cold returns by client`, one row per agent and client with `active hours`, `cold returns`, `per active hour`, and `avoidable per active hour`: the avoidable dollars of the client's cold returns.
 
 #### Scenario: A client's baseline
-- **WHEN** a client has 312 active hours, 206 cold returns and $740 of avoidable dollars
+- **WHEN** a client has 312 active hours and 206 cold returns that could have saved $740, and its other misses $150 more
 - **THEN** its row in `Cold returns by client` shows `312`, `206`, `0.66` and `$2.37`
 
 ### Requirement: Problems
@@ -39,11 +39,19 @@ The report SHALL print `Where the agent's time went`, one row per kind of busy t
 - **THEN** the `subagents` row shows `67.5h`, `18.5%` and `54.0h` under `after turns`
 
 ### Requirement: Working with the agent
-The report SHALL print `Working with the agent`, with the rows `typed messages`, `ends of turn`, `interrupts`, `typed while the agent worked`, `questions`, `answers`, `wakes: subagent`, `wakes: command` and `wakes: other`. The columns are `pooled`, `per 100 typed messages`, `median file` (of each file's value per 100 typed messages) and `files`. Typed messages come from the pause parts.
+The report SHALL print `Working with the agent`, with the rows of the scenario below. The columns are `pooled`, `per active hour`, `per 100 typed messages`, `median file` (of each file's value per active hour) and `files`. Only interrupts, messages typed while the agent worked, questions and answers have a value per 100 typed messages. Typed messages come from the pause parts.
+
+#### Scenario: The rows
+- **WHEN** the report is printed
+- **THEN** the rows are `typed messages`, `ends of turn`, `interrupts`, `typed while the agent worked`, `questions`, `answers`, `wakes: subagent`, `wakes: command` and `wakes: other`
 
 #### Scenario: Interrupts
-- **WHEN** a file has 1,030 typed messages and 41 interrupts
-- **THEN** the `interrupts` row shows `41` and `3.98`
+- **WHEN** a file has 1,030 typed messages, 41 interrupts and 141 active hours
+- **THEN** the `interrupts` row shows `41`, `0.29` and `3.98`
+
+#### Scenario: Ends of turn
+- **WHEN** a file has 2,671 ends of turn, many after wakes, over 395 active hours
+- **THEN** the `ends of turn` row shows `2,671`, `6.76` and `–` under `per 100 typed messages`
 
 ### Requirement: Highest effort by client
 The report SHALL print `Highest effort by client`, one row per agent and client, with the share of the client's spend and of its requests at `max` or `xhigh`, then `median file` (of the share of spend) and `files`.

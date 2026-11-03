@@ -156,6 +156,7 @@ const FIELDS: &[&str] = &[
     "prompts",
     "held",
     "all",
+    "cold_returns_avoidable_usd",
 ];
 
 /// What the file adds to the reports for one agent.
@@ -742,7 +743,7 @@ pub fn to_json(c: &Collector, p: &Pauses, s: &Share, h: &Header, day: impl Fn(i6
             .iter()
             .filter(|((who, _), _)| who == agent)
             .map(|((_, client), r)| {
-                let cold = pauses.and_then(|p| p.cold_returns_by_client.get(client)).copied().unwrap_or(0);
+                let (cold, cold_usd) = pauses.and_then(|p| p.cold_returns_by_client.get(client)).copied().unwrap_or_default();
                 let w = a.client_writes.get(client).copied().unwrap_or_default();
                 let hours = a.client_hours.get(client).map_or(0, HashSet::len);
                 let effort: Map<String, Value> = a
@@ -760,6 +761,7 @@ pub fn to_json(c: &Collector, p: &Pauses, s: &Share, h: &Header, day: impl Fn(i6
                         "avoidable_usd": dollars(avoidable.get(client.as_str()).copied().unwrap_or(0.0)),
                         "main_sessions": r.sessions.len(),
                         "cold_returns": cold,
+                        "cold_returns_avoidable_usd": dollars(cold_usd),
                         "cache_writes": writes(w),
                         "active_hours": hours,
                         "effort": effort,
@@ -1355,6 +1357,11 @@ mod tests {
         let c = &v["agents"]["claude"]["clients"]["sdk-ts"];
         assert_eq!(c["cache_writes"], json!({"short": 4_100_000, "long": 0}));
         assert_eq!((c["main_sessions"].as_u64(), c["cold_returns"].as_u64()), (Some(1), Some(1)));
+        // The cold return's avoidable dollars, apart from those of the client's other misses.
+        let premium =
+            v["agents"]["claude"]["pauses"]["cold_returns_by_pause"].as_object().unwrap().values().map(|r| r["avoidable_usd"].as_f64().unwrap()).sum::<f64>();
+        assert!(premium > 0.0);
+        assert_eq!(c["cold_returns_avoidable_usd"].as_f64(), Some(premium));
     }
 
     #[test]

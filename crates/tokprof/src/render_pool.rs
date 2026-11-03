@@ -340,8 +340,29 @@ pub fn text(p: &Pool, by_file: bool) -> String {
         out.push_str(&table(&rows, 1));
     }
     if !p.working.is_empty() {
-        out.push_str("\nWorking with the agent: hand-offs per 100 typed messages\n\n");
-        out.push_str(&rate_table(p, &p.working, "hand-off", "per 100 typed messages", by_file));
+        out.push_str("\nWorking with the agent: hand-offs per active hour, and per 100 typed messages for those a message starts\n\n");
+        let mut head =
+            vec!["hand-off".to_string(), if one { "value".into() } else { "pooled".into() }, "per active hour".into(), "per 100 typed messages".into()];
+        if !one {
+            head.push("median file".into());
+            head.push("files".into());
+        }
+        if by_file {
+            head.extend(p.files.iter().map(|f| f.name.clone()));
+        }
+        let mut rows = vec![head];
+        for r in &p.working {
+            let mut cells = vec![r.name.clone(), value_cell(r), rate_cell(r, r.rate), r.second_rate.map_or("–".to_string(), |x| format!("{x:.2}"))];
+            if !one {
+                cells.push(rate_cell(r, r.median_rate));
+                cells.push(r.files.to_string());
+            }
+            if by_file {
+                cells.extend(r.by_file.iter().map(|x| x.map_or("–".to_string(), |x| rate_cell(r, Some(x)))));
+            }
+            rows.push(cells);
+        }
+        out.push_str(&table(&rows, 1));
     }
     if let Some(t) = p.table("tools").filter(present) {
         let _ = write!(out, "\nTools and commands, by rent{}\n\n", coverage(t.files_with_part, n));
@@ -478,7 +499,7 @@ mod tests {
     fn savings_per_active_hour_and_cold_returns_by_client() {
         let misses = json!({
             "misses": {"idle > TTL": {"misses": 206, "tokens": 1, "avoidable_usd": 740.0}},
-            "clients": {"sdk-ts": {"requests": 10, "usd": 1_000.0, "avoidable_usd": 740.0, "main_sessions": 9, "cold_returns": 206, "cache_writes": {"short": 0, "long": 0}, "active_hours": 312, "effort": {}}},
+            "clients": {"sdk-ts": {"requests": 10, "usd": 1_000.0, "avoidable_usd": 890.0, "main_sessions": 9, "cold_returns": 206, "cold_returns_avoidable_usd": 740.0, "cache_writes": {"short": 0, "long": 0}, "active_hours": 312, "effort": {}}},
         });
         let p = pool_of(vec![friction_file(1_000.0, 312.0, 20.0, misses)]);
         let t = text(&p, false);
@@ -515,7 +536,12 @@ mod tests {
         let sub: Vec<&str> = t.lines().find(|l| l.starts_with("subagents")).unwrap().split_whitespace().collect();
         assert_eq!(sub[1..], ["67.5h", "18.5%", "54.0h"]);
         let interrupts: Vec<&str> = t.lines().find(|l| l.starts_with("interrupts")).unwrap().split_whitespace().collect();
-        assert_eq!(interrupts[1..], ["41", "3.98"]);
+        assert_eq!(interrupts[1..], ["41", "0.29", "3.98"]);
+        // Ends of turn have no value per 100 typed messages: many come after wakes.
+        let turns = json!({"handoffs": {"turn_ends": 2_671, "interrupts": 0, "typed_while_working": 0, "questions": 0, "answers": 0, "wakes": {"subagent": 0, "command": 0, "other": 0}}, "pauses": {"typed_messages": 1_163}});
+        let t = text(&pool_of(vec![friction_file(1_000.0, 395.0, 30.0, turns)]), false);
+        let ends: Vec<&str> = t.lines().find(|l| l.starts_with("ends of turn")).unwrap().split_whitespace().collect();
+        assert_eq!(ends[3..], ["2,671", "6.76", "–"]);
     }
 
     #[test]

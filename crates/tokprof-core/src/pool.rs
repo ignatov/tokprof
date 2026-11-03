@@ -509,18 +509,35 @@ fn ranges_usd(file: &Value, key: &str, names: &[&str], halved: bool) -> Option<f
     .map(|items| items.iter().filter(|i| names.contains(&i.name.as_str())).map(|i| i.usd).sum())
 }
 
-/// What the what-if replay says could have been saved in one bucket: the logged input cost minus
-/// the cheaper of the replays, when that is positive.
+/// A replay's lifetime in ms, from its key: `simulated_5m_usd` is 5 minutes.
+fn lifetime_ms(key: &str) -> Option<i64> {
+    let l = key.strip_prefix("simulated_")?.strip_suffix("_usd")?;
+    let (n, unit) = l.split_at(l.len().checked_sub(1)?);
+    let n: i64 = n.parse().ok()?;
+    match unit {
+        "m" => Some(n * 60_000),
+        "h" => Some(n * 3_600_000),
+        _ => None,
+    }
+}
+
+/// What the what-if replay says the other cache lifetime would have saved in one bucket: the
+/// replay under the lifetime the bucket wrote most with, minus the cheaper replay. The logged cost
+/// is not used: it holds the other misses too, which their own rows count.
 fn lifetime_saving(file: &Value, bucket: &str) -> Option<f64> {
-    part(file, "whatif", |_, w, out| {
-        let b = &w[bucket];
-        let actual = usd_at(b, &["actual_usd"]);
-        let cheapest = entries(b).filter(|(k, _)| k.starts_with("simulated_")).filter_map(|(_, v)| v.as_f64()).fold(f64::INFINITY, f64::min);
-        if cheapest.is_finite() {
-            out.push(Item::named("", (actual - cheapest).max(0.0)));
-        }
-    })
-    .map(|items| items.iter().map(|i| i.usd).sum())
+    let mut found = false;
+    let mut saved = 0.0;
+    for (_, a) in agents(file) {
+        let Some(w) = a.get("whatif").map(|w| &w[bucket]) else { continue };
+        found = true;
+        let mut replays: Vec<(i64, f64)> = entries(w).filter_map(|(k, v)| Some((lifetime_ms(k)?, v.as_f64()?))).collect();
+        replays.sort_by_key(|r| r.0);
+        let (Some(short), Some(long)) = (replays.first().copied(), replays.last().copied()) else { continue };
+        let writes = &a["cache_writes"][bucket];
+        let used = if writes["long"].as_f64().unwrap_or(0.0) > writes["short"].as_f64().unwrap_or(0.0) { long.1 } else { short.1 };
+        saved += (used - short.1.min(long.1)).max(0.0);
+    }
+    found.then_some(saved)
 }
 
 /// The report over these files, given as (name, file). Rows that fewer than `min_files` files
@@ -759,7 +776,7 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
         problems: problems(&files, &hours),
         time: time_rows(&files),
         time_files: files.iter().filter(|f| part(f, "time", |_, _, _| {}).is_some()).count(),
-        working: working(&files),
+        working: working(&files, &hours),
         effort_by_client: effort_by_client(&files, min_files),
         coverage: coverage(&files),
         activity,
@@ -945,33 +962,32 @@ fn time_rows(files: &[Value]) -> Vec<TimeRow> {
     rows
 }
 
-/// The hand-offs per 100 typed messages.
-fn working(files: &[Value]) -> Vec<RateRow> {
+/// The hand-offs per active hour, and per 100 typed messages for the ones a typed message is the
+/// base of: interrupts, messages typed while the agent worked, questions and answers.
+fn working(files: &[Value], hours: &[Option<f64>]) -> Vec<RateRow> {
     let typed: Vec<Option<f64>> = files.iter().map(|f| summed(f, "/pauses/typed_messages")).collect();
     if !files.iter().any(|f| part(f, "handoffs", |_, _, _| {}).is_some()) {
         return Vec::new();
     }
     let handoff =
         |pointer: &str| -> Vec<Option<f64>> { files.iter().map(|f| part(f, "handoffs", |_, _, _| {}).map(|_| summed(f, pointer).unwrap_or(0.0))).collect() };
-    let mut rows = vec![RateRow {
-        name: "typed messages".into(),
-        value: typed.iter().flatten().sum(),
-        files: typed.iter().flatten().filter(|v| **v > 0.0).count(),
-        files_with_part: typed.iter().flatten().count(),
-        by_file: vec![None; files.len()],
-        ..RateRow::default()
-    }];
-    for (name, pointer) in [
-        ("ends of turn", "/handoffs/turn_ends"),
-        ("interrupts", "/handoffs/interrupts"),
-        ("typed while the agent worked", "/handoffs/typed_while_working"),
-        ("questions", "/handoffs/questions"),
-        ("answers", "/handoffs/answers"),
-        ("wakes: subagent", "/handoffs/wakes/subagent"),
-        ("wakes: command", "/handoffs/wakes/command"),
-        ("wakes: other", "/handoffs/wakes/other"),
+    let mut rows = vec![rate_row("typed messages", Unit::Count, &typed, hours, 1.0)];
+    for (name, pointer, per_typed) in [
+        ("ends of turn", "/handoffs/turn_ends", false),
+        ("interrupts", "/handoffs/interrupts", true),
+        ("typed while the agent worked", "/handoffs/typed_while_working", true),
+        ("questions", "/handoffs/questions", true),
+        ("answers", "/handoffs/answers", true),
+        ("wakes: subagent", "/handoffs/wakes/subagent", false),
+        ("wakes: command", "/handoffs/wakes/command", false),
+        ("wakes: other", "/handoffs/wakes/other", false),
     ] {
-        rows.push(rate_row(name, Unit::Count, &handoff(pointer), &typed, 100.0));
+        let values = handoff(pointer);
+        let mut row = rate_row(name, Unit::Count, &values, hours, 1.0);
+        if per_typed {
+            row.second_rate = rate_row(name, Unit::Count, &values, &typed, 100.0).rate;
+        }
+        rows.push(row);
     }
     rows
 }
@@ -986,7 +1002,7 @@ fn cold_by_client(files: &[Value], min_files: usize) -> Vec<RateRow> {
                 let e = by.entry((agent.clone(), client.clone())).or_default();
                 e.0 += hours;
                 e.1 += c["cold_returns"].as_f64().unwrap_or(0.0);
-                e.2 += c["avoidable_usd"].as_f64().unwrap_or(0.0);
+                e.2 += c["cold_returns_avoidable_usd"].as_f64().unwrap_or(0.0);
                 e.3 += 1;
             }
         }
@@ -1138,12 +1154,23 @@ mod tests {
     }
 
     #[test]
-    fn a_cache_lifetime_saves_only_on_the_dearer_one() {
-        let whatif = |actual: f64, short: f64, long: f64| json!({"whatif": {"main": {"requests": 1, "actual_usd": actual, "simulated_5m_usd": short, "simulated_1h_usd": long}, "subagents": {"requests": 0, "actual_usd": 0.0, "simulated_5m_usd": 0.0, "simulated_1h_usd": 0.0}}});
-        let cheaper = build(&named(vec![file(1_000.0, whatif(118.0, 300.0, 120.0))]), 1);
-        assert_eq!(row(&cheaper, "saved", "cache lifetime: main").usd, 0.0);
-        let dearer = build(&named(vec![file(1_000.0, whatif(300.0, 300.0, 120.0))]), 1);
-        assert_eq!(row(&dearer, "saved", "cache lifetime: main").usd, 180.0);
+    fn a_cache_lifetime_saves_the_difference_of_the_replays_from_the_one_in_use() {
+        // Both buckets wrote mostly with the 1-hour lifetime, as the author's logs do.
+        let parts = json!({
+            "cache_writes": {"main": {"short": 17_167, "long": 229_060_448}, "subagents": {"short": 303_857, "long": 157_574_065}},
+            "whatif": {
+                "main": {"requests": 33_432, "actual_usd": 4_476.0, "simulated_5m_usd": 5_365.0, "simulated_1h_usd": 4_259.0},
+                "subagents": {"requests": 39_519, "actual_usd": 2_820.0, "simulated_5m_usd": 2_479.0, "simulated_1h_usd": 2_884.0},
+            },
+        });
+        let p = build(&named(vec![file(10_000.0, parts.clone())]), 1);
+        assert_eq!(row(&p, "saved", "cache lifetime: main").usd, 0.0, "already on the cheaper lifetime; the rest is other misses");
+        assert_eq!(row(&p, "saved", "cache lifetime: subagents").usd, 405.0);
+        // On the 5-minute lifetime, the main conversation would have saved the difference.
+        let mut short = parts;
+        short["cache_writes"]["main"] = json!({"short": 229_060_448, "long": 0});
+        let p = build(&named(vec![file(10_000.0, short)]), 1);
+        assert_eq!(row(&p, "saved", "cache lifetime: main").usd, 1_106.0);
     }
 
     #[test]

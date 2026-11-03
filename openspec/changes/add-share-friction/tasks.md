@@ -57,6 +57,13 @@ Apply after `add-team-survey`. Every group ends with `cargo test --workspace` an
 - [x] 6.5 Time `share` 3 times, and record the size. Verify: the median is within 5% of 1.1, and the size is under 150 KB.
 - [x] 6.6 Reinstall the binary with `cargo install --path crates/tokprof --root ~/.local`, then run `cargo test --workspace`, clippy and `openspec validate --all --strict`. Verify: all pass.
 
+## 7. Fixes after the first look at the report
+
+- [x] 7.1 A cache-lifetime row adds the replay under the lifetime the bucket wrote most with, minus the cheaper replay. It used the logged cost minus the cheaper replay, and the logged cost holds the other misses too, which their own rows count (add-team-survey, share-pool). Verify: the unit test that a cache lifetime saves the difference of the replays from the one in use, with the scenarios "A file already on the cheaper lifetime" and "A file on the dearer lifetime".
+- [x] 7.2 Each client in `clients` holds `cold_returns_avoidable_usd`, and `avoidable per active hour` in `Cold returns by client` uses those dollars, not those of all the client's misses. Verify: the unit tests for "Cold returns of a client" (share) and "A client's baseline" (pool).
+- [x] 7.3 `Working with the agent` gives the hand-offs per active hour, and per 100 typed messages only for interrupts, messages typed while the agent worked, questions and answers. Ends of turn came to 229.66 per 100 typed messages, because many turns end after a wake. Verify: the unit tests for "Interrupts" and "Ends of turn".
+- [x] 7.4 Run `share` over the author's 30 days again. Verify: `cache lifetime: main` is $0, `cache lifetime: subagents` is the 1-hour replay minus the 5-minute one of `whatif`, the avoidable dollars per active hour of each client are those of its cold returns, and ends of turn have no value per 100 typed messages. Record the numbers.
+
 ## Results
 
 | check | before | after |
@@ -70,6 +77,7 @@ Apply after `add-team-survey`. Every group ends with `cargo test --workspace` an
 | 6.3 error texts in the file | | no key or string holds `error`, `502`, `Bad Gateway`, `Traceback`, `No such file`, `Permission denied`, `cannot`, `Script failed` or `exit code`; the new keys are the new fields and the busy kinds only |
 | 6.4 pool with the file before | | each new section and the activity line say `in 1 of 2 files`; the new file's report: activity 29 active days · 380 active hours · busy 438h · $29.06 per active hour; `sdk-ts` 0.65 cold returns and $2.79 avoidable per active hour; 3.45 failed calls and $0.56 after failures per active hour; 3.88 interrupts per 100 typed messages |
 | 6.5 time and size | 23.93 s, 106,460 bytes | 30 days: 25.60, 24.92, 24.09 s, median 24.92 s (+4.1%); 134,111 bytes: the tools and programs carry `failed` and `after` now |
+| 7.4 the fixes on the real logs | 2026-10-04 to 11-03: `cache lifetime: main` $218 and `cache lifetime: subagents` $341; avoidable per active hour `sdk-ts` $2.78, `Codex Desktop` $2.14, `cli` $3.73; ends of turn 229.66 per 100 typed messages | the same window: `cache lifetime: main` $0, as the main conversations wrote 229M tokens with the 1-hour lifetime and 17k with the 5-minute one, and replay at $4,267 under 1h and $5,378 under 5m; `cache lifetime: subagents` $405, the $2,886 under 1h minus the $2,480 under 5m of `tokprof whatif`; avoidable per active hour from the cold returns: `sdk-ts` $2.35, `Codex Desktop` $0.22, `cli` $0.29; the clients' cold-return dollars add up to those of the pause parts: Claude Code $762.71 over 213 returns, Codex $30.98 over 38; ends of turn 6.78 per active hour and `–` per 100 typed messages, interrupts 0.11 and 3.77; 135,158 bytes |
 
 ## Workflow follow-up
 

@@ -80,19 +80,20 @@ The report SHALL print `Where the money went` and one table each by model, cost 
 - **THEN** its rows come in the order `under 50k`, `50–100k`, `100–200k`, `200–400k`, `400–800k`, `800k+`, whatever their cost
 
 ### Requirement: What could have been saved
-The report SHALL print `What could have been saved`: one row per miss cause, with its avoidable dollars (see cache-misses), and the rows `cache lifetime: main` and `cache lifetime: subagents`. For each file, a cache-lifetime row adds the input cost as logged minus the cheaper of the two replays in its `whatif`, when that is positive. The columns are `avoidable`, `share`, `median file`, and `files 5%+`: the files where the row is 5% or more of their spend.
+The report SHALL print `What could have been saved`: one row per miss cause, with its avoidable dollars (see cache-misses), and the rows `cache lifetime: main` and `cache lifetime: subagents`. For each file, a cache-lifetime row adds its replay under the lifetime the bucket wrote most with (see share-export, Cache parts) minus the cheaper replay. The columns are `avoidable`, `share`, `median file`, and `files 5%+`: the files where the row is 5% or more of their spend.
 
 #### Scenario: Cold returns in most files
 - **WHEN** 4 of 5 files have `idle > TTL` misses whose avoidable dollars are 5% or more of their spend
 - **THEN** the `idle > TTL` row shows `4` under `files 5%+`
 
 #### Scenario: A file already on the cheaper lifetime
-- **WHEN** a file's main conversations were logged at $118 of input, and replayed at $120 under a 1-hour and $300 under a 5-minute cache
+- **WHEN** a file's main conversations wrote mostly with the 1-hour lifetime, were logged at $4,476 of input, and were replayed at $4,259 under a 1-hour and $5,365 under a 5-minute cache
 - **THEN** that file adds nothing to `cache lifetime: main`
+- **AND** the $217 between the logged cost and the replay, which other misses cost, stays in the rows of their causes
 
 #### Scenario: A file on the dearer lifetime
-- **WHEN** a file's main conversations were logged at $300 of input, and replayed at $120 under a 1-hour cache
-- **THEN** that file adds $180 to `cache lifetime: main`
+- **WHEN** a file's subagents wrote mostly with the 1-hour lifetime, and were replayed at $2,884 under a 1-hour and $2,479 under a 5-minute cache
+- **THEN** that file adds $405 to `cache lifetime: subagents`
 
 ### Requirement: Habits that cost the most
 The report SHALL print `Habits that cost the most`: one row per habit in the scenario below, with the spend that the habit names, the costliest first. The columns are `cost`, `share`, `median file` and `files 5%+`. These rows show where to look, not what could be saved: they overlap, and the table adds no total.

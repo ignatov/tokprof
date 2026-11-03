@@ -126,8 +126,8 @@ pub struct AgentPauses {
     pub follows: Vec<u64>,
     /// By the session's short id; a subagent's log adds to its main session's.
     pub sessions: HashMap<String, SessionSize>,
-    /// The cold returns of each client (see `Request::client_name`).
-    pub cold_returns_by_client: BTreeMap<String, u64>,
+    /// The cold returns of each client (see `Request::client_name`), and their avoidable dollars.
+    pub cold_returns_by_client: BTreeMap<String, (u64, f64)>,
     /// Whether any request had a price; amounts are tokens otherwise.
     pub priced: bool,
     /// Where the agent's busy time went over the sessions (see agent-time); the caller paints it
@@ -159,8 +159,10 @@ impl AgentPauses {
             e.cold_returns += s.cold_returns;
             e.span = join_span(e.span, s.span);
         }
-        for (client, n) in o.cold_returns_by_client {
-            *self.cold_returns_by_client.entry(client).or_default() += n;
+        for (client, (n, usd)) in o.cold_returns_by_client {
+            let e = self.cold_returns_by_client.entry(client).or_default();
+            e.0 += n;
+            e.1 += usd;
         }
         self.priced |= o.priced;
         self.busy.merge(o.busy);
@@ -415,7 +417,9 @@ impl Sink for Pauses {
         if let Some(size) = agent.sessions.get_mut(&cur.session) {
             size.cold_returns += 1;
         }
-        *agent.cold_returns_by_client.entry(last.client).or_default() += 1;
+        let by_client = agent.cold_returns_by_client.entry(last.client).or_default();
+        by_client.0 += 1;
+        by_client.1 += m.premium_usd.unwrap_or(0.0);
         cur.conversations[last.conversation].follow = Some(1);
     }
 

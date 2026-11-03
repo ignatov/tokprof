@@ -69,7 +69,11 @@ Each agent's object SHALL hold `prompts`: the requests and dollars of the select
 - **THEN** `versions["2.1.296"].held` is 0
 
 ### Requirement: Client activity and effort
-Each client in `clients` SHALL also hold `active_hours`, the clock hours with at least one selected main-conversation request of that client, and `effort`: requests and dollars by effort level, with the levels Work parts names.
+Each client in `clients` SHALL also hold `active_hours`, the clock hours with at least one selected main-conversation request of that client; `cold_returns_avoidable_usd`, the avoidable dollars of its cold returns (see pause-report); and `effort`: requests and dollars by effort level, with the levels Work parts names.
+
+#### Scenario: Cold returns of a client
+- **WHEN** a client's misses could have saved $887, of which its 207 cold returns $740
+- **THEN** its `avoidable_usd` is $887 and its `cold_returns_avoidable_usd` is $740
 
 #### Scenario: A client at max
 - **WHEN** 900 of a client's requests ran at `max` for $800, and 100 at `medium` for $50
