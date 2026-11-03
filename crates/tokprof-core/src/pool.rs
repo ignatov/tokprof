@@ -275,6 +275,8 @@ pub struct Activity {
     pub keyboard_ms: Option<f64>,
     pub usd_per_keyboard_hour: Option<f64>,
     pub median_usd_per_keyboard_hour: Option<f64>,
+    /// The files with time at the keyboard.
+    pub keyboard_files: usize,
 }
 
 /// The share of spend whose prompts the logs hold.
@@ -324,6 +326,8 @@ pub struct Pool {
     /// The files with the rhythm part.
     pub rhythm_files: usize,
     pub client_work: Vec<ClientWork>,
+    /// The files whose clients have the rhythm part.
+    pub client_work_files: usize,
     pub outcomes: Option<Outcomes>,
 }
 
@@ -892,6 +896,7 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
         rhythm: rhythm_rows(&files),
         rhythm_files: files.iter().filter(|f| f.get("rhythm").is_some_and(Value::is_object)).count(),
         client_work: client_work(&files, min_files),
+        client_work_files: with_client_part(&files, "rhythm"),
         outcomes: outcomes(&files, &keyboard, &spends),
         effort_by_client: effort_rows,
         effort_more,
@@ -936,6 +941,7 @@ fn activity_of(infos: &[FileInfo], spends: &[f64]) -> Option<Activity> {
         usd_per_keyboard_hour: (!keyboard.is_empty())
             .then(|| keyboard.iter().map(|x| x.1).sum::<f64>() / (keyboard.iter().map(|x| x.0).sum::<f64>() / 3_600_000.0).max(1e-9)),
         median_usd_per_keyboard_hour: (!keyboard.is_empty()).then(|| median_of(keyboard.iter().map(|(k, s)| s / (k / 3_600_000.0).max(1e-9)))),
+        keyboard_files: keyboard.len(),
     })
 }
 

@@ -19,6 +19,11 @@ After the header, the report SHALL print `At a glance`: the lines `spend`, `cach
 - **WHEN** 5 files spent $41,220 in 700 active hours, and their median file spent $68.20 per active hour
 - **THEN** the `spend` line starts `spend     $41,220 · $58.89 per active hour (median file $68.20)`
 
+#### Scenario: A pool with a file from before this change
+- **WHEN** of 2 files, only one has the rhythm, bench and outcome parts and classes its retried requests
+- **THEN** the `returns`, `you` and `made` lines end with `(in 1 of 2 files)`, as does the hours-at-the-keyboard part of the `spend` and `activity` lines
+- **AND** the `problems` line says how many of the requests with a class had the main one, such as `87 of the 92 with a class for server errors`
+
 ### Requirement: Section notes
 Every section title SHALL be followed by one line that says what the section counts. An active hour is a clock hour in which an agent sent a main-conversation request (see share-export, Activity parts). An hour at the keyboard is time the person sat at the agents (see work-rhythm, Sittings and breaks). A title keeps its `in <k> of <n> files` when some files lack its parts.
 

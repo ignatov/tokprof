@@ -46,7 +46,7 @@ fn header(p: &Pool) -> String {
                 "activity  {} active days · {} active hours{} · busy {} · {} per active hour{}",
                 a.active_days,
                 a.active_hours,
-                keyboard_part(a.keyboard_ms),
+                keyboard_part(a.keyboard_ms, ""),
                 busy_hours(a.busy_ms),
                 usd(a.usd_per_hour),
                 a.usd_per_keyboard_hour.map_or(String::new(), |u| format!(" · {} per hour at the keyboard", usd(u)))
@@ -75,7 +75,7 @@ fn header(p: &Pool) -> String {
                 out,
                 "activity  {} active hours{} · {} per active hour{} · per file: median {} active days, {} active hours, {} per active hour{}",
                 a.active_hours,
-                keyboard_part(a.keyboard_ms),
+                keyboard_part(a.keyboard_ms, &files_note(a.keyboard_files, p.files.len())),
                 usd(a.usd_per_hour),
                 a.usd_per_keyboard_hour.map_or(String::new(), |u| format!(" · {} per hour at the keyboard", usd(u))),
                 a.median_days,
@@ -88,9 +88,14 @@ fn header(p: &Pool) -> String {
     out
 }
 
-/// The hours at the keyboard of the activity line, as whole hours.
-fn keyboard_part(ms: Option<f64>) -> String {
-    ms.map_or(String::new(), |ms| format!(" · {}h at the keyboard", int((ms / 3_600_000.0).round() as u64)))
+/// The hours at the keyboard of the activity line, as whole hours, with how many files have them.
+fn keyboard_part(ms: Option<f64>, files: &str) -> String {
+    ms.map_or(String::new(), |ms| format!(" · {}h at the keyboard{files}", int((ms / 3_600_000.0).round() as u64)))
+}
+
+/// ` (in <k> of <n> files)` when some files lack a part.
+fn files_note(with_part: usize, files: usize) -> String {
+    if with_part < files { format!(" (in {with_part} of {files} files)") } else { String::new() }
 }
 
 /// Busy hours as the activity line gives them: whole hours from 10 on.
@@ -331,7 +336,7 @@ fn glance(p: &Pool) -> Vec<String> {
     if let Some(a) = &p.activity {
         spend += &format!(" · {} per active hour{}", usd(a.usd_per_hour), in_median(usd(a.median_usd_per_hour)));
         if let (Some(u), Some(m)) = (a.usd_per_keyboard_hour, a.median_usd_per_keyboard_hour) {
-            spend += &format!(" · {} per hour at the keyboard{}", usd(u), in_median(usd(m)));
+            spend += &format!(" · {} per hour at the keyboard{}{}", usd(u), in_median(usd(m)), files_note(a.keyboard_files, p.files.len()));
         }
     }
     lines.push(format!("spend     {spend}"));
@@ -354,12 +359,13 @@ fn glance(p: &Pool) -> Vec<String> {
         let (resume, note, beats) = (&b.rows[0], &b.rows[2], &b.rows[3]);
         let of_resume = if one { String::new() } else { note.median_file.map_or(String::new(), |m| format!(" ({} of resuming in the median file)", pct(m))) };
         lines.push(format!(
-            "returns   {} cold returns cost {} as resumed; a handoff note would have cost {}{of_resume} and was cheapest in {}; heartbeats {}",
+            "returns   {} cold returns cost {} as resumed; a handoff note would have cost {}{of_resume} and was cheapest in {}; heartbeats {}{}",
             int(b.returns),
             usd(resume.usd),
             usd(note.usd),
             int(note.cheapest),
-            usd(beats.usd)
+            usd(beats.usd),
+            files_note(b.files, p.files.len())
         ));
     }
     if !p.problems.is_empty() {
@@ -372,8 +378,12 @@ fn glance(p: &Pool) -> Vec<String> {
         if let Some(r) = find("requests that waited for retries") {
             if r.value > 0.0 {
                 let time = find("time waiting for retries").map_or(String::new(), |t| format!(" {}", span(t.value)));
-                let top = p.problems.iter().filter(|c| c.under).max_by(|a, b| a.value.total_cmp(&b.value));
-                let class = top.map_or(String::new(), |c| format!(", {} of them for {}", int(c.value.round() as u64), class_phrase(&c.name)));
+                let classes: Vec<&RateRow> = p.problems.iter().filter(|c| c.under).collect();
+                let classed: f64 = classes.iter().map(|c| c.value).sum();
+                let top = classes.iter().max_by(|a, b| a.value.total_cmp(&b.value));
+                // Older files hold no classes: the share is then of the requests that have one.
+                let of = if classed < r.value { format!("of the {} with a class", int(classed.round() as u64)) } else { "of them".to_string() };
+                let class = top.map_or(String::new(), |c| format!(", {} {of} for {}", int(c.value.round() as u64), class_phrase(&c.name)));
                 parts.push(format!("{} requests waited{time} for retries{class}", int(r.value.round() as u64)));
             } else {
                 parts.push("no request waited for retries".to_string());
@@ -406,13 +416,20 @@ fn glance(p: &Pool) -> Vec<String> {
                 }
             }
         }
-        lines.push(format!("you       {text}"));
+        lines.push(format!("you       {text}{}", files_note(p.rhythm_files, p.files.len())));
     }
     if let Some(o) = &p.outcomes {
         let n = |i: usize| int(o.rows[i].value.round() as u64);
         lines.push(match o.usd_per_commit {
-            Some(u) => format!("made      the agents made {} commits, {} pushes and {} pull requests: {} of spend per commit", n(0), n(1), n(2), usd(u)),
-            None => "made      no commits by the agents".to_string(),
+            Some(u) => format!(
+                "made      the agents made {} commits, {} pushes and {} pull requests: {} of spend per commit{}",
+                n(0),
+                n(1),
+                n(2),
+                usd(u),
+                files_note(o.files, p.files.len())
+            ),
+            None => format!("made      no commits by the agents{}", files_note(o.files, p.files.len())),
         });
     }
     lines
@@ -624,7 +641,7 @@ pub fn text(p: &Pool, by_file: bool) -> String {
         out.push_str(&table(&rows, 1));
     }
     if !p.client_work.is_empty() {
-        section_head(&mut out, "Working with the agent by client", "", one);
+        section_head(&mut out, "Working with the agent by client", &coverage(p.client_work_files, n), one);
         let mut rows =
             vec![["agent", "client", "at the keyboard", "messages", "interrupts", "questions", "commits", "answered in"].map(str::to_string).to_vec()];
         for w in &p.client_work {
@@ -1077,6 +1094,25 @@ mod tests {
         plain["agents"]["claude"].as_object_mut().unwrap().remove("bench");
         plain["agents"].as_object_mut().unwrap().remove("codex");
         assert!(!text(&pool_of(vec![plain]), false).contains("\nreturns   "));
+    }
+
+    #[test]
+    fn a_pool_with_an_older_file_says_in_how_many_files_each_line_is() {
+        let mut older =
+            friction_file(11_356.0, 395.0, 30.0, json!({"time": {"kinds": {}, "requests": 100, "slow": 0, "slow_main": 0, "longest_ms": 1, "retried": 90}}));
+        older["agents"]["claude"].as_object_mut().unwrap().remove("outcomes");
+        let t = text(&pool_of(vec![rich_file(), older]), false);
+        let line = |label: &str| t.lines().find(|l| l.starts_with(label)).unwrap_or_else(|| panic!("{label}: {t}")).to_string();
+        assert!(line("returns   ").ends_with(" (in 1 of 2 files)"), "{}", line("returns   "));
+        assert!(line("you       ").ends_with(" (in 1 of 2 files)"), "{}", line("you       "));
+        assert!(line("made      ").ends_with(" (in 1 of 2 files)"), "{}", line("made      "));
+        assert!(
+            line("problems  ").contains("182 requests waited") && line("problems  ").ends_with("87 of the 92 with a class for server errors"),
+            "{}",
+            line("problems  ")
+        );
+        assert!(line("activity  ").contains("151h at the keyboard (in 1 of 2 files)"), "{}", line("activity  "));
+        assert!(t.contains("\nWorking with the agent by client, in 1 of 2 files\n"), "{t}");
     }
 
     #[test]
