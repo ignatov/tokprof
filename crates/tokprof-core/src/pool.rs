@@ -60,6 +60,8 @@ pub struct FileInfo {
     pub active_days: Option<f64>,
     pub active_hours: Option<f64>,
     pub busy_ms: Option<f64>,
+    /// The time at the keyboard, from the file's rhythm part.
+    pub keyboard_ms: Option<f64>,
 }
 
 /// The section a table belongs to.
@@ -153,6 +155,81 @@ pub struct RateRow {
     /// For the cold returns by client: the active hours, and the avoidable dollars per hour.
     pub hours: Option<f64>,
     pub second_rate: Option<f64>,
+    /// A row under the row before it, such as an error class under the retried requests.
+    pub under: bool,
+}
+
+/// A row of `Coming back after a cold break`: a way of coming back, from the bench parts.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct BenchRow {
+    pub name: String,
+    pub usd: f64,
+    /// The way's cost over the cost as resumed.
+    pub of_resume: f64,
+    /// The returns where the way cost least.
+    pub cheapest: u64,
+    pub median_file: Option<f64>,
+    pub by_file: Vec<Option<f64>>,
+}
+
+/// The cold returns of the files and what each way of coming back would have cost.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct BenchTable {
+    pub returns: u64,
+    /// The files with a cold return.
+    pub files: usize,
+    pub rows: Vec<BenchRow>,
+}
+
+/// What a row of `Your time with the agents` counts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RhythmUnit {
+    #[default]
+    Hours,
+    Count,
+    Duration,
+    Share,
+    Rate,
+}
+
+/// A row of `Your time with the agents`.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct RhythmRow {
+    pub name: String,
+    pub unit: RhythmUnit,
+    /// The pooled value: a sum, a share or a rate. A median has none; `range` names the pause
+    /// range that holds the median of the pooled ranges instead.
+    pub value: Option<f64>,
+    pub range: Option<String>,
+    pub median_file: Option<f64>,
+    pub files: usize,
+    pub by_file: Vec<Option<f64>>,
+}
+
+/// A row of `Working with the agent by client`.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ClientWork {
+    pub agent: Option<String>,
+    pub client: String,
+    pub keyboard_hours: f64,
+    pub messages: f64,
+    pub interrupts: f64,
+    pub questions: f64,
+    pub commits: f64,
+    /// The median answer to an end of turn: the file's, or the median of the files'.
+    pub answered_ms: Option<f64>,
+    pub files: usize,
+}
+
+/// The commits, pushes and pull requests of the agents.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Outcomes {
+    pub rows: Vec<RateRow>,
+    /// The files with the part.
+    pub files: usize,
+    /// The spend of the files with the part over their commits; `None` without a commit.
+    pub usd_per_commit: Option<f64>,
 }
 
 /// A row of the busy time by kind.
@@ -193,6 +270,11 @@ pub struct Activity {
     pub median_days: f64,
     pub median_hours: f64,
     pub median_usd_per_hour: f64,
+    /// Over the files that also have time at the keyboard: that time, and the dollars per hour
+    /// of it, pooled and of the median file.
+    pub keyboard_ms: Option<f64>,
+    pub usd_per_keyboard_hour: Option<f64>,
+    pub median_usd_per_keyboard_hour: Option<f64>,
 }
 
 /// The share of spend whose prompts the logs hold.
@@ -237,6 +319,12 @@ pub struct Pool {
     pub coverage: Option<Coverage>,
     /// The models without a price, the most tokens first.
     pub unpriced: Vec<Unpriced>,
+    pub bench: Option<BenchTable>,
+    pub rhythm: Vec<RhythmRow>,
+    /// The files with the rhythm part.
+    pub rhythm_files: usize,
+    pub client_work: Vec<ClientWork>,
+    pub outcomes: Option<Outcomes>,
 }
 
 impl Pool {
@@ -577,6 +665,7 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
             active_days: v.pointer("/activity/active_days").and_then(Value::as_f64),
             active_hours: v.pointer("/activity/active_hours").and_then(Value::as_f64),
             busy_ms: v.pointer("/activity/busy_ms").and_then(Value::as_f64),
+            keyboard_ms: v.pointer("/rhythm/keyboard_ms").and_then(Value::as_f64),
         })
         .collect::<Vec<FileInfo>>();
     let mut sorted = spends.clone();
@@ -775,6 +864,7 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
     ));
 
     let hours: Vec<Option<f64>> = infos.iter().map(|f| f.active_hours.filter(|h| *h > 0.0)).collect();
+    let keyboard: Vec<Option<f64>> = infos.iter().map(|f| f.keyboard_ms.map(|ms| ms / 3_600_000.0).filter(|h| *h > 0.0)).collect();
     // Savings per active hour: the dollars of the files with both parts over their hours.
     if let Some(saved) = tables.iter_mut().find(|t| t.key == "saved") {
         for r in &mut saved.rows {
@@ -797,7 +887,12 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
         problems: problems(&files, &hours),
         time: time_rows(&files),
         time_files: files.iter().filter(|f| part(f, "time", |_, _, _| {}).is_some()).count(),
-        working: working(&files, &hours),
+        working: working(&files, &keyboard),
+        bench: bench_table(&files),
+        rhythm: rhythm_rows(&files),
+        rhythm_files: files.iter().filter(|f| f.get("rhythm").is_some_and(Value::is_object)).count(),
+        client_work: client_work(&files, min_files),
+        outcomes: outcomes(&files, &keyboard, &spends),
         effort_by_client: effort_rows,
         effort_more,
         coverage: coverage(&files),
@@ -827,6 +922,7 @@ fn activity_of(infos: &[FileInfo], spends: &[f64]) -> Option<Activity> {
     }
     let hours: f64 = with.iter().map(|(f, _)| f.active_hours.unwrap_or(0.0)).sum();
     let usd: f64 = with.iter().map(|(_, s)| s).sum();
+    let keyboard: Vec<(f64, f64)> = with.iter().filter_map(|(f, s)| f.keyboard_ms.filter(|k| *k > 0.0).map(|k| (k, *s))).collect();
     Some(Activity {
         files: with.len(),
         active_days: with.iter().map(|(f, _)| f.active_days.unwrap_or(0.0)).sum(),
@@ -836,6 +932,10 @@ fn activity_of(infos: &[FileInfo], spends: &[f64]) -> Option<Activity> {
         median_days: median_of(with.iter().map(|(f, _)| f.active_days.unwrap_or(0.0))),
         median_hours: median_of(with.iter().map(|(f, _)| f.active_hours.unwrap_or(0.0))),
         median_usd_per_hour: median_of(with.iter().map(|(f, s)| s / f.active_hours.unwrap_or(0.0).max(1e-9))),
+        keyboard_ms: (!keyboard.is_empty()).then(|| keyboard.iter().map(|x| x.0).sum()),
+        usd_per_keyboard_hour: (!keyboard.is_empty())
+            .then(|| keyboard.iter().map(|x| x.1).sum::<f64>() / (keyboard.iter().map(|x| x.0).sum::<f64>() / 3_600_000.0).max(1e-9)),
+        median_usd_per_keyboard_hour: (!keyboard.is_empty()).then(|| median_of(keyboard.iter().map(|(k, s)| s / (k / 3_600_000.0).max(1e-9)))),
     })
 }
 
@@ -906,6 +1006,18 @@ fn problems(files: &[Value], hours: &[Option<f64>]) -> Vec<RateRow> {
             values.iter().any(Option::is_some).then(|| rate_row(name, *unit, &values, hours, 1.0))
         })
         .collect();
+    // The requests that waited for retries, by the class of their last error, under their row.
+    if let Some(at) = out.iter().position(|r| r.name == "requests that waited for retries") {
+        let mut classes = Vec::new();
+        for (key, name) in RETRY_CLASS_NAMES {
+            let pointer = format!("/time/retried_by_error/{key}");
+            let values: Vec<Option<f64>> = files.iter().map(|f| summed(f, &pointer)).collect();
+            if values.iter().flatten().sum::<f64>() > 0.0 {
+                classes.push(RateRow { under: true, ..rate_row(name, Unit::Count, &values, hours, 1.0) });
+            }
+        }
+        out.splice(at + 1..at + 1, classes);
+    }
     let slow = each("/time/slow");
     if slow.iter().any(Option::is_some) {
         let mut row = rate_row("requests of a minute or more", Unit::Count, &slow, hours, 1.0);
@@ -913,6 +1025,236 @@ fn problems(files: &[Value], hours: &[Option<f64>]) -> Vec<RateRow> {
         out.push(row);
     }
     out
+}
+
+/// The rows of the error classes under the retried requests: the key in the file, the name.
+const RETRY_CLASS_NAMES: [(&str, &str); 7] = [
+    ("server", "server errors"),
+    ("rate_limit", "rate limits"),
+    ("auth", "authentication"),
+    ("timeout", "timeouts"),
+    ("connection", "connection"),
+    ("sleep", "computer asleep"),
+    ("other", "other errors"),
+];
+
+/// A file's cold returns, and per way of coming back its dollars and the returns it was cheapest in.
+type BenchSums = (u64, [(f64, u64); 5]);
+
+/// The ways of coming back over the files' cold returns. `None` when no file has one.
+fn bench_table(files: &[Value]) -> Option<BenchTable> {
+    let ways = crate::share::BENCH_WAYS;
+    let per_file: Vec<Option<BenchSums>> = files
+        .iter()
+        .map(|f| {
+            let mut found: BenchSums = (0, [(0.0, 0); 5]);
+            for (_, a) in agents(f) {
+                let Some(b) = a.get("bench") else { continue };
+                found.0 += b["returns"].as_u64().unwrap_or(0);
+                for (i, key) in ways.iter().enumerate() {
+                    found.1[i].0 += b.pointer(&format!("/ways/{key}/usd")).and_then(Value::as_f64).unwrap_or(0.0);
+                    found.1[i].1 += b.pointer(&format!("/ways/{key}/cheapest")).and_then(Value::as_u64).unwrap_or(0);
+                }
+            }
+            (found.0 > 0).then_some(found)
+        })
+        .collect();
+    let with: Vec<&BenchSums> = per_file.iter().flatten().collect();
+    if with.is_empty() {
+        return None;
+    }
+    let resume: f64 = with.iter().map(|w| w.1[0].0).sum();
+    let rows = crate::bench::Strategy::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let usd: f64 = with.iter().map(|w| w.1[i].0).sum();
+            let by_file: Vec<Option<f64>> = per_file.iter().map(|w| w.as_ref().map(|w| w.1[i].0 / w.1[0].0.max(1e-9))).collect();
+            BenchRow {
+                name: s.name().to_string(),
+                usd,
+                of_resume: usd / resume.max(1e-9),
+                cheapest: with.iter().map(|w| w.1[i].1).sum(),
+                median_file: Some(median_of(by_file.iter().flatten().copied())),
+                by_file,
+            }
+        })
+        .collect();
+    Some(BenchTable { returns: with.iter().map(|w| w.0).sum(), files: with.len(), rows })
+}
+
+/// A row of the rhythm table, with its median file and files from each file's value.
+fn rhythm_row(name: &str, unit: RhythmUnit, value: Option<f64>, range: Option<String>, by_file: Vec<Option<f64>>) -> RhythmRow {
+    let values: Vec<f64> = by_file.iter().flatten().copied().collect();
+    RhythmRow {
+        name: name.to_string(),
+        unit,
+        value,
+        range,
+        median_file: (!values.is_empty()).then(|| median_of(values.iter().copied())),
+        files: values.len(),
+        by_file,
+    }
+}
+
+/// The pause range that holds the median of these counts by range, the upper of two middle
+/// values, as the rhythm takes a median.
+fn median_range(counts: &BTreeMap<String, f64>) -> Option<String> {
+    let total: f64 = counts.values().sum();
+    if total <= 0.0 {
+        return None;
+    }
+    let at = (total / 2.0).floor();
+    let mut seen = 0.0;
+    for (name, _) in crate::pauses::PAUSE_RANGES {
+        seen += counts.get(name).copied().unwrap_or(0.0);
+        if seen > at {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// The rows of a wait: its median, and the share of it within 5 minutes when `within` names it.
+fn wait_rows(parts: &[Option<&Value>], key: &str, name: &str, within: Option<&str>) -> Vec<RhythmRow> {
+    let mut merged: BTreeMap<String, f64> = BTreeMap::new();
+    let (mut medians, mut shares) = (Vec::new(), Vec::new());
+    let (mut fast_all, mut count_all) = (0.0, 0.0);
+    for p in parts {
+        let w = p.and_then(|r| r.get(key));
+        let n = w.and_then(|w| w["count"].as_f64()).unwrap_or(0.0);
+        medians.push(w.and_then(|w| w["median_ms"].as_f64()));
+        let by = w.and_then(|w| w["by_pause"].as_object());
+        let fast: f64 = by.map_or(0.0, |b| ["under 1m", "1–5m"].iter().filter_map(|k| b.get(*k)).filter_map(Value::as_f64).sum());
+        shares.push((n > 0.0).then(|| fast / n));
+        fast_all += fast;
+        count_all += n;
+        for (k, v) in by.into_iter().flatten() {
+            *merged.entry(k.clone()).or_default() += v.as_f64().unwrap_or(0.0);
+        }
+    }
+    let mut rows = vec![rhythm_row(name, RhythmUnit::Duration, None, median_range(&merged), medians)];
+    if let Some(w) = within {
+        rows.push(rhythm_row(w, RhythmUnit::Share, (count_all > 0.0).then(|| fast_all / count_all), None, shares));
+    }
+    rows
+}
+
+/// The rows of `Your time with the agents`, from the files' rhythm parts.
+fn rhythm_rows(files: &[Value]) -> Vec<RhythmRow> {
+    let parts: Vec<Option<&Value>> = files.iter().map(|f| f.get("rhythm").filter(|r| r.is_object())).collect();
+    if parts.iter().all(Option::is_none) {
+        return Vec::new();
+    }
+    let each = |f: &dyn Fn(&Value) -> Option<f64>| -> Vec<Option<f64>> { parts.iter().map(|p| p.and_then(f)).collect() };
+    let num = |r: &Value, pointer: &str| r.pointer(pointer).and_then(Value::as_f64);
+    let sum = |v: &[Option<f64>]| v.iter().flatten().sum::<f64>();
+    let hours = each(&|r| num(r, "/keyboard_ms").map(|ms| ms / 3_600_000.0));
+    let sittings = each(&|r| num(r, "/sittings"));
+    let mut out = vec![
+        rhythm_row("time at the keyboard", RhythmUnit::Hours, Some(sum(&hours)), None, hours.clone()),
+        rhythm_row("sittings", RhythmUnit::Count, Some(sum(&sittings)), None, sittings),
+    ];
+    out.extend(wait_rows(&parts, "answers", "you answered an end of turn in", Some("… within 5 minutes")));
+    out.extend(wait_rows(&parts, "question_answers", "you answered a question in", Some("… within 5 minutes")));
+    out.extend(wait_rows(&parts, "turns", "the agent's turn took", None));
+    // Ends while the person was there, per hour at the keyboard, over the files with both.
+    let present = each(&|r| num(r, "/ends/present"));
+    let both: Vec<(f64, f64)> = present.iter().zip(&hours).filter_map(|(p, h)| Some((p.as_ref().copied()?, h.filter(|h| *h > 0.0)?))).collect();
+    let rate = (!both.is_empty()).then(|| both.iter().map(|x| x.0).sum::<f64>() / both.iter().map(|x| x.1).sum::<f64>());
+    let per_hour: Vec<Option<f64>> = present.iter().zip(&hours).map(|(p, h)| Some(p.as_ref().copied()? / h.filter(|h| *h > 0.0)?)).collect();
+    out.push(rhythm_row("ends of turn while you were there", RhythmUnit::Rate, rate, None, per_hour));
+    let own = each(&|r| num(r, "/ends/started_by_agent"));
+    let ends = each(&|r| num(r, "/ends/count"));
+    let shares: Vec<Option<f64>> = own.iter().zip(&ends).map(|(o, e)| Some(o.as_ref().copied()? / e.filter(|e| *e > 0.0)?)).collect();
+    let all_ends: f64 = own.iter().zip(&ends).filter_map(|(o, e)| e.filter(|e| *e > 0.0).and(*o)).sum();
+    let share = (sum(&ends) > 0.0).then(|| all_ends / sum(&ends));
+    out.push(rhythm_row("turns the agent started itself", RhythmUnit::Share, share, None, shares));
+    out.extend(wait_rows(&parts, "stood_still", "the agents stood still after you left", None));
+    let worked = each(&|r| num(r, "/worked_share_median"));
+    out.push(rhythm_row("the agents worked through a break", RhythmUnit::Share, None, None, worked));
+    out
+}
+
+/// The clients with time at the keyboard, the most first: those with [`MIN_CLIENT_SHARE`] of the
+/// pooled time or more, at most [`TOP_ROWS`], then the rest folded into how many they are.
+fn client_work(files: &[Value], min_files: usize) -> Vec<ClientWork> {
+    let mut by: BTreeMap<(String, String), (ClientWork, Vec<f64>)> = BTreeMap::new();
+    for f in files {
+        for (agent, a) in agents(f) {
+            for (client, c) in entries(&a["clients"]) {
+                let Some(r) = c.get("rhythm") else { continue };
+                let hours = r["keyboard_ms"].as_f64().unwrap_or(0.0) / 3_600_000.0;
+                if hours <= 0.0 {
+                    continue;
+                }
+                let e = by
+                    .entry((agent.clone(), client.clone()))
+                    .or_insert_with(|| (ClientWork { agent: Some(agent.clone()), client: client.clone(), ..ClientWork::default() }, Vec::new()));
+                e.0.keyboard_hours += hours;
+                e.0.messages += r["messages"].as_f64().unwrap_or(0.0);
+                e.0.interrupts += r["interrupts"].as_f64().unwrap_or(0.0);
+                e.0.questions += r["questions"].as_f64().unwrap_or(0.0);
+                e.0.commits += c.pointer("/outcomes/commits").and_then(Value::as_f64).unwrap_or(0.0);
+                e.0.files += 1;
+                e.1.extend(r.pointer("/answers/median_ms").and_then(Value::as_f64));
+            }
+        }
+    }
+    let mut rows: Vec<ClientWork> = by
+        .into_values()
+        .map(|(mut w, medians)| {
+            w.answered_ms = (!medians.is_empty()).then(|| median_of(medians.into_iter()));
+            w
+        })
+        .collect();
+    rows.sort_by(|a, b| b.keyboard_hours.total_cmp(&a.keyboard_hours).then_with(|| a.client.cmp(&b.client)));
+    let total: f64 = rows.iter().map(|r| r.keyboard_hours).sum();
+    let (mut shown, mut rest, mut folded) = (Vec::new(), ClientWork::default(), 0);
+    for r in rows {
+        if shown.len() < TOP_ROWS && r.files >= min_files.max(1) && r.keyboard_hours >= MIN_CLIENT_SHARE * total {
+            shown.push(r);
+        } else {
+            folded += 1;
+            rest.keyboard_hours += r.keyboard_hours;
+            rest.messages += r.messages;
+            rest.interrupts += r.interrupts;
+            rest.questions += r.questions;
+            rest.commits += r.commits;
+            rest.files = rest.files.max(r.files);
+        }
+    }
+    if folded > 0 {
+        rest.client = format!("{folded} more");
+        shown.push(rest);
+    }
+    shown
+}
+
+/// The agents' commits, pushes and pull requests per hour at the keyboard, and the dollars per
+/// commit. `None` when no file has the part.
+fn outcomes(files: &[Value], keyboard: &[Option<f64>], spends: &[f64]) -> Option<Outcomes> {
+    let each = |key: &str| -> Vec<Option<f64>> {
+        files
+            .iter()
+            .map(|f| {
+                let found: Vec<f64> = agents(f).filter_map(|(_, a)| a.get("outcomes")).map(|o| o[key].as_f64().unwrap_or(0.0)).collect();
+                (!found.is_empty()).then(|| found.iter().sum())
+            })
+            .collect()
+    };
+    let commits = each("commits");
+    let with = commits.iter().flatten().count();
+    if with == 0 {
+        return None;
+    }
+    let rows = vec![
+        rate_row("commits", Unit::Count, &commits, keyboard, 1.0),
+        rate_row("pushes", Unit::Count, &each("pushes"), keyboard, 1.0),
+        rate_row("pull requests", Unit::Count, &each("pull_requests"), keyboard, 1.0),
+    ];
+    let (usd, n) = commits.iter().zip(spends).filter_map(|(c, s)| c.map(|c| (*s, c))).fold((0.0, 0.0), |a, x| (a.0 + x.0, a.1 + x.1));
+    Some(Outcomes { rows, files: with, usd_per_commit: (n > 0.0).then(|| usd / n) })
 }
 
 /// The busy time by kind: pooled, and each file's share of its own busy time.

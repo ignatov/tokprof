@@ -231,8 +231,16 @@ fn the_pool_gives_the_new_tables_as_json_and_by_file() {
     assert!(problems.iter().any(|r| r["name"] == "failed tool calls" && r["value"].is_f64()), "{problems:?}");
     assert!(v["time"].as_array().is_some_and(|t| t.iter().all(|r| r["ms"].is_f64())));
     assert!(v["working"].as_array().is_some_and(|w| !w.is_empty()));
+    // The tables of the rhythm, the agents' commits and the bench, with numbers.
+    let rhythm = v["rhythm"].as_array().unwrap();
+    assert!(rhythm.iter().any(|r| r["name"] == "time at the keyboard" && r["value"].is_f64()), "{rhythm:?}");
+    assert!(rhythm.iter().all(|r| r["files"].is_u64()), "{rhythm:?}");
+    assert!(v["outcomes"]["rows"].as_array().is_some_and(|o| o.len() == 3 && o.iter().all(|r| r["value"].is_f64())), "{}", v["outcomes"]);
+    assert!(v["bench"].is_null() || v["bench"]["rows"].as_array().is_some_and(|b| b.iter().all(|r| r["usd"].is_f64())), "{}", v["bench"]);
     let text = String::from_utf8_lossy(&tokprof_fixtures(&home, &["pool", "--by-file", a.to_str().unwrap(), b.to_str().unwrap()]).stdout).to_string();
     let head = text.lines().find(|l| l.starts_with("measure")).unwrap_or_else(|| panic!("{text}"));
     assert!(head.trim_end().ends_with("a  b") || head.split_whitespace().rev().take(2).collect::<Vec<_>>() == ["b", "a"], "{head}");
+    let head = text.lines().find(|l| l.starts_with("item")).unwrap_or_else(|| panic!("{text}"));
+    assert_eq!(head.split_whitespace().rev().take(2).collect::<Vec<_>>(), ["b", "a"], "a column per file in the rhythm table: {head}");
     std::fs::remove_dir_all(&home).unwrap();
 }

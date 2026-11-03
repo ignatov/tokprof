@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use tokprof_core::fmt::{count, int, table, tokens, usd};
-use tokprof_core::pool::{Pool, RateRow, Row, Table, Unit};
+use tokprof_core::pool::{Pool, RateRow, RhythmRow, RhythmUnit, Row, Table, Unit};
 use tokprof_core::rhythm::duration;
 
 fn pct(share: f64) -> String {
@@ -43,11 +43,13 @@ fn header(p: &Pool) -> String {
         if let Some(a) = &p.activity {
             let _ = writeln!(
                 out,
-                "activity  {} active days · {} active hours · busy {} · {} per active hour",
+                "activity  {} active days · {} active hours{} · busy {} · {} per active hour{}",
                 a.active_days,
                 a.active_hours,
+                keyboard_part(a.keyboard_ms),
                 busy_hours(a.busy_ms),
-                usd(a.usd_per_hour)
+                usd(a.usd_per_hour),
+                a.usd_per_keyboard_hour.map_or(String::new(), |u| format!(" · {} per hour at the keyboard", usd(u)))
             );
         }
     } else {
@@ -71,9 +73,11 @@ fn header(p: &Pool) -> String {
         if let Some(a) = &p.activity {
             let _ = writeln!(
                 out,
-                "activity  {} active hours · {} per active hour · per file: median {} active days, {} active hours, {} per active hour{}",
+                "activity  {} active hours{} · {} per active hour{} · per file: median {} active days, {} active hours, {} per active hour{}",
                 a.active_hours,
+                keyboard_part(a.keyboard_ms),
                 usd(a.usd_per_hour),
+                a.usd_per_keyboard_hour.map_or(String::new(), |u| format!(" · {} per hour at the keyboard", usd(u))),
                 a.median_days,
                 a.median_hours,
                 usd(a.median_usd_per_hour),
@@ -82,6 +86,11 @@ fn header(p: &Pool) -> String {
         }
     }
     out
+}
+
+/// The hours at the keyboard of the activity line, as whole hours.
+fn keyboard_part(ms: Option<f64>) -> String {
+    ms.map_or(String::new(), |ms| format!(" · {}h at the keyboard", int((ms / 3_600_000.0).round() as u64)))
 }
 
 /// Busy hours as the activity line gives them: whole hours from 10 on.
@@ -132,7 +141,7 @@ fn rate_table(p: &Pool, rows: &[RateRow], name: &str, rate: &str, by_file: bool)
     }
     let mut out = vec![head];
     for r in rows {
-        let mut name = r.name.clone();
+        let mut name = if r.under { format!("  {}", r.name) } else { r.name.clone() };
         if !one && r.files_with_part < p.files.len() {
             name += &format!(" (in {} of {} files)", r.files_with_part, p.files.len());
         }
@@ -224,7 +233,7 @@ fn tools_table(p: &Pool, t: &Table, by_file: bool) -> String {
     }
     let mut rows = vec![head];
     for r in &t.rows {
-        let mut cells = vec![r.name.clone(), r.calls.to_string(), r.failed.to_string(), usd(r.usd), usd(r.trips_usd)];
+        let mut cells = vec![r.name.clone(), int(r.calls), int(r.failed), usd(r.usd), usd(r.trips_usd)];
         if !one {
             cells.push(r.files.to_string());
         }
@@ -245,7 +254,7 @@ fn versions_table(p: &Pool, t: &Table) -> String {
     }
     let mut rows = vec![head];
     for r in &t.rows {
-        let mut cells = vec![r.agent.clone().unwrap_or_default(), r.name.clone(), r.requests.to_string()];
+        let mut cells = vec![r.agent.clone().unwrap_or_default(), r.name.clone(), int(r.requests)];
         if !one && !r.name.ends_with(" more") {
             cells.push(r.files.to_string());
         }
@@ -266,6 +275,192 @@ const SPEND_TABLES: [(&str, &[&str]); 8] = [
     ("client", &["agent", "client"]),
 ];
 
+/// The note under each section's title (see share-pool, Section notes).
+const NOTES: [(&str, &str); 14] = [
+    ("Where the money went", "what the spend paid for: model, content, origin, activity, prompt size, session length and client"),
+    ("What could have been saved", "dollars the prompt cache lost to misses, by cause, and what the cheaper cache lifetime would have kept"),
+    ("Cold returns by client", "returns to a session after its cache expired, per active hour"),
+    ("Coming back after a cold break", "what the cold returns cost as resumed, against the other ways to come back (see tokprof bench)"),
+    ("Problems", "calls that failed, requests that waited for retries, and slow requests, per active hour"),
+    ("Habits that cost the most", "where to look, not what could be saved; the rows overlap"),
+    ("Where the agent's time went", "what the agents waited on while busy; after turns: while their own background work ran on"),
+    ("Your time with the agents", "your sittings and answers, and what the agents did after you left"),
+    ("Working with the agent", "hand-offs per hour at the keyboard, and per 100 typed messages for those a message starts"),
+    ("Working with the agent by client", "the same by the program that ran the agent, such as an IDE or a terminal"),
+    ("Commits and pull requests", "what the agents committed, pushed and opened, from their shell calls that did not fail"),
+    ("Tools and commands", "rent: what keeping a tool's results in the context cost; trips: the requests its calls made the agent send"),
+    ("Highest effort by client", "the share of each client's spend and requests at max or xhigh"),
+    ("Versions", "the agent versions in use, by requests"),
+];
+
+/// A section's title, with `in <k> of <n> files` when some files lack its parts, and its note.
+fn section_head(out: &mut String, title: &str, coverage: &str, one: bool) {
+    let note = NOTES.iter().find(|(t, _)| *t == title).map_or("", |(_, n)| n);
+    let extra = match (title, one) {
+        ("Where the money went", false) => "; median file: the median of each file's own share",
+        ("What could have been saved", false) => "; files 5%+: the files where a row is 5% of their spend or more",
+        _ => "",
+    };
+    let _ = write!(out, "\n{title}{coverage}\n{note}{extra}\n");
+}
+
+/// The median of some values, the upper of two middle ones.
+fn median(values: &[f64]) -> Option<f64> {
+    let mut v = values.to_vec();
+    v.sort_by(f64::total_cmp);
+    v.get(v.len() / 2).copied()
+}
+
+/// How `At a glance` names an error class of the retried requests.
+fn class_phrase(row: &str) -> &str {
+    match row {
+        "authentication" => "authentication errors",
+        "connection" => "connection errors",
+        "computer asleep" => "the computer asleep",
+        other => other,
+    }
+}
+
+/// The lines of `At a glance`, each from the table of the section it sums up, and each left out
+/// when no file has its parts (see share-pool, At a glance).
+fn glance(p: &Pool) -> Vec<String> {
+    let one = p.files.len() == 1;
+    let mut lines = Vec::new();
+    let in_median = |x: String| if one { String::new() } else { format!(" (median file {x})") };
+    let mut spend = usd(p.spend_usd);
+    if let Some(a) = &p.activity {
+        spend += &format!(" · {} per active hour{}", usd(a.usd_per_hour), in_median(usd(a.median_usd_per_hour)));
+        if let (Some(u), Some(m)) = (a.usd_per_keyboard_hour, a.median_usd_per_keyboard_hour) {
+            spend += &format!(" · {} per hour at the keyboard{}", usd(u), in_median(usd(m)));
+        }
+    }
+    lines.push(format!("spend     {spend}"));
+    if let Some(t) = p.table("saved").filter(|t| t.files_with_part > 0 && !t.rows.is_empty()) {
+        let total: f64 = t.rows.iter().map(|r| r.usd).sum();
+        let share: f64 = t.rows.iter().map(|r| r.share).sum();
+        let mut top: Vec<&Row> = t.rows.iter().filter(|r| r.usd > 0.0).collect();
+        top.sort_by(|a, b| b.usd.total_cmp(&a.usd));
+        let largest: Vec<String> = top.iter().take(2).map(|r| format!("{} {}", r.name, usd(r.usd))).collect();
+        let per_file: Vec<f64> = (0..p.files.len())
+            .filter_map(|i| {
+                let shares: Vec<f64> = t.rows.iter().filter_map(|r| r.by_file.get(i).copied().flatten()).collect();
+                (!shares.is_empty()).then(|| shares.iter().sum())
+            })
+            .collect();
+        let median_share = if one { String::new() } else { median(&per_file).map_or(String::new(), |m| format!(", median file {:.1}%", 100.0 * m)) };
+        lines.push(format!("cache     {} could have been saved ({:.1}%{median_share}): {}", usd(total), 100.0 * share, largest.join(", ")));
+    }
+    if let Some(b) = &p.bench {
+        let (resume, note, beats) = (&b.rows[0], &b.rows[2], &b.rows[3]);
+        let of_resume = if one { String::new() } else { note.median_file.map_or(String::new(), |m| format!(" ({} of resuming in the median file)", pct(m))) };
+        lines.push(format!(
+            "returns   {} cold returns cost {} as resumed; a handoff note would have cost {}{of_resume} and was cheapest in {}; heartbeats {}",
+            int(b.returns),
+            usd(resume.usd),
+            usd(note.usd),
+            int(note.cheapest),
+            usd(beats.usd)
+        ));
+    }
+    if !p.problems.is_empty() {
+        let find = |name: &str| p.problems.iter().find(|r| r.name == name);
+        let mut parts = Vec::new();
+        if let Some(f) = find("failed tool calls") {
+            let after = find("spend after failures").map_or(String::new(), |a| format!(", {} after them", usd(a.value)));
+            parts.push(format!("{} failed calls{after}", int(f.value.round() as u64)));
+        }
+        if let Some(r) = find("requests that waited for retries") {
+            if r.value > 0.0 {
+                let time = find("time waiting for retries").map_or(String::new(), |t| format!(" {}", span(t.value)));
+                let top = p.problems.iter().filter(|c| c.under).max_by(|a, b| a.value.total_cmp(&b.value));
+                let class = top.map_or(String::new(), |c| format!(", {} of them for {}", int(c.value.round() as u64), class_phrase(&c.name)));
+                parts.push(format!("{} requests waited{time} for retries{class}", int(r.value.round() as u64)));
+            } else {
+                parts.push("no request waited for retries".to_string());
+            }
+        }
+        if !parts.is_empty() {
+            lines.push(format!("problems  {}", parts.join("; ")));
+        }
+    }
+    if !p.rhythm.is_empty() {
+        let row = |name: &str| p.rhythm.iter().find(|r| r.name == name);
+        let total = |name: &str| row(name).and_then(|r| r.value).unwrap_or(0.0);
+        let wait = |name: &str| row(name).and_then(|r| r.median_file).map(|ms| duration(ms.round() as i64));
+        let mut text = format!("{}h at the keyboard in {} sittings", int(total("time at the keyboard").round() as u64), int(total("sittings").round() as u64));
+        match (one, wait("you answered an end of turn in"), wait("the agents stood still after you left")) {
+            (true, answered, still) => {
+                if let Some(a) = answered {
+                    text += &format!("; you answered in a median {a}");
+                }
+                if let Some(s) = still {
+                    text += &format!("; the agents stood still a median {s} after you left");
+                }
+            }
+            (false, answered, still) => {
+                if let Some(a) = answered {
+                    text += &format!("; in the median file, answers came in {a}");
+                }
+                if let Some(s) = still {
+                    text += &format!(", and the agents stood still {s} after the person left");
+                }
+            }
+        }
+        lines.push(format!("you       {text}"));
+    }
+    if let Some(o) = &p.outcomes {
+        let n = |i: usize| int(o.rows[i].value.round() as u64);
+        lines.push(match o.usd_per_commit {
+            Some(u) => format!("made      the agents made {} commits, {} pushes and {} pull requests: {} of spend per commit", n(0), n(1), n(2), usd(u)),
+            None => "made      no commits by the agents".to_string(),
+        });
+    }
+    lines
+}
+
+/// A value of `Your time with the agents`, in its row's unit.
+fn rhythm_cell(unit: RhythmUnit, x: f64) -> String {
+    match unit {
+        RhythmUnit::Hours => format!("{x:.1}h"),
+        RhythmUnit::Count => int(x.round() as u64),
+        RhythmUnit::Duration => duration(x.round() as i64),
+        RhythmUnit::Share => format!("{:.0}%", 100.0 * x),
+        RhythmUnit::Rate => format!("{x:.2}"),
+    }
+}
+
+/// The table of `Your time with the agents`. One file shows its own values; a pool, the pooled
+/// value (for a median, the pause range of the pooled median), the median file and the files.
+fn rhythm_table(p: &Pool, rows: &[RhythmRow], by_file: bool) -> String {
+    let one = p.files.len() == 1;
+    let mut head = vec!["item".to_string()];
+    if one {
+        head.push("value".into());
+    } else {
+        head.extend(["pooled", "median file", "files"].map(str::to_string));
+    }
+    if by_file {
+        head.extend(p.files.iter().map(|f| f.name.clone()));
+    }
+    let mut out = vec![head];
+    let cell = |unit, x: Option<f64>| x.map_or("–".to_string(), |x| rhythm_cell(unit, x));
+    for r in rows {
+        let mut cells = vec![r.name.clone()];
+        if one {
+            cells.push(cell(r.unit, r.median_file));
+        } else {
+            cells.push(r.value.map(|x| rhythm_cell(r.unit, x)).or_else(|| r.range.clone()).unwrap_or_else(|| "–".to_string()));
+            cells.push(cell(r.unit, r.median_file));
+            cells.push(r.files.to_string());
+        }
+        if by_file {
+            cells.extend(r.by_file.iter().map(|x| cell(r.unit, *x)));
+        }
+        out.push(cells);
+    }
+    table(&out, 1)
+}
+
 /// The report over the pool. With one file, the columns about files are left out.
 pub fn text(p: &Pool, by_file: bool) -> String {
     let mut out = header(p);
@@ -273,7 +468,16 @@ pub fn text(p: &Pool, by_file: bool) -> String {
     let one = n == 1;
     let present = |t: &&Table| t.files_with_part > 0 && !t.rows.is_empty();
 
-    let _ = write!(out, "\nWhere the money went{}\n", if one { "" } else { ": pooled, and the median file's share of its own spend" });
+    let lines = glance(p);
+    if !lines.is_empty() {
+        out.push_str("\nAt a glance\n\n");
+        for l in lines {
+            out.push_str(&l);
+            out.push('\n');
+        }
+    }
+
+    section_head(&mut out, "Where the money went", "", one);
     for (key, cols) in SPEND_TABLES {
         let Some(t) = p.table(key).filter(present) else { continue };
         let _ = write!(out, "\n{}", coverage_line(t, n));
@@ -298,10 +502,11 @@ pub fn text(p: &Pool, by_file: bool) -> String {
     }
 
     if let Some(t) = p.table("saved").filter(present) {
-        let _ = write!(out, "\nWhat could have been saved{}\n\n", if one { "" } else { " (files 5%+: the files where it is 5% of their spend or more)" });
+        section_head(&mut out, "What could have been saved", "", one);
+        out.push('\n');
         out.push_str(&money_table(p, t, &["item"], "avoidable", "files 5%+", true, by_file));
         if !p.cold_by_client.is_empty() {
-            let _ = write!(out, "\nCold returns by client{}\n\n", coverage(p.cold_files, n));
+            section_head(&mut out, "Cold returns by client", &coverage(p.cold_files, n), one);
             let mut rows =
                 vec![["agent", "client", "active hours", "cold returns", "per active hour", "avoidable per active hour"].map(str::to_string).to_vec()];
             for r in &p.cold_by_client {
@@ -314,19 +519,46 @@ pub fn text(p: &Pool, by_file: bool) -> String {
                     usd(r.second_rate.unwrap_or(0.0)),
                 ]);
             }
+            out.push('\n');
             out.push_str(&table(&rows, 2));
         }
     }
+    if let Some(b) = &p.bench {
+        section_head(&mut out, "Coming back after a cold break", &coverage(b.files, n), one);
+        let mut head = ["way", "cost", "of resume", "cheapest in"].map(str::to_string).to_vec();
+        if !one {
+            head.extend(["median file", "files"].map(str::to_string));
+        }
+        if by_file {
+            head.extend(p.files.iter().map(|f| f.name.clone()));
+        }
+        let mut rows = vec![head];
+        for r in &b.rows {
+            let mut cells = vec![r.name.clone(), usd(r.usd), pct(r.of_resume), format!("{} of {}", int(r.cheapest), int(b.returns))];
+            if !one {
+                cells.push(r.median_file.map_or("–".to_string(), pct));
+                cells.push(b.files.to_string());
+            }
+            if by_file {
+                cells.extend(r.by_file.iter().map(|x| x.map_or("–".to_string(), pct)));
+            }
+            rows.push(cells);
+        }
+        out.push('\n');
+        out.push_str(&table(&rows, 1));
+    }
     if !p.problems.is_empty() {
-        out.push_str("\nProblems: failed calls, retries and slow requests\n\n");
+        section_head(&mut out, "Problems", "", one);
+        out.push('\n');
         out.push_str(&rate_table(p, &p.problems, "measure", "per active hour", by_file));
     }
     if let Some(t) = p.table("habits").filter(present) {
-        out.push_str("\nHabits that cost the most: where to look, not what could be saved; the rows overlap\n\n");
+        section_head(&mut out, "Habits that cost the most", "", one);
+        out.push('\n');
         out.push_str(&money_table(p, t, &["habit"], "cost", "files 5%+", true, by_file));
     }
     if !p.time.is_empty() {
-        let _ = write!(out, "\nWhere the agent's time went: what it waited on while it was busy{}\n\n", coverage(p.time_files, n));
+        section_head(&mut out, "Where the agent's time went", &coverage(p.time_files, n), one);
         let mut head = ["kind", "time", "share"].map(str::to_string).to_vec();
         if !one {
             head.extend(["median file", "files"].map(str::to_string));
@@ -348,12 +580,23 @@ pub fn text(p: &Pool, by_file: bool) -> String {
             }
             rows.push(cells);
         }
+        out.push('\n');
         out.push_str(&table(&rows, 1));
     }
-    if !p.working.is_empty() {
-        out.push_str("\nWorking with the agent: hand-offs per active hour, and per 100 typed messages for those a message starts\n\n");
-        let mut head =
-            vec!["hand-off".to_string(), if one { "value".into() } else { "pooled".into() }, "per active hour".into(), "per 100 typed messages".into()];
+    if !p.rhythm.is_empty() {
+        section_head(&mut out, "Your time with the agents", &coverage(p.rhythm_files, n), one);
+        out.push('\n');
+        out.push_str(&rhythm_table(p, &p.rhythm, by_file));
+    }
+    // Without the hours at the keyboard, the hand-offs have no base.
+    if p.working.iter().any(|r| r.files_with_part > 0) {
+        section_head(&mut out, "Working with the agent", "", one);
+        let mut head = vec![
+            "hand-off".to_string(),
+            if one { "value".into() } else { "pooled".into() },
+            "per hour at the keyboard".into(),
+            "per 100 typed messages".into(),
+        ];
         if !one {
             head.push("median file".into());
             head.push("files".into());
@@ -377,14 +620,42 @@ pub fn text(p: &Pool, by_file: bool) -> String {
             }
             rows.push(cells);
         }
+        out.push('\n');
         out.push_str(&table(&rows, 1));
     }
+    if !p.client_work.is_empty() {
+        section_head(&mut out, "Working with the agent by client", "", one);
+        let mut rows =
+            vec![["agent", "client", "at the keyboard", "messages", "interrupts", "questions", "commits", "answered in"].map(str::to_string).to_vec()];
+        for w in &p.client_work {
+            let per = |x: f64| format!("{:.2}", x / w.keyboard_hours.max(1e-9));
+            rows.push(vec![
+                w.agent.clone().unwrap_or_default(),
+                w.client.clone(),
+                format!("{:.1}h", w.keyboard_hours),
+                per(w.messages),
+                per(w.interrupts),
+                per(w.questions),
+                per(w.commits),
+                w.answered_ms.map_or("–".to_string(), |ms| duration(ms.round() as i64)),
+            ]);
+        }
+        out.push('\n');
+        out.push_str(&table(&rows, 2));
+    }
+    if let Some(o) = &p.outcomes {
+        section_head(&mut out, "Commits and pull requests", &coverage(o.files, n), one);
+        out.push('\n');
+        out.push_str(&rate_table(p, &o.rows, "action", "per hour at the keyboard", by_file));
+        let _ = writeln!(out, "{}", o.usd_per_commit.map_or("no commits by the agents".to_string(), |u| format!("{} of spend per commit", usd(u))));
+    }
     if let Some(t) = p.table("tools").filter(present) {
-        let _ = write!(out, "\nTools and commands, by rent{}\n\n", coverage(t.files_with_part, n));
+        section_head(&mut out, "Tools and commands", &coverage(t.files_with_part, n), one);
+        out.push('\n');
         out.push_str(&tools_table(p, t, by_file));
     }
     if !p.effort_by_client.is_empty() {
-        let _ = write!(out, "\nHighest effort by client: the share at max or xhigh{}\n\n", coverage(p.effort_files, n));
+        section_head(&mut out, "Highest effort by client", &coverage(p.effort_files, n), one);
         let mut head = ["agent", "client", "cost", "of spend", "of requests"].map(str::to_string).to_vec();
         if !one {
             head.extend(["median file", "files"].map(str::to_string));
@@ -407,10 +678,12 @@ pub fn text(p: &Pool, by_file: bool) -> String {
         if let Some((n, sum)) = p.effort_more {
             rows.push(vec![String::new(), format!("{n} more"), usd(sum)]);
         }
+        out.push('\n');
         out.push_str(&table(&rows, 2));
     }
     if let Some(t) = p.table("versions").filter(present) {
-        let _ = write!(out, "\nVersions{}\n\n", coverage(t.files_with_part, n));
+        section_head(&mut out, "Versions", &coverage(t.files_with_part, n), one);
+        out.push('\n');
         out.push_str(&versions_table(p, t));
     }
     out
@@ -503,6 +776,16 @@ mod tests {
         f
     }
 
+    /// The file with a rhythm part whose time at the keyboard is `hours`.
+    fn with_keyboard(mut f: Value, hours: f64) -> Value {
+        f["rhythm"] = json!({"keyboard_ms": hours * 3_600_000.0, "sittings": 10, "breaks": 9, "messages": 100, "sessions": 5,
+            "ends": {"count": 100, "present": 60, "started_by_agent": 20}, "interrupts": 1, "typed_while_working": 0, "questions": 2,
+            "answers": {"count": 10, "median_ms": 120_000, "by_pause": {"1–5m": 10}}, "question_answers": {"count": 2, "median_ms": 60_000, "by_pause": {"1–5m": 2}},
+            "turns": {"count": 10, "median_ms": 180_000, "by_pause": {"1–5m": 10}}, "stood_still": {"count": 9, "median_ms": 300_000, "by_pause": {"5–15m": 9}},
+            "worked_share_median": 0.4});
+        f
+    }
+
     #[test]
     fn the_activity_line_of_one_file_and_of_a_pool() {
         let one = pool_of(vec![friction_file(11_200.0, 141.0, 18.0, json!({}))]);
@@ -511,6 +794,31 @@ mod tests {
         let p = pool_of(five.iter().map(|(s, h, d)| friction_file(*s, *h, *d, json!({}))).collect());
         let line = text(&p, false).lines().find(|l| l.starts_with("activity")).unwrap().to_string();
         assert_eq!(line, "activity  700 active hours · $58.89 per active hour · per file: median 16 active days, 120 active hours, $68.20 per active hour");
+    }
+
+    #[test]
+    fn the_activity_line_with_the_hours_at_the_keyboard() {
+        let one = pool_of(vec![with_keyboard(friction_file(11_200.0, 141.0, 18.0, json!({})), 52.0)]);
+        assert!(
+            text(&one, false).contains(
+                "activity  18 active days · 141 active hours · 52h at the keyboard · busy 365h · $79.43 per active hour · $215 per hour at the keyboard\n"
+            ),
+            "{}",
+            text(&one, false)
+        );
+        let five = [
+            (3_200.0, 40.0, 10.0, 20.0),
+            (1_836.0, 100.0, 14.0, 30.0),
+            (8_184.0, 120.0, 16.0, 50.0),
+            (10_000.0, 200.0, 20.0, 70.0),
+            (18_000.0, 240.0, 22.0, 80.0),
+        ];
+        let p = pool_of(five.iter().map(|(s, h, d, k)| with_keyboard(friction_file(*s, *h, *d, json!({})), *k)).collect());
+        let line = text(&p, false).lines().find(|l| l.starts_with("activity")).unwrap().to_string();
+        assert_eq!(
+            line,
+            "activity  700 active hours · 250h at the keyboard · $58.89 per active hour · $165 per hour at the keyboard · per file: median 16 active days, 120 active hours, $68.20 per active hour"
+        );
     }
 
     #[test]
@@ -551,16 +859,18 @@ mod tests {
             "handoffs": {"turn_ends": 900, "interrupts": 41, "typed_while_working": 3, "questions": 5, "answers": 5, "wakes": {"subagent": 1, "command": 2, "other": 0}},
             "pauses": {"typed_messages": 1_030},
         });
-        let t = text(&pool_of(vec![friction_file(1_000.0, 141.0, 18.0, extra)]), false);
+        let t = text(&pool_of(vec![with_keyboard(friction_file(1_000.0, 141.0, 18.0, extra), 50.0)]), false);
         let sub: Vec<&str> = t.lines().find(|l| l.starts_with("subagents")).unwrap().split_whitespace().collect();
         assert_eq!(sub[1..], ["67.5h", "18.5%", "54.0h"]);
+        // Per hour at the keyboard, and per 100 typed messages.
         let interrupts: Vec<&str> = t.lines().find(|l| l.starts_with("interrupts")).unwrap().split_whitespace().collect();
-        assert_eq!(interrupts[1..], ["41", "0.29", "3.98"]);
+        assert_eq!(interrupts[1..], ["41", "0.82", "3.98"]);
         // Ends of turn have no value per 100 typed messages: many come after wakes.
         let turns = json!({"handoffs": {"turn_ends": 2_671, "interrupts": 0, "typed_while_working": 0, "questions": 0, "answers": 0, "wakes": {"subagent": 0, "command": 0, "other": 0}}, "pauses": {"typed_messages": 1_163}});
-        let t = text(&pool_of(vec![friction_file(1_000.0, 395.0, 30.0, turns)]), false);
-        let ends: Vec<&str> = t.lines().find(|l| l.starts_with("ends of turn")).unwrap().split_whitespace().collect();
-        assert_eq!(ends[3..], ["2,671", "6.76", "–"]);
+        let t = text(&pool_of(vec![with_keyboard(friction_file(1_000.0, 395.0, 30.0, turns), 151.0)]), false);
+        let section = &t[t.find("Working with the agent").unwrap()..];
+        let ends: Vec<&str> = section.lines().find(|l| l.starts_with("ends of turn")).unwrap().split_whitespace().collect();
+        assert_eq!(ends[3..], ["2,671", "17.69", "–"]);
     }
 
     #[test]
@@ -584,18 +894,18 @@ mod tests {
     fn a_file_without_the_activity_part_counts_in_no_rate() {
         let client = json!({"requests": 10, "usd": 1_000.0, "avoidable_usd": 0.0, "main_sessions": 1, "cold_returns": 2, "cold_returns_avoidable_usd": 9.0, "cache_writes": {"short": 0, "long": 0}, "active_hours": 395,
             "effort": {"max": {"requests": 10, "usd": 1_000.0}}});
-        let new = friction_file(1_000.0, 395.0, 30.0, json!({"pauses": {"typed_messages": 1_168}, "clients": {"sdk-ts": client}}));
+        let new = with_keyboard(friction_file(1_000.0, 395.0, 30.0, json!({"pauses": {"typed_messages": 1_168}, "clients": {"sdk-ts": client}})), 151.0);
         let mut old = file(1_000.0, None);
         old["agents"]["claude"]["pauses"] = json!({"typed_messages": 1_158});
         let p = pool_of(vec![new, old]);
         let typed = &p.working[0];
         assert_eq!((typed.value, typed.files_with_part), (1_168.0, 1));
-        assert!((typed.rate.unwrap() - 1_168.0 / 395.0).abs() < 1e-9, "{typed:?}");
+        assert!((typed.rate.unwrap() - 1_168.0 / 151.0).abs() < 1e-9, "{typed:?}");
         let t = text(&p, false);
         let row: Vec<&str> = t.lines().find(|l| l.starts_with("typed messages")).unwrap().split_whitespace().collect();
-        assert_eq!(row[..9], ["typed", "messages", "(in", "1", "of", "2", "files)", "1,168", "2.96"]);
+        assert_eq!(row[..9], ["typed", "messages", "(in", "1", "of", "2", "files)", "1,168", "7.74"]);
         assert!(t.contains("\nCold returns by client, in 1 of 2 files\n"), "{t}");
-        assert!(t.contains("\nHighest effort by client: the share at max or xhigh, in 1 of 2 files\n"), "{t}");
+        assert!(t.contains("\nHighest effort by client, in 1 of 2 files\n"), "{t}");
     }
 
     #[test]
@@ -645,24 +955,23 @@ mod tests {
 
     #[test]
     fn the_sections_come_in_their_order_and_format_1_files_have_none_of_the_new_ones() {
-        let t = text(
-            &pool_of(vec![friction_file(
-                1_000.0,
-                10.0,
-                2.0,
-                json!({"handoffs": {"turn_ends": 3, "interrupts": 1, "typed_while_working": 0, "questions": 0, "answers": 0, "wakes": {"subagent": 0, "command": 0, "other": 0}}, "pauses": {"typed_messages": 4}}),
-            )]),
-            false,
-        );
-        let at = |title: &str| t.find(title).unwrap_or_else(|| panic!("{title}: {t}"));
+        let t = text(&pool_of(vec![rich_file()]), false);
+        let at = |title: &str| t.find(&format!("\n{title}\n")).unwrap_or_else(|| panic!("{title}: {t}"));
         let order = [
+            "At a glance",
             "Where the money went",
             "What could have been saved",
+            "Cold returns by client",
+            "Coming back after a cold break",
             "Problems",
             "Habits that cost the most",
             "Where the agent's time went",
+            "Your time with the agents",
             "Working with the agent",
+            "Working with the agent by client",
+            "Commits and pull requests",
             "Tools and commands",
+            "Highest effort by client",
             "Versions",
         ];
         let positions: Vec<usize> = order.iter().map(|o| at(o)).collect();
@@ -670,8 +979,29 @@ mod tests {
         let mut old = file(1_000.0, None);
         old["format"] = json!(1);
         let t1 = text(&pool_of(vec![old]), false);
-        for title in ["Problems", "Where the agent's time went", "Working with the agent", "Highest effort by client", "activity  "] {
+        for title in [
+            "Problems",
+            "Where the agent's time went",
+            "Your time with the agents",
+            "Working with the agent",
+            "Coming back after a cold break",
+            "Commits and pull requests",
+            "Highest effort by client",
+            "activity  ",
+        ] {
             assert!(!t1.contains(title), "{title} in {t1}");
+        }
+        assert!(t1.contains("At a glance\n\nspend     $1,000\n"), "{t1}");
+        // Format 2 without the parts of this change: no section built from them, and no hand-offs.
+        let before = friction_file(
+            1_000.0,
+            10.0,
+            2.0,
+            json!({"handoffs": {"turn_ends": 3, "interrupts": 1, "typed_while_working": 0, "questions": 0, "answers": 0, "wakes": {"subagent": 0, "command": 0, "other": 0}}}),
+        );
+        let t2 = text(&pool_of(vec![before]), false);
+        for title in ["Your time with the agents", "Coming back after a cold break", "Commits and pull requests", "Working with the agent"] {
+            assert!(!t2.contains(title), "{title} in {t2}");
         }
     }
 
@@ -681,12 +1011,202 @@ mod tests {
         assert!(p.problems.iter().all(|r| r.files_with_part == 1), "{:?}", p.problems);
         assert_eq!(p.time_files, 1);
         let t = text(&p, false);
-        assert!(
-            t.contains("failed tool calls (in 1 of 2 files)")
-                && t.contains("Where the agent's time went: what it waited on while it was busy, in 1 of 2 files"),
-            "{t}"
-        );
+        assert!(t.contains("failed tool calls (in 1 of 2 files)") && t.contains("Where the agent's time went, in 1 of 2 files"), "{t}");
         assert!(t.lines().any(|l| l.starts_with("activity") && l.ends_with("(in 1 of 2 files)")), "{t}");
+    }
+
+    /// A file with every part this change adds, in two agents.
+    fn rich_file() -> Value {
+        let extra = json!({
+            "misses": {"idle > TTL": {"misses": 207, "tokens": 1, "avoidable_usd": 812.0}, "after assistant message": {"misses": 90, "tokens": 1, "avoidable_usd": 405.0}},
+            "failures": {"failed": 1_398, "refused": 0, "denied": 0, "after": {"usd": 227.0, "tokens": 1}},
+            "time": {"kinds": {"API retries": {"ms": 23.3 * 3_600_000.0, "after_turns_ms": 0}}, "requests": 100, "slow": 0, "slow_main": 0, "longest_ms": 1, "retried": 92,
+                "retried_by_error": {"server": 87, "rate_limit": 0, "auth": 0, "timeout": 5, "connection": 0, "sleep": 0, "other": 0}},
+            "handoffs": {"turn_ends": 10, "interrupts": 1, "typed_while_working": 0, "questions": 0, "answers": 0, "wakes": {"subagent": 0, "command": 0, "other": 0}},
+            "pauses": {"typed_messages": 50},
+            "outcomes": {"commits": 410, "pushes": 95, "pull_requests": 12},
+            "bench": bench(203, [1_644.0, 1_273.0, 518.0, 1_268.0, 809.0], 2),
+            "clients": {
+                "sdk-ts": {"requests": 10, "usd": 11_000.0, "avoidable_usd": 0.0, "main_sessions": 1, "cold_returns": 0, "cache_writes": {"short": 0, "long": 0}, "active_hours": 300, "effort": {"max": {"requests": 9, "usd": 10_000.0}, "medium": {"requests": 1, "usd": 1_000.0}},
+                    "outcomes": {"commits": 300, "pushes": 90, "pull_requests": 12},
+                    "rhythm": {"keyboard_ms": 120.0 * 3_600_000.0, "sittings": 150, "messages": 900, "interrupts": 30, "typed_while_working": 2, "questions": 60, "ends": {"count": 1_000, "present": 900}, "answers": {"count": 800, "median_ms": 210_000}, "question_answers": {"count": 60, "median_ms": 120_000}}},
+                "cli": {"requests": 10, "usd": 356.0, "avoidable_usd": 0.0, "main_sessions": 1, "cold_returns": 0, "cache_writes": {"short": 0, "long": 0}, "active_hours": 40, "effort": {"medium": {"requests": 10, "usd": 356.0}},
+                    "outcomes": {"commits": 40, "pushes": 5, "pull_requests": 0},
+                    "rhythm": {"keyboard_ms": 20.0 * 3_600_000.0, "sittings": 30, "messages": 150, "interrupts": 2, "typed_while_working": 0, "questions": 4, "ends": {"count": 100, "present": 90}, "answers": {"count": 120, "median_ms": 72_000}, "question_answers": {"count": 4, "median_ms": 30_000}}},
+            },
+        });
+        let mut f = friction_file(11_356.0, 395.0, 30.0, extra);
+        f["rhythm"] = json!({"keyboard_ms": 151.0 * 3_600_000.0, "sittings": 190, "breaks": 180, "messages": 1_460, "sessions": 228,
+            "ends": {"count": 2_420, "present": 2_013, "started_by_agent": 691}, "interrupts": 45, "typed_while_working": 35, "questions": 73,
+            "answers": {"count": 100, "median_ms": 222_000, "by_pause": {"under 1m": 30, "1–5m": 32, "5–15m": 38}},
+            "question_answers": {"count": 73, "median_ms": 138_000, "by_pause": {"1–5m": 73}},
+            "turns": {"count": 1_425, "median_ms": 175_000, "by_pause": {"1–5m": 1_425}},
+            "stood_still": {"count": 180, "median_ms": 480_000, "by_pause": {"5–15m": 180}},
+            "worked_share_median": 0.42});
+        f["agents"]["codex"] = json!({"bench": bench(18, [77.89, 55.82, 32.22, 90.29, 62.98], 2)});
+        f
+    }
+
+    /// A bench part: the returns, each way's dollars, and the way cheapest in all of them.
+    fn bench(returns: u64, usd: [f64; 5], cheapest: usize) -> Value {
+        let keys = ["resume", "compact", "handoff", "heartbeats", "heartbeats_then_compaction"];
+        let ways: serde_json::Map<String, Value> =
+            keys.iter().enumerate().map(|(i, k)| (k.to_string(), json!({"usd": usd[i], "cheapest": if i == cheapest { returns } else { 0 }}))).collect();
+        json!({"returns": returns, "requests": 60, "min_context": 100_000, "keep_warm_ms": 21_600_000, "ways": ways, "kept_warm": 1, "ping_usd": 1.0,
+            "elsewhere": {"pings": 1, "ping_usd": 1.0, "compactions": 0, "compaction_usd": 0.0}})
+    }
+
+    #[test]
+    fn at_a_glance_of_one_file() {
+        let t = text(&pool_of(vec![rich_file()]), false);
+        let glance = &t[t.find("At a glance").unwrap()..t.find("\nWhere the money went").unwrap()];
+        let lines: Vec<&str> = glance.lines().skip(2).collect();
+        assert_eq!(
+            lines,
+            [
+                "spend     $11,356 · $28.75 per active hour · $75.21 per hour at the keyboard",
+                "cache     $1,217 could have been saved (10.7%): idle > TTL $812, after assistant message $405",
+                "returns   221 cold returns cost $1,722 as resumed; a handoff note would have cost $550 and was cheapest in 221; heartbeats $1,358",
+                "problems  1,398 failed calls, $227 after them; 92 requests waited 23.3h for retries, 87 of them for server errors",
+                "you       151h at the keyboard in 190 sittings; you answered in a median 3.7m; the agents stood still a median 8.0m after you left",
+                "made      the agents made 410 commits, 95 pushes and 12 pull requests: $27.70 of spend per commit",
+            ]
+        );
+        // Without the bench parts, there is no returns line.
+        let mut plain = rich_file();
+        plain["agents"]["claude"].as_object_mut().unwrap().remove("bench");
+        plain["agents"].as_object_mut().unwrap().remove("codex");
+        assert!(!text(&pool_of(vec![plain]), false).contains("\nreturns   "));
+    }
+
+    #[test]
+    fn at_a_glance_of_a_pool() {
+        let five = [(3_200.0, 40.0, 10.0), (1_836.0, 100.0, 14.0), (8_184.0, 120.0, 16.0), (10_000.0, 200.0, 20.0), (18_000.0, 240.0, 22.0)];
+        let p = pool_of(five.iter().map(|(s, h, d)| friction_file(*s, *h, *d, json!({}))).collect());
+        let t = text(&p, false);
+        assert!(t.contains("\nspend     $41,220 · $58.89 per active hour (median file $68.20)\n"), "{t}");
+    }
+
+    #[test]
+    fn the_rows_of_your_time_with_the_agents() {
+        let p = pool_of(vec![rich_file()]);
+        let names: Vec<&str> = p.rhythm.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "time at the keyboard",
+                "sittings",
+                "you answered an end of turn in",
+                "… within 5 minutes",
+                "you answered a question in",
+                "… within 5 minutes",
+                "the agent's turn took",
+                "ends of turn while you were there",
+                "turns the agent started itself",
+                "the agents stood still after you left",
+                "the agents worked through a break",
+            ]
+        );
+        let t = text(&p, false);
+        let value =
+            |name: &str| t.lines().find(|l| l.starts_with(name)).unwrap_or_else(|| panic!("{name}: {t}")).split_whitespace().last().unwrap().to_string();
+        assert_eq!(
+            [value("time at the keyboard"), value("sittings"), value("you answered an end of turn in"), value("… within 5 minutes")],
+            ["151.0h", "190", "3.7m", "62%"]
+        );
+        assert_eq!(value("ends of turn while you were there"), "13.33", "2,013 ends in 151 hours at the keyboard");
+    }
+
+    #[test]
+    fn a_pooled_median_is_a_pause_range() {
+        let mut a = rich_file();
+        let mut b = rich_file();
+        a["rhythm"]["answers"] = json!({"count": 3, "median_ms": 30_000, "by_pause": {"under 1m": 3}});
+        b["rhythm"]["answers"] = json!({"count": 5, "median_ms": 240_000, "by_pause": {"1–5m": 5}});
+        let p = pool_of(vec![a, b]);
+        let row = p.rhythm.iter().find(|r| r.name == "you answered an end of turn in").unwrap();
+        assert_eq!(row.range.as_deref(), Some("1–5m"), "the 5th of 8 answers falls in 1–5m");
+        assert_eq!(row.median_file, Some(240_000.0), "the upper of the two files' medians");
+    }
+
+    #[test]
+    fn coming_back_after_a_cold_break() {
+        let t = text(&pool_of(vec![rich_file()]), false);
+        let row: Vec<&str> = t.lines().find(|l| l.starts_with("new session + handoff note")).unwrap().split_whitespace().collect();
+        assert_eq!(row[5..], ["$550", "32.0%", "221", "of", "221"]);
+        assert!(!text(&pool_of(vec![file(100.0, None)]), false).contains("Coming back after a cold break"), "no returns, no section");
+    }
+
+    #[test]
+    fn retries_by_error_class() {
+        let t = text(&pool_of(vec![rich_file()]), false);
+        let rows: Vec<&str> = t.lines().filter(|l| l.starts_with("  ")).collect();
+        assert!(rows.iter().any(|l| l.split_whitespace().collect::<Vec<_>>()[..3] == ["server", "errors", "87"]), "{t}");
+        assert!(rows.iter().any(|l| l.split_whitespace().collect::<Vec<_>>()[..2] == ["timeouts", "5"]), "{t}");
+        assert!(!t.contains("  rate limits") && !t.contains("  computer asleep"), "classes without requests have no row");
+    }
+
+    #[test]
+    fn working_with_the_agent_by_client() {
+        let t = text(&pool_of(vec![rich_file()]), false);
+        let section = &t[t.find("Working with the agent by client").unwrap()..];
+        let ide: Vec<&str> = section.lines().find(|l| l.starts_with("claude  sdk-ts")).unwrap().split_whitespace().collect();
+        assert_eq!(ide[2..], ["120.0h", "7.50", "0.25", "0.50", "2.50", "3.5m"]);
+        let term: Vec<&str> = section.lines().find(|l| l.starts_with("claude  cli")).unwrap().split_whitespace().collect();
+        assert_eq!(term[2..], ["20.0h", "7.50", "0.10", "0.20", "2.00", "1.2m"]);
+        // Ten clients: the eight with the most time at the keyboard, then the rest.
+        let client = |h: f64| {
+            json!({"requests": 1, "usd": 1.0, "avoidable_usd": 0.0, "main_sessions": 1, "cold_returns": 0, "cache_writes": {"short": 0, "long": 0}, "active_hours": 1, "effort": {},
+            "rhythm": {"keyboard_ms": h * 3_600_000.0, "sittings": 1, "messages": 1, "interrupts": 0, "typed_while_working": 0, "questions": 0, "ends": {"count": 1, "present": 1}, "answers": {"count": 0, "median_ms": null}, "question_answers": {"count": 0, "median_ms": null}}})
+        };
+        let clients: serde_json::Map<String, Value> = (1..=10).map(|i| (format!("c{i:02}"), client(i as f64))).collect();
+        let p = pool_of(vec![friction_file(1_000.0, 100.0, 10.0, json!({"clients": clients}))]);
+        assert_eq!(p.client_work.last().map(|w| w.client.as_str()), Some("2 more"));
+        assert_eq!(p.client_work.len(), 9);
+        // A client of minutes, under 1% of the time at the keyboard, has no row of its own.
+        let mut few = serde_json::Map::new();
+        few.insert("sdk-ts".into(), client(100.0));
+        few.insert("codex-tui".into(), client(0.5));
+        let p = pool_of(vec![friction_file(1_000.0, 100.0, 10.0, json!({"clients": few}))]);
+        let names: Vec<&str> = p.client_work.iter().map(|w| w.client.as_str()).collect();
+        assert_eq!(names, ["sdk-ts", "1 more"]);
+    }
+
+    #[test]
+    fn commits_and_pull_requests() {
+        let t = text(&pool_of(vec![rich_file()]), false);
+        let section = &t[t.find("Commits and pull requests").unwrap()..];
+        let commits: Vec<&str> = section.lines().find(|l| l.starts_with("commits")).unwrap().split_whitespace().collect();
+        assert_eq!(commits[1..], ["410", "2.72"]);
+        assert!(section.contains("\n$27.70 of spend per commit\n"), "{section}");
+        let none = with_keyboard(friction_file(1_000.0, 10.0, 2.0, json!({"outcomes": {"commits": 0, "pushes": 0, "pull_requests": 0}})), 5.0);
+        let t = text(&pool_of(vec![none]), false);
+        assert!(t.contains("\nno commits by the agents\n") && t.contains("made      no commits by the agents"), "{t}");
+    }
+
+    #[test]
+    fn every_section_has_its_note() {
+        let t = text(&pool_of(vec![rich_file()]), false);
+        for (title, note) in NOTES {
+            let at = t.find(&format!("\n{title}\n")).unwrap_or_else(|| panic!("{title}: {t}"));
+            let next = t[at + title.len() + 2..].lines().next().unwrap();
+            assert_eq!(next, note, "{title}");
+        }
+        let pool = text(&pool_of(vec![rich_file(), rich_file()]), false);
+        assert!(pool.contains(&format!("{}; median file: the median of each file's own share\n", NOTES[0].1)), "{pool}");
+        assert!(pool.contains(&format!("{}; files 5%+: the files where a row is 5% of their spend or more\n", NOTES[1].1)), "{pool}");
+    }
+
+    #[test]
+    fn counts_have_thousands_separators() {
+        let mut f = file(1_000.0, None);
+        f["agents"]["claude"]["tools"] =
+            json!({"Read": {"calls": 15_080, "failed": 1_026, "rent": {"usd": 30.0, "tokens": 1}, "trips": {"usd": 3.0, "tokens": 1}}});
+        f["agents"]["claude"]["versions"] = json!({"2.1.316": {"requests": 16_678, "usd": 1.0, "held": 1}});
+        let t = text(&pool_of(vec![f]), false);
+        let read: Vec<&str> = t.lines().find(|l| l.starts_with("Read")).unwrap().split_whitespace().collect();
+        assert_eq!(read[1..3], ["15,080", "1,026"]);
+        assert!(t.lines().any(|l| l.contains("2.1.316") && l.trim_end().ends_with("16,678")), "{t}");
     }
 
     #[test]

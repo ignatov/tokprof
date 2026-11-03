@@ -36,17 +36,17 @@ Apply after `add-team-survey` and `add-share-friction`. Every group ends with `c
 
 ## 5. The pool and the report
 
-- [ ] 5.1 Add the hours at the keyboard to the `activity` line. Verify: unit tests for "One file", "A pool" and "A file without the rhythm part".
-- [ ] 5.2 Count `Working with the agent` per hour at the keyboard. Verify: unit tests for "A file without active hours", "Interrupts" and "Ends of turn".
-- [ ] 5.3 Add the rows by error class under `requests that waited for retries`. Verify: a unit test for "Mostly gateway errors".
-- [ ] 5.4 Add `Coming back after a cold break`. Verify: unit tests for "Two agents" and "No returns".
-- [ ] 5.5 Add `Your time with the agents`, with the pooled median as a pause range. Verify: unit tests for "The rows", "One file" and "Ends while the person was there", and a pool of two files whose pooled median falls in `1–5m`.
-- [ ] 5.6 Add `Working with the agent by client`. Verify: a unit test for "An IDE against a terminal", and one with 10 clients that ends with `2 more`.
-- [ ] 5.7 Add `Commits and pull requests`. Verify: unit tests for "One file" and "No commits".
-- [ ] 5.8 Add `At a glance`, from the same pool tables as the sections. Verify: unit tests for "One file" and "A pool", and that a file without the bench parts has no `returns` line.
-- [ ] 5.9 Put a note line under every title, move the titles' colon remarks into the notes, and give every count thousands separators. Verify: unit tests for "The notes", "Notes of a pool", "Calls of a tool", "The order", "Format-1 files only" and "Files written before the rhythm parts".
-- [ ] 5.10 Check `--json` and `--by-file` over the new tables. Verify: an integration test that `--json` holds them with numeric values, and that `--by-file` adds a column per file to `Your time with the agents`.
-- [ ] 5.11 Update README's pool section, and `docs/survey.md`: reading the report, and the prompt's command with `--mcp-names <mcp servers>` and when to delete it. Verify: each new section of the report is described there, and the prompt holds the placeholder.
+- [x] 5.1 Add the hours at the keyboard to the `activity` line. Verify: unit tests for "One file", "A pool" and "A file without the rhythm part".
+- [x] 5.2 Count `Working with the agent` per hour at the keyboard. Verify: unit tests for "A file without active hours", "Interrupts" and "Ends of turn".
+- [x] 5.3 Add the rows by error class under `requests that waited for retries`. Verify: a unit test for "Mostly gateway errors".
+- [x] 5.4 Add `Coming back after a cold break`. Verify: unit tests for "Two agents" and "No returns".
+- [x] 5.5 Add `Your time with the agents`, with the pooled median as a pause range. Verify: unit tests for "The rows", "One file" and "Ends while the person was there", and a pool of two files whose pooled median falls in `1–5m`.
+- [x] 5.6 Add `Working with the agent by client`. Verify: a unit test for "An IDE against a terminal", and one with 10 clients that ends with `2 more`.
+- [x] 5.7 Add `Commits and pull requests`. Verify: unit tests for "One file" and "No commits".
+- [x] 5.8 Add `At a glance`, from the same pool tables as the sections. Verify: unit tests for "One file" and "A pool", and that a file without the bench parts has no `returns` line.
+- [x] 5.9 Put a note line under every title, move the titles' colon remarks into the notes, and give every count thousands separators. Verify: unit tests for "The notes", "Notes of a pool", "Calls of a tool", "The order", "Format-1 files only" and "Files written before the rhythm parts".
+- [x] 5.10 Check `--json` and `--by-file` over the new tables. Verify: an integration test that `--json` holds them with numeric values, and that `--by-file` adds a column per file to `Your time with the agents`.
+- [x] 5.11 Update README's pool section, and `docs/survey.md`: reading the report, and the prompt's command with `--mcp-names <mcp servers>` and when to delete it. Verify: each new section of the report is described there, and the prompt holds the placeholder.
 
 ## 6. Check on the real logs
 

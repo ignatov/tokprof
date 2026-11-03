@@ -72,11 +72,15 @@ The report SHALL print `Your time with the agents`, from the rhythm parts (see s
 - **THEN** the row `ends of turn while you were there` shows `13.33` per hour at the keyboard
 
 ### Requirement: Working with the agent by client
-After `Working with the agent`, the report SHALL print `Working with the agent by client`: one row per agent and client with rhythm parts, the most time at the keyboard first, at most 8, then `<n> more`. The columns are `at the keyboard`; `messages`, `interrupts`, `questions` and `commits` per hour at the keyboard; and `answered in`, the median answer to an end of turn, for a pool the median of the files'.
+After `Working with the agent`, the report SHALL print `Working with the agent by client`: one row per agent and client with time at the keyboard, the most first. It shows those with 1% of the pooled time at the keyboard or more, at most 8, then `<n> more`. The columns are `at the keyboard`; `messages`, `interrupts`, `questions` and `commits` per hour at the keyboard; and `answered in`, the median answer to an end of turn, for a pool the median of the files'.
 
 #### Scenario: An IDE against a terminal
 - **WHEN** `sdk-ts` has 120 hours at the keyboard, 900 messages, 30 interrupts and 300 commits, and `cli` has 20 hours, 150 messages, 2 interrupts and 40 commits
 - **THEN** the `sdk-ts` row shows `120.0h`, `7.50`, `0.25` and `2.50` under `commits`, and the `cli` row `20.0h`, `7.50`, `0.10` and `2.00`
+
+#### Scenario: A client of minutes
+- **WHEN** a client has 30 seconds at the keyboard, against 100 hours of another
+- **THEN** it has no row of its own: its rates would read as if it were used all day, and it counts in `<n> more`
 
 ### Requirement: Commits and pull requests
 The report SHALL print `Commits and pull requests`, from the outcome parts (see share-export, Outcome parts): the rows `commits`, `pushes` and `pull requests`, with `pooled`, `per hour at the keyboard`, `median file` and `files`. Under the table a line gives the dollars per commit: the spend of the files with the part over their commits.
@@ -110,11 +114,11 @@ The header SHALL have an `activity` line after `spend` (see share-export, Activi
 
 #### Scenario: One file
 - **WHEN** a file has 18 active days, 141 active hours, 52 hours at the keyboard, 365 busy hours and $11,200 of spend
-- **THEN** the line reads `activity  18 active days · 141 active hours · 52h at the keyboard · busy 365h · $79.43 per active hour · $215.38 per hour at the keyboard`
+- **THEN** the line reads `activity  18 active days · 141 active hours · 52h at the keyboard · busy 365h · $79.43 per active hour · $215 per hour at the keyboard`
 
 #### Scenario: A pool
 - **WHEN** 5 files with the parts hold 700 active hours, 250 hours at the keyboard and $41,220 between them, and their medians are 16 active days, 120 active hours and $68.20 per active hour
-- **THEN** the line reads `activity  700 active hours · 250h at the keyboard · $58.89 per active hour · $164.88 per hour at the keyboard · per file: median 16 active days, 120 active hours, $68.20 per active hour`
+- **THEN** the line reads `activity  700 active hours · 250h at the keyboard · $58.89 per active hour · $165 per hour at the keyboard · per file: median 16 active days, 120 active hours, $68.20 per active hour`
 
 #### Scenario: A file without the rhythm part
 - **WHEN** a file has the activity part and no rhythm part
