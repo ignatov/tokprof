@@ -1,8 +1,8 @@
-# Builds tokprof for macOS and Linux. Each binary that runs on its runner writes a share file
-# over the fixture logs, and the files must hold the same numbers. A pushed tag vX.Y.Z also
-# publishes a GitHub release with the archives, their SHA256SUMS and a build provenance
-# attestation per archive. A run by hand (Actions → Release → Run workflow) only keeps the
-# archives as artifacts of the run.
+# Builds tokprof for macOS, Linux and Windows. Each binary that runs on its runner writes a
+# share file over the fixture logs, and the files must hold the same numbers. A pushed tag
+# vX.Y.Z also publishes a GitHub release with the archives, their SHA256SUMS and a build
+# provenance attestation per archive. A run by hand (Actions → Release → Run workflow) only
+# keeps the archives as artifacts of the run.
 name: Release
 
 on:
@@ -46,6 +46,10 @@ jobs:
             os: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04-arm
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -61,7 +65,8 @@ jobs:
       - name: Check the tag against the version in Cargo.toml
         if: github.event_name == 'push'
         run: |
-          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tokprof") | .version')
+          # jq on Windows ends its lines with CR LF.
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tokprof") | .version' | tr -d '\r')
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
             echo "::error::The tag $GITHUB_REF_NAME does not match the version $version in Cargo.toml"
             exit 1
@@ -74,17 +79,22 @@ jobs:
         run: cargo build --release --locked --package tokprof --target "$TARGET"
       - name: Package
         run: |
-          staging="$RUNNER_TEMP/tokprof-$TARGET"
-          mkdir -p "$staging" dist
-          cp "target/$TARGET/release/tokprof" README.md LICENSE "$staging/"
+          exe=""
+          if [[ "$TARGET" == *-windows-* ]]; then exe=".exe"; fi
+          mkdir -p stage dist
+          cp "target/$TARGET/release/tokprof$exe" README.md LICENSE stage/
           # The x86_64 Mac binary cannot run on the arm64 runner, so it is only inspected.
           if [ "$TARGET" = x86_64-apple-darwin ]; then
-            file "$staging/tokprof"
+            file stage/tokprof
           else
-            "$staging/tokprof" --version
+            "stage/tokprof$exe" --version
           fi
-          # COPYFILE_DISABLE keeps macOS tar from adding ._ metadata files.
-          COPYFILE_DISABLE=1 tar -czf "dist/tokprof-$TARGET.tar.gz" -C "$staging" tokprof README.md LICENSE
+          if [ -n "$exe" ]; then
+            (cd stage && 7z a -tzip "../dist/tokprof-$TARGET.zip" tokprof.exe README.md LICENSE)
+          else
+            # COPYFILE_DISABLE keeps macOS tar from adding ._ metadata files.
+            COPYFILE_DISABLE=1 tar -czf "dist/tokprof-$TARGET.tar.gz" -C stage tokprof README.md LICENSE
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: tokprof-${{ matrix.target }}
@@ -142,13 +152,15 @@ jobs:
           merge-multiple: true
       - name: Write the checksums
         working-directory: dist
-        run: sha256sum -- *.tar.gz > SHA256SUMS && cat SHA256SUMS
+        run: sha256sum -- *.tar.gz *.zip > SHA256SUMS && cat SHA256SUMS
       # `gh attestation verify <archive> -R ignatov/tokprof` then shows that this workflow built
       # the archive from the tagged commit. A failure here leaves no release.
       - name: Attest where the archives were built
         uses: actions/attest@v4
         with:
-          subject-path: dist/*.tar.gz
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
       # The notes list the commit subjects since the previous tag, without the OpenSpec
       # "Archive <change>" commits.
       - name: Write the notes
@@ -159,7 +171,7 @@ jobs:
             echo
             git log --no-merges --reverse --format='- %s' "${previous:+$previous..}$GITHUB_REF_NAME" | grep -v '^- Archive ' || true
             echo
-            echo "Archives for macOS and Linux are below, with their checksums in SHA256SUMS. See [Install](https://github.com/${GITHUB_REPOSITORY}#install)."
+            echo "Archives for macOS, Linux and Windows are below, with their checksums in SHA256SUMS. See [Install](https://github.com/${GITHUB_REPOSITORY}#install)."
           } > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
       - name: Create the release

@@ -1,5 +1,5 @@
-# The checks of every push to main and every pull request: the tests on Linux and macOS,
-# clippy with warnings as errors, and the OpenSpec specs. The release workflow runs them too,
+# The checks of every push to main and every pull request: the tests on Linux, macOS and
+# Windows, clippy with warnings as errors, and the OpenSpec specs. The release workflow runs them too,
 # before it publishes a release.
 name: CI
 
@@ -20,6 +20,10 @@ concurrency:
   # A new push to a pull request cancels the run for the old one; the runs on main all finish.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+defaults:
+  run:
+    shell: bash
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -30,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
