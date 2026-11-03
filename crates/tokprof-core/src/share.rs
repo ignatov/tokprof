@@ -1623,6 +1623,7 @@ mod tests {
             call: Some(true),
             outcome,
             error,
+            vcs: crate::trigger::VcsActions::default(),
         };
         let edit = |outcome| ToolShare { tool: Some("Edit"), target: None, class: Class::Tool(ToolClass::Edit), ..call(outcome, None) };
         sink.session(&s);

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use crate::api::ApiId;
 use crate::source::AgentId;
-use crate::trigger::{CallClass, Trigger};
+use crate::trigger::{CallClass, Trigger, VcsActions};
 
 /// Token counts the provider reported for one API request.
 #[derive(Clone, Copy, Debug, Default)]
@@ -411,6 +411,9 @@ pub struct Session {
     /// `blocks`: how each ended, and for a failure the line that tells why. A call that is not
     /// here worked, or its log does not tell.
     pub call_ends: BTreeMap<usize, CallEnd>,
+    /// The tool calls whose shell command committed, pushed or opened a pull request, by the
+    /// index of their call blocks in `blocks`.
+    pub vcs: BTreeMap<usize, VcsActions>,
 }
 
 /// How a tool call ended, as its result tells.
@@ -597,6 +600,7 @@ impl Session {
             handoffs: Vec::new(),
             scripted: false,
             call_ends: BTreeMap::new(),
+            vcs: BTreeMap::new(),
         }
     }
 

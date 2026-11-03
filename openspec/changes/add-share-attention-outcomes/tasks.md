@@ -21,9 +21,9 @@ Apply after `add-team-survey` and `add-share-friction`. Every group ends with `c
 
 ## 3. Sources
 
-- [ ] 3.1 In both sources, pass each full shell command to the action parser where the class parser is called, and keep the actions on the call's block. Claude Code: the `Bash` input `command`. Codex: `exec_command` `cmd`, `shell` and `container.exec` `command`, and the `tools.exec_command` calls inside the `exec` tool's code. Verify: unit tests in each source with synthetic lines, one for `git add -A && git commit -m x` and one for an `exec` tool that calls `git push`; both sources' conformance tests and `crates/tokprof/tests/architecture.rs` pass.
-- [ ] 3.2 Pass the actions with each call's outcome to the sinks. Verify: a unit test in the analysis that a failed call's actions reach the sink marked as failed.
-- [ ] 3.3 Note the fields in each source's README: the commands read for the actions, with the agent versions. Verify: both READMEs name them.
+- [x] 3.1 In both sources, pass each full shell command to the action parser where the class parser is called, and keep the actions on the call's block. Claude Code: the `Bash` input `command`. Codex: `exec_command` `cmd`, `shell` and `container.exec` `command`, and the `tools.exec_command` calls inside the `exec` tool's code. Verify: unit tests in each source with synthetic lines, one for `git add -A && git commit -m x` and one for an `exec` tool that calls `git push`; both sources' conformance tests and `crates/tokprof/tests/architecture.rs` pass.
+- [x] 3.2 Pass the actions with each call's outcome to the sinks. Verify: a unit test in the analysis that a failed call's actions reach the sink marked as failed.
+- [x] 3.3 Note the fields in each source's README: the commands read for the actions, with the agent versions. Verify: both READMEs name them.
 
 ## 4. The share file
 

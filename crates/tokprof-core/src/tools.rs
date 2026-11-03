@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use crate::analysis::{Fact, MissEvent, RequestRecord, Sink};
 use crate::model::{BlockKind, ChainKind, Class, HandoffKind, Outcome, Session, ToolClass};
 use crate::profile::Values;
-use crate::trigger::read_only_command;
+use crate::trigger::{VcsActions, read_only_command};
 
 /// A block the first time a request held it: its tool, size and class.
 pub struct BlockEntry<'a> {
@@ -32,6 +32,8 @@ pub struct ToolShare<'a> {
     /// For the share of a call: how the call ended, and for a failure the line that tells why.
     pub outcome: Outcome,
     pub error: Option<&'a str>,
+    /// For the share of a call: what its shell command did to version control.
+    pub vcs: VcsActions,
 }
 
 /// A row's key: the tool, and the command head for shell tools.
@@ -498,7 +500,17 @@ mod tests {
         /// A call of the latest response, by tool and command head.
         fn call(&mut self, tool: &str, head: Option<&str>, outcome: Outcome) -> &mut Walk {
             let class = Class::Tool(if head.is_some() { ToolClass::Execute } else { ToolClass::Edit });
-            self.table.tool_share(&ToolShare { tool: Some(tool), target: head, class, tokens: 0.0, usd: 0.0, call: Some(true), outcome, error: Some("why") });
+            self.table.tool_share(&ToolShare {
+                tool: Some(tool),
+                target: head,
+                class,
+                tokens: 0.0,
+                usd: 0.0,
+                call: Some(true),
+                outcome,
+                error: Some("why"),
+                vcs: VcsActions::default(),
+            });
             self
         }
 

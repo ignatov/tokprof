@@ -638,6 +638,7 @@ impl<'a> Walker<'a> {
                 call,
                 outcome: ended.map_or(Outcome::Worked, |b| s.outcome(b)),
                 error: ended.and_then(|b| s.error_line(b)),
+                vcs: ended.and_then(|b| s.vcs.get(&b).copied()).unwrap_or_default(),
             }
         };
         if triggers.is_empty() {
@@ -1099,6 +1100,49 @@ mod tests {
         let rent: f64 = t.rows.values().map(|r| r.rent.usd).sum::<f64>() + t.other_rent.usd;
         let trips: f64 = t.rows.values().map(|r| r.trips.usd).sum::<f64>() + t.other_trips.usd;
         assert!((rent - t.spend.usd).abs() < 1e-12 && (trips - t.spend.usd).abs() < 1e-12, "both views add up to the spend");
+    }
+
+    #[test]
+    fn a_calls_actions_reach_the_sinks_with_its_outcome() {
+        use crate::model::{CallEnd, Class, Outcome, ToolClass};
+        use crate::tools::ToolShare;
+        use crate::trigger::VcsActions;
+        #[derive(Default)]
+        struct Calls(Vec<(VcsActions, Outcome)>);
+        impl Sink for Calls {
+            fn session(&mut self, _: &Session) {}
+            fn request(&mut self, _: &RequestRecord) {}
+            fn miss(&mut self, _: MissEvent) {}
+            fn fact(&mut self, _: &Fact) {}
+            fn tool_share(&mut self, t: &ToolShare) {
+                if t.call.is_some() {
+                    self.0.push((t.vcs, t.outcome));
+                }
+            }
+        }
+        let mut s = Session::new(crate::testing::claude(), "s".into());
+        let shell = Class::Tool(ToolClass::Execute);
+        let call = |target: &str| Block { class: shell, kind: BlockKind::ToolUse, chars: 10, tool: Some("Bash".into()), target: Some(target.into()) };
+        let prompt = s.push_message(vec![Block { class: Class::None, kind: BlockKind::Prompt, chars: 100, tool: None, target: None }], true);
+        let calls = s.push_message(vec![call("git commit"), call("git push")], false);
+        let blocks: Vec<usize> = s.messages[calls].blocks.clone().collect();
+        s.vcs.insert(blocks[0], VcsActions { commit: true, ..VcsActions::default() });
+        s.vcs.insert(blocks[1], VcsActions { push: true, ..VcsActions::default() });
+        s.call_ends.insert(blocks[1], CallEnd { outcome: Outcome::Failed, error: Some("rejected".into()) });
+        let req = Request {
+            ts_ms: 1,
+            model: "claude-opus-5-5".into(),
+            usage: Usage { cache_read: 1_000, output: 20, ..Usage::default() },
+            prompt: Some(PromptDelta { shape: None, keep: 0, tail: vec![prompt] }),
+            produced: Some(calls),
+            ..Request::default()
+        };
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests: vec![req] });
+        let mut sink = Calls::default();
+        analyze(&s, &Pricing::defaults(), &Filter::default(), &mut sink);
+        let commit = VcsActions { commit: true, ..VcsActions::default() };
+        let push = VcsActions { push: true, ..VcsActions::default() };
+        assert_eq!(sink.0, [(commit, Outcome::Worked), (push, Outcome::Failed)]);
     }
 
     #[test]

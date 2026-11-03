@@ -5,7 +5,7 @@ use std::path::Path;
 use serde_json::Value;
 use tokprof_core::labels::{command_head, display_path, exit_line, first_line, url_host};
 use tokprof_core::model::{CallEnd, Outcome, WakeSource};
-use tokprof_core::trigger::{CallClass, command_class};
+use tokprof_core::trigger::{CallClass, VcsActions, command_class, vcs_actions};
 
 /// Openings of a result whose call the user said no to or stopped. Seen in 2.1.287–2.1.316.
 const REFUSALS: &[&str] = &[
@@ -85,6 +85,14 @@ pub(crate) fn asks_the_user(tool: &str) -> bool {
 }
 
 /// What a Claude Code tool call did, for the trigger and activity of the request after it.
+/// What a call's shell command did to version control: only `Bash` runs commands.
+pub(crate) fn call_vcs(tool: &str, input: &Value) -> VcsActions {
+    match tool {
+        "Bash" => input.get("command").and_then(Value::as_str).map(vcs_actions).unwrap_or_default(),
+        _ => VcsActions::default(),
+    }
+}
+
 pub(crate) fn call_class(tool: &str, input: &Value) -> CallClass {
     match tool {
         "Read" | "NotebookRead" | "Grep" | "Glob" | "LS" => CallClass::Reading,

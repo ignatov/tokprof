@@ -166,6 +166,8 @@ pub(crate) struct Parser {
     call_ends: HashMap<String, CallEnd>,
     /// The call and result blocks of each tool call id, in every message that holds them.
     blocks_by_call: HashMap<String, Vec<usize>>,
+    /// The calls whose shell command committed, pushed or opened a pull request, by call id.
+    vcs_by_call: HashMap<String, tokprof_core::trigger::VcsActions>,
 }
 
 impl Parser {
@@ -202,6 +204,7 @@ impl Parser {
             api_errors: HashMap::new(),
             call_ends: HashMap::new(),
             blocks_by_call: HashMap::new(),
+            vcs_by_call: HashMap::new(),
         }
     }
 
@@ -742,6 +745,10 @@ impl Parser {
                             let input = item.get("input").unwrap_or(&Value::Null);
                             let target = tool_target(&name, input, cwd.as_deref(), &self.home);
                             if let Some(id) = str_at(item, "id") {
+                                let vcs = crate::tools::call_vcs(&name, input);
+                                if vcs.any() {
+                                    self.vcs_by_call.insert(id.to_string(), vcs);
+                                }
                                 self.tools_by_id.insert(id.to_string(), (name.clone(), target.clone()));
                                 self.blocks_by_call.entry(id.to_string()).or_default().push(self.session.blocks.len() + blocks.len());
                             }
@@ -939,6 +946,14 @@ impl Parser {
         for (id, end) in &self.call_ends {
             for &b in self.blocks_by_call.get(id).into_iter().flatten() {
                 session.call_ends.insert(b, end.clone());
+            }
+        }
+        // A call's actions go to its call blocks, in every message that holds them.
+        for (id, vcs) in &self.vcs_by_call {
+            for &b in self.blocks_by_call.get(id).into_iter().flatten() {
+                if session.blocks.get(b).is_some_and(|x| x.kind == BlockKind::ToolUse) {
+                    session.vcs.insert(b, *vcs);
+                }
             }
         }
         for b in &mut session.blocks {
@@ -1680,6 +1695,20 @@ mod tests {
         ]);
         let r = &s.chains[0].requests[0];
         assert_eq!((r.retries, r.first_sent_ms), (0, Some(ms("2026-11-03T07:00:00Z"))));
+    }
+
+    #[test]
+    fn a_commit_in_a_chain_marks_its_call() {
+        let calls = json!([
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git add -A && git commit -m x"}},
+            {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "git status"}},
+            {"type": "tool_use", "id": "t3", "name": "Read", "input": {"file_path": "/w/git commit"}},
+        ]);
+        let s = session_from(&[user_line("commit it"), assistant_line("m1", json!({}), calls)]);
+        let marked: Vec<(BlockKind, Option<&str>, bool, bool)> =
+            s.vcs.iter().map(|(&b, a)| (s.blocks[b].kind, s.blocks[b].target.as_deref(), a.commit, a.push)).collect();
+        assert!(!marked.is_empty(), "the commit is found after git add &&");
+        assert!(marked.iter().all(|m| *m == (BlockKind::ToolUse, Some("git add"), true, false)), "{marked:?}");
     }
 
     #[test]

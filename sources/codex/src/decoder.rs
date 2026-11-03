@@ -25,7 +25,7 @@ use tokprof_core::model::{
     Session, Shape, ToolClass, TypedMessage, Usage,
 };
 use tokprof_core::source::{AgentId, Decoder};
-use tokprof_core::trigger::{CallClass, Pending, Trigger, command_class};
+use tokprof_core::trigger::{CallClass, Pending, Trigger, VcsActions, command_class, vcs_actions};
 use tokprof_logio::{json_len, parse_ts_ms, str_at, u64_at};
 
 use crate::tools::{self, tool_target};
@@ -94,6 +94,8 @@ pub(crate) struct Parser {
     call_of_message: HashMap<usize, String>,
     /// The call and output blocks of each call id, in the items and in the responses' copies.
     blocks_by_call: HashMap<String, Vec<usize>>,
+    /// The calls whose shell commands committed, pushed or opened a pull request, by call id.
+    vcs_by_call: HashMap<String, VcsActions>,
     /// The calls that did not work, by call id.
     call_ends: HashMap<String, CallEnd>,
     /// The first `session_meta.cli_version` of the rollout, for every request of it: a later
@@ -126,6 +128,7 @@ impl Parser {
             run_used: [false; 2],
             call_of_message: HashMap::new(),
             blocks_by_call: HashMap::new(),
+            vcs_by_call: HashMap::new(),
             call_ends: HashMap::new(),
             version: None,
         }
@@ -349,17 +352,21 @@ impl Parser {
             }
             "function_call" | "custom_tool_call" => {
                 let name = str_at(item, "name").unwrap_or("?");
-                let (tool, target, chars) = if ty == "custom_tool_call" {
+                let (tool, target, chars, vcs) = if ty == "custom_tool_call" {
                     let input = str_at(item, "input").unwrap_or_default();
                     self.item_calls = code_calls(name, input);
                     let (tool, target) = code_target(name, input, cwd, &self.home);
-                    (tool, target, input.len() as u64)
+                    (tool, target, input.len() as u64, code_vcs(name, input))
                 } else {
                     let args = str_at(item, "arguments").unwrap_or_default();
                     let parsed: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                     self.item_calls = vec![call_class(name, &parsed)];
-                    (name.to_string(), call_target(name, &parsed, cwd, &self.home), args.len() as u64)
+                    let vcs = shell_command(name, &parsed).map(|c| vcs_actions(&c)).unwrap_or_default();
+                    (name.to_string(), call_target(name, &parsed, cwd, &self.home), args.len() as u64, vcs)
                 };
+                if let (Some(id), true) = (str_at(item, "call_id"), vcs.any()) {
+                    self.vcs_by_call.insert(id.to_string(), vcs);
+                }
                 if let Some(id) = str_at(item, "call_id") {
                     self.tools_by_call.insert(id.to_string(), (tool.clone(), target.clone()));
                 }
@@ -490,6 +497,14 @@ impl Parser {
                 self.session.call_ends.insert(b, end.clone());
             }
         }
+        // A call's actions go to its call blocks, the copies in responses too.
+        for (id, vcs) in &self.vcs_by_call {
+            for &b in self.blocks_by_call.get(id).into_iter().flatten() {
+                if self.session.blocks.get(b).is_some_and(|x| x.kind == BlockKind::ToolUse) {
+                    self.session.vcs.insert(b, *vcs);
+                }
+            }
+        }
         self.session
     }
 }
@@ -572,23 +587,49 @@ fn code_target(name: &str, code: &str, cwd: Option<&str>, home: &Path) -> (Strin
     }
 }
 
+/// The shell command of a function call that runs one: `exec_command`'s `cmd`, or the `command`
+/// of `shell` and `container.exec`, a string or an array whose script follows a flag.
+fn shell_command(name: &str, args: &Value) -> Option<String> {
+    if !matches!(name, "exec_command" | "shell" | "container.exec") {
+        return None;
+    }
+    match args.get("cmd").or(args.get("command")) {
+        Some(Value::String(c)) => Some(c.clone()),
+        Some(Value::Array(parts)) => {
+            let parts: Vec<&str> = parts.iter().filter_map(Value::as_str).collect();
+            match parts.as_slice() {
+                [_, flag, script] if flag.starts_with('-') => Some(script.to_string()),
+                _ => Some(parts.join(" ")),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// What the commands of a custom tool did to version control: the `exec` tool's inner
+/// `tools.exec_command(...)` calls, each with its `cmd`.
+fn code_vcs(name: &str, code: &str) -> VcsActions {
+    if name == "apply_patch" {
+        return VcsActions::default();
+    }
+    let starts: Vec<usize> = code.match_indices("tools.exec_command").map(|(at, _)| at).collect();
+    let mut all = VcsActions::default();
+    for (i, &at) in starts.iter().enumerate() {
+        let segment = &code[at..starts.get(i + 1).copied().unwrap_or(code.len())];
+        if let Some(cmd) = js_string(segment, "cmd") {
+            let a = vcs_actions(&cmd);
+            all.commit |= a.commit;
+            all.push |= a.push;
+            all.pull_request |= a.pull_request;
+        }
+    }
+    all
+}
+
 /// What a Codex function call did, for the trigger and activity of the request after it.
 fn call_class(name: &str, args: &Value) -> CallClass {
     match name {
-        "exec_command" | "shell" | "container.exec" => {
-            let cmd = match args.get("cmd").or(args.get("command")) {
-                Some(Value::String(c)) => Some(c.clone()),
-                Some(Value::Array(parts)) => {
-                    let parts: Vec<&str> = parts.iter().filter_map(Value::as_str).collect();
-                    match parts.as_slice() {
-                        [_, flag, script] if flag.starts_with('-') => Some(script.to_string()),
-                        _ => Some(parts.join(" ")),
-                    }
-                }
-                _ => None,
-            };
-            cmd.map_or(CallClass::System, |c| command_class(&c))
-        }
+        "exec_command" | "shell" | "container.exec" => shell_command(name, args).map_or(CallClass::System, |c| command_class(&c)),
         "apply_patch" => CallClass::Editing,
         "spawn_agent" => CallClass::Subagents,
         _ => CallClass::OtherTools,
@@ -793,6 +834,36 @@ mod tests {
         let s = p.into_session();
         use Trigger::*;
         assert_eq!(s.chains[0].requests.iter().map(Request::trigger).collect::<Vec<_>>(), [Prompt, Lookups, Edit, Run, Lookup, Continuation]);
+    }
+
+    #[test]
+    fn calls_that_commit_or_push_are_marked() {
+        use serde_json::json;
+        let mut p = parser("t");
+        let item = |payload: Value| json!({"type": "response_item", "timestamp": "2026-10-01T10:00:00Z", "payload": payload});
+        let record =
+            |n: u32| json!({"type": "token_usage_record", "payload": {"response_id": format!("r{n}"), "usage": {"input_tokens": 100, "output_tokens": 1}}});
+        for v in [
+            item(json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "ship it"}]})),
+            item(
+                json!({"type": "custom_tool_call", "name": "exec", "call_id": "c", "input": "text(await tools.exec_command({cmd: \"git push origin main\"}))"}),
+            ),
+            record(1),
+            item(json!({"type": "custom_tool_call_output", "call_id": "c", "output": "ok"})),
+            item(json!({"type": "function_call", "name": "exec_command", "call_id": "d", "arguments": "{\"cmd\":\"git -C ../zebra commit -m x\"}"})),
+            record(2),
+            item(json!({"type": "function_call_output", "call_id": "d", "output": "ok"})),
+            item(json!({"type": "function_call", "name": "exec_command", "call_id": "e", "arguments": "{\"cmd\":\"git status\"}"})),
+            record(3),
+            item(json!({"type": "function_call_output", "call_id": "e", "output": "ok"})),
+            record(4),
+        ] {
+            p.line(&v.to_string());
+        }
+        let s = p.into_session();
+        let mut acts: Vec<(bool, bool)> = s.vcs.iter().filter(|(b, _)| s.blocks[**b].kind == BlockKind::ToolUse).map(|(_, a)| (a.commit, a.push)).collect();
+        acts.dedup();
+        assert!(acts.contains(&(false, true)) && acts.contains(&(true, false)) && acts.len() == 2, "{acts:?}");
     }
 
     #[test]
