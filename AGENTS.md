@@ -24,11 +24,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo install --path crates/tokprof --root ~/.local    # the binary the author runs
 ```
 
-GitHub Actions check every push to main and every pull request (`.github/workflows/ci.yml`): the tests on Linux and macOS, the clippy line above, and `openspec validate --all --strict`. rustfmt is not checked, because the code does not follow its default style.
+GitHub Actions check every push to main and every pull request (`.github/workflows/ci.yml`): the tests on Linux, macOS and Windows, the clippy line above, and `openspec validate --all --strict`. rustfmt is not checked, because the code does not follow its default style. On Windows a path prints with `\`, so a test must not expect `/` in a printed path.
 
 ## Releases
 
-A release is a tag. Set `version` in the root `Cargo.toml`, build once so that `Cargo.lock` follows, and commit both. Push main, then a tag of that version: `git tag v0.2.0 && git push origin v0.2.0`. `.github/workflows/release.yml` checks the tag against the version, runs the CI checks, builds the macOS and Linux binaries and publishes them as a GitHub release with `SHA256SUMS`. The release notes list the commit subjects since the previous tag, without the `Archive <change>` commits. A tag with a hyphen, such as `v0.2.0-rc.1`, makes a pre-release. A run by hand (Actions → Release → Run workflow) builds the archives and keeps them as artifacts, without a release.
+A release is a tag. Set `version` in the root `Cargo.toml`, build once so that `Cargo.lock` follows, and commit both. Push main, then a tag of that version: `git tag v0.2.0 && git push origin v0.2.0`. `.github/workflows/release.yml` checks the tag against the version, runs the CI checks, builds the macOS, Linux and Windows binaries and publishes them as a GitHub release with `SHA256SUMS`. The release notes list the commit subjects since the previous tag, without the `Archive <change>` commits. A tag with a hyphen, such as `v0.2.0-rc.1`, makes a pre-release. A run by hand (Actions → Release → Run workflow) builds the archives and keeps them as artifacts, without a release.
 
 ## Layout
 

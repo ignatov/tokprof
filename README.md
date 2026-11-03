@@ -84,14 +84,14 @@ The runs, the way each agent found the other's log, and how the id runs were kep
 
 ## Install
 
-Every [release](https://github.com/ignatov/tokprof/releases) has a ready binary for macOS and Linux. This puts the latest one into `~/.local/bin` on a Mac with Apple silicon:
+Every [release](https://github.com/ignatov/tokprof/releases) has a ready binary for macOS, Linux and Windows. This puts the latest one into `~/.local/bin` on a Mac with Apple silicon:
 
 ```sh
 mkdir -p ~/.local/bin
 curl -fsSL https://github.com/ignatov/tokprof/releases/latest/download/tokprof-aarch64-apple-darwin.tar.gz | tar -xz -C ~/.local/bin tokprof
 ```
 
-On another machine, put its target in place of `aarch64-apple-darwin`:
+On another Mac or on Linux, put its target in place of `aarch64-apple-darwin`. On Windows, download the zip of its target from the release and put `tokprof.exe` into a folder on your `PATH`.
 
 | Machine | Target |
 |---|---|
@@ -99,8 +99,10 @@ On another machine, put its target in place of `aarch64-apple-darwin`:
 | Mac with Intel | `x86_64-apple-darwin` |
 | Linux on x86-64 | `x86_64-unknown-linux-gnu` |
 | Linux on ARM64 | `aarch64-unknown-linux-gnu` |
+| Windows on x86-64 | `x86_64-pc-windows-msvc` |
+| Windows on ARM64 | `aarch64-pc-windows-msvc` |
 
-The Linux binaries need glibc 2.35 or later: Ubuntu 22.04, Debian 12 or newer. There is no Windows build yet. The binaries are not notarized, so macOS refuses to run one that a browser downloaded and marked as quarantined. `curl` sets no such mark; `xattr -d com.apple.quarantine ~/.local/bin/tokprof` lifts it. `SHA256SUMS` in each release holds the checksums of the archives. Each archive also has a build provenance attestation: `gh attestation verify tokprof-<target>.tar.gz -R ignatov/tokprof` checks that the release workflow of this repository built it from the tagged commit.
+The Linux binaries need glibc 2.35 or later: Ubuntu 22.04, Debian 12 or newer. The binaries are not notarized, so macOS refuses to run one that a browser downloaded and marked as quarantined. `curl` sets no such mark; `xattr -d com.apple.quarantine ~/.local/bin/tokprof` lifts it. On Windows, tokprof cannot use the clipboard or open the browser yet: `tokprof handoff` prints the line for you to copy, and `o` in `tokprof ui` writes the HTML without opening it. `SHA256SUMS` in each release holds the checksums of the archives. Each archive also has a build provenance attestation: `gh attestation verify tokprof-<target>.tar.gz -R ignatov/tokprof` (`.zip` on Windows) checks that the release workflow of this repository built it from the tagged commit.
 
 To build from source, tokprof needs a recent stable Rust; its dependencies need 1.89 or later.
 
