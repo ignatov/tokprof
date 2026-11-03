@@ -212,10 +212,10 @@ In the list, `↑` or `k` and `↓` or `j` SHALL move the selection by one sessi
 #### Scenario: Writing and opening the HTML
 - **WHEN** `o` is pressed
 - **THEN** the footer reads `wrote <n> frames to ~/tokprof/<id>.html`, and the page is titled `tokprof: <agent> <project> <id>`
-- **AND** tokprof then tries to open the page with `open` on macOS, and with `xdg-open` elsewhere
+- **AND** tokprof then tries to open the page with `open` on macOS, with `explorer` on Windows, and with `xdg-open` elsewhere
 
 #### Scenario: No way to open the page
-- **WHEN** the `open` command is missing or fails
+- **WHEN** the command that opens the page is missing or fails
 - **THEN** the file is still written and no error is shown
 
 #### Scenario: The export fails
@@ -228,11 +228,11 @@ In the list, `↑` or `k` and `↓` or `j` SHALL move the selection by one sessi
 - **THEN** it is overwritten
 
 ### Requirement: Handoff key
-`c` SHALL copy the selected session's handoff line (handoff) to the clipboard with the first of `pbcopy`, `wl-copy` and `xclip` that works, after which the footer reads `copied the handoff line for <id>: paste it into a new session`.
+`c` SHALL copy the selected session's handoff line (handoff) to the clipboard with the first of `pbcopy`, `wl-copy`, `xclip` and `clip.exe` that works, as handoff copies, after which the footer reads `copied the handoff line for <id>: paste it into a new session`.
 
 #### Scenario: No clipboard tool
-- **WHEN** none of the three tools works
-- **THEN** nothing is copied and the footer reads `no clipboard tool (pbcopy, wl-copy, xclip); run: tokprof handoff <id>`
+- **WHEN** none of the four tools works
+- **THEN** nothing is copied and the footer reads `no clipboard tool (pbcopy, wl-copy, xclip, clip.exe); run: tokprof handoff <id>`
 
 ### Requirement: Live updates
 While it runs, `tokprof ui` SHALL follow the agents' log directories: a new session joins the list, a session whose main or subagent logs change is costed and X-rayed again, and a session whose main log is deleted or moved away leaves the list. Until the new X-ray is ready, the old one stays, with `· updating…` in its title. Where rows go when this happens belongs to Rows in place.
@@ -364,4 +364,3 @@ The hidden option `tokprof ui --dump <width>x<height>` SHALL render one frame of
 #### Scenario: Coming back
 - **WHEN** a day that was computed is shown again and no session wrote to its log since
 - **THEN** it shows at once
-
