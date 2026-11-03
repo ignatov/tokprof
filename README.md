@@ -102,7 +102,7 @@ On another Mac or on Linux, put its target in place of `aarch64-apple-darwin`. O
 | Windows on x86-64 | `x86_64-pc-windows-msvc` |
 | Windows on ARM64 | `aarch64-pc-windows-msvc` |
 
-The Linux binaries need glibc 2.35 or later: Ubuntu 22.04, Debian 12 or newer. The binaries are not notarized, so macOS refuses to run one that a browser downloaded and marked as quarantined. `curl` sets no such mark; `xattr -d com.apple.quarantine ~/.local/bin/tokprof` lifts it. On Windows, tokprof cannot use the clipboard or open the browser yet: `tokprof handoff` prints the line for you to copy, and `o` in `tokprof ui` writes the HTML without opening it. `SHA256SUMS` in each release holds the checksums of the archives. Each archive also has a build provenance attestation: `gh attestation verify tokprof-<target>.tar.gz -R ignatov/tokprof` (`.zip` on Windows) checks that the release workflow of this repository built it from the tagged commit.
+The Linux binaries need glibc 2.35 or later: Ubuntu 22.04, Debian 12 or newer. The binaries are not notarized, so macOS refuses to run one that a browser downloaded and marked as quarantined. `curl` sets no such mark; `xattr -d com.apple.quarantine ~/.local/bin/tokprof` lifts it. `SHA256SUMS` in each release holds the checksums of the archives. Each archive also has a build provenance attestation: `gh attestation verify tokprof-<target>.tar.gz -R ignatov/tokprof` (`.zip` on Windows) checks that the release workflow of this repository built it from the tagged commit.
 
 To build from source, tokprof needs a recent stable Rust; its dependencies need 1.89 or later.
 

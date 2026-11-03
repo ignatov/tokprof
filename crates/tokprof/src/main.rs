@@ -261,10 +261,10 @@ fn main() -> Result<()> {
             println!("{text}");
             if std::io::stdout().is_terminal() {
                 let done = match clipboard::copy(&text) {
-                    Some(_) => "copied to the clipboard: paste it into a new session",
-                    None => "no clipboard tool found (pbcopy, wl-copy, xclip): copy the text above",
+                    Some(_) => "copied to the clipboard: paste it into a new session".to_string(),
+                    None => format!("no clipboard tool found ({}): copy the text above", clipboard::TOOLS),
                 };
-                eprintln!("{}", style.dim(done));
+                eprintln!("{}", style.dim(&done));
             }
             return Ok(());
         }

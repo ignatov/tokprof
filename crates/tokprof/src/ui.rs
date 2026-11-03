@@ -651,7 +651,7 @@ impl App {
         let row = &self.entries[i].row;
         self.status = match crate::clipboard::copy(&tokprof_core::handoff::line(&self.catalog, &row.file)) {
             Some(_) => format!("copied the handoff line for {}: paste it into a new session", row.id),
-            None => format!("no clipboard tool (pbcopy, wl-copy, xclip); run: tokprof handoff {}", row.id),
+            None => format!("no clipboard tool ({}); run: tokprof handoff {}", crate::clipboard::TOOLS, row.id),
         };
     }
 
@@ -679,14 +679,27 @@ impl App {
                 .and_then(|_| xray::export(&catalog, &row, &pricing, &path))
                 .map(|written| {
                     if open {
-                        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-                        let _ = std::process::Command::new(opener).arg(&path).spawn();
+                        let (program, target) = opener(&path);
+                        let _ = std::process::Command::new(program).arg(target).spawn();
                     }
                     format!("wrote {written}")
                 })
                 .unwrap_or_else(|e| format!("export failed: {e:#}"));
             let _ = tx.send(Note::Status(note));
         });
+    }
+}
+
+/// The command that opens a file with the program registered for it, with the path as it takes
+/// it: `open` on macOS, `explorer` on Windows, which misreads `/` in a path, and `xdg-open`
+/// elsewhere.
+fn opener(path: &Path) -> (&'static str, PathBuf) {
+    if cfg!(target_os = "macos") {
+        ("open", path.to_path_buf())
+    } else if cfg!(windows) {
+        ("explorer", PathBuf::from(path.to_string_lossy().replace('/', "\\")))
+    } else {
+        ("xdg-open", path.to_path_buf())
     }
 }
 
@@ -907,6 +920,18 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         tx.send(Note::Change(change)).unwrap();
         app.absorb(&rx);
+    }
+
+    #[test]
+    fn a_page_opens_with_the_platform_s_opener() {
+        let (program, path) = opener(Path::new("C:/Users/me/tokprof/a.html"));
+        if cfg!(target_os = "macos") {
+            assert_eq!((program, path), ("open", PathBuf::from("C:/Users/me/tokprof/a.html")));
+        } else if cfg!(windows) {
+            assert_eq!((program, path), ("explorer", PathBuf::from(r"C:\Users\me\tokprof\a.html")));
+        } else {
+            assert_eq!((program, path), ("xdg-open", PathBuf::from("C:/Users/me/tokprof/a.html")));
+        }
     }
 
     #[test]
