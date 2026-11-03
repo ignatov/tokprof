@@ -62,6 +62,15 @@ struct ApiRequest {
     failed: Option<Option<String>>,
 }
 
+/// The attempts of a stream that failed with an API error since its latest other request: the
+/// first one's send, how many, the last error, and where the latest one is (chain, request).
+struct FailedAttempts {
+    first_ms: i64,
+    count: u32,
+    error: Option<String>,
+    latest: (usize, usize),
+}
+
 /// An `api_error` line of a chain without request-audit lines: its time, the delay before the
 /// next attempt, and the error's text.
 #[derive(Clone)]
@@ -805,9 +814,8 @@ impl Parser {
             .filter_map(|(i, r)| r.request_ref.as_deref().map(|id| (id, i)))
             .collect();
         let mut used = vec![false; self.responses.len()];
-        // Per stream, the attempts that failed with an API error since its latest other request:
-        // the first one's send, how many, the last error, and where the latest one is.
-        let mut retried: HashMap<(String, String), (i64, u32, Option<String>, (usize, usize))> = HashMap::new();
+        // Per stream, the attempts that failed with an API error since its latest other request.
+        let mut retried: HashMap<(String, String), FailedAttempts> = HashMap::new();
 
         for req in &self.requests {
             let (name, kind) = stream_chain(&req.stream.0, &req.stream.1, self.subagent_file);
@@ -829,11 +837,11 @@ impl Parser {
             // An attempt after failed ones repeats them: it takes over their first send, their count
             // and their last error, and the attempt before it keeps no time of its own.
             let before = retried.remove(&req.stream);
-            if let Some((first, count, error, (pci, pri))) = &before {
-                base.first_sent_ms = Some(*first);
-                base.retries = *count;
-                base.retry_error = error.as_deref().map(Arc::from);
-                let prev = &mut chains[*pci].requests[*pri];
+            if let Some(b) = &before {
+                base.first_sent_ms = Some(b.first_ms);
+                base.retries = b.count;
+                base.retry_error = b.error.as_deref().map(Arc::from);
+                let prev = &mut chains[b.latest.0].requests[b.latest.1];
                 (prev.first_sent_ms, prev.sent_ms, prev.retries, prev.retry_error) = (None, None, 0, None);
             }
             let answered = by_ref.contains_key(req.id.as_str());
@@ -843,10 +851,13 @@ impl Parser {
                 if let Some(e) = error {
                     base.retry_error = Some(Arc::from(e.as_str()));
                 }
-                let first = before.as_ref().map_or(req.ts_ms, |b| b.0);
-                let at = (ci, chains[ci].requests.len());
-                let last = base.retry_error.as_deref().map(str::to_string);
-                retried.insert(req.stream.clone(), (first, base.retries + 1, last, at));
+                let attempts = FailedAttempts {
+                    first_ms: before.as_ref().map_or(req.ts_ms, |b| b.first_ms),
+                    count: base.retries + 1,
+                    error: base.retry_error.as_deref().map(str::to_string),
+                    latest: (ci, chains[ci].requests.len()),
+                };
+                retried.insert(req.stream.clone(), attempts);
             }
             match by_ref.get(req.id.as_str()) {
                 Some(&ri) => {
