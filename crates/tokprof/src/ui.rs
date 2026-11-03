@@ -69,9 +69,9 @@ enum Note {
     Change(Change),
     Status(String),
     /// A day view: the day asked for (`None` for the day of the latest action), the date it shows,
-    /// the count of log changes and the pane width it was computed for, its text, and how long it
-    /// took.
-    Day(Option<i64>, i64, u32, u16, String, Duration),
+    /// the count of log changes and the width it was computed for, the local hour its strip starts
+    /// at, its text, and how long it took.
+    Day(Option<i64>, i64, u32, u16, i64, String, Duration),
 }
 
 /// A day the browser computed.
@@ -84,8 +84,9 @@ struct DayText {
     width: u16,
 }
 
-/// What the day worker is asked: the day, the count of log changes, the pane width.
-type DayJob = (Option<i64>, u32, u16);
+/// What the day worker is asked: the day, the count of log changes, the width, and the local hour
+/// the strip starts at once a first day set it.
+type DayJob = (Option<i64>, u32, u16, Option<i64>);
 
 /// A listed session and what is known about it.
 struct Entry {
@@ -154,6 +155,8 @@ struct App {
     day_tx: Sender<DayJob>,
     /// The width of the right pane when it was last drawn.
     pane_width: u16,
+    /// The local hour the first day shown starts its strip at; later days start theirs there too.
+    day_axis: Option<i64>,
 }
 
 /// The colors of the agent column, by the agent's place in the registry.
@@ -195,18 +198,19 @@ pub fn run(catalog: Arc<Catalog>, pricing: Pricing, dump: Option<(u16, u16)>, se
                 while let Ok(newer) = day_rx.try_recv() {
                     job = newer;
                 }
-                let (key, changes, width) = job;
+                let (key, changes, width, axis) = job;
                 let started = Instant::now();
-                let build = || crate::day::build(&catalog, &select, &pricing, key, now_ms(), strip_columns(width));
+                let style = tokprof_core::fmt::Style::with_color(true);
+                let build = || crate::day::build(&catalog, &select, &pricing, key, now_ms(), strip_columns(width), axis, &style);
                 let built = match &pool {
                     Some(pool) => pool.install(build),
                     None => build(),
                 };
-                let (date, text) = match built {
-                    Ok(day) => (day.date, day.text),
-                    Err(e) => (key.unwrap_or_else(|| rhythm::date_of(now_ms(), &rhythm::local_offset)), format!("error: {e:#}")),
+                let (date, hour, text) = match built {
+                    Ok(day) => (day.date, day.axis_hour, day.text),
+                    Err(e) => (key.unwrap_or_else(|| rhythm::date_of(now_ms(), &rhythm::local_offset)), axis.unwrap_or(0), format!("error: {e:#}")),
                 };
-                if tx.send(Note::Day(key, date, changes, width, text, started.elapsed())).is_err() {
+                if tx.send(Note::Day(key, date, changes, width, hour, text, started.elapsed())).is_err() {
                     return;
                 }
             }
@@ -310,6 +314,7 @@ impl App {
             day_after: Instant::now(),
             day_tx,
             pane_width: 0,
+            day_axis: None,
         };
         app.refilter();
         app
@@ -343,9 +348,11 @@ impl App {
                     listed |= self.apply(change);
                 }
                 Note::Status(s) => self.status = s,
-                Note::Day(key, date, changes, width, text, took) => {
-                    self.days.insert(key, DayText { date, text: Text::raw(text), changes, width });
-                    if self.day_pending == Some((key, changes, width)) {
+                Note::Day(key, date, changes, width, hour, text, took) => {
+                    let text = text.into_text().unwrap_or_else(|_| Text::raw(text));
+                    self.days.insert(key, DayText { date, text, changes, width });
+                    self.day_axis.get_or_insert(hour);
+                    if self.day_pending.is_some_and(|p| (p.0, p.1, p.2) == (key, changes, width)) {
                         self.day_pending = None;
                     }
                     self.day_after = Instant::now() + took;
@@ -492,7 +499,7 @@ impl App {
     fn request_day(&mut self) {
         let Some(key) = self.day else { return };
         let width = self.pane_width;
-        if width == 0 || self.day_pending == Some((key, self.changes, width)) {
+        if width == 0 || self.day_pending.is_some_and(|p| (p.0, p.1, p.2) == (key, self.changes, width)) {
             return;
         }
         if let Some(d) = self.days.get(&key)
@@ -501,8 +508,9 @@ impl App {
         {
             return;
         }
-        self.day_pending = Some((key, self.changes, width));
-        let _ = self.day_tx.send((key, self.changes, width));
+        let job = (key, self.changes, width, self.day_axis);
+        self.day_pending = Some(job);
+        let _ = self.day_tx.send(job);
     }
 
     /// Steps the shown day by `delta` days, never past the day of the latest action.
@@ -591,6 +599,12 @@ impl App {
         let page = height.saturating_sub(4).max(1);
         match key.code {
             KeyCode::Char('q') => return false,
+            // The day takes the whole screen; these go back to the list with the X-ray.
+            KeyCode::Char('d') | KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace if self.day.is_some() => {
+                self.day = None;
+                self.zoom = false;
+                self.scroll = 0;
+            }
             KeyCode::Esc if self.zoom => self.zoom = false,
             KeyCode::Esc if !self.filter.is_empty() => {
                 self.filter.clear();
@@ -619,7 +633,8 @@ impl App {
             KeyCode::Char('o') => self.export("html", true),
             KeyCode::Char('c') => self.handoff(),
             KeyCode::Char('d') => {
-                self.day = if self.day.is_some() { None } else { Some(None) };
+                self.day = Some(None);
+                self.zoom = true;
                 self.scroll = 0;
             }
             KeyCode::Char('[') => self.step_day(-1),
@@ -1046,7 +1061,7 @@ mod tests {
     /// The day view the worker would send for `key`, showing `date`.
     fn day_note(app: &mut App, key: Option<i64>, date: i64, changes: u32, text: &str) {
         let (tx, rx) = mpsc::channel();
-        tx.send(Note::Day(key, date, changes, app.pane_width, text.to_string(), Duration::ZERO)).unwrap();
+        tx.send(Note::Day(key, date, changes, app.pane_width, 4, text.to_string(), Duration::ZERO)).unwrap();
         app.absorb(&rx);
     }
 
@@ -1076,13 +1091,15 @@ mod tests {
         assert!(title.contains(&format!(" day · {} ", label(today(), "%a %Y-%m-%d"))), "{title}");
         assert!(body.contains(&format!("computing the day of {}…", label(today(), "%Y-%m-%d"))), "{body}");
         a.request_day();
-        assert_eq!(a.day_pending, Some((None, 0, 160 - LIST_WIDTH)), "the day is asked for at the pane's width");
+        assert!(a.zoom, "the day takes the whole screen");
+        assert_eq!(a.day_pending, Some((None, 0, 160, None)), "the day is asked for at the screen's width");
         day_note(&mut a, None, today() - 1, 0, "tokprof · day\nday       …");
         let (title, body) = pane(&mut a);
         assert!(title.contains(&format!(" day · {} ", label(today() - 1, "%a %Y-%m-%d"))), "the latest action's day: {title}");
         assert!(body.contains("tokprof · day"), "{body}");
+        assert_eq!(a.day_axis, Some(4), "the first day sets the hour strips start at");
         press(&mut a, KeyCode::Char('d'));
-        assert!(a.day.is_none());
+        assert!(a.day.is_none() && !a.zoom, "d goes back to the list with the X-ray");
         assert!(!pane(&mut a).0.contains(" day · "));
     }
 
@@ -1123,6 +1140,17 @@ mod tests {
         assert_eq!(a.scroll, 1, "the full-screen day scrolls");
         press(&mut a, KeyCode::Char('['));
         assert_eq!((a.day, a.zoom, a.scroll), (Some(Some(99)), true, 0), "[ works full screen");
+        pane(&mut a);
+        a.request_day();
+        assert_eq!(a.day_pending, Some((Some(99), 0, 160, Some(4))), "the day before starts its strip at the first day's hour");
+        for key in [KeyCode::Esc, KeyCode::Left, KeyCode::Char('h'), KeyCode::Backspace] {
+            if a.day.is_none() {
+                press(&mut a, KeyCode::Char('d'));
+            }
+            assert!(a.day.is_some() && a.zoom);
+            assert!(press(&mut a, key), "{key:?} does not quit");
+            assert_eq!((a.day, a.zoom), (None, false), "{key:?} goes back to the list");
+        }
     }
 
     #[test]
@@ -1135,7 +1163,7 @@ mod tests {
         assert_eq!(a.day_pending, None, "fresh: nothing to ask");
         take(&mut a, Change::Session(Box::new(row(0, "~/src/a", 5))));
         a.request_day();
-        assert_eq!(a.day_pending, Some((None, 1, 160 - LIST_WIDTH)), "a log changed: computed again");
+        assert_eq!(a.day_pending, Some((None, 1, 160, Some(4))), "a log changed: computed again");
         assert!(pane(&mut a).0.contains(" · updating…"), "the old view shows until the new one is ready");
         day_note(&mut a, None, 100, 1, "latest again");
         assert!(!pane(&mut a).0.contains("updating"));
@@ -1151,6 +1179,6 @@ mod tests {
         assert!(pane(&mut a).1.contains("the day before"), "and shows at once");
         press(&mut a, KeyCode::Char(']'));
         a.request_day();
-        assert_eq!(a.day_pending, Some((None, 2, 160 - LIST_WIDTH)), "the current day is, since logs changed");
+        assert_eq!(a.day_pending, Some((None, 2, 160, Some(4))), "the current day is, since logs changed");
     }
 }

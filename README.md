@@ -197,8 +197,8 @@ The list's last column is the cost of one more request and its share of the sess
 | `f` | Write the session's JFR for IntelliJ Profiler to `~/tokprof/<id>.jfr`, or into `$TOKPROF_DIR` if set |
 | `o` | Write the session's HTML flame graph to `~/tokprof/<id>.html`, or into `$TOKPROF_DIR`, and open it in the browser |
 | `c` | Copy the `tokprof handoff` line for the session, to continue it in a new session |
-| `d` | Show the day of your latest message in the right pane instead of the X-ray, as `tokprof day` prints it; `d` again shows the X-ray |
-| `[` `]` | With the day shown, step to the day before or after, never past the latest |
+| `d` | Show the day of your latest message on the whole screen, as `tokprof day` prints it; `d`, `esc`, `←`, `h` or backspace go back to the list |
+| `[` `]` | With the day shown, step to the day before or after, never past the latest; the strips keep the hours of the first day shown |
 | `q`, Ctrl+C, or `esc` in the list | Quit |
 
 The X-ray shows:
@@ -353,18 +353,18 @@ day       Mon 2026-11-02 04:21 → Tue 2026-11-03 04:24
 night     before the day 00:22–08:20 (8.0h), after it 22:45–10:03 (11.3h); a day runs from the middle of one night to the middle of the next
 left out  11 sessions that nobody typed in: a program ran them, or they ran in a temporary folder
 
-                     08  09  10  11  12  13  14  15  16  17  18  19  20  21  22
-you                   ######   ###     ## # ###      ###  #   # #  ########   # #
-a1f3c9 Cache report             **==---*==*=*?*=-----***=-----*
-b27e40 Crate split      ****===**====--*
-c90d12 Idle notice                                                 **=*=-**
-d4e5f6 Setup view                                               *==*=*=***=
-e7a8b9 Cost counter                     *=*=*=-------**
-f0c1d2 Session list                                  ***==*
-0a1b2c Tool table        **
-1c2d3e Codex project                                                          !
+                     04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22 23 00 01 02 03
+you                               ▓▓▓▓  ▓▓▓   ▓▓▓▓▓▓     ▓▓  ▓  ▓▓ ▓▓▓▓▓▓▓ ▓▓▓
+a1f3c9 Cache report                      **█░░░*****█░░░░**█░░░░*
+b27e40 Crate split                 ***██**███░*
+c90d12 Idle notice                                                  *█*░**
+d4e5f6 Setup view                                                *█*█****
+e7a8b9 Cost counter                            **█*█░░░░░*
+f0c1d2 Session list                                      **██*
+0a1b2c Tool table                   **
+1c2d3e Codex project                                                       *!
 4 more sessions
-= agent working   - waiting for your answer   * your message   ? its question   ! you stopped it   # you were there
+█ agent working   ░ waiting for your answer   * your message   ? its question   ! you stopped it   ▓ you were there
 
 sittings  16, 4.1h at the keyboard, 59 messages to 12 sessions; median sitting 11m, median break 28m
 left      the agents stood still a median 19m after you left, and worked through 68% of a median break
@@ -374,7 +374,7 @@ stops     2 interrupts, 0 messages typed while the agent worked, 3 questions fro
 cache     5 cold returns, $15.48 in their first requests, $14.91 of it avoidable
 ```
 
-- The strip has a lane per session with your messages that day, most messages first, and folds the rest into one line. `=` is the agent at work, `-` a finished turn that waits for your answer, `*` your message, `?` the agent's question, `!` your interrupt. The `you` lane marks your sittings. A column is 10, 15 or 20 minutes, whichever fits the day into 72 columns; in `tokprof ui` the strip fits its pane, with 30- or 60-minute columns when the pane is narrow.
+- The strip covers 24 hours from the hour the day starts in, so every day has the same scale. It has a lane per session with your messages that day, most messages first, and folds the rest into one line. `█` (green) is the agent at work, `░` (yellow) a finished turn that waits for your answer, `*` (cyan) your message, `?` (magenta) the agent's question, `!` (red) your interrupt, and `▓` (blue) in the `you` lane your sittings. Colors show in a terminal and leave with `NO_COLOR` or a pipe. In `tokprof day` a column is 20 minutes; `tokprof ui` shows the day on the whole screen, with 10-minute columns on a screen 200 columns wide.
 - A sitting is a run of your messages, answers and interrupts, across all sessions, each less than 15 minutes after the one before. A break is the time between two sittings of one day.
 - `left` says how soon after you left all agents stood still, and how much of a break at least one of them worked. A short time there means each message left the agents little work for the break.
 - `present` says how often an agent ended a turn while you sat there, and how many turns the agent started itself, after a background task or a message from another session.

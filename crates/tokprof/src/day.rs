@@ -7,6 +7,7 @@ use anyhow::{Result, bail};
 
 use tokprof_core::analysis::{self, Filter};
 use tokprof_core::catalog::Catalog;
+use tokprof_core::fmt::Style;
 use tokprof_core::pauses::Pauses;
 use tokprof_core::pricing::Pricing;
 use tokprof_core::query::Query;
@@ -26,6 +27,8 @@ pub struct Day {
     pub read: String,
     /// The warnings about logs that could not be read.
     pub warnings: Vec<String>,
+    /// The local hour the strip starts at, so that other days can start theirs there too.
+    pub axis_hour: i64,
 }
 
 /// The logs a day view reads: main logs last written at or after `from` and created before
@@ -57,8 +60,10 @@ pub fn window(date: Option<i64>, now_ms: i64, offset: Offset) -> (i64, i64) {
 }
 
 /// The day view of a date, or of the day of the latest action, for a strip at most `columns`
-/// wide.
-pub fn build(catalog: &Catalog, select: &Query, pricing: &Pricing, date: Option<i64>, now_ms: i64, columns: i64) -> Result<Day> {
+/// wide over the 24 hours from `axis_hour` on the day's date, by default from the hour the day
+/// starts in.
+#[allow(clippy::too_many_arguments)]
+pub fn build(catalog: &Catalog, select: &Query, pricing: &Pricing, date: Option<i64>, now_ms: i64, columns: i64, axis_hour: Option<i64>, style: &Style) -> Result<Day> {
     let started = Instant::now();
     let offset: Offset = &rhythm::local_offset;
     let (from, to) = window(date, now_ms, offset);
@@ -97,8 +102,23 @@ pub fn build(catalog: &Catalog, select: &Query, pricing: &Pricing, date: Option<
     let bounds = view.days.bounds(date, offset);
     let returns: Vec<_> = cold.agents.values().flat_map(|a| a.returns.iter().copied()).filter(|r| r.ts_ms >= bounds.0 && r.ts_ms < bounds.1).collect();
     let priced = cold.agents.values().any(|a| a.priced);
-    let text = crate::render_rhythm::day(&view, date, bounds, offset, &returns, priced, columns);
-    Ok(Day { date, text, read, warnings: crate::warnings(&stats.unreadable) })
+    let hour = axis_hour.unwrap_or_else(|| (bounds.0 + offset(bounds.0)).rem_euclid(24 * HOUR_MS) / HOUR_MS);
+    let axis = axis_at(bounds.0, hour, offset);
+    let text = crate::render_rhythm::day(&view, date, bounds, offset, &returns, priced, columns, Some(axis), style);
+    Ok(Day { date, text, read, warnings: crate::warnings(&stats.unreadable), axis_hour: hour })
+}
+
+/// The instant at a local hour that is nearest to `start`: the axis a strip starts at.
+fn axis_at(start: i64, hour: i64, offset: Offset) -> i64 {
+    const DAY_MS: i64 = 24 * HOUR_MS;
+    let axis = start - (start + offset(start)).rem_euclid(DAY_MS) + hour * HOUR_MS;
+    if axis > start + DAY_MS / 2 {
+        axis - DAY_MS
+    } else if axis <= start - DAY_MS / 2 {
+        axis + DAY_MS
+    } else {
+        axis
+    }
 }
 
 /// Whether a session has a request of the client the filter asks for; any session without one.
@@ -140,6 +160,15 @@ mod tests {
         // Without a date, at 02:10 on 11-03: from 18:00 on 11-01, so that 11-02 is in it.
         let now = MIDNIGHT + 26 * HOUR_MS + 10 * 60_000;
         assert_eq!(window(None, now, &off), (MIDNIGHT - 6 * HOUR_MS, now + 1));
+    }
+
+    #[test]
+    fn the_axis_hour_is_the_one_nearest_the_days_start() {
+        let at = |h: i64, m: i64| MIDNIGHT + h * HOUR_MS + m * 60_000;
+        assert_eq!(axis_at(at(4, 21), 4, &off), at(4, 0), "the hour the day starts in");
+        assert_eq!(axis_at(at(5, 14), 4, &off), at(4, 0), "an hour kept from another day");
+        assert_eq!(axis_at(at(-1, 30), 23, &off), at(-1, 0), "a day that starts the evening before");
+        assert_eq!(axis_at(at(23, 30), 4, &off), at(28, 0), "the nearest 04:00 is the next morning");
     }
 
     #[test]

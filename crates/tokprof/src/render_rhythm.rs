@@ -7,8 +7,10 @@ use tokprof_core::pauses::ColdReturn;
 use tokprof_core::rhythm::{self, Offset, View};
 
 /// The day view of a date that runs `[from, to)`, with the cold returns of its requests and a
-/// strip at most `columns` wide. The current day ends at `i64::MAX`.
-pub fn day(view: &View, date: i64, (from, to): (i64, i64), offset: Offset, returns: &[ColdReturn], priced: bool, columns: i64) -> String {
+/// strip at most `columns` wide over the 24 hours from `axis`. The current day ends at
+/// `i64::MAX`.
+#[allow(clippy::too_many_arguments)]
+pub fn day(view: &View, date: i64, (from, to): (i64, i64), offset: Offset, returns: &[ColdReturn], priced: bool, columns: i64, axis: Option<i64>, style: &fmt::Style) -> String {
     let mut out = String::from("tokprof · day\n");
     let end = if to == i64::MAX { "now".to_string() } else { local_time(to, "%a %Y-%m-%d %H:%M") };
     let _ = writeln!(out, "day       {} → {end}", local_time(from, "%a %Y-%m-%d %H:%M"));
@@ -17,7 +19,7 @@ pub fn day(view: &View, date: i64, (from, to): (i64, i64), offset: Offset, retur
         let _ = writeln!(out, "{line}");
     }
     let summary = view.summary((from, to));
-    let Some(strip) = view.strip(&summary, (from, to), columns, offset) else {
+    let Some(strip) = view.strip(&summary, (from, to), columns, axis, style, offset) else {
         let _ = writeln!(out, "\nNo messages on {}.", local_time(rhythm::midnight(date, offset) + 12 * 3_600_000, "%Y-%m-%d"));
         return out;
     };
@@ -93,7 +95,7 @@ mod tests {
         let view = View::new(Vec::new(), 0, &|_| 0);
         // 2026-11-02 in UTC.
         let date = 1_793_577_600_000 / 86_400_000;
-        let text = day(&view, date, view.days.bounds(date, &|_| 0), &|_| 0, &[], true, 72);
+        let text = day(&view, date, view.days.bounds(date, &|_| 0), &|_| 0, &[], true, 72, None, &fmt::Style::with_color(false));
         assert!(text.starts_with("tokprof · day\nday       "), "{text}");
         assert!(text.contains("\nnight     no pause before the day; it starts at midnight\n"), "{text}");
         assert!(text.ends_with("\nNo messages on 2026-11-02.\n"), "{text}");

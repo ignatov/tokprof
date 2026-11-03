@@ -672,10 +672,11 @@ impl View {
         Summary::of(&lanes, window, &self.days)
     }
 
-    /// The strip of a day, at most `columns` wide.
-    pub fn strip(&self, summary: &Summary, window: (i64, i64), columns: i64, offset: Offset) -> Option<Strip> {
+    /// The strip of a day, at most `columns` wide, over the 24 hours from `axis`, by default the
+    /// whole hour at or before the day's start.
+    pub fn strip(&self, summary: &Summary, window: (i64, i64), columns: i64, axis: Option<i64>, style: &fmt::Style, offset: Offset) -> Option<Strip> {
         let pairs: Vec<(&Timeline, &Lane)> = self.kept().collect();
-        Strip::of(&pairs, summary, window, &self.days, columns, offset)
+        Strip::of(&pairs, summary, window, &self.days, columns, axis, style, offset)
     }
 }
 
@@ -734,6 +735,74 @@ impl SessionRhythm {
     }
 }
 
+/// What a column of a lane shows, from the least to the most telling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Cell {
+    Empty,
+    Wait,
+    Work,
+    Question,
+    Message,
+    Interrupt,
+    /// The user sat at the agents, in the `you` lane.
+    Present,
+}
+
+impl Cell {
+    const LEGEND: [(Cell, &'static str); 6] = [
+        (Cell::Work, "agent working"),
+        (Cell::Wait, "waiting for your answer"),
+        (Cell::Message, "your message"),
+        (Cell::Question, "its question"),
+        (Cell::Interrupt, "you stopped it"),
+        (Cell::Present, "you were there"),
+    ];
+
+    fn mark(self) -> char {
+        match self {
+            Cell::Empty => ' ',
+            Cell::Wait => '░',
+            Cell::Work => '█',
+            Cell::Question => '?',
+            Cell::Message => '*',
+            Cell::Interrupt => '!',
+            Cell::Present => '▓',
+        }
+    }
+
+    /// The ANSI color of the mark: the 16 standard colors, which read on light and dark themes.
+    fn color(self) -> &'static str {
+        match self {
+            Cell::Empty => "0",
+            Cell::Wait => "33",
+            Cell::Work => "32",
+            Cell::Question => "1;35",
+            Cell::Message => "1;36",
+            Cell::Interrupt => "1;31",
+            Cell::Present => "34",
+        }
+    }
+}
+
+/// A row of cells as text: runs of one kind take one color code, and trailing spaces go.
+fn paint(cells: &[Cell], style: &fmt::Style) -> String {
+    let end = cells.iter().rposition(|&c| c != Cell::Empty).map_or(0, |i| i + 1);
+    let mut out = String::new();
+    let mut i = 0;
+    while i < end {
+        let kind = cells[i];
+        let run = cells[i..end].iter().take_while(|&&c| c == kind).count();
+        let marks: String = std::iter::repeat_n(kind.mark(), run).collect();
+        if kind == Cell::Empty {
+            out.push_str(&marks);
+        } else {
+            out.push_str(&style.paint(kind.color(), &marks));
+        }
+        i += run;
+    }
+    out
+}
+
 /// The day as a strip: an hours row, the user's sittings and a lane per session.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Strip {
@@ -742,36 +811,28 @@ pub struct Strip {
 
 impl Strip {
     /// The strip of a day `[from, to)`, or `None` when the user did not act in it. `lanes` pairs
-    /// each timeline with its lane.
-    pub fn of(lanes: &[(&Timeline, &Lane)], summary: &Summary, (from, to): (i64, i64), days: &Days, columns: i64, offset: Offset) -> Option<Strip> {
-        let first = *summary.sittings.first().map(|(a, _)| a)?;
-        let last = summary.sittings.last().map_or(first, |s| s.1);
+    /// each timeline with its lane. It covers 24 hours from `axis`, by default the whole hour at
+    /// or before `from`, in the shortest column that fits `columns`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn of(lanes: &[(&Timeline, &Lane)], summary: &Summary, (from, to): (i64, i64), days: &Days, columns: i64, axis: Option<i64>, style: &fmt::Style, offset: Offset) -> Option<Strip> {
+        summary.sittings.first()?;
         let local = |ts: i64| ts + offset(ts);
-        let floor_hour = |ts: i64| ts - local(ts).rem_euclid(HOUR);
-        let begin = floor_hour(first);
-        let end = floor_hour(last) + HOUR;
-        let minutes = COLUMN_MINUTES.iter().copied().find(|m| (end - begin + m * MINUTE - 1) / (m * MINUTE) <= columns).unwrap_or(60);
+        let begin = axis.unwrap_or_else(|| from - local(from).rem_euclid(HOUR));
+        let end = begin + DAY;
+        let minutes = COLUMN_MINUTES.iter().copied().find(|m| DAY / (m * MINUTE) <= columns).unwrap_or(60);
         let col = minutes * MINUTE;
-        let n = ((end - begin) / col).max(1) as usize;
+        let n = (DAY / col) as usize;
         let at = |ts: i64| ((ts - begin).div_euclid(col)).clamp(0, n as i64 - 1) as usize;
-        let span = |row: &mut [char], a: i64, b: i64, c: char, rank: &dyn Fn(char) -> u8| {
-            let (a, b) = (a.max(begin).max(from), b.min(end).min(to));
+        let span = |row: &mut [Cell], a: i64, b: i64, c: Cell| {
+            let (a, b) = (a.max(from), b.min(to));
             if b < a {
                 return;
             }
             for cell in &mut row[at(a)..=at(b)] {
-                if rank(c) > rank(*cell) {
+                if c > *cell {
                     *cell = c;
                 }
             }
-        };
-        let rank = |c: char| match c {
-            '!' => 5,
-            '*' => 4,
-            '?' => 3,
-            '=' => 2,
-            '-' => 1,
-            _ => 0,
         };
         let mut hours = vec![' '; n];
         let mut last_label: Option<usize> = None;
@@ -788,11 +849,11 @@ impl Strip {
             h += HOUR;
         }
         let mut lines = vec![format!("{:w$} {}", "", hours.iter().collect::<String>().trim_end(), w = LABEL_WIDTH)];
-        let mut you = vec![' '; n];
+        let mut you = vec![Cell::Empty; n];
         for &(a, b) in &summary.sittings {
-            span(&mut you, a, b, '#', &|c| u8::from(c == '#'));
+            span(&mut you, a, b, Cell::Present);
         }
-        lines.push(format!("{:w$} {}", "you", you.iter().collect::<String>().trim_end(), w = LABEL_WIDTH));
+        lines.push(format!("{:w$} {}", "you", paint(&you, style), w = LABEL_WIDTH));
         let mut shown: Vec<(&Timeline, &Lane, usize)> = lanes
             .iter()
             .map(|(t, l)| (*t, *l, l.actions.iter().filter(|(ts, _)| *ts >= from && *ts < to).count()))
@@ -800,31 +861,36 @@ impl Strip {
             .collect();
         shown.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.id.cmp(&b.0.id)));
         for (t, l, _) in shown.iter().take(STRIP_LANES) {
-            let mut row = vec![' '; n];
+            let mut row = vec![Cell::Empty; n];
             for &(end, msg) in &l.answers {
                 if days.day_of(end) == days.day_of(msg) {
-                    span(&mut row, end, msg, '-', &rank);
+                    span(&mut row, end, msg, Cell::Wait);
                 }
             }
             for &(a, b) in &l.work {
-                span(&mut row, a, b, '=', &rank);
+                span(&mut row, a, b, Cell::Work);
             }
             for &(ask, _) in &l.questions {
-                span(&mut row, ask, ask, '?', &rank);
+                span(&mut row, ask, ask, Cell::Question);
             }
             for &(ts, e) in &l.actions {
-                let c = if e == Event::Interrupt { '!' } else if e.is_message() { '*' } else { continue };
-                span(&mut row, ts, ts, c, &rank);
+                let c = if e == Event::Interrupt { Cell::Interrupt } else if e.is_message() { Cell::Message } else { continue };
+                span(&mut row, ts, ts, c);
             }
             let id: String = t.id.chars().take(6).collect();
             let label = fmt::clip_end(&format!("{id} {}", t.title.as_deref().unwrap_or("")), LABEL_WIDTH);
-            lines.push(format!("{label:LABEL_WIDTH$} {}", row.iter().collect::<String>().trim_end()));
+            lines.push(format!("{label:LABEL_WIDTH$} {}", paint(&row, style)));
         }
         if shown.len() > STRIP_LANES {
             lines.push(fmt::count((shown.len() - STRIP_LANES) as u64, "more session", "more sessions"));
         }
-        lines.push("= agent working   - waiting for your answer   * your message   ? its question   ! you stopped it   # you were there".to_string());
+        lines.push(Strip::legend(style));
         Some(Strip { lines })
+    }
+
+    /// What each mark means, each in its color.
+    pub fn legend(style: &fmt::Style) -> String {
+        Cell::LEGEND.iter().map(|(c, what)| format!("{} {what}", style.paint(c.color(), &c.mark().to_string()))).collect::<Vec<_>>().join("   ")
     }
 }
 
@@ -1156,15 +1222,15 @@ mod tests {
     }
 
     fn strip(lanes: &[(Timeline, Lane)]) -> Vec<String> {
-        strip_in(lanes, 72)
+        strip_in(lanes, 72, false)
     }
 
-    fn strip_in(lanes: &[(Timeline, Lane)], columns: i64) -> Vec<String> {
+    fn strip_in(lanes: &[(Timeline, Lane)], columns: i64, color: bool) -> Vec<String> {
         let pairs: Vec<(&Timeline, &Lane)> = lanes.iter().map(|(t, l)| (t, l)).collect();
         let refs: Vec<&Lane> = lanes.iter().map(|(_, l)| l).collect();
         let day = night().bounds(nov2(), &off);
         let s = Summary::of(&refs, day, &night());
-        Strip::of(&pairs, &s, day, &night(), columns, &off).unwrap().lines
+        Strip::of(&pairs, &s, day, &night(), columns, None, &fmt::Style::with_color(color), &off).unwrap().lines
     }
 
     fn lane(id: &str, title: &str, events: &[(i64, Event)]) -> (Timeline, Lane) {
@@ -1174,39 +1240,80 @@ mod tests {
         (tl, l)
     }
 
-    #[test]
-    fn the_strip_columns_and_marks() {
-        let lines = strip(&[lane(
+    fn marked() -> (Timeline, Lane) {
+        lane(
             "ecad11b9-0000",
             "Инфографика прерываний",
-            &[(t(8, 20), Typed), (t(8, 30), Request), (t(8, 40), Request), (t(8, 50), TurnEnd), (t(9, 30), Typed), (t(9, 31), Question), (t(10, 10), Answer), (t(10, 20), Interrupt), (t(22, 26), Typed)],
-        )]);
-        assert_eq!(lines[0], format!("{:20} 08  09  10  11  12  13  14  15  16  17  18  19  20  21  22", ""));
-        // 08:00–23:00 in 15-minute columns: the message at 08:20 is in the second.
+            &[
+                (t(8, 20), Typed),
+                (t(8, 30), Request),
+                (t(8, 40), Request),
+                (t(8, 50), TurnEnd),
+                (t(9, 30), Typed),
+                (t(9, 31), Question),
+                (t(10, 10), Answer),
+                (t(10, 20), Interrupt),
+                (t(22, 26), Typed),
+            ],
+        )
+    }
+
+    #[test]
+    fn the_strip_covers_24_hours_from_the_days_start() {
+        let lines = strip(&[marked()]);
+        // The day starts at 05:00: 24 hours in 72 columns of 20 minutes, three to an hour.
+        assert_eq!(lines[0], format!("{:20} 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22 23 00 01 02 03 04", ""));
         let row = &lines[2];
         assert!(row.starts_with("ecad11 Инфографика…  "), "{row}");
         let cells: Vec<char> = row.chars().skip(21).collect();
-        assert_eq!(cells[0], ' ');
-        assert_eq!(cells[1], '*');
-        assert_eq!(cells[2], '=', "08:30 works");
-        assert_eq!(cells[3], '=', "08:45 ends at 08:50");
-        assert_eq!(cells[4], '-', "09:00 waits for the answer");
-        assert_eq!(cells[6], '*', "09:30 the message wins over the question");
-        assert_eq!(cells[7], ' ', "09:45 waits for the answer to its question");
-        assert_eq!(cells[8], '=', "10:00 works again after the answer at 10:10");
-        assert_eq!(cells[9], '!', "10:15 the interrupt");
-        assert_eq!(cells.len(), 58, "the row ends at the message at 22:26");
-        assert_eq!(lines.last().unwrap(), "= agent working   - waiting for your answer   * your message   ? its question   ! you stopped it   # you were there");
-        assert!(lines[1].starts_with(&format!("{:20}  #", "you")), "{}", lines[1]);
+        assert_eq!(&cells[..10], &[' '; 10]);
+        assert_eq!(cells[10], '*', "the message at 08:20");
+        assert_eq!(cells[11], '█', "work until 08:50");
+        assert_eq!(cells[12], '░', "waiting for the answer");
+        assert_eq!(cells[13], '*', "09:20–09:40: the message wins over the question");
+        assert_eq!(cells[14], ' ', "09:40–10:00 waits for the answer to its question");
+        assert_eq!(cells[15], '█', "10:00–10:20 works again after the answer at 10:10");
+        assert_eq!(cells[16], '!', "the interrupt at 10:20");
+        assert_eq!(cells.len(), 53, "the row ends at the message at 22:26");
+        assert!(lines[1].starts_with(&format!("{:20} {}", "you", " ".repeat(10))) && lines[1].contains('▓'), "{}", lines[1]);
+        assert_eq!(lines.last().unwrap(), "█ agent working   ░ waiting for your answer   * your message   ? its question   ! you stopped it   ▓ you were there");
     }
 
     #[test]
     fn a_narrow_pane_takes_wider_columns() {
-        let lines = strip_in(&[lane("a", "t", &[(t(8, 20), Typed), (t(22, 26), Typed)])], 50);
-        // 08:00–23:00 in 20-minute columns: 45 of them, three to an hour.
-        assert_eq!(lines[0], format!("{:20} 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22", ""));
+        let lines = strip_in(&[lane("a", "t", &[(t(8, 20), Typed), (t(22, 26), Typed)])], 50, false);
+        // 48 columns of 30 minutes, an hour label every other hour.
+        assert_eq!(lines[0], format!("{:20} 05  07  09  11  13  15  17  19  21  23  01  03", ""));
         let you: Vec<char> = lines[1].chars().skip(21).collect();
-        assert_eq!(you.len(), 44, "the last mark, at 22:26, is in column 44 of 45");
+        assert_eq!(you.len(), 35, "the last sitting, at 22:26, is in column 35 of 48");
+    }
+
+    #[test]
+    fn a_wide_screen_takes_ten_minute_columns() {
+        let lines = strip_in(&[lane("a", "t", &[(t(8, 20), Typed)])], 179, false);
+        assert!(lines[0].starts_with(&format!("{:20} 05    06    07", "")), "{}", lines[0]);
+        assert_eq!(lines[0].trim_end().chars().count(), 21 + 23 * 6 + 2, "144 columns, the last label at 04");
+    }
+
+    #[test]
+    fn the_axis_can_be_given() {
+        let pairs_lanes = [lane("a", "t", &[(t(8, 20), Typed)])];
+        let pairs: Vec<(&Timeline, &Lane)> = pairs_lanes.iter().map(|(t, l)| (t, l)).collect();
+        let refs: Vec<&Lane> = pairs_lanes.iter().map(|(_, l)| l).collect();
+        let day = night().bounds(nov2(), &off);
+        let s = Summary::of(&refs, day, &night());
+        let lines = Strip::of(&pairs, &s, day, &night(), 72, Some(t(4, 0)), &fmt::Style::with_color(false), &off).unwrap().lines;
+        assert!(lines[0].starts_with(&format!("{:20} 04 05 06", "")), "{}", lines[0]);
+    }
+
+    #[test]
+    fn marks_take_their_colors() {
+        let lines = strip_in(&[marked()], 72, true);
+        assert!(lines[2].contains("\x1b[1;36m*\x1b[0m\x1b[32m█\x1b[0m\x1b[33m░\x1b[0m"), "{:?}", lines[2]);
+        assert!(lines[2].contains("\x1b[1;31m!\x1b[0m"), "{:?}", lines[2]);
+        assert!(lines[1].contains("\x1b[34m▓"), "{:?}", lines[1]);
+        assert!(lines.last().unwrap().starts_with("\x1b[32m█\x1b[0m agent working   \x1b[33m░\x1b[0m waiting"), "{:?}", lines.last());
+        assert!(strip(&[marked()]).iter().all(|l| !l.contains('\x1b')), "no escape code without color");
     }
 
     #[test]
@@ -1215,12 +1322,5 @@ mod tests {
         let lines = strip(&lanes);
         assert_eq!(lines.iter().filter(|l| l.starts_with('s')).count(), 8);
         assert_eq!(lines[lines.len() - 2], "3 more sessions");
-    }
-
-    #[test]
-    fn a_whole_day_takes_twenty_minute_columns() {
-        let lines = strip(&[lane("a", "t", &[(t(5, 10), Typed), (t(28, 50), Typed)])]);
-        // 05:00–05:00 is 24 hours: 20-minute columns fit them into 72, three to an hour.
-        assert_eq!(lines[0], format!("{:20} 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22 23 00 01 02 03 04", ""));
     }
 }
