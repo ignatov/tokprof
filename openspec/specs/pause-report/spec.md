@@ -123,7 +123,7 @@ After the agent sections, `tokprof pauses` SHALL print one rhythm section for al
 - **THEN** the section is the title and `No messages in this time.`
 
 ### Requirement: Busy time part
-The last part of each agent section SHALL be `Where the agent's busy time went: what it waited on in its turns, and while its own background work ran after them` (see agent-time), with a table over the selected sessions of the agent and their subagents, the sessions that work-rhythm leaves out included. The table has one row per kind of busy time, most time first: `kind`, `time`, `share` and `after turns`, the part that came after the end of a turn. A line on the slow requests follows.
+The last part of each agent section SHALL be `Where the agent's busy time went: what it waited on in its turns, and while its own background work ran after them` (see agent-time): a table of the busy time inside the window, of the selected sessions and their subagents, those that work-rhythm leaves out included. It has one row per kind of busy time, most time first: `kind`, `time`, `share` and `after turns`, the part after the end of a turn. A line on the slow requests follows.
 
 #### Scenario: A month of Claude Code
 - **WHEN** the agent's subagents kept it busy 43 hours after ends of turn, of 60 hours for subagents in all
@@ -137,3 +137,8 @@ The last part of each agent section SHALL be `Where the agent's busy time went: 
 #### Scenario: Not busy
 - **WHEN** the agent's selected sessions hold no busy time
 - **THEN** the part reads `No busy time.` after its title
+
+#### Scenario: A session that began before the window
+- **WHEN** `--since` falls inside a session that was busy 10 hours before it and 2 hours after it, with 40 slow requests before it and 3 after
+- **THEN** the table counts the 2 hours, and the slow line counts the 3 requests among the requests sent inside the window
+- **AND** without `--since` and `--until`, the whole session counts
