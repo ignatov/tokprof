@@ -41,37 +41,37 @@ Five lessons for the interface:
 4. **One log event can carry the usage of several models** (Junie's `modelUsage[]`).
 5. **Cache writes may come without a lifetime split** (OpenCode, Junie), as Claude Code requests without `cache_creation` do today.
 
-### Air's log of every ACP session
+### An IDE host's log of every ACP session
 
-JetBrains Air runs ACP agents in the IDE: Claude Code (claude-agent-acp), Codex (codex-acp), Junie, agents from the ACP registry such as GitHub Copilot, and cloud agents. It writes one log per thread, in one format for every agent. This was checked read-only on 2026-11-02 against Air's specs (`plugins/air/spec/core/acp-raw-session-events.spec.md`, `acp-session-event-mapper.spec.md`) and its code.
+An IDE host on this machine runs ACP agents in the IDE: Claude Code (claude-agent-acp), Codex (codex-acp), Junie, agents from the ACP registry such as GitHub Copilot, and cloud agents. It writes one log per thread, in one format for every agent. This was checked read-only on 2026-11-02 against the host's description of that format and its logs.
 
-- **Where.** `<IDE system dir>/acp/projects/<hash of the project>/threads/<thread id>/events.jsonl`. On macOS the system directory is `~/Library/Caches/JetBrains/<product><version>`. This machine has IntelliJIdea2026.3 with 351 threads (3.4 GB) and IntelliJIdea2027.1 with 101 (864 MB).
-- **Records.** Every line has `id`, `threadId`, `seq`, `timestamp`, `source`, `type`, `payload`, `version` and `turnId`. Air's codec says the payload keys are part of the stored log, so changing one is a change of its log format.
+- **Where.** `<IDE system dir>/acp/projects/<hash of the project>/threads/<thread id>/events.jsonl`. On macOS the system directory is under `~/Library/Caches`. This machine has two IDE versions, with 351 threads (3.4 GB) and 101 (864 MB).
+- **Records.** Every line has `id`, `threadId`, `seq`, `timestamp`, `source`, `type`, `payload`, `version` and `turnId`. The host's codec says the payload keys are part of the stored log, so changing one is a change of its log format.
 - **Usage per turn, not per request.** `PromptTurnFinished` carries:
   - `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens`;
   - `tokenAttribution` (`EXACT`, `INFERRED` or `UNKNOWN`), `totalTokens`, `contextWindow`;
   - `costAmount` and `costCurrency`.
 
   `UsageUpdated` carries the running context fill: ACP's `used` and `size`, plus a cost when the agent sends one. Of 1,160 finished turns, 1,115 have exact counts.
-- **The cost's kind is not stored.** Air's cost ledger takes the agent's own cumulative cost when it can, and otherwise prices the tokens with the LiteLLM catalogue. The payload stores the amount without saying which of the two it is.
+- **The cost's kind is not stored.** The host's cost ledger takes the agent's own cumulative cost when it can, and otherwise prices the tokens with the LiteLLM catalogue. The payload stores the amount without saying which of the two it is.
 - **Identity.**
   - `ThreadCreated` holds `agentId`, `title` and `cwd`.
   - `RuntimeSessionBound` holds `agentId` and `agentSessionId`, the agent's own session id. For Codex, 242 of 243 bound sessions still have their rollout. For Claude Code, 109 of 176 still have their transcript; the others are probably gone to Claude Code's transcript cleanup.
   - Agents from the ACP registry get ids found only at run time, such as `acp.dynamic.<hex of "acp.registry.github-copilot">`.
 - **Other facts.**
   - `SubagentStarted` and `SubagentFinished` with `subagentSessionId`, `name`, `prompt` and `parentSubagentSessionId`.
-  - A compaction event from `_meta.jetbrains.air.contextCompaction` with `trigger`, `preTokens`, `postTokens` and `durationMs`.
+  - A compaction event in the host's `_meta` extension, `contextCompaction`, with `trigger`, `preTokens`, `postTokens` and `durationMs`.
   - `ConfigOptionUpdated` with `session.model`. For Codex the value is the model plus its effort, such as `gpt-5.6-sol[max]`; for Claude Code the field is empty.
   - Tool events with ACP's tool `kind`: `execute`, `read`, `edit`, `fetch`, `think`, `other`.
-- **Air's own analysis module** (`plugins/air/shared/session-analysis`) solves a neighboring problem the same way this design does. It has a provider-neutral model and one plain decoder per format. The caller finds and reads the files, and the decoder only reduces the records it gets. No clock and no random ids are used, and a full analysis must equal an incremental one.
+- **The host's own analysis module** solves a neighboring problem the same way this design does. It has a provider-neutral model and one plain decoder per format. The caller finds and reads the files, and the decoder only reduces the records it gets. No clock and no random ids are used, and a full analysis must equal an incremental one.
 
 Three more lessons for the interface:
 
 6. **The reader of a log and the agent are different things.** One log source reports sessions of many agents, some known only at run time.
-7. **One session can be seen through two sources:** the agent's own log and Air's. Counting both would double its spend.
+7. **One session can be seen through two sources:** the agent's own log and the host's. Counting both would double its spend.
 8. **ACP already has a neutral tool vocabulary,** its tool kinds.
 
-This change reads no new log fields. The Claude Code and Codex adapters keep reading the fields that session-logs names. The Air source is not built here; the interface leaves room for it.
+This change reads no new log fields. The Claude Code and Codex adapters keep reading the fields that session-logs names. The IDE host source is not built here; the interface leaves room for it.
 
 ## Goals / Non-Goals
 
@@ -102,7 +102,7 @@ crates/
 sources/
   claude-code/        tokprof-source-claude-code
   codex/              tokprof-source-codex
-  ...                 later air/, junie/, opencode/, each its own crate
+  ...                 later ide-host/, junie/, opencode/, each its own crate
 ```
 
 **Dependency rules.**
@@ -135,7 +135,7 @@ Nothing in `tokprof-core`, `tokprof-logio` or the CLI changes. The architecture 
 Alternatives considered:
 - **One package with feature flags.** Nothing would stop the core from calling into an adapter or the CLI.
 - **One crate for all adapters, a module and a feature per agent.** Fewer crates today. Rejected for the reasons above; it gets worse with every agent.
-- **Sources as separate programs** that print normalized records, as `git` finds `git-*` commands. It would allow any language, for example Air's own Kotlin decoders. Deferred: it needs a stable wire format of the model, and `add-json-output` is where one could come from. Crossing a process boundary for 8.5 GB of logs also costs time.
+- **Sources as separate programs** that print normalized records, as `git` finds `git-*` commands. It would allow any language, for example the host's own Kotlin decoders. Deferred: it needs a stable wire format of the model, and `add-json-output` is where one could come from. Crossing a process boundary for 8.5 GB of logs also costs time.
 - **Library `tokprof` and bin `tokprof-cli`,** as typst does. Rejected: the product is the console tool, so its name should install the binary.
 
 ### 2. Sessions are referenced, not assumed to be files
@@ -156,11 +156,11 @@ The core never opens a locator. It sorts and filters by size and times, and it p
 
 ### 3. The adapter interface: a source and a decoder
 
-An adapter is a log source. It finds, opens and watches logs, and it knows their layout. The agent is a property of each session it reports, not of the source (lesson 6). Reading a log is split off into a decoder that only reduces the records it is given, as in Air's analysis module.
+An adapter is a log source. It finds, opens and watches logs, and it knows their layout. The agent is a property of each session it reports, not of the source (lesson 6). Reading a log is split off into a decoder that only reduces the records it is given, as in the host's analysis module.
 
 ```rust
 pub trait LogSource: Send + Sync {
-    fn name(&self) -> &'static str;                      // "claude", "codex"; later "air"
+    fn name(&self) -> &'static str;                      // "claude", "codex"; later "ide-host"
     fn agents(&self) -> Vec<AgentInfo>;                  // the agents it knows; it may report others found at run time
 
     fn discover(&self) -> Vec<SessionRef>;               // main sessions and subagent logs
@@ -197,7 +197,7 @@ pub trait Decoder {
 ### 4. Agent identity
 
 `AgentId` is the agent's name as a shared string (`Arc<str>`). It replaces the `Agent` enum in the core.
-- It is a name and not a registry index, because a source can report agents found only at run time (lesson 6), such as a registry agent in Air's log.
+- It is a name and not a registry index, because a source can report agents found only at run time (lesson 6), such as a registry agent in the IDE host's log.
 - An agent no source declared gets an `AgentInfo` with only its name: no title beyond the name, no harness calibration, and no capabilities beyond what its records show.
 - The catalog orders agents: declared agents in registry order, then the others by name.
 - The printed name stays `claude` or `codex`, so profiles, the read line and the lists do not change.
@@ -205,11 +205,11 @@ pub trait Decoder {
 
 ### 4a. One session, several sources
 
-`Head` carries the agent's own session id when the log names it: the Claude Code transcript id, the Codex thread id, and in Air's log `RuntimeSessionBound.agentSessionId`. The catalog keys a session by agent plus that id. When two sources report the same key, it keeps one of them:
-- The source with requests and prompts wins over one with only turns. The agent's own log beats Air's.
-- The other source can still add what the winner lacks, such as Air's thread title, and it fills in the session when the agent's own log is gone, as for 67 of the 176 Claude Code sessions above.
+`Head` carries the agent's own session id when the log names it: the Claude Code transcript id, the Codex thread id, and in the IDE host's log `RuntimeSessionBound.agentSessionId`. The catalog keys a session by agent plus that id. When two sources report the same key, it keeps one of them:
+- The source with requests and prompts wins over one with only turns. The agent's own log beats the host's.
+- The other source can still add what the winner lacks, such as the host's thread title, and it fills in the session when the agent's own log is gone, as for 67 of the 176 Claude Code sessions above.
 
-Only one source per agent exists in this change, so the rule never runs here. The key and the rule are built now, so that an Air source cannot double the spend when it comes.
+Only one source per agent exists in this change, so the rule never runs here. The key and the rule are built now, so that an IDE host source cannot double the spend when it comes.
 
 ### 5. Two axes: the agent and the API
 
@@ -332,7 +332,7 @@ Views get `Serialize` in `add-json-output`, so the JSON shape is designed once, 
 
 Expected change: none measurable. The check is a median of 3 runs of `tokprof summary` within 5% of the baseline.
 
-For the later Air source: its logs here are 4.2 GB, mostly `MessageChunk` (270k) and `ToolCallUpdated` (127k) lines. Reading them all would add noticeably to a full scan. The plan is to read only the head of each thread, for the agent and its own session id. A thread whose agent has its own log is then skipped by section 4a. Only the other threads are read in full, and only their usage, subagent and compaction lines are parsed, picked out by a substring test as the idle-compaction notice is today.
+For the later IDE host source: its logs here are 4.2 GB, mostly `MessageChunk` (270k) and `ToolCallUpdated` (127k) lines. Reading them all would add noticeably to a full scan. The plan is to read only the head of each thread, for the agent and its own session id. A thread whose agent has its own log is then skipped by section 4a. Only the other threads are read in full, and only their usage, subagent and compaction lines are parsed, picked out by a substring test as the idle-compaction notice is today.
 
 ### 13. What the implementation settled
 
@@ -350,10 +350,10 @@ The code follows this design with these choices, made while building it:
 - **[The move touches every file while other sessions may edit `src/`]** → Phase 1 only moves files, with `git mv`, on a clean tree, in one step. Later phases edit in place.
 - **[Output drifts during the refactor (map order, rounding)]** → After every phase, compare every command's output with the baseline binary, byte for byte.
 - **[The X-ray depends on the current minute]** → Run the baseline and the new binary back to back. Accept differences only in lines with a duration since now (`cold in`, `cold for`, `idle`).
-- **[The interface fits only the two agents it was cut from]** → It was checked against OpenCode's database, Junie's sessions and Air's ACP log on this machine. That is where the locators, the API per request, the own cost per request, several models per event, sources of several agents, and one session in two sources come from.
-- **[Air's log is an internal format of another product]** → Air's own codec treats its payload keys as a stored format, and every record has a `version`. The Air source pins what it reads with synthetic fixtures.
-- **[Air's turn cost may be its own estimate]** → The payload does not say whether `costAmount` is the agent's figure or a LiteLLM price. An Air source prices the turn's tokens with tokprof's prices, and shows Air's amount only for reconciliation. Storing the cost's kind and the model next to the amount in `PromptTurnFinished` would remove the doubt; that is a request for Air, not part of this change.
-- **[Air reports usage per turn, not per request]** → An Air-only session gets turn totals, cache reads and writes, and context fill. It gets no per-request miss causes and no prompt composition, and its capabilities say so.
+- **[The interface fits only the two agents it was cut from]** → It was checked against OpenCode's database, Junie's sessions and the IDE host's ACP log on this machine. That is where the locators, the API per request, the own cost per request, several models per event, sources of several agents, and one session in two sources come from.
+- **[The host's log is an internal format of another product]** → The host's own codec treats its payload keys as a stored format, and every record has a `version`. The IDE host source pins what it reads with synthetic fixtures.
+- **[The host's turn cost may be its own estimate]** → The payload does not say whether `costAmount` is the agent's figure or a LiteLLM price. An IDE host source prices the turn's tokens with tokprof's prices, and shows the host's amount only for reconciliation. Storing the cost's kind and the model next to the amount in `PromptTurnFinished` would remove the doubt; that is a request for the host, not part of this change.
+- **[The host reports usage per turn, not per request]** → A host-only session gets turn totals, cache reads and writes, and context fill. It gets no per-request miss causes and no prompt composition, and its capabilities say so.
 - **[Claude Code keeps claiming unknown files]** → Kept, because the spec says so. The adapter that could be confused with it narrows the rule in its own change.
 - **[The exhaustive `match` on agents is lost]** → Trait methods without default bodies, plus the conformance tests.
 - **[A library without a stability promise]** → 0.x and a git dependency with a tag. Semver checks come with publishing.

@@ -24,7 +24,7 @@ Adding Junie or OpenCode today would touch about 10 files outside the new adapte
   - `sources/claude-code` and `sources/codex`: one crate per log source. A later agent is one more crate there, and nothing outside it changes;
   - `tokprof-sources`: the registry of sources, a feature per source;
   - `tokprof`: the CLI and the TUI.
-- Every piece of agent-specific logic moves behind one adapter interface: a log source, which finds and opens logs, and a pure decoder, which turns their records into sessions. A source may report sessions of several agents, and one session seen through two sources is counted once. JetBrains Air's log of every ACP session is such a source (design.md, Context). The core and the UI only see neutral data:
+- Every piece of agent-specific logic moves behind one adapter interface: a log source, which finds and opens logs, and a pure decoder, which turns their records into sessions. A source may report sessions of several agents, and one session seen through two sources is counted once. An IDE host's log of every ACP session is such a source (design.md, Context). The core and the UI only see neutral data:
   - what the agent is called;
   - what its log can tell (capabilities);
   - its harness facts, such as the pickup calibration;
@@ -60,7 +60,7 @@ The rule that cache lifetimes follow the API is behavior only once an agent can 
 
 - The `--json` output and its error codes. That is the next change, `add-json-output`. It serializes the data types this change introduces.
 - Publishing to crates.io, `cargo-semver-checks` and typed library errors. `anyhow` stays for now.
-- Junie, OpenCode and Air sources. The interface was checked against their logs on this machine (design.md, Context), but none of them is built.
+- Junie, OpenCode and IDE host sources. The interface was checked against their logs on this machine (design.md, Context), but none of them is built.
 - Feeding only the appended lines of a growing log to the TUI or a statusline. The decoders allow it; this change keeps parsing whole logs.
 - Reading Codex's logged model provider, so that a Codex request to a non-OpenAI API gets that API's rules.
 - Drawing the TUI from data. It keeps converting the ANSI X-ray, as today.
