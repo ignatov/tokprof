@@ -604,6 +604,18 @@ impl Session {
         }
     }
 
+    /// The first client the session's main conversations name, as the client filter reads a
+    /// session; `unknown` when none does.
+    pub fn first_client(&self) -> &str {
+        self.chains
+            .iter()
+            .filter(|c| c.kind == ChainKind::Main)
+            .flat_map(|c| &c.requests)
+            .filter(|r| r.client.is_some())
+            .min_by_key(|r| r.ts_ms)
+            .map_or(UNKNOWN_CLIENT, Request::client_name)
+    }
+
     /// How the call or result in block `b` ended.
     pub fn outcome(&self, b: usize) -> Outcome {
         self.call_ends.get(&b).map_or(Outcome::Worked, |e| e.outcome)

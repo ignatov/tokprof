@@ -435,18 +435,29 @@ fn main() -> Result<()> {
         // `tokprof pauses`, inside the same window.
         type Busy = std::collections::BTreeMap<(AgentId, String), tokprof_core::busy::Parts>;
         let busy_window = window_of(&filter);
-        let ((sink, busy), stats) = scan(
+        // The rhythm reads the main sessions as `tokprof pauses` does, each with the client of its
+        // first main request, and the bench scans them as `tokprof bench` does.
+        type Rhythm = (Vec<(String, Timeline)>, bench::Found);
+        let temp = temp_folders();
+        let ((sink, busy, (timelines, found)), stats) = scan(
             &catalog,
             &files,
             &select,
             OnUnreadable::Skip,
-            || ((Collector::new(None, None), (Pauses::new(filter.clone()), Share::new(filter.clone()))), Busy::new()),
-            |(t, busy): &mut (_, Busy), session, f| {
+            || ((Collector::new(None, None), (Pauses::new(filter.clone()), Share::new(filter.clone()))), Busy::new(), Rhythm::default()),
+            |(t, busy, (timelines, found)): &mut (_, Busy, Rhythm), session, f| {
                 analysis::analyze(session, &pricing, &filter, t);
+                let kept = keeps_client(session, &filter);
+                if !f.subagent {
+                    if kept {
+                        timelines.push((session.first_client().to_string(), Timeline::of(session, &temp)));
+                    }
+                    *found = std::mem::take(found).merge(bench::scan(session, &filter, bench::DEFAULT_REQUESTS, bench::DEFAULT_MIN_CONTEXT));
+                }
                 let parts = if f.subagent {
                     Some(tokprof_core::busy::Parts::of_subagent_in(session, busy_window))
                 } else {
-                    keeps_client(session, &filter).then(|| tokprof_core::busy::Parts::of_main_in(session, busy_window))
+                    kept.then(|| tokprof_core::busy::Parts::of_main_in(session, busy_window))
                 };
                 if let Some(parts) = parts {
                     busy.entry((session.agent.clone(), session.id.clone())).or_default().add(parts);
@@ -459,6 +470,8 @@ fn main() -> Result<()> {
                 for (k, parts) in b.1 {
                     a.1.entry(k).or_default().add(parts);
                 }
+                a.2.0.extend(b.2.0);
+                a.2.1 = std::mem::take(&mut a.2.1).merge(b.2.1);
                 a
             },
         )?;
@@ -476,7 +489,18 @@ fn main() -> Result<()> {
         }
         let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
         let header = share::Header { tokprof: env!("CARGO_PKG_VERSION"), platform: &platform, survey: survey.as_deref(), mcp_names };
-        let value = share::to_json(&collector, &p, &s, &header, |ms| fmt::local_time(ms, "%Y-%m-%d"));
+        // The rhythm of all the main sessions together and of each agent's clients, over the
+        // window of the filters, and the bench with its defaults.
+        let offset = &rhythm::local_offset;
+        let now = filter.until_ms.unwrap_or_else(now_ms);
+        let window = (filter.since_ms.unwrap_or(i64::MIN), filter.until_ms.unwrap_or(i64::MAX));
+        let (all, client_rhythm) = share::rhythms(timelines, now, offset, window);
+        let extra = share::Extra {
+            rhythm: Some(all),
+            client_rhythm,
+            bench: Some(bench::replay(found, &pricing, bench::DEFAULT_REQUESTS, bench::DEFAULT_MIN_CONTEXT, bench::DEFAULT_KEEP_WARM_MS)),
+        };
+        let value = share::to_json_with(&collector, &p, &s, &header, &extra, |ms| fmt::local_time(ms, "%Y-%m-%d"));
         // Before anything is written, the words that tokprof did not make are searched for this
         // machine's names.
         let words = share::words(&value, &share::own_words(&catalog.agents()));

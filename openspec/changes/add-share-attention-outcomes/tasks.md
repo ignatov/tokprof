@@ -27,12 +27,12 @@ Apply after `add-team-survey` and `add-share-friction`. Every group ends with `c
 
 ## 4. The share file
 
-- [ ] 4.1 Count `outcomes` per agent and per client: the calls with actions that did not fail, in main conversations and subagents. Verify: unit tests for "A failed push", a subagent's commit, and two clients.
-- [ ] 4.2 Write `retried_by_error` into the `time` part, from the error texts busy time keeps. Verify: a unit test for "The classes add up".
-- [ ] 4.3 In `tokprof share`, build the rhythm timelines as `tokprof pauses` does, each with its session's client. Write the file's `rhythm` part and each client's short one. Verify: unit tests for "Two sittings", "An answer", "A median of two", "Agents after the person left", "Sessions nobody typed in", "An IDE and a terminal" and "Two clients at once".
-- [ ] 4.4 In the same pass, run the bench scan on the main sessions the client filter keeps, price it with the bench's constants, and write `bench` per agent. Verify: unit tests for "The cheapest way", with a tie, "Breaks that were no return" and "No returns".
-- [ ] 4.5 Add the new keys to tokprof's own words. Verify: a unit test for "Nothing new outside the own words", over a file with every new part.
-- [ ] 4.6 Update the share section of README: `rhythm`, `bench`, `outcomes` and `retried_by_error` in the field table, and the client additions. Verify: each new key is in the table.
+- [x] 4.1 Count `outcomes` per agent and per client: the calls with actions that did not fail, in main conversations and subagents. Verify: unit tests for "A failed push", a subagent's commit, and two clients.
+- [x] 4.2 Write `retried_by_error` into the `time` part, from the error texts busy time keeps. Verify: a unit test for "The classes add up".
+- [x] 4.3 In `tokprof share`, build the rhythm timelines as `tokprof pauses` does, each with its session's client. Write the file's `rhythm` part and each client's short one. Verify: unit tests for "Two sittings", "An answer", "A median of two", "Agents after the person left", "Sessions nobody typed in", "An IDE and a terminal" and "Two clients at once".
+- [x] 4.4 In the same pass, run the bench scan on the main sessions the client filter keeps, price it with the bench's constants, and write `bench` per agent. Verify: unit tests for "The cheapest way", with a tie, "Breaks that were no return" and "No returns".
+- [x] 4.5 Add the new keys to tokprof's own words. Verify: a unit test for "Nothing new outside the own words", over a file with every new part.
+- [x] 4.6 Update the share section of README: `rhythm`, `bench`, `outcomes` and `retried_by_error` in the field table, and the client additions. Verify: each new key is in the table.
 
 ## 5. The pool and the report
 

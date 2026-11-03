@@ -11,7 +11,7 @@ The file SHALL hold `rhythm`, the person's time with all its agents together ins
 - **AND** the medians of its answers, question answers, turns and the time the agents stood still equal those of the rhythm lines
 
 #### Scenario: Two sittings
-- **WHEN** the person acts at 10:00, 10:05 and 10:14 in one session and at 10:40 in another
+- **WHEN** on an afternoon the person acts at 14:00, 14:05 and 14:14 in one session and at 14:40 in another
 - **THEN** `rhythm` has `"sittings": 2`, `"breaks": 1` and `"keyboard_ms": 900000`
 
 #### Scenario: Sessions nobody typed in
@@ -34,7 +34,7 @@ Each wait in `rhythm` SHALL hold `count`, `median_ms` and `by_pause`, its counts
 - **THEN** `answers.median_ms` is 360000, the upper of the two middle values, as the rhythm takes a median
 
 ### Requirement: Rhythm per client
-Each client in `clients` SHALL also hold `rhythm`, counted over the sessions of that client only. It holds `keyboard_ms`, `sittings`, `messages`, `interrupts`, `typed_while_working` and `questions`; `ends` with `present`; and the `count` and `median_ms` of `answers` and `question_answers`. A session's client is the client of the first request of its main conversation (see session-logs, Client of a request).
+Each client in `clients` SHALL also hold `rhythm`, counted over the sessions of that client only. It holds `keyboard_ms`, `sittings`, `messages`, `interrupts`, `typed_while_working` and `questions`; `ends` with `present`; and the `count` and `median_ms` of `answers` and `question_answers`. A session's client is the first client its main log names, as the client filter reads a session (see session-logs, Client filter).
 
 #### Scenario: An IDE and a terminal
 - **WHEN** the person typed 40 messages in `sdk-ts` sessions and 10 in `cli` sessions
@@ -65,7 +65,7 @@ Each agent's object SHALL hold `bench`, the cold returns inside the window as `t
 - **THEN** its `bench` has `"returns": 0` and no `ways`
 
 ### Requirement: Outcome parts
-Each agent's object and each client SHALL hold `outcomes`: `commits`, `pushes` and `pull_requests`. They count the shell calls, in main conversations and subagents, that ran `git commit`, `git push` or `gh pr create` in some part of their command and did not fail (see tool-breakdown, Failed, refused and denied calls). Options before the subcommand of `git`, such as `-C <dir>`, are skipped. A call that ran two of them counts for each. No argument goes into the file.
+Each agent's object and each client SHALL hold `outcomes`: `commits`, `pushes` and `pull_requests`. They count the shell calls, in main conversations and subagents, that ran `git commit`, `git push` or `gh pr create` in some part of their command and worked: were not failed, refused or denied (see tool-breakdown, Failed, refused and denied calls). Options before the subcommand of `git`, such as `-C <dir>`, are skipped. A call that ran two of them counts for each. No argument goes into the file.
 
 #### Scenario: A commit in a chain
 - **WHEN** a call runs `git add -A && git commit -m "fix"` and does not fail
@@ -78,6 +78,10 @@ Each agent's object and each client SHALL hold `outcomes`: `commits`, `pushes` a
 #### Scenario: Another folder
 - **WHEN** a call runs `git -C ../app commit -m x`
 - **THEN** it adds 1 to `commits`
+
+#### Scenario: A heredoc
+- **WHEN** a call runs `cat > notes.md <<'EOF'`, with a body that mentions `git push`, and after the body `git add notes.md && git commit -m x`
+- **THEN** it adds 1 to `commits` and nothing to `pushes`: a heredoc's body is data, not commands
 
 #### Scenario: A failed push
 - **WHEN** a call runs `git push` and fails

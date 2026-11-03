@@ -592,7 +592,7 @@ impl Summary {
     }
 
     /// The median over breaks of the share of the break in which some agent worked, in percent.
-    fn worked_share(&self) -> Option<f64> {
+    pub fn worked_share(&self) -> Option<f64> {
         let mut shares: Vec<f64> = self.breaks.iter().map(|b| 100.0 * b.worked as f64 / (b.to - b.from).max(1) as f64).collect();
         shares.sort_by(f64::total_cmp);
         shares.get(shares.len() / 2).copied()

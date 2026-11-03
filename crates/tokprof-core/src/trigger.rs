@@ -356,7 +356,8 @@ const GIT_VALUE_OPTIONS: [&str; 5] = ["-C", "-c", "--git-dir", "--work-tree", "-
 /// in any of its parts, after `git`'s options before the subcommand.
 pub fn vcs_actions(cmd: &str) -> VcsActions {
     let mut a = VcsActions::default();
-    for part in &split(cmd).parts {
+    // A here-string's word is data too, and `split` reads `<<` as the start of a heredoc.
+    for part in &split(&without_heredoc_bodies(cmd).replace("<<<", " ")).parts {
         let Some((_, program, args)) = first_program(part) else { continue };
         match program.as_str() {
             "git" => {
@@ -375,6 +376,67 @@ pub fn vcs_actions(cmd: &str) -> VcsActions {
         }
     }
     a
+}
+
+/// A command without the bodies of its heredocs, which are data: the text before each `<<`, the
+/// rest of that line after the delimiter, and what follows the line that ends the body.
+fn without_heredoc_bodies(cmd: &str) -> String {
+    let mut out = String::new();
+    let mut rest = cmd;
+    while let Some(at) = heredoc_at(rest) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 2..];
+        let after = after.strip_prefix('-').unwrap_or(after).trim_start_matches([' ', '\t']);
+        let word: String = after.chars().take_while(|c| !c.is_whitespace() && !matches!(c, ';' | '|' | '&' | ')')).collect();
+        let delimiter = word.trim_matches(['\'', '"']);
+        let line = &after[word.len()..];
+        let Some(end) = line.find('\n') else {
+            out.push_str(line);
+            return out;
+        };
+        out.push_str(&line[..end]);
+        out.push('\n');
+        let body = &line[end + 1..];
+        let mut at_end = None;
+        let mut pos = 0;
+        for l in body.split_inclusive('\n') {
+            pos += l.len();
+            if l.trim() == delimiter {
+                at_end = Some(pos);
+                break;
+            }
+        }
+        match at_end {
+            Some(p) => rest = &body[p..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Where the next heredoc's `<<` stands, outside quotes; a here-string's `<<<` is none.
+fn heredoc_at(cmd: &str) -> Option<usize> {
+    let b = cmd.as_bytes();
+    let (mut single, mut double) = (false, false);
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\\' if !single => i += 1,
+            b'\'' if !double => single = !single,
+            b'"' if !single => double = !double,
+            b'<' if !single && !double && b.get(i + 1) == Some(&b'<') => {
+                if b.get(i + 2) == Some(&b'<') {
+                    i += 3;
+                    continue;
+                }
+                return Some(i);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// `-i`, `-i.bak`, `-ni` or `--in-place` make `sed` edit the file.
@@ -535,6 +597,18 @@ mod vcs_tests {
         assert_eq!(acts("git -c user.name=x commit -m y"), (true, false, false));
         assert_eq!(acts("git --git-dir=.g push origin main"), (false, true, false));
         assert_eq!(acts("GIT_AUTHOR_NAME=x git commit -m y"), (true, false, false));
+    }
+
+    #[test]
+    fn heredoc_bodies_are_data() {
+        let file = "cat > notes.md <<'EOF'\ngit push and git commit are words here\nEOF\ngit add notes.md && git commit -m x";
+        assert_eq!(acts(file), (true, false, false), "the commit after the body counts, the words in it do not");
+        let message = "git commit -q -F - <<'EOF'\nSay why, not git push\nEOF\ngit push origin main";
+        assert_eq!(acts(message), (true, true, false));
+        let tabs = "cat <<-END > x\n\tgh pr create\n\tEND\ngh pr create --fill";
+        assert_eq!(acts(tabs), (false, false, true));
+        assert_eq!(acts("cat <<'EOF'\ngit commit"), (false, false, false), "a body that never ends");
+        assert_eq!(acts("grep x <<< \"git push\" && git commit -m y"), (true, false, false), "a here-string is no heredoc");
     }
 
     #[test]

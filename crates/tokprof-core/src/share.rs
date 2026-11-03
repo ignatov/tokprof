@@ -18,10 +18,13 @@ use serde_json::{Map, Value, json};
 
 use crate::analysis::cache::Cause;
 use crate::analysis::{Component, Fact, Filter, MissEvent, RequestRecord, Sink};
-use crate::model::{BlockKind, ChainKind, Class, HandoffKind, Session, ToolClass, WakeSource};
+use crate::bench::{Bench, Strategy};
+use crate::busy::{RETRY_CLASSES, retry_class};
+use crate::model::{BlockKind, ChainKind, Class, HandoffKind, Outcome, Session, ToolClass, WakeSource};
 use crate::pauses::{AgentPauses, PAUSE_RANGES, Pauses, RETURN_RANGES, SIZE_RANGES, Starter};
 use crate::profile::Values;
 use crate::report::{Collector, Spend, WhatIf, Work};
+use crate::rhythm::{Offset, Summary, Timeline, View};
 use crate::source::{AgentId, PublicNames};
 use crate::tools::{BlockEntry, HINTS, ToolRow, ToolShare, ToolTable, hint};
 use crate::trigger::{CallClass, Trigger, known_programs, program_of};
@@ -157,7 +160,44 @@ const FIELDS: &[&str] = &[
     "held",
     "all",
     "cold_returns_avoidable_usd",
+    "outcomes",
+    "commits",
+    "pushes",
+    "pull_requests",
+    "retried_by_error",
+    "rhythm",
+    "keyboard_ms",
+    "sittings",
+    "breaks",
+    "messages",
+    "ends",
+    "present",
+    "started_by_agent",
+    "question_answers",
+    "turns",
+    "stood_still",
+    "worked_share_median",
+    "count",
+    "median_ms",
+    "by_pause",
+    "bench",
+    "returns",
+    "min_context",
+    "keep_warm_ms",
+    "ways",
+    "cheapest",
+    "kept_warm",
+    "ping_usd",
+    "elsewhere",
+    "pings",
+    "compaction_usd",
 ];
+
+/// The names of the bench's ways in the file, in the bench's order (see return-bench).
+pub const BENCH_WAYS: [&str; 5] = ["resume", "compact", "handoff", "heartbeats", "heartbeats_then_compaction"];
+
+/// The version-control actions in the file, in the order of [`AgentShare::outcomes`].
+const OUTCOMES: [&str; 3] = ["commits", "pushes", "pull_requests"];
 
 /// What the file adds to the reports for one agent.
 #[derive(Clone, Debug, Default)]
@@ -203,6 +243,10 @@ pub struct AgentShare {
     /// The replay of this agent's requests under two cache lifetimes, and those lifetimes in ms.
     pub whatif: WhatIf,
     pub whatif_lifetimes: Option<(i64, i64)>,
+    /// The shell calls that worked and committed, pushed or opened a pull request (see
+    /// [`OUTCOMES`]): of the agent, and of each client.
+    pub outcomes: [u64; 3],
+    pub client_outcomes: BTreeMap<String, [u64; 3]>,
 }
 
 impl AgentShare {
@@ -267,6 +311,15 @@ impl AgentShare {
         }
         self.whatif.merge(o.whatif);
         self.whatif_lifetimes = self.whatif_lifetimes.or(o.whatif_lifetimes);
+        for (mine, theirs) in self.outcomes.iter_mut().zip(o.outcomes) {
+            *mine += theirs;
+        }
+        for (client, n) in o.client_outcomes {
+            let e = self.client_outcomes.entry(client).or_default();
+            for (mine, theirs) in e.iter_mut().zip(n) {
+                *mine += theirs;
+            }
+        }
     }
 }
 
@@ -283,6 +336,8 @@ struct Current {
     wakes: Vec<&'static str>,
     ids: Vec<String>,
     title: Option<String>,
+    /// The client of the latest selected request, whose calls the shares after it are.
+    client: String,
 }
 
 /// Collects what [`to_json`] needs beyond the summary and the pause report.
@@ -419,6 +474,7 @@ impl Sink for Share {
             wakes,
             ids: vec![s.id.clone(), s.short_id().to_string()],
             title: s.title.clone(),
+            client: String::new(),
         });
         if let Some(t) = self.current_table() {
             t.session(s);
@@ -448,6 +504,8 @@ impl Sink for Share {
             ids.extend(cur.ids.drain(..));
             titles.extend(cur.title.take());
         }
+        cur.client.clear();
+        cur.client.push_str(r.client);
         let usd = r.price.map_or(0.0, |p| p.cost(&r.usage));
         let tokens = (r.usage.prompt() + r.usage.output) as f64;
         let spend = Spend { requests: 1, tokens, usd };
@@ -508,6 +566,18 @@ impl Sink for Share {
     fn tool_share(&mut self, t: &ToolShare) {
         if let Some(table) = self.current_table() {
             table.tool_share(t);
+        }
+        // A call that worked counts what its command did to version control.
+        if t.call.is_some() && t.outcome == Outcome::Worked && t.vcs.any() {
+            let Share { agents, current, .. } = self;
+            let Some(cur) = current else { return };
+            let a = agents.entry(cur.agent.clone()).or_default();
+            let n = [t.vcs.commit, t.vcs.push, t.vcs.pull_request].map(u64::from);
+            let c = a.client_outcomes.entry(cur.client.clone()).or_default();
+            for i in 0..3 {
+                a.outcomes[i] += n[i];
+                c[i] += n[i];
+            }
         }
     }
 }
@@ -578,7 +648,140 @@ fn time_part(b: &crate::busy::Busy) -> Value {
         "slow_main": b.slow_main,
         "longest_ms": b.longest.map(|(ms, _)| ms),
         "retried": b.retried,
+        "retried_by_error": retry_classes(b),
     })
+}
+
+/// The requests that waited for retries by the class of their last error. A request whose log
+/// gives no error text is `other`.
+fn retry_classes(b: &crate::busy::Busy) -> Value {
+    let mut n: BTreeMap<&str, u64> = RETRY_CLASSES.iter().map(|c| (*c, 0)).collect();
+    let mut texts = 0;
+    for (text, k) in &b.retry_errors {
+        *n.entry(retry_class(text)).or_default() += k;
+        texts += k;
+    }
+    *n.entry("other").or_default() += b.retried.saturating_sub(texts);
+    Value::Object(RETRY_CLASSES.iter().map(|c| (c.to_string(), json!(n[c]))).collect())
+}
+
+/// What a version-control count part holds: the commits, pushes and pull requests.
+fn outcome_part(n: [u64; 3]) -> Value {
+    Value::Object(OUTCOMES.iter().zip(n).map(|(k, v)| (k.to_string(), json!(v))).collect())
+}
+
+/// What `tokprof share` adds from its own pass over the logs: the rhythm of the main sessions,
+/// of all agents together and of each agent's clients, and the bench over them.
+#[derive(Default)]
+pub struct Extra {
+    pub rhythm: Option<Summary>,
+    pub client_rhythm: BTreeMap<(AgentId, String), Summary>,
+    pub bench: Option<Bench>,
+}
+
+/// The rhythm of these main sessions inside `window`, as `tokprof pauses` reads them: of all of
+/// them together, and of each agent's client, a session going with the client its main log names
+/// first.
+pub fn rhythms(timelines: Vec<(String, Timeline)>, now_ms: i64, offset: Offset, window: (i64, i64)) -> (Summary, BTreeMap<(AgentId, String), Summary>) {
+    let mut by_client: BTreeMap<(AgentId, String), Vec<Timeline>> = BTreeMap::new();
+    for (client, t) in &timelines {
+        by_client.entry((t.agent.clone(), client.clone())).or_default().push(t.clone());
+    }
+    let all = View::new(timelines.into_iter().map(|(_, t)| t).collect(), now_ms, offset).summary(window);
+    let clients = by_client.into_iter().map(|(key, ts)| (key, View::new(ts, now_ms, offset).summary(window))).collect();
+    (all, clients)
+}
+
+/// A wait of the rhythm parts: how many, their median as the rhythm takes it, and their counts
+/// by pause range.
+fn wait_part(ms: &[i64]) -> Value {
+    let mut counts = [0u64; PAUSE_RANGES.len()];
+    for &v in ms {
+        counts[range_of(&PAUSE_RANGES, v)] += 1;
+    }
+    let by: Map<String, Value> = PAUSE_RANGES.iter().zip(counts).filter(|(_, n)| *n > 0).map(|((name, _), n)| (name.to_string(), json!(n))).collect();
+    json!({"count": ms.len(), "median_ms": crate::rhythm::median(ms), "by_pause": by})
+}
+
+/// The file's rhythm part (see work-rhythm).
+fn rhythm_part(s: &Summary) -> Value {
+    let answers: Vec<i64> = s.answers.iter().map(|a| a.1).collect();
+    let still: Vec<i64> = s.breaks.iter().map(|b| b.still_after).collect();
+    json!({
+        "keyboard_ms": s.keyboard_ms(),
+        "sittings": s.sittings.len(),
+        "breaks": s.breaks.len(),
+        "messages": s.messages.len(),
+        "sessions": s.sessions,
+        "ends": {"count": s.ends.len(), "present": s.ends.iter().filter(|e| e.1).count(), "started_by_agent": s.ends.iter().filter(|e| e.2).count()},
+        "interrupts": s.interrupts,
+        "typed_while_working": s.typed_while_working,
+        "questions": s.questions,
+        "answers": wait_part(&answers),
+        "question_answers": wait_part(&s.question_answers),
+        "turns": wait_part(&s.turns),
+        "stood_still": wait_part(&still),
+        "worked_share_median": s.worked_share().map(|p| (p * 100.0).round() / 10_000.0),
+    })
+}
+
+/// A client's short rhythm part.
+fn client_rhythm_part(s: &Summary) -> Value {
+    let answers: Vec<i64> = s.answers.iter().map(|a| a.1).collect();
+    json!({
+        "keyboard_ms": s.keyboard_ms(),
+        "sittings": s.sittings.len(),
+        "messages": s.messages.len(),
+        "interrupts": s.interrupts,
+        "typed_while_working": s.typed_while_working,
+        "questions": s.questions,
+        "ends": {"count": s.ends.len(), "present": s.ends.iter().filter(|e| e.1).count()},
+        "answers": {"count": answers.len(), "median_ms": crate::rhythm::median(&answers)},
+        "question_answers": {"count": s.question_answers.len(), "median_ms": crate::rhythm::median(&s.question_answers)},
+    })
+}
+
+/// An agent's bench part: its cold returns and what each way of coming back would have cost
+/// over them, as `tokprof bench` gives it (see return-bench).
+fn bench_part(b: &Bench, agent: &AgentId) -> Value {
+    let returns = b.of(agent);
+    let mut part = Map::new();
+    part.insert("returns".into(), json!(returns.len()));
+    part.insert("requests".into(), json!(b.requests));
+    part.insert("min_context".into(), json!(b.min_context));
+    part.insert("keep_warm_ms".into(), json!(b.keep_warm_ms));
+    if returns.is_empty() {
+        return Value::Object(part);
+    }
+    let n = b.requests;
+    // The way that cost least in a return; a tie goes to the way named first.
+    let cheapest_of = |r: &crate::bench::Return| -> usize {
+        let mut best = 0;
+        for (i, s) in Strategy::ALL.iter().enumerate() {
+            if r.after(*s, n) < r.after(Strategy::ALL[best], n) {
+                best = i;
+            }
+        }
+        best
+    };
+    let cheapest: Vec<usize> = returns.iter().map(|r| cheapest_of(r)).collect();
+    let ways: Map<String, Value> = Strategy::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let usd: f64 = returns.iter().map(|r| r.after(*s, n)).sum();
+            (BENCH_WAYS[i].to_string(), json!({"usd": dollars(usd), "cheapest": cheapest.iter().filter(|c| **c == i).count()}))
+        })
+        .collect();
+    part.insert("ways".into(), Value::Object(ways));
+    part.insert("kept_warm".into(), json!(returns.iter().filter(|r| r.kept_warm).count()));
+    part.insert("ping_usd".into(), dollars(returns.iter().map(|r| r.after(Strategy::Heartbeats, 0)).sum()));
+    let e = b.elsewhere.get(agent).copied().unwrap_or_default();
+    part.insert(
+        "elsewhere".into(),
+        json!({"pings": e.pings, "ping_usd": dollars(e.ping_usd), "compactions": e.compactions, "compaction_usd": dollars(e.compaction_usd)}),
+    );
+    Value::Object(part)
 }
 
 /// The main sessions by how long they ran, with their spend and cold returns.
@@ -707,6 +910,11 @@ pub fn pretty(v: &Value) -> String {
 /// The file's content, from one scan into the three collectors with the same filters. `day`
 /// turns epoch ms into `YYYY-MM-DD`.
 pub fn to_json(c: &Collector, p: &Pauses, s: &Share, h: &Header, day: impl Fn(i64) -> String) -> Value {
+    to_json_with(c, p, s, h, &Extra::default(), day)
+}
+
+/// The file, with what the share command's own pass adds.
+pub fn to_json_with(c: &Collector, p: &Pauses, s: &Share, h: &Header, x: &Extra, day: impl Fn(i64) -> String) -> Value {
     let mut agents = Map::new();
     for (agent, a) in &s.agents {
         let names = &agent.info().public_names;
@@ -753,20 +961,22 @@ pub fn to_json(c: &Collector, p: &Pauses, s: &Share, h: &Header, day: impl Fn(i6
                     .flatten()
                     .map(|(level, (requests, usd))| (level.clone(), json!({"requests": requests, "usd": dollars(*usd)})))
                     .collect();
-                (
-                    client.clone(),
-                    json!({
-                        "requests": r.spend.requests,
-                        "usd": dollars(r.spend.usd),
-                        "avoidable_usd": dollars(avoidable.get(client.as_str()).copied().unwrap_or(0.0)),
-                        "main_sessions": r.sessions.len(),
-                        "cold_returns": cold,
-                        "cold_returns_avoidable_usd": dollars(cold_usd),
-                        "cache_writes": writes(w),
-                        "active_hours": hours,
-                        "effort": effort,
-                    }),
-                )
+                let mut row = json!({
+                    "requests": r.spend.requests,
+                    "usd": dollars(r.spend.usd),
+                    "avoidable_usd": dollars(avoidable.get(client.as_str()).copied().unwrap_or(0.0)),
+                    "main_sessions": r.sessions.len(),
+                    "cold_returns": cold,
+                    "cold_returns_avoidable_usd": dollars(cold_usd),
+                    "cache_writes": writes(w),
+                    "active_hours": hours,
+                    "effort": effort,
+                    "outcomes": outcome_part(a.client_outcomes.get(client).copied().unwrap_or_default()),
+                });
+                if let (Value::Object(m), Some(r)) = (&mut row, x.client_rhythm.get(&(agent.clone(), client.clone()))) {
+                    m.insert("rhythm".into(), client_rhythm_part(r));
+                }
+                (client.clone(), row)
             })
             .collect();
         let triggers: Map<String, Value> = a.work.triggers().iter().map(|(t, sp)| (t.name().to_string(), spend(&sp.spend))).collect();
@@ -838,6 +1048,7 @@ pub fn to_json(c: &Collector, p: &Pauses, s: &Share, h: &Header, day: impl Fn(i6
             "handoffs": {"turn_ends": handoffs["turn_ends"], "interrupts": handoffs["interrupts"], "typed_while_working": handoffs["typed_while_working"],
                 "questions": handoffs["questions"], "answers": handoffs["answers"], "wakes": wakes},
             "prompts": {"held": spend(&a.prompts[0]), "all": spend(&a.prompts[1])},
+            "outcomes": outcome_part(a.outcomes),
         });
         let Value::Object(e) = &mut entry else { unreachable!("built as an object") };
         let busy_ms = pauses.map_or(0, |p| p.busy.total_ms());
@@ -859,6 +1070,9 @@ pub fn to_json(c: &Collector, p: &Pauses, s: &Share, h: &Header, day: impl Fn(i6
             };
             e.insert("whatif".into(), json!({"main": bucket(0), "subagents": bucket(1)}));
         }
+        if let Some(b) = &x.bench {
+            e.insert("bench".into(), bench_part(b, agent));
+        }
         agents.insert(agent.name().to_string(), entry);
     }
     let mut file = Map::new();
@@ -871,6 +1085,9 @@ pub fn to_json(c: &Collector, p: &Pauses, s: &Share, h: &Header, day: impl Fn(i6
     let days: BTreeSet<String> = hours.iter().map(|h| day(h * HOUR_MS)).collect();
     let busy_ms: i64 = s.agents.keys().filter_map(|agent| p.agents.get(agent)).map(|a| a.busy.total_ms()).sum();
     file.insert("activity".into(), json!({"active_days": days.len(), "active_hours": hours.len(), "busy_ms": busy_ms}));
+    if let Some(r) = &x.rhythm {
+        file.insert("rhythm".into(), rhythm_part(r));
+    }
     if let Some(label) = h.survey {
         file.insert("survey".into(), json!(label));
     }
@@ -922,6 +1139,8 @@ pub fn own_words(agents: &[AgentId]) -> HashSet<String> {
         .chain(PROMPT_RANGES.iter().map(|r| r.0))
         .chain(SPAN_RANGES.iter().map(|r| r.0))
         .chain(HINTS)
+        .chain(BENCH_WAYS)
+        .chain(RETRY_CLASSES)
         .chain(COMPACTION_TRIGGERS)
         .chain(EFFORT_LEVELS)
         .chain(STARTERS)
@@ -973,6 +1192,8 @@ pub fn words(v: &Value, own: &HashSet<String>) -> Vec<Word> {
             // The tokprof version, the platform, the window's days and the activity counts are
             // tokprof's own.
             ("format" | "tokprof" | "platform" | "window" | "activity", _) => {}
+            // The rhythm is tokprof's own part: its keys are field names and pause ranges.
+            ("rhythm", value) => walk(value, "rhythm", own, &mut out),
             (other, value) => {
                 out.push(Word { kind: WordKind::Other, text: other.to_string(), field: String::new() });
                 walk(value, other, own, &mut out);
@@ -1651,6 +1872,237 @@ mod tests {
     }
 
     /// The local day of a moment `offset_h` hours east of UTC.
+    mod attention {
+        use super::*;
+        use crate::bench::{Base, Bench, Elsewhere, Return, Strategy};
+        use crate::rhythm::{Event, Timeline};
+
+        const DAY: i64 = 1_793_577_600_000; // 2026-11-03 00:00 UTC
+
+        fn at(h: i64, m: i64) -> i64 {
+            DAY + h * 3_600_000 + m * 60_000
+        }
+
+        fn tl(id: &str, events: Vec<(i64, Event)>) -> Timeline {
+            Timeline { agent: crate::testing::claude(), id: id.into(), title: None, left_out: false, events }
+        }
+
+        fn utc(_: i64) -> i64 {
+            0
+        }
+
+        fn rhythm_of(timelines: Vec<(&str, Timeline)>) -> (Value, BTreeMap<(AgentId, String), Summary>) {
+            let (all, clients) = rhythms(timelines.into_iter().map(|(c, t)| (c.to_string(), t)).collect(), at(23, 0), &utc, (i64::MIN, i64::MAX));
+            (rhythm_part(&all), clients)
+        }
+
+        #[test]
+        fn two_sittings() {
+            use Event::*;
+            // Afternoon times: a pause before noon could be taken for the night.
+            let a = tl("a", vec![(at(14, 0), Typed), (at(14, 5), Typed), (at(14, 14), Typed)]);
+            let b = tl("b", vec![(at(14, 40), Typed)]);
+            let (r, _) = rhythm_of(vec![("sdk-ts", a), ("sdk-ts", b)]);
+            assert_eq!((&r["sittings"], &r["breaks"], &r["keyboard_ms"]), (&json!(2), &json!(1), &json!(900_000)));
+            assert_eq!(r["messages"], json!(4));
+        }
+
+        #[test]
+        fn an_answer() {
+            use Event::*;
+            let (r, _) = rhythm_of(vec![("sdk-ts", tl("a", vec![(at(14, 0), Typed), (at(14, 4), TurnEnd), (at(14, 7), Typed)]))]);
+            assert_eq!(r["answers"], json!({"count": 1, "median_ms": 180_000, "by_pause": {"1–5m": 1}}), "an answer from 14:04 to 14:07");
+        }
+
+        #[test]
+        fn a_median_of_two_takes_the_upper() {
+            assert_eq!(wait_part(&[120_000, 360_000]), json!({"count": 2, "median_ms": 360_000, "by_pause": {"1–5m": 1, "5–15m": 1}}));
+            assert_eq!(wait_part(&[]), json!({"count": 0, "median_ms": null, "by_pause": {}}));
+        }
+
+        #[test]
+        fn agents_after_the_person_left() {
+            use Event::*;
+            let a = tl("a", vec![(at(14, 0), Typed), (at(14, 6), TurnEnd), (at(14, 40), Typed)]);
+            let b = tl("b", vec![(at(14, 20), Wake), (at(14, 24), TurnEnd)]);
+            let (r, _) = rhythm_of(vec![("sdk-ts", a), ("cli", b)]);
+            assert_eq!(r["worked_share_median"], json!(0.25), "10 of the 40 minutes of the break");
+            assert_eq!(r["stood_still"]["median_ms"], json!(360_000), "the agents stood still 6 minutes after the person left");
+            // The turn the message at 14:40 starts ends at its last event, while the person is there.
+            assert_eq!(r["ends"], json!({"count": 3, "present": 1, "started_by_agent": 1}));
+        }
+
+        #[test]
+        fn sessions_nobody_typed_in_count_in_nothing() {
+            use Event::*;
+            let typed = tl("a", vec![(at(10, 0), Typed)]);
+            let scripted = Timeline { left_out: true, ..tl("p", vec![(at(11, 0), Typed), (at(11, 5), Typed)]) };
+            let (r, _) = rhythm_of(vec![("sdk-ts", typed), ("sdk-cli", scripted)]);
+            assert_eq!((&r["sittings"], &r["messages"], &r["sessions"]), (&json!(1), &json!(1), &json!(1)));
+        }
+
+        #[test]
+        fn an_ide_and_a_terminal() {
+            use Event::*;
+            let ide = tl("i", (0..40).map(|k| (at(9, 0) + k * 60_000, Typed)).collect());
+            let term = tl("t", (0..10).map(|k| (at(14, 0) + k * 60_000, Typed)).collect());
+            let (r, clients) = rhythm_of(vec![("sdk-ts", ide), ("cli", term)]);
+            let claude = crate::testing::claude();
+            let part = |c: &str| client_rhythm_part(&clients[&(claude.clone(), c.to_string())]);
+            assert_eq!((part("sdk-ts")["messages"].clone(), part("cli")["messages"].clone(), r["messages"].clone()), (json!(40), json!(10), json!(50)));
+        }
+
+        #[test]
+        fn two_clients_at_once() {
+            use Event::*;
+            let ide = tl("i", vec![(at(10, 0), Typed), (at(10, 10), Typed)]);
+            let term = tl("t", vec![(at(10, 5), Typed)]);
+            let (r, clients) = rhythm_of(vec![("sdk-ts", ide), ("cli", term)]);
+            let claude = crate::testing::claude();
+            let keyboard = |c: &str| client_rhythm_part(&clients[&(claude.clone(), c.to_string())])["keyboard_ms"].clone();
+            assert_eq!(r["keyboard_ms"], json!(600_000), "one sitting from 10:00 to 10:10 in the file");
+            assert_eq!((keyboard("sdk-ts"), keyboard("cli")), (json!(600_000), json!(60_000)), "each client counts its own sittings");
+        }
+
+        #[test]
+        fn a_client_part_goes_to_its_row() {
+            let s = session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, one())]);
+            let (c, p, sh) = collect(&[s]);
+            let client = c.clients.rows.keys().next().unwrap().1.clone();
+            let (summary, mut clients) = rhythms(vec![(client.clone(), tl("s", vec![(at(10, 0), Event::Typed)]))], at(23, 0), &utc, (i64::MIN, i64::MAX));
+            let extra = Extra { rhythm: Some(summary), client_rhythm: std::mem::take(&mut clients), bench: None };
+            let v = to_json_with(&c, &p, &sh, &HEADER, &extra, |_| "2026-11-03".into());
+            assert_eq!(v["agents"]["claude"]["clients"][&client]["rhythm"]["messages"], json!(1));
+            assert_eq!(v["rhythm"]["sittings"], json!(1));
+        }
+
+        #[test]
+        fn outcomes_count_the_calls_that_worked_per_client() {
+            use crate::model::Outcome;
+            use crate::trigger::VcsActions;
+            let agent = crate::testing::claude();
+            let s = session(agent.clone(), "s", vec![("main", ChainKind::Main, vec![])]);
+            let price = Pricing::defaults().get("claude-opus-5-5", 100_000, 1_793_620_800_000);
+            let mut sink = (Collector::new(None, None), (Pauses::new(Filter::default()), Share::new(Filter::default())));
+            let call = |outcome, vcs| ToolShare {
+                tool: Some("Bash"),
+                target: Some("git commit"),
+                class: Class::Tool(ToolClass::Execute),
+                tokens: 1.0,
+                usd: 0.0,
+                call: Some(true),
+                outcome,
+                error: None,
+                vcs,
+            };
+            let commit = VcsActions { commit: true, ..VcsActions::default() };
+            let push = VcsActions { push: true, ..VcsActions::default() };
+            let both = VcsActions { commit: true, push: true, ..VcsActions::default() };
+            sink.session(&s);
+            sink.request(&record(&agent, 0, price));
+            sink.tool_share(&call(Outcome::Worked, commit));
+            sink.tool_share(&call(Outcome::Failed, push));
+            sink.tool_share(&call(Outcome::Refused, commit));
+            sink.request(&crate::analysis::RequestRecord { client: "cli", ..record(&agent, 1, price) });
+            sink.tool_share(&call(Outcome::Worked, both));
+            // A subagent's commit counts too.
+            let sub = session(agent.clone(), "s", vec![("subagent", ChainKind::Subagent, vec![])]);
+            sink.session(&sub);
+            sink.request(&crate::analysis::RequestRecord { chain_kind: ChainKind::Subagent, ..record(&agent, 2, price) });
+            sink.tool_share(&call(Outcome::Worked, commit));
+            let a = &sink.1.1.agents[&agent];
+            assert_eq!(a.outcomes, [3, 1, 0], "commits, pushes, pull requests that worked");
+            assert_eq!((a.client_outcomes["sdk-ts"], a.client_outcomes["cli"]), ([2, 0, 0], [1, 1, 0]));
+        }
+
+        #[test]
+        fn the_retry_classes_add_up() {
+            let mut b = crate::busy::Busy { retried: 92, ..crate::busy::Busy::default() };
+            b.retry_errors.insert("API Error: 502 Bad Gateway".into(), 80);
+            b.retry_errors.insert("API Error: 529 overloaded".into(), 7);
+            b.retry_errors.insert("Request timed out.".into(), 4);
+            let v = retry_classes(&b);
+            assert_eq!(v, json!({"server": 87, "rate_limit": 0, "auth": 0, "timeout": 4, "connection": 0, "sleep": 0, "other": 1}));
+            assert_eq!(v.as_object().unwrap().values().map(|n| n.as_u64().unwrap()).sum::<u64>(), 92, "a request without a text is other");
+        }
+
+        fn ret(costs: [f64; 5], kept_warm: bool) -> Return {
+            Return {
+                agent: crate::testing::claude(),
+                api: crate::api::ApiId::Anthropic,
+                context: 200_000,
+                idle_ms: 7_200_000,
+                long_ttl: true,
+                cumulative: costs.map(|c| vec![if c == costs[3] { 0.5 } else { 0.0 }, c]),
+                forecast: costs[0],
+                pings: 2,
+                kept_warm,
+                compacted: false,
+            }
+        }
+
+        fn bench(returns: Vec<Return>) -> Bench {
+            let claude = crate::testing::claude();
+            let elsewhere = [(claude.clone(), Elsewhere { pings: 1_026, ping_usd: 87.08, compactions: 136, compaction_usd: 38.1 })].into_iter().collect();
+            Bench {
+                requests: crate::bench::DEFAULT_REQUESTS,
+                min_context: crate::bench::DEFAULT_MIN_CONTEXT,
+                keep_warm_ms: crate::bench::DEFAULT_KEEP_WARM_MS,
+                returns,
+                base: [(claude, Base { tokens: 20_000, compactions: 0 })].into_iter().collect(),
+                elsewhere,
+            }
+        }
+
+        #[test]
+        fn the_cheapest_way_and_a_tie() {
+            // resume, /compact first, handoff note, heartbeats, heartbeats then compaction
+            let b = bench(vec![ret([10.0, 8.0, 3.0, 3.0, 5.0], true), ret([2.0, 4.0, 3.0, 6.0, 5.0], false)]);
+            let v = bench_part(&b, &crate::testing::claude());
+            assert_eq!(v["returns"], json!(2));
+            let ways = &v["ways"];
+            assert_eq!(ways["handoff"], json!({"usd": 6.0, "cheapest": 1}), "a tie goes to the way named first");
+            assert_eq!(ways["heartbeats"]["cheapest"], json!(0));
+            assert_eq!(ways["resume"], json!({"usd": 12.0, "cheapest": 1}));
+            assert_eq!((&v["kept_warm"], &v["requests"], &v["min_context"], &v["keep_warm_ms"]), (&json!(1), &json!(60), &json!(100_000), &json!(21_600_000)));
+            assert_eq!(Strategy::ALL.len(), BENCH_WAYS.len());
+        }
+
+        #[test]
+        fn breaks_that_were_no_return() {
+            let v = bench_part(&bench(vec![ret([10.0, 8.0, 3.0, 4.0, 5.0], true)]), &crate::testing::claude());
+            assert_eq!(v["elsewhere"], json!({"pings": 1026, "ping_usd": 87.08, "compactions": 136, "compaction_usd": 38.1}));
+            assert_eq!(v["ping_usd"], json!(0.5), "what the heartbeats spent before the first request of each return");
+        }
+
+        #[test]
+        fn no_returns() {
+            let v = bench_part(&bench(Vec::new()), &crate::testing::claude());
+            assert_eq!(v["returns"], json!(0));
+            assert!(v.get("ways").is_none(), "{v}");
+        }
+
+        #[test]
+        fn nothing_new_outside_the_own_words() {
+            let s = session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, one())]);
+            let (c, p, sh) = collect(std::slice::from_ref(&s));
+            let client = c.clients.rows.keys().next().unwrap().1.clone();
+            let (summary, clients) = rhythms(
+                vec![(client, tl("s", vec![(at(10, 0), Event::Typed), (at(10, 4), Event::TurnEnd), (at(10, 7), Event::Typed)]))],
+                at(23, 0),
+                &utc,
+                (i64::MIN, i64::MAX),
+            );
+            let extra = Extra { rhythm: Some(summary), client_rhythm: clients, bench: Some(bench(vec![ret([10.0, 8.0, 3.0, 4.0, 5.0], true)])) };
+            let own = own_words(&agents());
+            let texts = |v: &Value| words(v, &own).into_iter().map(|w| w.text).collect::<BTreeSet<String>>();
+            let with = to_json_with(&c, &p, &sh, &HEADER, &extra, |_| "2026-11-03".into());
+            let without = to_json(&c, &p, &sh, &HEADER, |_| "2026-11-03".into());
+            assert!(with["rhythm"].is_object() && with["agents"]["claude"]["bench"]["ways"].is_object());
+            assert_eq!(texts(&with), texts(&without));
+        }
+    }
+
     fn day_at(offset_h: i64) -> impl Fn(i64) -> String {
         move |ms| chrono::DateTime::from_timestamp_millis(ms + offset_h * 3_600_000).unwrap().format("%Y-%m-%d").to_string()
     }
