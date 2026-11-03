@@ -599,12 +599,15 @@ impl App {
         let page = height.saturating_sub(4).max(1);
         match key.code {
             KeyCode::Char('q') => return false,
-            // The day takes the whole screen; these go back to the list with the X-ray.
-            KeyCode::Char('d') | KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace if self.day.is_some() => {
+            // The day takes the whole screen; these go back to the list with the X-ray, and the
+            // arrows step through days.
+            KeyCode::Char('d') | KeyCode::Esc | KeyCode::Backspace if self.day.is_some() => {
                 self.day = None;
                 self.zoom = false;
                 self.scroll = 0;
             }
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('[') if self.day.is_some() => self.step_day(-1),
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(']') if self.day.is_some() => self.step_day(1),
             KeyCode::Esc if self.zoom => self.zoom = false,
             KeyCode::Esc if !self.filter.is_empty() => {
                 self.filter.clear();
@@ -637,8 +640,6 @@ impl App {
                 self.zoom = true;
                 self.scroll = 0;
             }
-            KeyCode::Char('[') => self.step_day(-1),
-            KeyCode::Char(']') => self.step_day(1),
             _ => {}
         }
         true
@@ -802,13 +803,14 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let line = if app.editing {
         Line::from(vec![Span::raw(" filter: ").dim(), Span::raw(format!("{}▌", app.filter)), Span::raw("   ⏎ done · esc clear").dim()])
     } else {
-        let keys = if app.zoom {
-            " ↑↓ PgUp PgDn scroll · ← back · f JFR · o HTML · c handoff · q quit"
+        let keys = if app.day.is_some() {
+            " ↑↓ PgUp PgDn scroll · ← → days · esc back · f JFR · o HTML · c handoff · q quit"
+        } else if app.zoom {
+            " ↑↓ PgUp PgDn scroll · ← back · f JFR · o HTML · c handoff · q quit · d day"
         } else {
-            " ↑↓ move · ⏎ zoom · / filter · s sort: time, cost, next · r re-sort · f JFR for IntelliJ · o HTML · c handoff · q quit"
+            " ↑↓ move · ⏎ zoom · / filter · s sort: time, cost, next · r re-sort · f JFR for IntelliJ · o HTML · c handoff · q quit · d day"
         };
-        let days = if app.day.is_some() { " · d day · [ ] days" } else { " · d day" };
-        let mut spans = vec![Span::raw(format!("{keys}{days}")).dim()];
+        let mut spans = vec![Span::raw(keys).dim()];
         if !app.filter.is_empty() {
             spans.push(Span::raw(format!("   filter: {}", app.filter)));
         }
@@ -1126,23 +1128,29 @@ mod tests {
     }
 
     #[test]
-    fn brackets_step_through_days_but_not_past_the_latest() {
+    fn arrows_step_through_days_but_not_past_the_latest() {
         let mut a = app(&["~/src/a"]);
         press(&mut a, KeyCode::Char('['));
         assert_eq!(a.day, None, "the brackets need the day view");
         press(&mut a, KeyCode::Char('d'));
-        press(&mut a, KeyCode::Char('['));
+        press(&mut a, KeyCode::Left);
         assert_eq!(a.day, Some(None), "the latest day is not known before it is computed");
         pane(&mut a);
         day_note(&mut a, None, 100, 0, "latest");
-        press(&mut a, KeyCode::Char('['));
-        press(&mut a, KeyCode::Char('['));
-        press(&mut a, KeyCode::Char(']'));
+        press(&mut a, KeyCode::Left);
+        press(&mut a, KeyCode::Left);
+        press(&mut a, KeyCode::Right);
         assert_eq!(a.day, Some(Some(99)));
-        press(&mut a, KeyCode::Char(']'));
+        press(&mut a, KeyCode::Right);
         assert_eq!(a.day, Some(None), "back on the latest day");
-        press(&mut a, KeyCode::Char(']'));
-        assert_eq!(a.day, Some(None), "] on the latest day does nothing");
+        press(&mut a, KeyCode::Right);
+        assert_eq!(a.day, Some(None), "→ on the latest day does nothing");
+        for (back, on) in [(KeyCode::Char('h'), KeyCode::Char('l')), (KeyCode::Char('['), KeyCode::Char(']'))] {
+            press(&mut a, back);
+            assert_eq!(a.day, Some(Some(99)), "{back:?} steps back");
+            press(&mut a, on);
+            assert_eq!(a.day, Some(None), "{on:?} steps on");
+        }
     }
 
     #[test]
@@ -1153,19 +1161,20 @@ mod tests {
         pane(&mut a);
         day_note(&mut a, None, 100, 0, &vec!["line"; 40].join("\n"));
         let footer = title_and_footer(&mut a).1;
-        assert!(footer.contains(" · d day · [ ] days"), "{footer}");
+        assert!(footer.contains(" ↑↓ PgUp PgDn scroll · ← → days · esc back · f JFR · o HTML · c handoff · q quit"), "{footer}");
+        assert!(!footer.contains("d day"), "{footer}");
         press(&mut a, KeyCode::Enter);
         assert!(a.zoom);
         let (title, _) = pane(&mut a);
         assert!(title.starts_with("┌ day · "), "full screen: {title}");
         press(&mut a, KeyCode::Down);
         assert_eq!(a.scroll, 1, "the full-screen day scrolls");
-        press(&mut a, KeyCode::Char('['));
-        assert_eq!((a.day, a.zoom, a.scroll), (Some(Some(99)), true, 0), "[ works full screen");
+        press(&mut a, KeyCode::Left);
+        assert_eq!((a.day, a.zoom, a.scroll), (Some(Some(99)), true, 0), "← steps to the day before, full screen");
         pane(&mut a);
         a.request_day();
         assert_eq!(a.day_pending, Some((Some(99), 0, (160, 19), Some(4))), "the day before starts its strip at the first day's hour");
-        for key in [KeyCode::Esc, KeyCode::Left, KeyCode::Char('h'), KeyCode::Backspace] {
+        for key in [KeyCode::Esc, KeyCode::Char('d'), KeyCode::Backspace] {
             if a.day.is_none() {
                 press(&mut a, KeyCode::Char('d'));
             }

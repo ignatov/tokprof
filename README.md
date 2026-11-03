@@ -215,8 +215,8 @@ The list's last column is the cost of one more request and its share of the sess
 | `f` | Write the session's JFR for IntelliJ Profiler to `~/tokprof/<id>.jfr`, or into `$TOKPROF_DIR` if set |
 | `o` | Write the session's HTML flame graph to `~/tokprof/<id>.html`, or into `$TOKPROF_DIR`, and open it in the browser |
 | `c` | Copy the `tokprof handoff` line for the session, to continue it in a new session |
-| `d` | Show the day of your latest message on the whole screen, as `tokprof day` prints it; `d`, `esc`, `←`, `h` or backspace go back to the list |
-| `[` `]` | With the day shown, step to the day before or after, never past the latest; the strips keep the hours of the first day shown |
+| `d` | Show the day of your latest message on the whole screen, as `tokprof day` prints it; `esc`, `d` or backspace go back to the list |
+| `←` `→`, `h` `l`, `[` `]` | With the day shown, step to the day before or after, never past the latest; the strips keep the hours of the first day shown |
 | `q`, Ctrl+C, or `esc` in the list | Quit |
 
 The X-ray shows:
