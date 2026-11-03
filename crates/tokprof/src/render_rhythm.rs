@@ -8,6 +8,12 @@ use tokprof_core::rhythm::{self, Offset, View};
 
 use crate::render_xray::advice_lines;
 
+/// A date, counted as days since 1970-01-01, as `%Y-%m-%d`. The count already names the local
+/// date, so the machine's time zone must not shift it.
+fn date_name(date: i64) -> String {
+    chrono::DateTime::from_timestamp(date * 86_400, 0).map(|t| t.date_naive().format("%Y-%m-%d").to_string()).unwrap_or_default()
+}
+
 /// The day view of a date that runs `[from, to)`, with the cold returns of its requests and a
 /// strip in `layout` over the 24 hours from `axis`. The current day ends at `i64::MAX`.
 #[allow(clippy::too_many_arguments)]
@@ -21,7 +27,7 @@ pub fn day(view: &View, date: i64, (from, to): (i64, i64), offset: Offset, retur
     }
     let summary = view.summary((from, to));
     let Some(strip) = view.strip(&summary, (from, to), layout, axis, style, offset) else {
-        let _ = writeln!(out, "\nNo messages on {}.", local_time(rhythm::midnight(date, offset) + 12 * 3_600_000, "%Y-%m-%d"));
+        let _ = writeln!(out, "\nNo messages on {}.", date_name(date));
         return out;
     };
     out.push('\n');
@@ -166,6 +172,17 @@ mod tests {
         let text = day(&view, date, view.days.bounds(date, &|_| 0), &|_| 0, &[], true, rhythm::Layout::TERMINAL, None, &fmt::Style::with_color(false));
         assert!(text.starts_with("tokprof · day\nday       "), "{text}");
         assert!(text.contains("\nnight     no pause before the day; it starts at midnight\n"), "{text}");
+        assert!(text.ends_with("\nNo messages on 2026-11-02.\n"), "{text}");
+    }
+
+    #[test]
+    fn a_day_with_no_message_keeps_its_date_in_any_zone() {
+        // A day at UTC+14 starts at 10:00 UTC the day before; read in another zone, its noon
+        // fell on the wrong date.
+        let plus14 = |_: i64| 14 * 3_600_000;
+        let view = View::new(Vec::new(), 0, &plus14);
+        let date = 1_793_577_600_000 / 86_400_000;
+        let text = day(&view, date, view.days.bounds(date, &plus14), &plus14, &[], true, rhythm::Layout::TERMINAL, None, &fmt::Style::with_color(false));
         assert!(text.ends_with("\nNo messages on 2026-11-02.\n"), "{text}");
     }
 
