@@ -495,7 +495,6 @@ fn main() -> Result<()> {
         println!("wrote {}", display_path(&path.to_string_lossy(), None, catalog.home()));
         let name = path.file_stem().map_or_else(|| "share".to_string(), |n| n.to_string_lossy().to_string());
         print!("\n{}", render_pool::text(&pool::build(&[(name, value)], 1), false));
-        println!("\nwords to review: {}", share::review_list(&words).join(", "));
         println!("Nothing was sent anywhere: review the file, then send it yourself.");
         return Ok(());
     }

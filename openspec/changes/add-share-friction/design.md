@@ -67,7 +67,7 @@
    - The coverage line takes `prompts`.
 
 9. **Own words.**
-   - The new field names, the busy kinds, the hand-off kinds and the wake sources join tokprof's own words. Nothing new reaches the words to review.
+   - The new field names, the busy kinds, the hand-off kinds and the wake sources join tokprof's own words. No new word falls outside tokprof's own.
 
 ## Log fields and versions
 

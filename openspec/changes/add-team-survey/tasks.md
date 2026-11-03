@@ -91,6 +91,12 @@ Apply after `add-release-builds`. Every group ends with `cargo test --workspace`
   - record each session's time and cost with `tokprof scan <id>` (aim: under 5 minutes and $1).
 - [x] 7.5 Reinstall the binary with `cargo install --path crates/tokprof --root ~/.local`, then run `cargo test --workspace` and `openspec validate --all --strict`. Verify: all pass.
 
+## 8. No list of words after writing
+
+- [x] 8.1 `tokprof share` prints no `words to review:` line. The author found it of no use: models, clients and versions make up nearly all of it. The requirement keeps tokprof's own words as Own words, and the leak check still searches every other word. Verify: the unit test for "Models, clients and versions" finds those six words, and the integration test of "What it prints" sees no list.
+- [x] 8.2 Update README and `docs/survey.md`. Verify: neither names the words to review.
+- [x] 8.3 Run `share` over the author's 30 days. Verify: the output ends with the report and `Nothing was sent anywhere…`, and the file has the same keys as before.
+
 ## Results
 
 | check | baseline | after |

@@ -80,8 +80,8 @@ Each client in `clients` SHALL also hold `active_hours`, the clock hours with at
 - **THEN** its `effort` holds `max` with 900 requests and $800, and `medium` with 100 requests and $50
 
 ### Requirement: Words of the new parts
-The keys of the new parts SHALL be tokprof's own words (see Words to review): the part and field names, the kinds of busy time as agent-time names them, and the kinds of hand-off and of wake.
+The keys of the new parts SHALL be tokprof's own words (see Own words): the part and field names, the kinds of busy time as agent-time names them, and the kinds of hand-off and of wake.
 
-#### Scenario: Nothing new to review
+#### Scenario: No new words outside the own ones
 - **WHEN** a file with the new parts is written
-- **THEN** its words to review are the same as those of the file without them
+- **THEN** its words outside tokprof's own are the same as those of the file without them

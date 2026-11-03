@@ -46,7 +46,7 @@
 
 4. **Own words and the leak check work on the finished JSON value.**
    - The writer builds the value, then walks it by position. Under fixed parts, a key or string must be one of tokprof's own words. Under `spend` the keys are models, under `clients` clients, and under `versions` versions; the label and `mcp_names` sit in the header. Anything else is "any other".
-   - The words to review are every non-own word.
+   - The leak check searches every non-own word, and tokprof prints none of them.
    - The leak check searches only those, for:
      - the home path;
      - the session ids, short ids and titles that the scan saw;
@@ -105,7 +105,7 @@
 ## Parse time
 
 - The extra work is constant per fact, per request and per session: one addition per fact, two map updates per request, and a few per session.
-- The leak check and the words to review walk a value of about 50 KB once. The pool reads a few dozen such files.
+- The leak check walks a value of about 50 KB once. The pool reads a few dozen such files.
 - Expected: within 1–3% of today's 24.4 s for `tokprof --since 30d share` over the author's 8.5 GB. The budget is 5%.
 - `summary`, `tools`, `whatif` and `pauses` are unchanged, apart from Codex request records carrying a version, which costs one shared string per rollout.
 

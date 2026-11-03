@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Share command
-`tokprof share` SHALL write one JSON file of aggregates over the requests that the global filters select (see session-logs). The file goes to `share-<YYYY-MM-DD>.json` in the profile directory (`~/tokprof`, or `$TOKPROF_DIR` when set), or to the file `-o` names, with missing directories created. It then prints `wrote <path>`, the report of that one file (see share-pool), the words to review, and `Nothing was sent anywhere: review the file, then send it yourself.`
+`tokprof share` SHALL write one JSON file of aggregates over the requests that the global filters select (see session-logs). The file goes to `share-<YYYY-MM-DD>.json` in the profile directory (`~/tokprof`, or `$TOKPROF_DIR` when set), or to the file `-o` names, with missing directories created. It then prints `wrote <path>`, the report of that one file (see share-pool), and `Nothing was sent anywhere: review the file, then send it yourself.`
 
 #### Scenario: Default path
 - **WHEN** `tokprof share` runs on 2026-11-03 without `-o`
@@ -19,7 +19,8 @@
 
 #### Scenario: What it prints
 - **WHEN** `tokprof --since 30d share` writes its file
-- **THEN** stdout holds, in this order: `wrote <path>`; the report that `tokprof pool <path>` prints for that one file; the `words to review:` line; and `Nothing was sent anywhere: review the file, then send it yourself.`
+- **THEN** stdout holds, in this order: `wrote <path>`; the report that `tokprof pool <path>` prints for that one file; and `Nothing was sent anywhere: review the file, then send it yourself.`
+- **AND** it prints no list of the words in the file
 
 ### Requirement: File header
 The file SHALL start with `format` (the number 2), `tokprof` (the version that wrote it), `platform` (the system and CPU it ran on, such as `macos-aarch64` or `linux-x86_64`), `window` (the first and last day of the selected requests, as `YYYY-MM-DD`), `survey` and `mcp_names` when they were given, and `agents`, one object per agent with requests, keyed by agent name.
@@ -234,7 +235,7 @@ The Claude Code object SHALL hold `whatif`: under `main` for main conversations 
 - **THEN** each figure under `whatif` equals the report's before rounding
 
 ### Requirement: Leak check
-Before it writes, `tokprof share` SHALL search every key and string of the file that is not one of tokprof's own words (see Words to review). It looks for this machine's home path, for the ids, short ids and titles of the selected sessions, and for the user name and host name as whole words of 4 or more characters. When it finds one, it writes nothing and fails with `the file would hold <what> in <field>; nothing written`.
+Before it writes, `tokprof share` SHALL search every key and string of the file that is not one of tokprof's own words (see Own words). It looks for this machine's home path, for the ids, short ids and titles of the selected sessions, and for the user name and host name as whole words of 4 or more characters. When it finds one, it writes nothing and fails with `the file would hold <what> in <field>; nothing written`.
 
 #### Scenario: A home path in a model name
 - **WHEN** a log names the model `/Users/me/models/m1`, and the home directory is `/Users/me`
@@ -249,13 +250,13 @@ Before it writes, `tokprof share` SHALL search every key and string of the file 
 - **WHEN** the search finds nothing
 - **THEN** the file is written
 
-### Requirement: Words to review
-tokprof's own words SHALL be the fixed names of its parts, components, causes, triggers, activities, setup sources, content kinds, ranges, hints, compaction triggers and effort levels, and the names that the requirements above allow. After writing, `tokprof share` prints `words to review: ` and every other key or string of the file, each once, joined by `, `. They come in this order: model names, client names, versions, the survey label, the kept MCP servers, and any other.
+### Requirement: Own words
+tokprof's own words SHALL be the fixed names of its parts, components, causes, triggers, activities, setup sources, content kinds, ranges, hints, compaction triggers and effort levels, and the names that the requirements above allow. Every other key or string of the file is a word that the leak check searches: model names, client names, versions, the survey label, the kept MCP servers, and any other. `tokprof share` SHALL NOT print these words.
 
 #### Scenario: Models, clients and versions
 - **WHEN** the file holds the models `claude-opus-5-5` and `gpt-6-astra`, the clients `sdk-ts` and `codex_exec`, and the versions `2.1.316` and `0.166.0`
-- **THEN** the command prints `words to review: claude-opus-5-5, gpt-6-astra, sdk-ts, codex_exec, 2.1.316, 0.166.0`
+- **THEN** these six are the words outside tokprof's own, the leak check searches them, and the command prints none of them
 
 #### Scenario: A string of no known kind
 - **WHEN** the file holds a key or string that is neither one of tokprof's own words nor a model, client, version, label or kept MCP server
-- **THEN** it comes last in the words to review
+- **THEN** the leak check searches it too

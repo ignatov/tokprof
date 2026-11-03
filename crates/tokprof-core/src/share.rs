@@ -1058,14 +1058,6 @@ fn walk(v: &Value, path: &str, own: &HashSet<String>, out: &mut Vec<Word>) {
     }
 }
 
-/// The words to review, each once, in the order of their kinds.
-pub fn review_list(words: &[Word]) -> Vec<String> {
-    let mut sorted: Vec<&Word> = words.iter().collect();
-    sorted.sort_by_key(|w| w.kind);
-    let mut seen = HashSet::new();
-    sorted.into_iter().filter(|w| seen.insert(w.text.as_str())).map(|w| w.text.clone()).collect()
-}
-
 /// This machine's names, which a share file must not hold.
 pub struct Secrets<'a> {
     /// The home directory, as the logs write it.
@@ -1524,7 +1516,7 @@ mod tests {
     }
 
     #[test]
-    fn the_words_to_review_are_the_models_clients_and_versions() {
+    fn the_words_outside_the_own_ones_are_the_models_clients_and_versions() {
         let r = |model: &str, client: &str, version: &str| Request {
             model: model.into(),
             client: Some(client.into()),
@@ -1538,28 +1530,31 @@ mod tests {
         ]);
         let own = own_words(&agents());
         let w = words(&v, &own);
-        assert_eq!(review_list(&w), ["claude-opus-5-5", "gpt-6-astra", "sdk-ts", "codex_exec", "2.1.316", "0.166.0"], "{w:?}");
+        let texts = |w: &[Word]| w.iter().map(|w| w.text.clone()).collect::<BTreeSet<String>>();
+        assert_eq!(texts(&w), ["claude-opus-5-5", "gpt-6-astra", "sdk-ts", "codex_exec", "2.1.316", "0.166.0"].map(String::from).into(), "{w:?}");
+        let kinds = |k: WordKind| w.iter().filter(|w| w.kind == k).count();
+        assert_eq!((kinds(WordKind::Model), kinds(WordKind::Client), kinds(WordKind::Version)), (2, 2, 2), "{w:?}");
         // Every kind of origin is tokprof's own word.
         let mut with_kinds = v.clone();
         for kind in ORIGIN_KINDS {
             with_kinds["agents"]["claude"]["origins"][kind] = json!({"requests": 1, "usd": 0.0, "tokens": 1});
         }
-        assert_eq!(review_list(&words(&with_kinds, &own)).len(), 6);
+        assert_eq!(texts(&words(&with_kinds, &own)).len(), 6);
     }
 
     #[test]
-    fn a_string_of_no_known_kind_comes_last() {
+    fn a_string_of_no_known_kind_is_a_word_the_leak_check_searches() {
         let mut v = file(&[session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, one())])]);
         v["agents"]["claude"]["triggers"]["zebra-billing"] = json!({"requests": 1});
         v["agents"]["claude"]["tools"]["walrus"] = json!({"calls": 1});
         let w = words(&v, &own_words(&agents()));
-        let list = review_list(&w);
-        assert_eq!(&list[list.len() - 2..], ["walrus", "zebra-billing"], "{list:?}");
+        let other: BTreeSet<&str> = w.iter().filter(|x| x.kind == WordKind::Other).map(|x| x.text.as_str()).collect();
+        assert!(other.contains("walrus") && other.contains("zebra-billing"), "{w:?}");
         assert!(w.iter().any(|x| x.text == "zebra-billing" && x.field == "agents.claude.triggers"), "{w:?}");
     }
 
     #[test]
-    fn the_leak_check_finds_this_machines_names_in_the_words_to_review() {
+    fn the_leak_check_finds_this_machines_names_in_the_words_outside_the_own_ones() {
         let ids: BTreeSet<String> = ["5e5510f0-1111".to_string(), "5e5510f0".to_string()].into();
         let titles: BTreeSet<String> = ["Fix quokka export".to_string(), "thinking".to_string()].into();
         let secrets = Secrets { home: "/Users/me", user: Some("user"), host: Some("walrus-mbp"), ids: &ids, titles: &titles };
@@ -1569,7 +1564,7 @@ mod tests {
         assert_eq!(leak(&model("Fix quokka export model"), &secrets).map(|l| l.0), Some("a session title"));
         assert_eq!(leak(&model("walrus-mbp-proxy"), &secrets).map(|l| l.0), Some("the host name"));
         assert_eq!(leak(&model("claude-opus-5-5"), &secrets), None, "nothing found");
-        // tokprof's own words are not words to review, so `user prompt` and `thinking` stay.
+        // The leak check searches only the words outside tokprof's own, so `user prompt` and `thinking` stay.
         let v = file(&[session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, one())])]);
         let w = words(&v, &own_words(&agents()));
         assert_eq!(leak(&w, &secrets), None, "{w:?}");

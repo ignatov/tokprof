@@ -23,7 +23,7 @@ The file holds no project or file path, no session id or title, no prompt or too
 
 A person's own skills, commands, subagent types, MCP servers and scripts count only as `skill`, `command`, `agent`, `mcp` and `other`.
 
-Before writing, tokprof searches the file for the home path, the user and host names, and the ids and titles of the sessions, and writes nothing if it finds one. After writing, it prints what the file says, and then `words to review`: every word in the file that tokprof did not make, so the person can check them before sending.
+Before writing, tokprof searches the file for the home path, the user and host names, and the ids and titles of the sessions, and writes nothing if it finds one. After writing, it prints what the file says.
 
 The file is anonymous in what it holds, not in how it is sent. Whoever collects the files knows who sent which, and sees each person's spend. When that matters, collect them in a shared folder or a form that does not show the sender.
 
@@ -64,7 +64,7 @@ or my logs into this chat.
 
 The agent downloads nothing but the archive and `SHA256SUMS`, and it sends nothing. The person reads tokprof's output in the chat and sends the file themselves.
 
-To count the calls of an MCP server by name, such as the server of an IDE, add `--mcp-names <server>` to the command in step 5. The server's name then shows in each file's header and in its words to review.
+To count the calls of an MCP server by name, such as the server of an IDE, add `--mcp-names <server>` to the command in step 5. The server's name then shows in each file's header.
 
 ## Collecting and pooling
 

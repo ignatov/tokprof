@@ -87,7 +87,7 @@ fn no_selected_request_writes_no_file() {
 }
 
 #[test]
-fn share_prints_the_report_of_its_file_then_the_words_to_review() {
+fn share_prints_the_report_of_its_file_and_no_list_of_words() {
     let home = home("prints");
     let target = home.join("out/f.json");
     let out = tokprof(&home, &["--since", "30d", "share", "--survey", "team-2026-11", "-o", target.to_str().unwrap()]);
@@ -95,9 +95,9 @@ fn share_prints_the_report_of_its_file_then_the_words_to_review() {
     assert!(out.status.success(), "{stdout}{}", String::from_utf8_lossy(&out.stderr));
     let wrote = stdout.find("wrote ").unwrap();
     let report = stdout.find("share   ").unwrap();
-    let words = stdout.find("words to review: claude-opus-5-5, sdk-ts").unwrap_or_else(|| panic!("{stdout}"));
     let nothing = stdout.find("Nothing was sent anywhere").unwrap();
-    assert!(wrote < report && report < words && words < nothing, "{stdout}");
+    assert!(wrote < report && report < nothing, "{stdout}");
+    assert!(!stdout.contains("words to review"), "{stdout}");
     assert!(stdout.contains(" · survey team-2026-11\n") && stdout.contains("Where the money went"), "{stdout}");
     // The report is what `tokprof pool` prints for the file.
     let pooled = tokprof(&home, &["pool", target.to_str().unwrap()]);

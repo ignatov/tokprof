@@ -386,7 +386,7 @@ tokprof --since 30d share                              # ~/tokprof/share-2026-11
 tokprof --since 30d share --survey team-2026-11 -o f.json
 ```
 
-After writing, it prints what the file says, as `tokprof pool` would for that one file (see below). Then comes `words to review:`, every word in the file that tokprof did not make: model, client and version names, the survey label, and anything else. Read them before you send the file.
+After writing, it prints what the file says, as `tokprof pool` would for that one file (see below).
 
 Per agent, the file holds:
 
@@ -417,7 +417,7 @@ Per agent, the file holds:
 
 The file also names its format (2), the tokprof version, the platform, the first and last day of the requests, and the survey label when `--survey` gives one.
 
-It holds no project, path, session id, title, task, prompt or tool text, and no user or host name. Names stay only when they ship with the agent, as each log source lists them: built-in tools, slash commands, bundled skills and built-in subagent types. Well-known shell programs such as `git` and `sed` stay too. Your own skills, commands, subagent types, MCP servers and scripts count only as `skill`, `command`, `agent`, `mcp` and `other`. `--mcp-names docs,ide` keeps the named MCP servers by name. Before writing, tokprof searches the words to review for the home path, the user and host names, and the ids and titles of the sessions, and writes nothing when it finds one. Dollars have 4 decimals and tokens are whole, so files from several users can be summed.
+It holds no project, path, session id, title, task, prompt or tool text, and no user or host name. Names stay only when they ship with the agent, as each log source lists them: built-in tools, slash commands, bundled skills and built-in subagent types. Well-known shell programs such as `git` and `sed` stay too. Your own skills, commands, subagent types, MCP servers and scripts count only as `skill`, `command`, `agent`, `mcp` and `other`. `--mcp-names docs,ide` keeps the named MCP servers by name. Before writing, tokprof searches every word in the file that it did not make itself, such as model, client and version names, for the home path, the user and host names, and the ids and titles of the sessions, and writes nothing when it finds one. Dollars have 4 decimals and tokens are whole, so files from several users can be summed.
 
 ### Pooling the files
 

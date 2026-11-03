@@ -42,7 +42,7 @@ There is also no way to read many files together. And a colleague who runs the s
   - tools and commands, and agent versions.
 
   `--json` writes the same numbers, `--by-file` adds a column per file, and `--min-people <n>` folds rows that fewer than n files share into `other`.
-- **`tokprof share` prints the report of the file it wrote,** as `tokprof pool` would for that one file, before the words to review and `Nothing was sent anywhere…`.
+- **`tokprof share` prints the report of the file it wrote,** as `tokprof pool` would for that one file, before `Nothing was sent anywhere…`. It prints no list of the words in the file; the leak check searches them.
 - **`docs/survey.md`: how to run a survey,** and the prompt a colleague pastes into their agent, with the release tag, the label and the recipient filled in. The prompt tells the agent to:
   - download the archive for the machine from that release (see `add-release-builds`);
   - check it against `SHA256SUMS`, and with `gh attestation verify` when `gh` is installed;
@@ -64,7 +64,7 @@ There is also no way to read many files together. And a colleague who runs the s
   - the new parts;
   - the names that ship with the agent, shell programs and kept MCP servers;
   - the label and the platform;
-  - the leak check and the words to review;
+  - the leak check over the words that are not tokprof's own;
   - the command prints the report of its file.
 - `session-logs`: each request carries the agent version. That is new for Codex, from `session_meta.cli_version`.
 
