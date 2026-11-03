@@ -104,7 +104,10 @@ jobs:
       # checks that every platform wrote the same numbers.
       - name: Smoke run over the fixture logs
         if: matrix.target != 'x86_64-apple-darwin'
-        run: ci/smoke.sh "dist/tokprof-$TARGET.tar.gz" "smoke/share-$TARGET.json"
+        run: |
+          archive="dist/tokprof-$TARGET.tar.gz"
+          if [[ "$TARGET" == *-windows-* ]]; then archive="dist/tokprof-$TARGET.zip"; fi
+          ci/smoke.sh "$archive" "smoke/share-$TARGET.json"
       - uses: actions/upload-artifact@v7
         if: matrix.target != 'x86_64-apple-darwin'
         with:
