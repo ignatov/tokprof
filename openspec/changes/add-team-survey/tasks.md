@@ -89,7 +89,7 @@ Apply after `add-release-builds`. Every group ends with `cargo test --workspace`
 - [x] 7.4 Dry-run the prompt on the author's Mac against the dry-run archives of `add-release-builds`, in a new Claude Code session and a new Codex session. Verify:
   - each agent picks `tokprof-aarch64-apple-darwin.tar.gz`, checks it, runs tokprof, shows the output, and sends nothing;
   - record each session's time and cost with `tokprof scan <id>` (aim: under 5 minutes and $1).
-- [ ] 7.5 Reinstall the binary with `cargo install --path crates/tokprof --root ~/.local`, then run `cargo test --workspace` and `openspec validate --all --strict`. Verify: all pass.
+- [x] 7.5 Reinstall the binary with `cargo install --path crates/tokprof --root ~/.local`, then run `cargo test --workspace` and `openspec validate --all --strict`. Verify: all pass.
 
 ## Results
 
@@ -104,6 +104,7 @@ Apply after `add-release-builds`. Every group ends with `cargo test --workspace`
 | 7.1 sums and time | main: 25.18 s | 2026-10-04 to 11-03 (`--until 2026-11-03`): content, prompt sizes, versions and spans each add up to the spend, $9,109.91 for Claude Code and $1,931.60 for Codex; spans count 290 and 170 sessions, the `main_sessions`; tools rent $6,100 and trips $8,363, as `tokprof tools`; whatif $4,187 / $5,034 / $3,966 and $2,851 / $2,540 / $2,915, as `tokprof whatif`; total $11,042, as `Total priced`. 30 days: 3 runs 26.49, 24.52, 25.35 s, median 25.35 s (+0.7%); 105,108 bytes with the names filled in (41,578 before) |
 | 7.2 names in the file | | 538 names searched: 328 session id prefixes, 156 project folders, 48 origin names, 6 MCP servers; no `/Users/` or `~/`. Two words match only inside two client names that Codex logs, which the words to review list; `general-purpose`, `Bash`, `git`, `code-review` and `/goal` are in the file. 44 words to review |
 | 7.3 pool checks | | the pool of the file equals the report `share` printed (150 lines); 3 copies give 3.0× the dollars and the same shares in every row; with the format-1 file, the content, prompt-size, span, tool and version tables say `in 1 of 2 files`; 50 files pool in 0.03 s |
+| 7.5 reinstall and checks | | after a rebase onto 8587e0f (add-failures-and-waits and add-windows-builds landed meanwhile): 385 tests pass, clippy clean, `openspec validate --all --strict` 18 of 18; ~/.local/bin/tokprof reinstalled from e64c325, `share` over 30 days in 25.0 s |
 | 7.4 dry-run sessions: time and cost | | the prompt of docs/survey.md against `tokprof-aarch64-apple-darwin.tar.gz` and `SHA256SUMS` served from 127.0.0.1 (no attestation, so that line was left out). Claude Code: 68 s, 5 turns, $0.33; checked the SHA-256, ran tokprof, showed its output, named the file, did not open it. Codex: 2 min, 8 requests, $0.68; the same. Neither sent anything or installed tokprof |
 
 ## Workflow follow-up
