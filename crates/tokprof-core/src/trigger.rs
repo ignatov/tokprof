@@ -334,6 +334,49 @@ fn first_program(part: &str) -> Option<(bool, String, Vec<String>)> {
     Some((first.contains('/'), name.to_string(), words[1..].iter().map(|w| w.to_string()).collect()))
 }
 
+/// What a shell command does to version control, in any of its parts: a commit, a push, a pull
+/// request opened.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct VcsActions {
+    pub commit: bool,
+    pub push: bool,
+    pub pull_request: bool,
+}
+
+impl VcsActions {
+    pub fn any(self) -> bool {
+        self.commit || self.push || self.pull_request
+    }
+}
+
+/// The options of `git` before its subcommand whose value is the next word.
+const GIT_VALUE_OPTIONS: [&str; 5] = ["-C", "-c", "--git-dir", "--work-tree", "--namespace"];
+
+/// The version-control actions of a shell command: `git commit`, `git push` and `gh pr create`
+/// in any of its parts, after `git`'s options before the subcommand.
+pub fn vcs_actions(cmd: &str) -> VcsActions {
+    let mut a = VcsActions::default();
+    for part in &split(cmd).parts {
+        let Some((_, program, args)) = first_program(part) else { continue };
+        match program.as_str() {
+            "git" => {
+                let mut i = 0;
+                while args.get(i).is_some_and(|w| w.starts_with('-')) {
+                    i += if GIT_VALUE_OPTIONS.contains(&args[i].as_str()) { 2 } else { 1 };
+                }
+                match args.get(i).map(String::as_str) {
+                    Some("commit") => a.commit = true,
+                    Some("push") => a.push = true,
+                    _ => {}
+                }
+            }
+            "gh" if args.first().is_some_and(|w| w == "pr") && args.get(1).is_some_and(|w| w == "create") => a.pull_request = true,
+            _ => {}
+        }
+    }
+    a
+}
+
 /// `-i`, `-i.bak`, `-ni` or `--in-place` make `sed` edit the file.
 fn sed_in_place<S: AsRef<str>>(args: &[S]) -> bool {
     args.iter().map(AsRef::as_ref).any(|a: &str| {
@@ -463,6 +506,49 @@ fn git_reads(args: &[&str]) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod vcs_tests {
+    use super::*;
+
+    fn acts(cmd: &str) -> (bool, bool, bool) {
+        let a = vcs_actions(cmd);
+        (a.commit, a.push, a.pull_request)
+    }
+
+    #[test]
+    fn a_commit_in_a_chain() {
+        assert_eq!(acts("git add -A && git commit -m \"fix\""), (true, false, false));
+        assert_eq!(acts("cd walrus && git commit -am wip"), (true, false, false));
+    }
+
+    #[test]
+    fn a_commit_and_a_push() {
+        assert_eq!(acts("git commit -m x && git push"), (true, true, false));
+        assert_eq!(acts("git commit -m \"a && git push\""), (true, false, false), "a quoted && is no part");
+    }
+
+    #[test]
+    fn options_before_the_subcommand() {
+        assert_eq!(acts("git -C ../zebra commit -m x"), (true, false, false));
+        assert_eq!(acts("git -c user.name=x commit -m y"), (true, false, false));
+        assert_eq!(acts("git --git-dir=.g push origin main"), (false, true, false));
+        assert_eq!(acts("GIT_AUTHOR_NAME=x git commit -m y"), (true, false, false));
+    }
+
+    #[test]
+    fn a_pull_request() {
+        assert_eq!(acts("gh pr create --fill"), (false, false, true));
+        assert_eq!(acts("gh pr view 12"), (false, false, false));
+    }
+
+    #[test]
+    fn other_commands_do_nothing() {
+        for cmd in ["git status", "git log --oneline", "echo git commit", "git", "", "commit -m x"] {
+            assert_eq!(acts(cmd), (false, false, false), "{cmd}");
+        }
+    }
 }
 
 #[cfg(test)]

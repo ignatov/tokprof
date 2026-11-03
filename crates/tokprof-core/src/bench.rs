@@ -64,6 +64,12 @@ impl Strategy {
     }
 }
 
+/// The bench's defaults, which `tokprof bench` and the share file use: the requests followed
+/// after a return, the smallest context of a return, and how long heartbeats keep the cache warm.
+pub const DEFAULT_REQUESTS: usize = 60;
+pub const DEFAULT_MIN_CONTEXT: u64 = 100_000;
+pub const DEFAULT_KEEP_WARM_MS: i64 = 6 * 3_600_000;
+
 /// Output tokens of one heartbeat: a short reply to the ping, which the conversation drops.
 pub const PING_OUTPUT: f64 = 100.0;
 

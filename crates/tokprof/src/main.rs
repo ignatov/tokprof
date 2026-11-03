@@ -186,10 +186,10 @@ enum Command {
     /// with heartbeats that keep the cache warm.
     Bench {
         /// Follow each return for up to this many requests.
-        #[arg(long, default_value_t = 60, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        #[arg(long, default_value_t = bench::DEFAULT_REQUESTS, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         requests: usize,
         /// Only returns to contexts of at least this many tokens.
-        #[arg(long, default_value_t = 100_000)]
+        #[arg(long, default_value_t = bench::DEFAULT_MIN_CONTEXT)]
         min_context: u64,
         /// How long heartbeats keep the cache warm after the last request: 6h, 90m.
         #[arg(long, default_value = "6h", value_parser = parse_duration)]
@@ -776,6 +776,13 @@ mod tests {
 
     fn name(args: &[&str], value: Value) -> String {
         default_name(&Cli::parse_from(std::iter::once("tokprof").chain(args.iter().copied())), value)
+    }
+
+    #[test]
+    fn the_bench_defaults_are_the_bench_constants() {
+        let cli = Cli::parse_from(["tokprof", "bench"]);
+        let Some(Command::Bench { requests, min_context, keep_warm, .. }) = cli.command else { panic!("not the bench") };
+        assert_eq!((requests, min_context, keep_warm), (bench::DEFAULT_REQUESTS, bench::DEFAULT_MIN_CONTEXT, bench::DEFAULT_KEEP_WARM_MS));
     }
 
     #[test]

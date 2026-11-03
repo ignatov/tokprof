@@ -17,6 +17,39 @@ pub const SLOW_MS: i64 = 60_000;
 /// How many of the longest waits the views name.
 pub const LONGEST: usize = 3;
 
+/// The classes of the last error a request waited on for retries, in the order the share
+/// writes them.
+pub const RETRY_CLASSES: [&str; 7] = ["server", "rate_limit", "auth", "timeout", "connection", "sleep", "other"];
+
+/// The class of a retry's error text: a status number from 400 to 599 that stands alone wins
+/// first, then the words.
+pub fn retry_class(text: &str) -> &'static str {
+    let b = text.as_bytes();
+    for i in 0..b.len().saturating_sub(2) {
+        let alone = (i == 0 || !b[i - 1].is_ascii_digit()) && b.get(i + 3).is_none_or(|c| !c.is_ascii_digit());
+        if alone && b[i..i + 3].iter().all(u8::is_ascii_digit) {
+            let n = b[i..i + 3].iter().fold(0u32, |n, d| n * 10 + u32::from(d - b'0'));
+            match n {
+                500..=599 => return "server",
+                429 => return "rate_limit",
+                401 | 403 => return "auth",
+                408 => return "timeout",
+                _ => {}
+            }
+        }
+    }
+    let low = text.to_lowercase();
+    if low.contains("asleep") {
+        "sleep"
+    } else if low.contains("timed out") || low.contains("timeout") {
+        "timeout"
+    } else if low.contains("connection") && ["error", "lost", "reset", "refused", "closed", "failed"].iter().any(|w| low.contains(w)) {
+        "connection"
+    } else {
+        "other"
+    }
+}
+
 pub const MODEL: &str = "model";
 pub const API_RETRIES: &str = "API retries";
 pub const SUBAGENTS: &str = "subagents";
@@ -385,6 +418,36 @@ fn between(next: &Request) -> Option<Kind> {
         Some(if activity == SUBAGENTS { Kind::Subagents } else { Kind::Between(activity) })
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod retry_class_tests {
+    use super::retry_class;
+
+    #[test]
+    fn the_classes() {
+        assert_eq!(retry_class("API Error: 502 Bad Gateway"), "server");
+        assert_eq!(retry_class("API Error: 529 overloaded"), "server");
+        assert_eq!(retry_class("429 Too Many Requests"), "rate_limit");
+        assert_eq!(retry_class("API Error: 401 invalid token"), "auth");
+        assert_eq!(retry_class("403 forbidden"), "auth");
+        assert_eq!(retry_class("408 Request Timeout"), "timeout");
+    }
+
+    #[test]
+    fn words_without_a_status() {
+        assert_eq!(retry_class("Request timed out."), "timeout");
+        assert_eq!(retry_class("Connection error."), "connection");
+        assert_eq!(retry_class("Connection lost while your computer was asleep"), "sleep");
+        assert_eq!(retry_class("something odd happened"), "other");
+        assert_eq!(retry_class(""), "other");
+    }
+
+    #[test]
+    fn a_status_stands_alone() {
+        assert_eq!(retry_class("request 15023 failed"), "other", "no status inside a longer number");
+        assert_eq!(retry_class("Fehler: 503 — Dienst"), "server", "text around it may be any language");
     }
 }
 
