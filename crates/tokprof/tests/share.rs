@@ -15,12 +15,13 @@ fn home_with_model(name: &str, model: impl Fn(&Path) -> String) -> PathBuf {
     let _ = std::fs::remove_dir_all(&home);
     let dir = home.join(".claude/projects/-w-p");
     std::fs::create_dir_all(&dir).unwrap();
-    let model = model(&home);
+    // As a JSON string: a Windows home path holds `\`, which JSON escapes.
+    let model = serde_json::to_string(&model(&home)).unwrap();
     let now = chrono::Utc::now();
     let at = |min: i64| (now - chrono::Duration::minutes(min)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let assistant = |id: &str, min: i64| {
         format!(
-            r#"{{"type":"assistant","sessionId":"5e5510f0-0000-0000-0000-000000000000","cwd":"/w/p","entrypoint":"sdk-ts","requestId":"{id}","timestamp":"{}","message":{{"id":"{id}","model":"{model}","content":[{{"type":"text","text":"ok"}}],"usage":{{"input_tokens":5,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000,"output_tokens":10}}}}}}"#,
+            r#"{{"type":"assistant","sessionId":"5e5510f0-0000-0000-0000-000000000000","cwd":"/w/p","entrypoint":"sdk-ts","requestId":"{id}","timestamp":"{}","message":{{"id":"{id}","model":{model},"content":[{{"type":"text","text":"ok"}}],"usage":{{"input_tokens":5,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000,"output_tokens":10}}}}}}"#,
             at(min),
         )
     };
