@@ -25,11 +25,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo install --path crates/tokprof --root ~/.local    # the binary the author runs
 ```
 
-GitHub Actions check every push to main and every pull request (`.github/workflows/ci.yml`): the tests on Linux, macOS and Windows, the clippy line above, and `openspec validate --all --strict`. CI also checks the formatting with `cargo fmt --all --check`, in the style that `rustfmt.toml` sets. On Windows a path prints with `\`, so a test must not expect `/` in a printed path.
+CI runs the tests on Windows too, where a path prints with `\`, so a test must not expect `/` in a printed path.
 
 ## Releases
 
-A release is a tag. Set `version` in the root `Cargo.toml`, build once so that `Cargo.lock` follows, and commit both. Push main, then a tag of that version: `git tag v0.2.0 && git push origin v0.2.0`. `.github/workflows/release.yml` checks the tag against the version, runs the CI checks, builds the macOS, Linux and Windows binaries and publishes them as a GitHub release with `SHA256SUMS`. The release notes list the commit subjects since the previous tag, without the `Archive <change>` commits. A tag with a hyphen, such as `v0.2.0-rc.1`, makes a pre-release. A run by hand (Actions → Release → Run workflow) builds the archives and keeps them as artifacts, without a release. GitHub's macOS runners are short at times: a job that no runner takes is cancelled after about 15 minutes with "The job was not acquired by Runner". Then run `gh run rerun <run id> --failed`; a tag's release is published once the jobs pass.
+A release is a tag; the `release` skill has the steps.
 
 ## Layout
 
