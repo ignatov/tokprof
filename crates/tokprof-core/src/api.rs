@@ -34,12 +34,27 @@ pub struct CacheRules {
     pub read_resets_ttl_documented: bool,
 }
 
-const ANTHROPIC: CacheRules =
-    CacheRules { vendor: "Anthropic", models: "Claude", write_lifetimes: ("5m", "1h"), short: (300_000, "5m"), long: Some((3_600_000, "1h")), lookback_blocks: Some(20), read_resets_ttl_documented: true };
+const ANTHROPIC: CacheRules = CacheRules {
+    vendor: "Anthropic",
+    models: "Claude",
+    write_lifetimes: ("5m", "1h"),
+    short: (300_000, "5m"),
+    long: Some((3_600_000, "1h")),
+    lookback_blocks: Some(20),
+    read_resets_ttl_documented: true,
+};
 
 // OpenAI lifetimes depend on the model and organization; 30 minutes is the default for current
 // models, and shorter in-memory retention also expires within it.
-const OPENAI: CacheRules = CacheRules { vendor: "OpenAI", models: "GPT", write_lifetimes: ("30m", "12h"), short: (1_800_000, "30m"), long: None, lookback_blocks: None, read_resets_ttl_documented: false };
+const OPENAI: CacheRules = CacheRules {
+    vendor: "OpenAI",
+    models: "GPT",
+    write_lifetimes: ("30m", "12h"),
+    short: (1_800_000, "30m"),
+    long: None,
+    lookback_blocks: None,
+    read_resets_ttl_documented: false,
+};
 
 impl ApiId {
     /// The APIs whose rules are known.

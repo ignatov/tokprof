@@ -25,7 +25,10 @@ fn home_with_model(name: &str, model: impl Fn(&Path) -> String) -> PathBuf {
             at(min),
         )
     };
-    let user = format!(r#"{{"type":"user","sessionId":"5e5510f0-0000-0000-0000-000000000000","cwd":"/w/p","entrypoint":"sdk-ts","timestamp":"{}","message":{{"role":"user","content":"go"}}}}"#, at(3));
+    let user = format!(
+        r#"{{"type":"user","sessionId":"5e5510f0-0000-0000-0000-000000000000","cwd":"/w/p","entrypoint":"sdk-ts","timestamp":"{}","message":{{"role":"user","content":"go"}}}}"#,
+        at(3)
+    );
     let lines = [user, assistant("m1", 2), assistant("m2", 1)];
     std::fs::write(dir.join("5e5510f0-0000-0000-0000-000000000000.jsonl"), lines.join("\n") + "\n").unwrap();
     home
@@ -140,7 +143,12 @@ fn the_pool_reads_share_files_and_skips_the_others() {
     let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success(), "{stderr}");
     assert!(stdout.starts_with("share   "), "one file read: {stdout}");
-    assert!(stderr.contains("a (1).json: the same as ") && stderr.contains("bad.json: not a tokprof share file") && stderr.contains("newer.json: format 3 needs a newer tokprof"), "{stderr}");
+    assert!(
+        stderr.contains("a (1).json: the same as ")
+            && stderr.contains("bad.json: not a tokprof share file")
+            && stderr.contains("newer.json: format 3 needs a newer tokprof"),
+        "{stderr}"
+    );
     assert!(!stderr.contains("notes.txt") && !stderr.contains("b.json"), "{stderr}");
     // Two different files make a pool.
     let b = dir.join("b.json");

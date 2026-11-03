@@ -55,10 +55,7 @@ fn folded(stacks: &Stacks, measure: Measure, suffixes: bool) -> (String, usize) 
     let mut lines: Vec<(String, i64)> = stacks
         .iter()
         .map(|(stack, v)| {
-            let frames: Vec<String> = stack
-                .iter()
-                .map(|f| if suffixes { format!("{}{}", f.name, f.tint.suffix()) } else { f.name.clone() })
-                .collect();
+            let frames: Vec<String> = stack.iter().map(|f| if suffixes { format!("{}{}", f.name, f.tint.suffix()) } else { f.name.clone() }).collect();
             (frames.join(";"), measure.of(v))
         })
         .filter(|(k, v)| *v > 0 && !k.is_empty())
@@ -157,16 +154,7 @@ fn flame_html(stacks: &Stacks, measure: Measure, opts: &HtmlOptions) -> (String,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn print_frame(
-    node: &Node,
-    name: usize,
-    ty: u8,
-    level: usize,
-    x: i64,
-    order: &[usize],
-    cursor: &mut Cursor,
-    out: &mut String,
-) -> usize {
+fn print_frame(node: &Node, name: usize, ty: u8, level: usize, x: i64, order: &[usize], cursor: &mut Cursor, out: &mut String) -> usize {
     let key = order[name] << 3 | ty as usize;
     if level == cursor.level + 1 && x == cursor.x {
         let _ = write!(out, "u({key}");

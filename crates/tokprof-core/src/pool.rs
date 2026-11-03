@@ -372,7 +372,12 @@ fn fold_rare(rows: Vec<Row>, min_files: usize, section: Section) -> Vec<Row> {
         } else if r.under || section == Section::Versions {
             // Left out; a name's spend stays in its kind's row.
         } else {
-            let o = other.get_or_insert_with(|| Row { name: "other".into(), files_with_part: r.files_with_part, by_file: vec![Some(0.0); r.by_file.len()], ..Row::default() });
+            let o = other.get_or_insert_with(|| Row {
+                name: "other".into(),
+                files_with_part: r.files_with_part,
+                by_file: vec![Some(0.0); r.by_file.len()],
+                ..Row::default()
+            });
             o.usd += r.usd;
             o.share += r.share;
             o.calls += r.calls;
@@ -548,7 +553,9 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
     tables.push(table(
         "model",
         Section::Spend,
-        each("spend", &|agent, p, out| out.extend(entries(p).map(|(m, v)| Item { agent: Some(agent.to_string()), ..Item::named(m.clone(), usd_at(v, &["total", "usd"])) }))),
+        each("spend", &|agent, p, out| {
+            out.extend(entries(p).map(|(m, v)| Item { agent: Some(agent.to_string()), ..Item::named(m.clone(), usd_at(v, &["total", "usd"])) }))
+        }),
         &spends,
         Order::Cost(TOP_ROWS),
         min_files,
@@ -608,7 +615,9 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
     tables.push(table(
         "client",
         Section::Spend,
-        each("clients", &|agent, p, out| out.extend(entries(p).map(|(c, v)| Item { agent: Some(agent.to_string()), ..Item::named(c.clone(), usd_at(v, &["usd"])) }))),
+        each("clients", &|agent, p, out| {
+            out.extend(entries(p).map(|(c, v)| Item { agent: Some(agent.to_string()), ..Item::named(c.clone(), usd_at(v, &["usd"])) }))
+        }),
         &spends,
         Order::Cost(TOP_ROWS),
         min_files,
@@ -635,7 +644,11 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
     tables.push(saved);
 
     // Habits that cost the most.
-    let hint_rows: BTreeSet<String> = files.iter().flat_map(|f| part(f, "tool_hints", |_, p, out| out.extend(entries(p).map(|(h, _)| Item::named(h.clone(), 0.0)))).unwrap_or_default()).map(|i| i.name).collect();
+    let hint_rows: BTreeSet<String> = files
+        .iter()
+        .flat_map(|f| part(f, "tool_hints", |_, p, out| out.extend(entries(p).map(|(h, _)| Item::named(h.clone(), 0.0)))).unwrap_or_default())
+        .map(|i| i.name)
+        .collect();
     let hint_value = |hint: String| {
         move |f: &Value| -> Option<f64> {
             part(f, "tool_hints", |_, p, out| {
@@ -652,8 +665,11 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
     let big_prompts = |f: &Value| ranges_usd(f, "prompt_sizes", &["400–800k", "800k+"], true);
     let long_sessions = |f: &Value| ranges_usd(f, "session_spans", &["1–3d", "over 3d"], false);
     let lookups = |f: &Value| part(f, "triggers", |_, p, out| out.push(Item::named("", usd_at(p, &["lookup", "usd"])))).map(|i| i.iter().map(|i| i.usd).sum());
-    let thinking = |f: &Value| part(f, "content", |_, p, out| out.push(Item::named("", usd_at(p, &["thinking", "usd"])))).map(|i| i.iter().map(|i| i.usd).sum());
-    let setup = |f: &Value| part(f, "setup", |_, p, out| out.extend(entries(p).map(|(_, v)| Item::named("", usd_at(v, &["usd"]))))).map(|i| i.iter().map(|i| i.usd).sum());
+    let thinking =
+        |f: &Value| part(f, "content", |_, p, out| out.push(Item::named("", usd_at(p, &["thinking", "usd"])))).map(|i| i.iter().map(|i| i.usd).sum());
+    let setup = |f: &Value| {
+        part(f, "setup", |_, p, out| out.extend(entries(p).map(|(_, v)| Item::named("", usd_at(v, &["usd"]))))).map(|i| i.iter().map(|i| i.usd).sum())
+    };
     // Format 1 counts no dollars per effort level, so its files have no part for this row.
     let effort = |f: &Value| -> Option<f64> {
         let mut found = false;
@@ -911,10 +927,8 @@ fn time_rows(files: &[Value]) -> Vec<TimeRow> {
     let mut rows: Vec<TimeRow> = kinds
         .into_iter()
         .map(|kind| {
-            let by_file: Vec<Option<f64>> = per_file
-                .iter()
-                .map(|m| m.as_ref().map(|m| m.get(&kind).map_or(0.0, |v| v.0) / m.values().map(|v| v.0).sum::<f64>().max(1e-9)))
-                .collect();
+            let by_file: Vec<Option<f64>> =
+                per_file.iter().map(|m| m.as_ref().map(|m| m.get(&kind).map_or(0.0, |v| v.0) / m.values().map(|v| v.0).sum::<f64>().max(1e-9))).collect();
             let ms: f64 = per_file.iter().flatten().filter_map(|m| m.get(&kind)).map(|v| v.0).sum();
             TimeRow {
                 after_turns_ms: per_file.iter().flatten().filter_map(|m| m.get(&kind)).map(|v| v.1).sum(),
@@ -937,8 +951,16 @@ fn working(files: &[Value]) -> Vec<RateRow> {
     if !files.iter().any(|f| part(f, "handoffs", |_, _, _| {}).is_some()) {
         return Vec::new();
     }
-    let handoff = |pointer: &str| -> Vec<Option<f64>> { files.iter().map(|f| part(f, "handoffs", |_, _, _| {}).map(|_| summed(f, pointer).unwrap_or(0.0))).collect() };
-    let mut rows = vec![RateRow { name: "typed messages".into(), value: typed.iter().flatten().sum(), files: typed.iter().flatten().filter(|v| **v > 0.0).count(), files_with_part: typed.iter().flatten().count(), by_file: vec![None; files.len()], ..RateRow::default() }];
+    let handoff =
+        |pointer: &str| -> Vec<Option<f64>> { files.iter().map(|f| part(f, "handoffs", |_, _, _| {}).map(|_| summed(f, pointer).unwrap_or(0.0))).collect() };
+    let mut rows = vec![RateRow {
+        name: "typed messages".into(),
+        value: typed.iter().flatten().sum(),
+        files: typed.iter().flatten().filter(|v| **v > 0.0).count(),
+        files_with_part: typed.iter().flatten().count(),
+        by_file: vec![None; files.len()],
+        ..RateRow::default()
+    }];
     for (name, pointer) in [
         ("ends of turn", "/handoffs/turn_ends"),
         ("interrupts", "/handoffs/interrupts"),

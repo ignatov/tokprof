@@ -90,7 +90,12 @@ fn codex_tool(e: &mut Activity, name: &str, raw: &str) {
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-                .map(|t| (t.get("status").and_then(Value::as_str).unwrap_or_default().to_string(), t.get("step").and_then(Value::as_str).unwrap_or_default().to_string()))
+                .map(|t| {
+                    (
+                        t.get("status").and_then(Value::as_str).unwrap_or_default().to_string(),
+                        t.get("step").and_then(Value::as_str).unwrap_or_default().to_string(),
+                    )
+                })
                 .collect();
         }
         _ => {

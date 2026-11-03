@@ -65,15 +65,97 @@ const ORIGIN_KINDS: [&str; 7] = ["prompt", "skill", "agent", "command", "notific
 
 /// The keys of the file's parts.
 const FIELDS: &[&str] = &[
-    "format", "tokprof", "platform", "window", "first", "last", "survey", "mcp_names", "agents", "sessions", "main_sessions", "spend",
-    "clients", "cache_writes", "misses", "origins", "triggers", "activities", "setup", "effort", "pauses", "content", "prompt_sizes",
-    "session_spans", "tools", "tool_hints", "compactions", "versions", "whatif", "requests", "priced", "components", "total", "usd",
-    "tokens", "avoidable_usd", "cold_returns", "main", "subagents", "short", "long", "names", "subagents_usd", "output_tokens",
-    "typed_messages", "typed_by_pause", "messages", "median_context", "typed_after_lifetime", "cold_returns_by_pause", "returns",
-    "cold_returns_started_by", "after_cold_return", "median", "quarter_1", "quarter_3", "ended_within_3", "sessions_by_largest_context",
-    "calls", "single", "results", "result_tokens", "inputs", "input_tokens", "rent", "trips", "programs", "rows", "actual_usd",
-    "activity", "active_days", "active_hours", "busy_ms", "failures", "failed", "refused", "denied", "after", "time", "kinds", "ms",
-    "after_turns_ms", "slow", "slow_main", "longest_ms", "retried", "handoffs", "wakes", "prompts", "held", "all",
+    "format",
+    "tokprof",
+    "platform",
+    "window",
+    "first",
+    "last",
+    "survey",
+    "mcp_names",
+    "agents",
+    "sessions",
+    "main_sessions",
+    "spend",
+    "clients",
+    "cache_writes",
+    "misses",
+    "origins",
+    "triggers",
+    "activities",
+    "setup",
+    "effort",
+    "pauses",
+    "content",
+    "prompt_sizes",
+    "session_spans",
+    "tools",
+    "tool_hints",
+    "compactions",
+    "versions",
+    "whatif",
+    "requests",
+    "priced",
+    "components",
+    "total",
+    "usd",
+    "tokens",
+    "avoidable_usd",
+    "cold_returns",
+    "main",
+    "subagents",
+    "short",
+    "long",
+    "names",
+    "subagents_usd",
+    "output_tokens",
+    "typed_messages",
+    "typed_by_pause",
+    "messages",
+    "median_context",
+    "typed_after_lifetime",
+    "cold_returns_by_pause",
+    "returns",
+    "cold_returns_started_by",
+    "after_cold_return",
+    "median",
+    "quarter_1",
+    "quarter_3",
+    "ended_within_3",
+    "sessions_by_largest_context",
+    "calls",
+    "single",
+    "results",
+    "result_tokens",
+    "inputs",
+    "input_tokens",
+    "rent",
+    "trips",
+    "programs",
+    "rows",
+    "actual_usd",
+    "activity",
+    "active_days",
+    "active_hours",
+    "busy_ms",
+    "failures",
+    "failed",
+    "refused",
+    "denied",
+    "after",
+    "time",
+    "kinds",
+    "ms",
+    "after_turns_ms",
+    "slow",
+    "slow_main",
+    "longest_ms",
+    "retried",
+    "handoffs",
+    "wakes",
+    "prompts",
+    "held",
+    "all",
 ];
 
 /// What the file adds to the reports for one agent.
@@ -453,12 +535,16 @@ fn lifetime_key(ms: i64) -> String {
 fn pause_parts(p: &AgentPauses) -> Value {
     let typed: Map<String, Value> =
         p.pause_rows().into_iter().map(|r| (r.name.to_string(), json!({"messages": r.count, "median_context": r.median_context}))).collect();
-    let after: Map<String, Value> =
-        p.lifetimes.iter().map(|&ms| (lifetime_key(ms), json!(p.typed.iter().filter(|(pause, _)| *pause > ms).count()))).collect();
+    let after: Map<String, Value> = p.lifetimes.iter().map(|&ms| (lifetime_key(ms), json!(p.typed.iter().filter(|(pause, _)| *pause > ms).count()))).collect();
     let returns: Map<String, Value> = p
         .return_rows()
         .into_iter()
-        .map(|r| (r.name.to_string(), json!({"returns": r.count, "usd": dollars(r.usd), "avoidable_usd": dollars(r.premium_usd), "median_context": r.median_context})))
+        .map(|r| {
+            (
+                r.name.to_string(),
+                json!({"returns": r.count, "usd": dollars(r.usd), "avoidable_usd": dollars(r.premium_usd), "median_context": r.median_context}),
+            )
+        })
         .collect();
     let starters = p.starters();
     let started: Map<String, Value> = Starter::ALL.iter().zip(STARTERS).map(|(s, name)| (name.to_string(), json!(starters[*s as usize]))).collect();
@@ -482,7 +568,8 @@ fn pause_parts(p: &AgentPauses) -> Value {
 /// The busy time by kind, with the part after ends of turn, and the requests: slow, longest and
 /// retried. The retries' errors and the longest waits, which carry times, stay out.
 fn time_part(b: &crate::busy::Busy) -> Value {
-    let kinds: Map<String, Value> = b.kinds.iter().filter(|(_, v)| v.0 > 0).map(|(k, (ms, after))| (k.to_string(), json!({"ms": ms, "after_turns_ms": after}))).collect();
+    let kinds: Map<String, Value> =
+        b.kinds.iter().filter(|(_, v)| v.0 > 0).map(|(k, (ms, after))| (k.to_string(), json!({"ms": ms, "after_turns_ms": after}))).collect();
     json!({
         "kinds": kinds,
         "requests": b.requests,
@@ -643,8 +730,10 @@ pub fn to_json(c: &Collector, p: &Pauses, s: &Share, h: &Header, day: impl Fn(i6
             e.2 += m.premium_usd.unwrap_or(0.0);
             *avoidable.entry(m.client.as_str()).or_default() += m.premium_usd.unwrap_or(0.0);
         }
-        let misses: Map<String, Value> =
-            causes.into_iter().map(|(cause, (n, tokens, usd))| (cause.to_string(), json!({"misses": n, "tokens": tokens, "avoidable_usd": dollars(usd)}))).collect();
+        let misses: Map<String, Value> = causes
+            .into_iter()
+            .map(|(cause, (n, tokens, usd))| (cause.to_string(), json!({"misses": n, "tokens": tokens, "avoidable_usd": dollars(usd)})))
+            .collect();
         let pauses = p.agents.get(agent);
         let writes = |w: [u64; 2]| json!({"short": w[0], "long": w[1]});
         let clients: Map<String, Value> = c
@@ -693,10 +782,15 @@ pub fn to_json(c: &Collector, p: &Pauses, s: &Share, h: &Header, day: impl Fn(i6
         }
         let setup: Map<String, Value> = setup
             .into_iter()
-            .map(|(name, (all, subagents))| (name.to_string(), json!({"usd": dollars(all.usd), "tokens": whole(all.tokens), "subagents_usd": dollars(subagents.usd)})))
+            .map(|(name, (all, subagents))| {
+                (name.to_string(), json!({"usd": dollars(all.usd), "tokens": whole(all.tokens), "subagents_usd": dollars(subagents.usd)}))
+            })
             .collect();
         let effort = |levels: &BTreeMap<String, (u64, u64, f64)>| -> Map<String, Value> {
-            levels.iter().map(|(level, (requests, output, usd))| (level.clone(), json!({"requests": requests, "output_tokens": output, "usd": dollars(*usd)}))).collect()
+            levels
+                .iter()
+                .map(|(level, (requests, output, usd))| (level.clone(), json!({"requests": requests, "output_tokens": output, "usd": dollars(*usd)})))
+                .collect()
         };
         let content: Map<String, Value> = BlockKind::ALL
             .iter()
@@ -1027,8 +1121,8 @@ mod tests {
     use super::*;
     use crate::analysis::Sink;
     use crate::model::{Block, Chain, Compaction, CompactionTrigger, Origin, Params, PromptDelta, Request, Usage};
-    use crate::tools::ToolShare;
     use crate::pricing::Pricing;
+    use crate::tools::ToolShare;
 
     fn request(min: i64, chain_effort: Option<&str>, usage: Usage) -> Request {
         Request {
@@ -1099,7 +1193,10 @@ mod tests {
 
     #[test]
     fn effort_levels_outside_the_list_count_as_other() {
-        let main = vec![request(0, Some("turbo"), Usage { cache_read: 1_000, output: 1, ..Usage::default() }), request(1, Some("xhigh"), Usage { cache_read: 1_000, output: 1, ..Usage::default() })];
+        let main = vec![
+            request(0, Some("turbo"), Usage { cache_read: 1_000, output: 1, ..Usage::default() }),
+            request(1, Some("xhigh"), Usage { cache_read: 1_000, output: 1, ..Usage::default() }),
+        ];
         let v = file(&[session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, main)])]);
         let levels: Vec<&String> = v["agents"]["claude"]["effort"]["main"].as_object().unwrap().keys().collect();
         assert_eq!(levels, ["other", "xhigh"]);
@@ -1119,7 +1216,10 @@ mod tests {
 
     #[test]
     fn the_file_has_its_header_and_one_object_per_agent() {
-        let v = file(&[session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, one())]), session(crate::testing::codex(), "c", vec![("main", ChainKind::Main, one())])]);
+        let v = file(&[
+            session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, one())]),
+            session(crate::testing::codex(), "c", vec![("main", ChainKind::Main, one())]),
+        ]);
         assert_eq!(v["format"], 2);
         assert_eq!(v["tokprof"], "0.1.0");
         assert_eq!(v["platform"], "macos-aarch64");
@@ -1152,7 +1252,16 @@ mod tests {
         let s = session(
             crate::testing::claude(),
             "s",
-            vec![("main", ChainKind::Main, vec![with("skill:walrus-review", "sdk-ts", 1_000_000), with("skill:release-notes", "sdk-ts", 1_000_000), with("agent:general-purpose", "cli", 4_000_000), with("agent:ocelot", "cli", 1_000_000)])],
+            vec![(
+                "main",
+                ChainKind::Main,
+                vec![
+                    with("skill:walrus-review", "sdk-ts", 1_000_000),
+                    with("skill:release-notes", "sdk-ts", 1_000_000),
+                    with("agent:general-purpose", "cli", 4_000_000),
+                    with("agent:ocelot", "cli", 1_000_000),
+                ],
+            )],
         );
         let v = file(&[s]);
         let a = &v["agents"]["claude"];
@@ -1176,7 +1285,10 @@ mod tests {
     fn content_prompt_sizes_and_versions_add_up_to_the_spend() {
         let main = vec![
             Request { version: Some("2.1.316".into()), ..request(0, None, Usage { write_long: 400_000, output: 100, ..Usage::default() }) },
-            Request { version: Some("build of zebra".into()), ..request(1, None, Usage { cache_read: 400_000, write_long: 1_000, output: 100, ..Usage::default() }) },
+            Request {
+                version: Some("build of zebra".into()),
+                ..request(1, None, Usage { cache_read: 400_000, write_long: 1_000, output: 100, ..Usage::default() })
+            },
             request(2, None, Usage { cache_read: 10_000, output: 10, ..Usage::default() }),
         ];
         let s = session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, main)]);
@@ -1275,7 +1387,11 @@ mod tests {
 
     #[test]
     fn codex_has_no_whatif() {
-        let r = Request { api: crate::api::ApiId::OpenAi, model: "gpt-6-astra".into(), ..request(0, None, Usage { cache_read: 1_000, output: 1, ..Usage::default() }) };
+        let r = Request {
+            api: crate::api::ApiId::OpenAi,
+            model: "gpt-6-astra".into(),
+            ..request(0, None, Usage { cache_read: 1_000, output: 1, ..Usage::default() })
+        };
         let v = file(&[session(crate::testing::codex(), "c", vec![("main", ChainKind::Main, vec![r])])]);
         assert!(v["agents"]["codex"].get("whatif").is_none(), "{v}");
     }
@@ -1285,7 +1401,13 @@ mod tests {
         let mut s = session(crate::testing::claude(), "s", vec![]);
         let mut requests = Vec::new();
         for (i, (tool, target, class)) in calls.iter().enumerate() {
-            let block = Block { class: Class::Tool(*class), kind: BlockKind::ToolResult, chars: 4_000, tool: Some(tool.to_string()), target: target.map(str::to_string) };
+            let block = Block {
+                class: Class::Tool(*class),
+                kind: BlockKind::ToolResult,
+                chars: 4_000,
+                tool: Some(tool.to_string()),
+                target: target.map(str::to_string),
+            };
             let m = s.push_message(vec![block], false);
             requests.push(Request {
                 prompt: Some(PromptDelta { shape: None, keep: i, tail: vec![m] }),
@@ -1360,7 +1482,13 @@ mod tests {
         s.cwd = Some("/Users/me/src/zebra-billing".into());
         s.title = Some("Fix quokka export".into());
         s.task = Some("ask the walrus".into());
-        let block = |kind, tool: Option<&str>, target: Option<&str>, class| Block { class, kind, chars: 4_000, tool: tool.map(str::to_string), target: target.map(str::to_string) };
+        let block = |kind, tool: Option<&str>, target: Option<&str>, class| Block {
+            class,
+            kind,
+            chars: 4_000,
+            tool: tool.map(str::to_string),
+            target: target.map(str::to_string),
+        };
         let prompt = s.push_message(vec![block(BlockKind::Prompt, None, Some("ping the yak"), Class::None)], true);
         let read = s.push_message(vec![block(BlockKind::ToolResult, Some("Read"), Some("/tmp/heron.txt"), Class::Tool(ToolClass::Read))], false);
         let reminder = s.push_message(vec![block(BlockKind::Reminder, None, Some("narwhal server notes"), Class::None)], false);
@@ -1586,7 +1714,8 @@ mod tests {
             prompt: Some(PromptDelta { shape: None, keep: 0, tail: vec![] }),
             ..request(min, None, Usage { cache_read: 1_000, output: 1, ..Usage::default() })
         };
-        let unheld = |min, version: &str| Request { version: Some(version.into()), ..request(min, None, Usage { cache_read: 1_000, output: 1, ..Usage::default() }) };
+        let unheld =
+            |min, version: &str| Request { version: Some(version.into()), ..request(min, None, Usage { cache_read: 1_000, output: 1, ..Usage::default() }) };
         let s = session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, vec![unheld(0, "2.1.296"), unheld(1, "2.1.296"), held(2, "2.1.316")])]);
         let v = file(&[s]);
         let a = &v["agents"]["claude"];
@@ -1597,7 +1726,10 @@ mod tests {
 
     #[test]
     fn each_client_has_its_effort() {
-        let at = |min, effort: &str, client: &str| Request { client: Some(client.into()), ..request(min, Some(effort), Usage { cache_read: 100_000, output: 100, ..Usage::default() }) };
+        let at = |min, effort: &str, client: &str| Request {
+            client: Some(client.into()),
+            ..request(min, Some(effort), Usage { cache_read: 100_000, output: 100, ..Usage::default() })
+        };
         let mut requests: Vec<Request> = (0..9).map(|i| at(i, "max", "sdk-ts")).collect();
         requests.push(at(9, "medium", "sdk-ts"));
         let v = file(&[session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, requests)])]);

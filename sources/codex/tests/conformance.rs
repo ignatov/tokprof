@@ -44,11 +44,14 @@ fn the_fixtures_hold_call_outcomes_and_request_times() {
     let mut errors: Vec<(Outcome, Option<String>)> = main.call_ends.values().map(|e| (e.outcome, e.error.clone())).collect();
     errors.sort_by_key(|e| format!("{e:?}"));
     errors.dedup();
-    assert_eq!(errors, [
-        (Outcome::Failed, Some("exit code 101: error: test failed, to rerun pass --lib".to_string())),
-        (Outcome::Failed, Some("exit code 1: ModuleNotFoundError: No module named 'bs4'".to_string())),
-        (Outcome::Refused, None),
-    ]);
+    assert_eq!(
+        errors,
+        [
+            (Outcome::Failed, Some("exit code 101: error: test failed, to rerun pass --lib".to_string())),
+            (Outcome::Failed, Some("exit code 1: ModuleNotFoundError: No module named 'bs4'".to_string())),
+            (Outcome::Refused, None),
+        ]
+    );
     let at = |ts: &str| tokprof_logio::parse_ts_ms(Some(&serde_json::Value::String(format!("2026-10-31T{ts}Z")))).unwrap();
     let first = &main.chains[0].requests[0];
     assert_eq!((first.sent_ms, first.ended_ms), (Some(at("08:00:02")), Some(at("08:00:05"))));

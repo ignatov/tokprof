@@ -5,18 +5,20 @@ use std::path::Path;
 /// Shows a path relative to the project, or to the home directory.
 pub fn display_path(path: &str, cwd: Option<&str>, home: &Path) -> String {
     if let Some(cwd) = cwd
-        && let Some(rest) = path.strip_prefix(cwd) {
-            if rest.is_empty() {
-                return ".".to_string();
-            }
-            if let Some(rest) = rest.strip_prefix('/') {
-                return rest.to_string();
-            }
+        && let Some(rest) = path.strip_prefix(cwd)
+    {
+        if rest.is_empty() {
+            return ".".to_string();
         }
+        if let Some(rest) = rest.strip_prefix('/') {
+            return rest.to_string();
+        }
+    }
     if let Some(home) = home.to_str().filter(|h| !h.is_empty())
-        && let Some(rest) = path.strip_prefix(home) {
-            return format!("~{rest}");
-        }
+        && let Some(rest) = path.strip_prefix(home)
+    {
+        return format!("~{rest}");
+    }
     path.to_string()
 }
 
@@ -24,20 +26,12 @@ pub fn display_path(path: &str, cwd: Option<&str>, home: &Path) -> String {
 pub fn command_head(cmd: &str) -> String {
     let mut cmd = cmd.trim();
     if cmd.starts_with("cd ")
-        && let Some((_, rest)) = cmd.split_once("&&") {
-            cmd = rest.trim();
-        }
-    let words: Vec<&str> = cmd
-        .split_whitespace()
-        .skip_while(|w| w.contains('=') && !w.starts_with('-'))
-        .take(2)
-        .collect();
-    let mut head = words
-        .iter()
-        .enumerate()
-        .map(|(i, w)| if i == 0 { w.rsplit('/').next().unwrap_or(w) } else { w })
-        .collect::<Vec<_>>()
-        .join(" ");
+        && let Some((_, rest)) = cmd.split_once("&&")
+    {
+        cmd = rest.trim();
+    }
+    let words: Vec<&str> = cmd.split_whitespace().skip_while(|w| w.contains('=') && !w.starts_with('-')).take(2).collect();
+    let mut head = words.iter().enumerate().map(|(i, w)| if i == 0 { w.rsplit('/').next().unwrap_or(w) } else { w }).collect::<Vec<_>>().join(" ");
     if head.len() > 60 {
         head.truncate(head.char_indices().nth(60).map_or(head.len(), |(i, _)| i));
     }
@@ -114,7 +108,10 @@ mod tests {
 
     #[test]
     fn error_lines() {
-        assert_eq!(first_line("\n  File does not exist. Note: your current working directory is /w.\nmore").as_deref(), Some("File does not exist. Note: your current working directory is /w."));
+        assert_eq!(
+            first_line("\n  File does not exist. Note: your current working directory is /w.\nmore").as_deref(),
+            Some("File does not exist. Note: your current working directory is /w.")
+        );
         assert_eq!(first_line(" \n "), None);
         assert_eq!(first_line(&"x".repeat(300)).map(|l| l.chars().count()), Some(ERROR_LINE_CHARS));
         assert_eq!(exit_line(101, "running 3 tests\n\nerror: test failed, to rerun pass --lib\n\n"), "exit code 101: error: test failed, to rerun pass --lib");

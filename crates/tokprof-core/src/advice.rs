@@ -141,10 +141,13 @@ pub fn advise(i: &Inputs) -> Vec<Advice> {
             out.push(Advice::new(Topic::CarryOn, line));
             if let (Some(p), Some(pickup)) = (price, pickup) {
                 if i.cache.rebuild_usd.is_some_and(|r| pickup < r) {
-                    out.push(Advice::new(Topic::CarryOn, format!(
-                        "A new session that refers to this one is cheaper: ≈ {} to pick up the work. `{handoff}` prints the line to start it with.",
-                        usd(pickup)
-                    )));
+                    out.push(Advice::new(
+                        Topic::CarryOn,
+                        format!(
+                            "A new session that refers to this one is cheaper: ≈ {} to pick up the work. `{handoff}` prints the line to start it with.",
+                            usd(pickup)
+                        ),
+                    ));
                 } else {
                     out.push(Advice::new(Topic::CarryOn, format!("A new session that refers to this one costs about as much (≈ {}).", usd(pickup))));
                 }
@@ -152,7 +155,10 @@ pub fn advise(i: &Inputs) -> Vec<Advice> {
                 // The compaction call shares the conversation's cache, so on a cold cache it
                 // writes the whole context again before it summarizes it.
                 let compact = prompt * write / 1e6 + SUMMARY_TOKENS * p.output / 1e6;
-                out.push(Advice::new(Topic::CarryOn, format!("/compact costs about as much as resuming (≈ {} once), then ~{} per request.", usd(compact), tokens(after))));
+                out.push(Advice::new(
+                    Topic::CarryOn,
+                    format!("/compact costs about as much as resuming (≈ {} once), then ~{} per request.", usd(compact), tokens(after)),
+                ));
             }
         } else {
             let left = human_duration((i.cache.ttl_ms - i.cache.idle_ms) as f64 / 1000.0);
@@ -166,7 +172,10 @@ pub fn advise(i: &Inputs) -> Vec<Advice> {
             if let Some(r) = i.cache.rebuild_usd {
                 out.push(Advice::new(Topic::CarryOn, format!("Once it is cold, resuming writes the whole {} context again (+{}).", tokens(prompt), usd(r))));
                 if let Some(pickup) = pickup.filter(|u| *u < r) {
-                    out.push(Advice::new(Topic::CarryOn, format!("Then a new session that refers to this one is cheaper: ≈ {} to pick up the work (`{handoff}`).", usd(pickup))));
+                    out.push(Advice::new(
+                        Topic::CarryOn,
+                        format!("Then a new session that refers to this one is cheaper: ≈ {} to pick up the work (`{handoff}`).", usd(pickup)),
+                    ));
                 }
             }
         }
@@ -213,13 +222,16 @@ pub fn advise(i: &Inputs) -> Vec<Advice> {
     }
     let l = i.lookups;
     if l.spend.requests >= 20 && i.spend_usd > 0.0 && (l.spend.usd >= 5.0 || l.spend.usd / i.spend_usd >= 0.1) {
-        out.push(Advice::new(Topic::Lookups, format!(
-            "Single lookups made {} requests, each re-reading ≈ {} tokens: {}, {:.0}% of the session. Batch independent reads, or explore in a subagent.",
-            l.spend.requests,
-            tokens(l.avg_prompt()),
-            usd(l.spend.usd),
-            100.0 * l.spend.usd / i.spend_usd
-        )));
+        out.push(Advice::new(
+            Topic::Lookups,
+            format!(
+                "Single lookups made {} requests, each re-reading ≈ {} tokens: {}, {:.0}% of the session. Batch independent reads, or explore in a subagent.",
+                l.spend.requests,
+                tokens(l.avg_prompt()),
+                usd(l.spend.usd),
+                100.0 * l.spend.usd / i.spend_usd
+            ),
+        ));
     }
     if held(BlockKind::Reminder) >= 30_000.0 || share(BlockKind::Reminder) >= 0.05 {
         let v = sources(BlockKind::Reminder);
@@ -249,18 +261,25 @@ pub fn advise(i: &Inputs) -> Vec<Advice> {
 
     if i.spend_usd > 0.0 && i.thinking_usd / i.spend_usd >= 0.1 {
         let effort = i.effort.as_ref().map_or(String::new(), |e| format!(", at effort {e}"));
-        out.push(Advice::new(Topic::Thinking, format!(
-            "Thinking cost {}, {:.0}% of the session{effort}: use a lower effort for routine steps.",
-            usd(i.thinking_usd),
-            100.0 * i.thinking_usd / i.spend_usd
-        )));
+        out.push(Advice::new(
+            Topic::Thinking,
+            format!(
+                "Thinking cost {}, {:.0}% of the session{effort}: use a lower effort for routine steps.",
+                usd(i.thinking_usd),
+                100.0 * i.thinking_usd / i.spend_usd
+            ),
+        ));
     }
 
     let missed: f64 = i.misses.iter().map(|(_, _, u)| u).sum();
     if let Some((cause, n, _)) = i.misses.iter().max_by(|a, b| a.2.total_cmp(&b.2))
-        && (missed >= 5.0 || (i.spend_usd > 0.0 && missed / i.spend_usd >= 0.05)) {
-            out.push(Advice::new(Topic::CacheMisses, format!("Cache misses could have saved {}, mostly {} ({n}×): {}.", usd(missed), cause.name(), miss_hint(*cause))));
-        }
+        && (missed >= 5.0 || (i.spend_usd > 0.0 && missed / i.spend_usd >= 0.05))
+    {
+        out.push(Advice::new(
+            Topic::CacheMisses,
+            format!("Cache misses could have saved {}, mostly {} ({n}×): {}.", usd(missed), cause.name(), miss_hint(*cause)),
+        ));
+    }
     out
 }
 
@@ -268,9 +287,7 @@ fn miss_hint(cause: Cause) -> &'static str {
     match cause {
         Cause::IdleTtl => "compact or wrap up a big session before a long break",
         Cause::ModelSwitch | Cause::ParamsChanged => "switch model or effort in a new session, not mid-task",
-        Cause::ToolsChanged | Cause::SystemChanged | Cause::AgentUpdated => {
-            "avoid toggling MCP servers or plugins, or updating the agent, mid-task"
-        }
+        Cause::ToolsChanged | Cause::SystemChanged | Cause::AgentUpdated => "avoid toggling MCP servers or plugins, or updating the agent, mid-task",
         Cause::HistoryEdited | Cause::ToolResultsCleared | Cause::ImagesRemoved | Cause::ThinkingDropped => {
             "earlier messages were rewritten, and everything after them was written again"
         }
@@ -326,7 +343,13 @@ mod tests {
         let mut s = Session::new(crate::testing::claude(), "s".into());
         s.blocks = blocks
             .iter()
-            .map(|&(kind, source, _, _)| Block { class: class(kind, source), kind, chars: 1, tool: source.map(str::to_string), target: source.map(str::to_string) })
+            .map(|&(kind, source, _, _)| Block {
+                class: class(kind, source),
+                kind,
+                chars: 1,
+                tool: source.map(str::to_string),
+                target: source.map(str::to_string),
+            })
             .collect();
         let live = LiveContext {
             chain: "main".into(),
@@ -385,10 +408,7 @@ mod tests {
 
     /// 950.0k tokens: tool schemas, Bash output and a pasted prompt.
     fn full() -> (Session, LiveContext) {
-        session(
-            &[(BlockKind::Tools, None, 30_000.0, 0), (BlockKind::ToolResult, Some("Bash"), 800_000.0, 3), (BlockKind::Prompt, None, 120_000.0, 2)],
-            10,
-        )
+        session(&[(BlockKind::Tools, None, 30_000.0, 0), (BlockKind::ToolResult, Some("Bash"), 800_000.0, 3), (BlockKind::Prompt, None, 120_000.0, 2)], 10)
     }
 
     #[test]
@@ -579,12 +599,20 @@ mod tests {
             i.spend_usd = 276.67;
             i.lookups = lookups(412, 380_200.0, 58.10);
         });
-        assert_eq!(lines, ["Single lookups made 412 requests, each re-reading ≈ 380.2k tokens: $58.10, 21% of the session. Batch independent reads, or explore in a subagent."]);
+        assert_eq!(
+            lines,
+            [
+                "Single lookups made 412 requests, each re-reading ≈ 380.2k tokens: $58.10, 21% of the session. Batch independent reads, or explore in a subagent."
+            ]
+        );
     }
 
     #[test]
     fn lookups_come_after_the_tool_calls_and_before_the_reminders() {
-        let (s, live) = session(&[(BlockKind::ToolUse, Some("Bash"), 30_000.0, 1), (BlockKind::Reminder, Some("instructions"), 8_000.0, 0), (BlockKind::Prompt, None, 1_000.0, 1)], 1);
+        let (s, live) = session(
+            &[(BlockKind::ToolUse, Some("Bash"), 30_000.0, 1), (BlockKind::Reminder, Some("instructions"), 8_000.0, 0), (BlockKind::Prompt, None, 1_000.0, 1)],
+            1,
+        );
         let lines = advice(&s, &live, &cold_cache(None), |i| i.lookups = lookups(100, 30_000.0, 20.0));
         let at = |prefix: &str| lines.iter().position(|l| l.starts_with(prefix)).unwrap_or_else(|| panic!("no {prefix}: {lines:?}"));
         assert!(at("Tool calls") < at("Single lookups") && at("Single lookups") < at("Reminders"));
@@ -593,10 +621,12 @@ mod tests {
     #[test]
     fn few_or_cheap_lookups_give_no_item() {
         let (s, live) = session(&[(BlockKind::Prompt, None, 1_000.0, 1)], 1);
-        let lines = |spend: f64, l: TriggerSpend| advice(&s, &live, &cold_cache(None), |i| {
-            i.spend_usd = spend;
-            i.lookups = l;
-        });
+        let lines = |spend: f64, l: TriggerSpend| {
+            advice(&s, &live, &cold_cache(None), |i| {
+                i.spend_usd = spend;
+                i.lookups = l;
+            })
+        };
         assert!(lines(40.0, lookups(15, 50_000.0, 9.0)).is_empty(), "fewer than 20 requests");
         assert!(lines(60.0, lookups(200, 50_000.0, 3.0)).is_empty(), "under $5 and 10%");
         assert_eq!(lines(20.0, lookups(30, 50_000.0, 2.5)).len(), 1, "10% of a small session");

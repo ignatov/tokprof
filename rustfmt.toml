@@ -1,0 +1,3 @@
+# Of the five configs tried, this one changed the fewest lines of the existing code: 2,847, against 19,684 with the defaults.
+max_width = 160
+use_small_heuristics = "Max"

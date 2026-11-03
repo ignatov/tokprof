@@ -177,9 +177,9 @@ impl Pending {
 
 /// Programs that only read, search or print.
 const READ_ONLY_PROGRAMS: &[&str] = &[
-    "cat", "head", "tail", "nl", "less", "sed", "awk", "grep", "rg", "ag", "ls", "tree", "find", "fd", "wc", "stat", "file", "du", "pwd",
-    "echo", "printf", "sort", "uniq", "cut", "tr", "column", "paste", "comm", "jq", "diff", "basename", "dirname", "realpath", "which",
-    "zcat", "zstdcat", "xxd", "test", "[", "true", "read",
+    "cat", "head", "tail", "nl", "less", "sed", "awk", "grep", "rg", "ag", "ls", "tree", "find", "fd", "wc", "stat", "file", "du", "pwd", "echo", "printf",
+    "sort", "uniq", "cut", "tr", "column", "paste", "comm", "jq", "diff", "basename", "dirname", "realpath", "which", "zcat", "zstdcat", "xxd", "test", "[",
+    "true", "read",
 ];
 
 /// Git subcommands that only read.
@@ -205,9 +205,48 @@ const SCRIPT_PROGRAMS: &[&str] = &["python", "python3", "node", "deno", "ruby", 
 
 /// Common programs that the lists above leave out, which a share file keeps by name.
 const COMMON_PROGRAMS: &[&str] = &[
-    "mkdir", "rm", "cp", "mv", "ln", "touch", "chmod", "curl", "wget", "tar", "unzip", "zip", "xargs", "sleep", "kill", "pkill", "ps",
-    "lsof", "date", "open", "xdg-open", "ssh", "scp", "rsync", "docker", "kubectl", "brew", "pip", "pip3", "npx", "java", "javac",
-    "kotlinc", "rustc", "rustup", "cmake", "clang", "gcc", "ffmpeg", "sqlite3", "psql", "osascript",
+    "mkdir",
+    "rm",
+    "cp",
+    "mv",
+    "ln",
+    "touch",
+    "chmod",
+    "curl",
+    "wget",
+    "tar",
+    "unzip",
+    "zip",
+    "xargs",
+    "sleep",
+    "kill",
+    "pkill",
+    "ps",
+    "lsof",
+    "date",
+    "open",
+    "xdg-open",
+    "ssh",
+    "scp",
+    "rsync",
+    "docker",
+    "kubectl",
+    "brew",
+    "pip",
+    "pip3",
+    "npx",
+    "java",
+    "javac",
+    "kotlinc",
+    "rustc",
+    "rustup",
+    "cmake",
+    "clang",
+    "gcc",
+    "ffmpeg",
+    "sqlite3",
+    "psql",
+    "osascript",
 ];
 
 /// The words a command can start with that frame or wrap the programs it runs: shell keywords,
@@ -249,9 +288,12 @@ pub fn command_class(cmd: &str) -> CallClass {
     }
     let split = split(cmd);
     let Some((path, program, args)) = split.parts.iter().find_map(|p| first_program(p)) else { return CallClass::System };
-    let in_place = (program == "sed" && sed_in_place(&args)) || (program == "perl" && args.iter().any(|a| a.starts_with("-i") || (a.starts_with("-p") && a.contains('i'))));
+    let in_place = (program == "sed" && sed_in_place(&args))
+        || (program == "perl" && args.iter().any(|a| a.starts_with("-i") || (a.starts_with("-p") && a.contains('i'))));
     let tee = split.parts.iter().any(|p| first_program(p).is_some_and(|(_, prog, _)| prog == "tee"));
-    if (split.writes || split.heredoc || tee || in_place) && (READ_ONLY_PROGRAMS.contains(&program.as_str()) || matches!(program.as_str(), "tee" | "sed" | "perl")) {
+    if (split.writes || split.heredoc || tee || in_place)
+        && (READ_ONLY_PROGRAMS.contains(&program.as_str()) || matches!(program.as_str(), "tee" | "sed" | "perl"))
+    {
         return CallClass::Editing;
     }
     match program.as_str() {
@@ -430,9 +472,48 @@ mod tests {
     #[test]
     fn a_share_file_keeps_common_programs_by_name() {
         for p in [
-            "mkdir", "rm", "cp", "mv", "ln", "touch", "chmod", "curl", "wget", "tar", "unzip", "zip", "xargs", "sleep", "kill", "pkill", "ps",
-            "lsof", "date", "open", "xdg-open", "ssh", "scp", "rsync", "docker", "kubectl", "brew", "pip", "pip3", "npx", "java", "javac",
-            "kotlinc", "rustc", "rustup", "cmake", "clang", "gcc", "ffmpeg", "sqlite3", "psql", "osascript",
+            "mkdir",
+            "rm",
+            "cp",
+            "mv",
+            "ln",
+            "touch",
+            "chmod",
+            "curl",
+            "wget",
+            "tar",
+            "unzip",
+            "zip",
+            "xargs",
+            "sleep",
+            "kill",
+            "pkill",
+            "ps",
+            "lsof",
+            "date",
+            "open",
+            "xdg-open",
+            "ssh",
+            "scp",
+            "rsync",
+            "docker",
+            "kubectl",
+            "brew",
+            "pip",
+            "pip3",
+            "npx",
+            "java",
+            "javac",
+            "kotlinc",
+            "rustc",
+            "rustup",
+            "cmake",
+            "clang",
+            "gcc",
+            "ffmpeg",
+            "sqlite3",
+            "psql",
+            "osascript",
         ] {
             assert_eq!(program_of(&format!("{p} -x")), p);
         }
@@ -534,7 +615,17 @@ mod tests {
         assert_eq!(Trigger::of_calls(&[Reading, Building, Editing]), Some(Trigger::Edit));
         assert_eq!(Trigger::of_calls(&[Scripts, Subagents]), Some(Trigger::Subagent));
         assert_eq!(Trigger::of_calls(&[Reading, System]), Some(Trigger::Run));
-        for (class, trigger) in [(Editing, Trigger::Edit), (Subagents, Trigger::Subagent), (Building, Trigger::Run), (VersionControl, Trigger::Run), (Scripts, Trigger::Run), (System, Trigger::Run), (OtherTools, Trigger::Run), (Web, Trigger::Lookup), (Reading, Trigger::Lookup)] {
+        for (class, trigger) in [
+            (Editing, Trigger::Edit),
+            (Subagents, Trigger::Subagent),
+            (Building, Trigger::Run),
+            (VersionControl, Trigger::Run),
+            (Scripts, Trigger::Run),
+            (System, Trigger::Run),
+            (OtherTools, Trigger::Run),
+            (Web, Trigger::Lookup),
+            (Reading, Trigger::Lookup),
+        ] {
             assert_eq!(Trigger::of_calls(&[class]), Some(trigger), "{class:?}");
         }
     }

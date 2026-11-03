@@ -8,24 +8,24 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use rayon::prelude::*;
 
-use crate::catalog::Catalog;
-pub use crate::query::id_starts_with;
-use crate::query::Query;
-use crate::labels::display_path;
-use crate::source::{AgentId, SessionRef};
 use crate::advice::{self, Advice};
 use crate::analysis::cache::Cause;
 use crate::analysis::{self, Component, Fact, Filter, LiveContext, MissEvent, RequestRecord, Sink};
+use crate::catalog::Catalog;
+use crate::fmt::count;
 use crate::fmt::local_time;
 use crate::forecast::{CacheState, cache_state, conversation, long_ttl, pace};
+use crate::labels::display_path;
 use crate::model::{BlockKind, ChainKind, CompactionTrigger, Session, TypedMessage, Usage};
 use crate::pricing::{Price, Pricing};
 use crate::profile::Values;
-use crate::setup::{self, MeanStart, SetupSpend, SetupView, Start};
+use crate::query::Query;
+pub use crate::query::id_starts_with;
 use crate::report::{Spend, Work};
+use crate::setup::{self, MeanStart, SetupSpend, SetupView, Start};
+use crate::source::{AgentId, SessionRef};
 use crate::tools::{BlockEntry, ToolShare, ToolTable};
 use crate::trigger::Trigger;
-use crate::fmt::count;
 
 /// The main logs of sessions, without subagents' logs, newest first.
 pub fn main_sessions(catalog: &Catalog, agents: &[AgentId]) -> Vec<SessionRef> {
@@ -402,11 +402,8 @@ fn prompts_of(typed: &[TypedMessage], rows: &[RequestRow]) -> Vec<PromptSpend> {
         let t = first.entry((r.file, r.chain.as_str())).or_insert(r.ts_ms);
         *t = (*t).min(r.ts_ms);
     }
-    let mut out: Vec<PromptSpend> = typed
-        .iter()
-        .enumerate()
-        .map(|(i, m)| PromptSpend { number: i + 1, label: m.label.clone(), spend: Spend::default(), activities: Vec::new() })
-        .collect();
+    let mut out: Vec<PromptSpend> =
+        typed.iter().enumerate().map(|(i, m)| PromptSpend { number: i + 1, label: m.label.clone(), spend: Spend::default(), activities: Vec::new() }).collect();
     let mut by: Vec<HashMap<&'static str, Spend>> = vec![HashMap::new(); typed.len()];
     for r in rows {
         let i = if r.main { at(r.ts_ms) } else { at(first[&(r.file, r.chain.as_str())]) };
@@ -522,9 +519,7 @@ fn trailing_compaction(s: &Session, live: &LiveContext, pricing: &Pricing, now_m
     let after = requests.iter().rev().find(|r| r.compacted_before && r.usage.prompt() > 0 && !r.advisor).map(|r| r.usage.prompt() as f64);
     let estimate = after.unwrap_or(setup + 2.0 * crate::forecast::SUMMARY_TOKENS);
     let (added, output) = pace(&requests);
-    let next_usd = pricing
-        .get(&live.model, estimate as u64, now_ms)
-        .map(|p| next_after_compaction(estimate, setup, added, output, p, long_ttl(&requests)));
+    let next_usd = pricing.get(&live.model, estimate as u64, now_ms).map(|p| next_after_compaction(estimate, setup, added, output, p, long_ttl(&requests)));
     Some(Trailing { at_ms: c.ts_ms, kind: c.kind.clone(), estimate, setup, next_usd })
 }
 
@@ -716,7 +711,8 @@ mod tests {
 
     #[test]
     fn each_typed_message_gets_its_requests_and_subagents() {
-        let typed: Vec<TypedMessage> = [(10, "first"), (100, "second"), (200, "third")].iter().map(|&(ts_ms, l)| TypedMessage { ts_ms, label: l.into() }).collect();
+        let typed: Vec<TypedMessage> =
+            [(10, "first"), (100, "second"), (200, "third")].iter().map(|&(ts_ms, l)| TypedMessage { ts_ms, label: l.into() }).collect();
         let rows = [
             row(1, "main", true, 5, 1.0, "prompt"),
             row(1, "main", true, 20, 2.0, "reading"),
@@ -752,7 +748,16 @@ mod tests {
     fn listed(n: usize, written: i64, active: i64) -> SessionRow {
         let mut file = log(crate::testing::codex(), &format!("/r/{n:03}.jsonl"));
         file.modified_ns = written as i128 * 1_000_000;
-        SessionRow { file, subagents: Vec::new(), project: String::new(), id: n.to_string(), session_id: n.to_string(), bytes: 0, active_ms: active, client: None }
+        SessionRow {
+            file,
+            subagents: Vec::new(),
+            project: String::new(),
+            id: n.to_string(),
+            session_id: n.to_string(),
+            bytes: 0,
+            active_ms: active,
+            client: None,
+        }
     }
 
     /// `newest_rows` over these rows, with their logs in last-write order as discovery gives them,
@@ -890,7 +895,11 @@ mod tests {
         let block = |kind, target: Option<&str>, chars| Block { class: class(kind, target), kind, chars, tool: None, target: target.map(str::to_string) };
         let mut s = Session::new(crate::testing::claude(), "s".into());
         let first = s.push_message(
-            vec![block(BlockKind::Reminder, Some("instructions"), 4_000), block(BlockKind::Reminder, Some("skills"), 3_000), block(BlockKind::Prompt, None, 500)],
+            vec![
+                block(BlockKind::Reminder, Some("instructions"), 4_000),
+                block(BlockKind::Reminder, Some("skills"), 3_000),
+                block(BlockKind::Prompt, None, 500),
+            ],
             true,
         );
         let notice = s.push_message(vec![block(BlockKind::Reminder, Some("background notifications"), 2_000)], false);

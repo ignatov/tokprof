@@ -253,7 +253,10 @@ mod tests {
     #[test]
     fn agents_are_found_by_name_in_registry_order() {
         let (b, a) = (agent("b"), agent("a"));
-        let c = Catalog::new(vec![fake("one", &[&b], Detail::Requests, vec![], Claim::No), fake("two", &[&a, &b], Detail::Turns, vec![], Claim::No)], PathBuf::new());
+        let c = Catalog::new(
+            vec![fake("one", &[&b], Detail::Requests, vec![], Claim::No), fake("two", &[&a, &b], Detail::Turns, vec![], Claim::No)],
+            PathBuf::new(),
+        );
         assert_eq!(c.agents(), [b.clone(), a.clone()]);
         assert_eq!(c.agent("a").unwrap(), a);
         assert_eq!(c.agent("x").unwrap_err().to_string(), "unknown agent \"x\"");

@@ -24,18 +24,21 @@ fn the_fixtures_hand_off_once_of_each_kind() {
     let main = decode(false);
     let at = |ts: &str| tokprof_logio::parse_ts_ms(Some(&serde_json::Value::String(format!("2026-10-30T{ts}Z")))).unwrap();
     let handoffs: Vec<_> = main.handoffs.iter().map(|h| (h.ts_ms, h.kind)).collect();
-    assert_eq!(handoffs, [
-        (at("09:01:10"), Question),
-        (at("09:03:00"), Answer),
-        (at("09:03:41"), TypedWhileWorking),
-        // The two lines of one response end the turn once, at the later.
-        (at("09:04:00"), TurnEnd),
-        (at("10:05:00"), Wake(tokprof_core::model::WakeSource::Command)),
-        (at("10:06:00"), Interrupt),
-        // A `<synthetic>` API error ends the turn too.
-        (at("10:07:30"), TurnEnd),
-        (at("10:08:00"), Wake(tokprof_core::model::WakeSource::Subagent)),
-    ]);
+    assert_eq!(
+        handoffs,
+        [
+            (at("09:01:10"), Question),
+            (at("09:03:00"), Answer),
+            (at("09:03:41"), TypedWhileWorking),
+            // The two lines of one response end the turn once, at the later.
+            (at("09:04:00"), TurnEnd),
+            (at("10:05:00"), Wake(tokprof_core::model::WakeSource::Command)),
+            (at("10:06:00"), Interrupt),
+            // A `<synthetic>` API error ends the turn too.
+            (at("10:07:30"), TurnEnd),
+            (at("10:08:00"), Wake(tokprof_core::model::WakeSource::Subagent)),
+        ]
+    );
     assert!(!main.scripted, "an IDE session");
     assert!(decode(true).handoffs.is_empty(), "a subagent has no hand-offs");
 }

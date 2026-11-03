@@ -17,39 +17,75 @@ use anyhow::Result;
 use serde_json::Value;
 use tokprof_core::labels::display_path;
 use tokprof_core::source::{
-    Activity, AgentId, AgentInfo, Capabilities, Claim, Decoder, Detail, Harness, Head, Locator, LogSource, OwnCost, Pickup, PublicNames, Records,
-    SessionRef, Touched,
+    Activity, AgentId, AgentInfo, Capabilities, Claim, Decoder, Detail, Harness, Head, Locator, LogSource, OwnCost, Pickup, PublicNames, Records, SessionRef,
+    Touched,
 };
 use tokprof_logio::{file_times, str_at, walk};
 
 /// The names that ship with Codex, which a share file keeps (see README.md): the tools that the
 /// 0.164.0 and 0.166.0-alpha binaries give the model. A thread a parent spawned without a role is
 /// `default` (see the decoder).
-const PUBLIC_NAMES: PublicNames = PublicNames {
-    tools: CODEX_TOOLS,
-    commands: &[],
-    skills: &[],
-    subagent_types: &["default"],
-    mcp: Some(("mcp__", "__")),
-};
+const PUBLIC_NAMES: PublicNames = PublicNames { tools: CODEX_TOOLS, commands: &[], skills: &[], subagent_types: &["default"], mcp: Some(("mcp__", "__")) };
 
 /// Top-level tools, the code-mode tool `exec`, the `collaboration` and `clock` namespaces with their
 /// tools as `exec` code names them (`clock__curr_time`), the `functions` prefix of the Responses
 /// API, the terminal UI's dynamic tools, and the hosted tools.
 const CODEX_TOOLS: &[&str] = &[
-    "exec_command", "write_stdin", "apply_patch", "update_plan", "view_image", "request_user_input",
-    "request_user_input_async", "request_permissions", "request_plugin_install",
-    "list_available_plugins_to_install", "tool_search", "list_mcp_resources", "list_mcp_resource_templates",
-    "read_mcp_resource", "spawn_agent", "send_input", "wait", "close_agent", "resume_agent",
-    "get_context_remaining", "new_context", "send_message_to_user_async", "create_goal", "update_goal",
-    "get_goal", "multi_env_copy_file", "wait_for_environment", "wait_for_git_enrichment", "test_sync_tool",
-    "exec", "collaboration", "send_message", "followup_task", "interrupt_agent", "list_agents", "wait_agent",
-    "clock", "curr_time", "sleep", "clock__curr_time", "clock__sleep", "collaboration__spawn_agent",
-    "collaboration__send_message", "collaboration__followup_task", "collaboration__interrupt_agent",
-    "collaboration__list_agents", "collaboration__wait_agent", "functions", "create_worktree",
-    "get_worktree_creation_status", "list_worktrees", "web_search", "image_generation", "local_shell",
+    "exec_command",
+    "write_stdin",
+    "apply_patch",
+    "update_plan",
+    "view_image",
+    "request_user_input",
+    "request_user_input_async",
+    "request_permissions",
+    "request_plugin_install",
+    "list_available_plugins_to_install",
+    "tool_search",
+    "list_mcp_resources",
+    "list_mcp_resource_templates",
+    "read_mcp_resource",
+    "spawn_agent",
+    "send_input",
+    "wait",
+    "close_agent",
+    "resume_agent",
+    "get_context_remaining",
+    "new_context",
+    "send_message_to_user_async",
+    "create_goal",
+    "update_goal",
+    "get_goal",
+    "multi_env_copy_file",
+    "wait_for_environment",
+    "wait_for_git_enrichment",
+    "test_sync_tool",
+    "exec",
+    "collaboration",
+    "send_message",
+    "followup_task",
+    "interrupt_agent",
+    "list_agents",
+    "wait_agent",
+    "clock",
+    "curr_time",
+    "sleep",
+    "clock__curr_time",
+    "clock__sleep",
+    "collaboration__spawn_agent",
+    "collaboration__send_message",
+    "collaboration__followup_task",
+    "collaboration__interrupt_agent",
+    "collaboration__list_agents",
+    "collaboration__wait_agent",
+    "functions",
+    "create_worktree",
+    "get_worktree_creation_status",
+    "list_worktrees",
+    "web_search",
+    "image_generation",
+    "local_shell",
 ];
-
 
 use decoder::Parser;
 
@@ -319,9 +355,7 @@ impl Records for Lines {
 
 /// `rollout-*.jsonl`, or `rollout-*.jsonl.zst` for archived threads.
 fn is_rollout(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with("rollout-") && (n.ends_with(".jsonl") || n.ends_with(".jsonl.zst")))
+    path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("rollout-") && (n.ends_with(".jsonl") || n.ends_with(".jsonl.zst")))
 }
 
 /// The thread id at the end of a rollout file name, for rollouts without `session_meta`.
@@ -399,10 +433,8 @@ fn read_threads(paths: Vec<PathBuf>) -> Vec<(PathBuf, (Option<Thread>, bool))> {
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
     let chunk = paths.len().div_ceil(workers).max(1);
     std::thread::scope(|s| {
-        let handles: Vec<_> = paths
-            .chunks(chunk)
-            .map(|part| s.spawn(move || part.iter().map(|path| (path.clone(), read_thread(path))).collect::<Vec<_>>()))
-            .collect();
+        let handles: Vec<_> =
+            paths.chunks(chunk).map(|part| s.spawn(move || part.iter().map(|path| (path.clone(), read_thread(path))).collect::<Vec<_>>())).collect();
         handles.into_iter().flat_map(|h| h.join().expect("thread index reader")).collect()
     })
 }

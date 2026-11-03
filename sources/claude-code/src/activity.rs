@@ -99,7 +99,12 @@ fn claude_tool(e: &mut Activity, name: &str, input: &Value) {
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-                .map(|t| (t.get("status").and_then(Value::as_str).unwrap_or_default().to_string(), t.get("content").and_then(Value::as_str).unwrap_or_default().to_string()))
+                .map(|t| {
+                    (
+                        t.get("status").and_then(Value::as_str).unwrap_or_default().to_string(),
+                        t.get("content").and_then(Value::as_str).unwrap_or_default().to_string(),
+                    )
+                })
                 .collect();
         }
         _ => {}

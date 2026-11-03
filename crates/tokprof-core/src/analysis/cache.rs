@@ -5,8 +5,8 @@
 //! `/usage` "Prompt cache" line, so the counts are comparable. The cause is the first
 //! explanation that fits, checked from the most to the least certain.
 
-use crate::model::{BlockKind, CompactionTrigger, Params, Request, Session, Usage};
 use crate::fmt::human_duration;
+use crate::model::{BlockKind, CompactionTrigger, Params, Request, Session, Usage};
 
 const MIN_MISS_TOKENS: u64 = 2_000;
 const MIN_MISS_SHARE: f64 = 0.05;
@@ -103,14 +103,7 @@ pub struct Edit<'a> {
     pub added: &'a [usize],
 }
 
-pub fn judge(
-    s: &Session,
-    prev: &Prev,
-    req: &Request,
-    shape: Option<usize>,
-    edit: Option<&Edit>,
-    tail_blocks: usize,
-) -> Option<Verdict> {
+pub fn judge(s: &Session, prev: &Prev, req: &Request, shape: Option<usize>, edit: Option<&Edit>, tail_blocks: usize) -> Option<Verdict> {
     let rewritten = rewritten(prev.prompt, &req.usage)?;
     let (cause, detail) = classify(s, prev, req, shape, edit, tail_blocks);
     Some(Verdict { rewritten, cause, detail })
@@ -123,14 +116,7 @@ pub fn rewritten(prev_prompt: u64, usage: &Usage) -> Option<u64> {
     (rewritten >= MIN_MISS_TOKENS && rewritten as f64 > MIN_MISS_SHARE * expected as f64).then_some(rewritten)
 }
 
-fn classify(
-    s: &Session,
-    prev: &Prev,
-    req: &Request,
-    shape: Option<usize>,
-    edit: Option<&Edit>,
-    tail_blocks: usize,
-) -> (Cause, String) {
+fn classify(s: &Session, prev: &Prev, req: &Request, shape: Option<usize>, edit: Option<&Edit>, tail_blocks: usize) -> (Cause, String) {
     let gap_s = (req.ts_ms - prev.ts_ms) as f64 / 1000.0;
     if req.model != prev.model {
         return (Cause::ModelSwitch, format!("{} -> {}", prev.model, req.model));
@@ -151,13 +137,15 @@ fn classify(
         return (Cause::IdleTtl, format!("{} idle, {ttl_name} TTL", human_duration(gap_s)));
     }
     if let (Some(p), Some(c)) = (&prev.params, &req.params)
-        && let Some(name) = c.changed_from(p) {
-            return (Cause::ParamsChanged, name.to_string());
-        }
+        && let Some(name) = c.changed_from(p)
+    {
+        return (Cause::ParamsChanged, name.to_string());
+    }
     if let (Some(a), Some(b)) = (&prev.version, &req.version)
-        && a != b {
-            return (Cause::AgentUpdated, format!("{a} -> {b}"));
-        }
+        && a != b
+    {
+        return (Cause::AgentUpdated, format!("{a} -> {b}"));
+    }
     if let (Some(a), Some(b)) = (prev.shape, shape) {
         let (a, b) = (&s.shapes[a], &s.shapes[b]);
         if a.fingerprint != b.fingerprint {

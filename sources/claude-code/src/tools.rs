@@ -67,9 +67,7 @@ pub(crate) fn tool_target(tool: &str, input: &Value, cwd: Option<&str>, home: &P
         return rest.split("__").next().map(|server| format!("mcp:{server}"));
     }
     let target = match tool {
-        "Read" | "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "NotebookRead" => {
-            s("file_path").or(s("notebook_path")).map(|p| display_path(p, cwd, home))
-        }
+        "Read" | "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "NotebookRead" => s("file_path").or(s("notebook_path")).map(|p| display_path(p, cwd, home)),
         "Grep" | "Glob" | "LS" => s("path").map(|p| display_path(p, cwd, home)).or(Some("(project)".to_string())),
         "Bash" | "BashOutput" => s("command").or(s("cmd")).map(command_head),
         "WebFetch" => s("url").and_then(url_host),
@@ -128,7 +126,10 @@ mod tests {
             assert_eq!(outcome(true, text, false), (Outcome::Refused, None), "{text}");
         }
         assert_eq!(outcome(true, "Permission to use Bash with command rm -rf build has been denied.", false), (Outcome::Denied, None));
-        assert_eq!(outcome(true, "Permission for this command was denied by a built-in Claude Code safety check, not by the user.", false), (Outcome::Denied, None));
+        assert_eq!(
+            outcome(true, "Permission for this command was denied by a built-in Claude Code safety check, not by the user.", false),
+            (Outcome::Denied, None)
+        );
         assert_eq!(outcome(true, "This session is isolated in the worktree /w, but this command is too complex", true), (Outcome::Denied, None));
     }
 

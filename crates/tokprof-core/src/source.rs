@@ -143,7 +143,13 @@ mod tests {
 
     #[test]
     fn an_mcp_tool_names_its_server() {
-        let names = PublicNames { commands: &["goal"], subagent_types: &["general-purpose"], skills: &["simplify"], mcp: Some(("mcp__", "__")), ..PublicNames::default() };
+        let names = PublicNames {
+            commands: &["goal"],
+            subagent_types: &["general-purpose"],
+            skills: &["simplify"],
+            mcp: Some(("mcp__", "__")),
+            ..PublicNames::default()
+        };
         assert_eq!(names.mcp_server("mcp__docs__search"), Some("docs"));
         assert_eq!(names.mcp_server("Read"), None);
         assert_eq!(names.mcp_server("mcp____x"), None, "no server");

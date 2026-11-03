@@ -31,15 +31,24 @@ fn a_codex_note_reads_patches_commands_and_the_plan() {
     let d = dir("codex");
     let c = catalog(&d);
     let item = |payload: Value| serde_json::json!({"type": "response_item", "timestamp": "2026-08-12T11:44:00Z", "payload": payload});
-    let file = log(&c, &d, "rollout-2026-08-12T13-44-47-019ff5ca-0db2-7180-8f61-e241e484f21a.jsonl", &[
-        serde_json::json!({"type": "session_meta", "payload": {"id": "019ff5ca", "cwd": "/w/u", "git": {"branch": "master"}}}),
-        item(serde_json::json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "# AGENTS.md instructions"}]})),
-        item(serde_json::json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "sync the specs with the code"}]})),
-        item(serde_json::json!({"type": "function_call", "name": "exec_command", "arguments": "{\"cmd\":\"git status --short\"}"})),
-        item(serde_json::json!({"type": "custom_tool_call", "name": "exec", "input": "await tools.exec_command({cmd: \"rg -n Done spec\"}); await tools.apply_patch(\"*** Begin Patch\\n*** Update File: spec/a.md\\n\");"})),
-        item(serde_json::json!({"type": "function_call", "name": "update_plan", "arguments": "{\"plan\":[{\"status\":\"in_progress\",\"step\":\"group the conflicts\"}]}"})),
-        item(serde_json::json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Specs updated, code unchanged."}]})),
-    ]);
+    let file = log(
+        &c,
+        &d,
+        "rollout-2026-08-12T13-44-47-019ff5ca-0db2-7180-8f61-e241e484f21a.jsonl",
+        &[
+            serde_json::json!({"type": "session_meta", "payload": {"id": "019ff5ca", "cwd": "/w/u", "git": {"branch": "master"}}}),
+            item(serde_json::json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "# AGENTS.md instructions"}]})),
+            item(serde_json::json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "sync the specs with the code"}]})),
+            item(serde_json::json!({"type": "function_call", "name": "exec_command", "arguments": "{\"cmd\":\"git status --short\"}"})),
+            item(
+                serde_json::json!({"type": "custom_tool_call", "name": "exec", "input": "await tools.exec_command({cmd: \"rg -n Done spec\"}); await tools.apply_patch(\"*** Begin Patch\\n*** Update File: spec/a.md\\n\");"}),
+            ),
+            item(
+                serde_json::json!({"type": "function_call", "name": "update_plan", "arguments": "{\"plan\":[{\"status\":\"in_progress\",\"step\":\"group the conflicts\"}]}"}),
+            ),
+            item(serde_json::json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Specs updated, code unchanged."}]})),
+        ],
+    );
     let note = note(&c, &file).unwrap();
     assert!(note.starts_with("# Handoff from Codex session 019ff5ca"), "{note}");
     assert!(note.contains("branch master at the start"), "{note}");

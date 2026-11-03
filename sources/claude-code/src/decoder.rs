@@ -20,7 +20,10 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use tokprof_core::api::ApiId;
 use tokprof_core::labels::{display_path, message_label};
-use tokprof_core::model::{Block, BlockKind, CallEnd, Class, CompactionTrigger, HandoffKind, Origin, ReminderKind, ToolClass, Chain, ChainKind, Compaction, Params, PromptDelta, Request, Session, Shape, TypedMessage, Usage, WakeSource};
+use tokprof_core::model::{
+    Block, BlockKind, CallEnd, Chain, ChainKind, Class, Compaction, CompactionTrigger, HandoffKind, Origin, Params, PromptDelta, ReminderKind, Request,
+    Session, Shape, ToolClass, TypedMessage, Usage, WakeSource,
+};
 use tokprof_core::source::{AgentId, Decoder};
 use tokprof_core::trigger::{CallClass, Pending, Trigger};
 use tokprof_logio::{canonical_hash, canonical_string, json_len, parse_ts_ms, str_at, u64_at};
@@ -221,11 +224,12 @@ impl Parser {
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else { return };
         if !self.entrypoint_seen
-            && let Some(entrypoint) = str_at(&v, "entrypoint").filter(|e| !e.is_empty()) {
-                self.entrypoint_seen = true;
-                // `claude -p` runs as `sdk-cli`.
-                self.session.scripted = entrypoint == "sdk-cli";
-            }
+            && let Some(entrypoint) = str_at(&v, "entrypoint").filter(|e| !e.is_empty())
+        {
+            self.entrypoint_seen = true;
+            // `claude -p` runs as `sdk-cli`.
+            self.session.scripted = entrypoint == "sdk-cli";
+        }
         match str_at(&v, "type") {
             Some("user") => self.user(&v),
             Some("attachment") => self.attachment(&v),
@@ -236,17 +240,19 @@ impl Parser {
             Some("api-request") => self.api_request(&v),
             Some("api-request-blob") => {
                 if let (Some(hash), Some(msg)) = (str_at(&v, "hash"), v.get("message"))
-                    && !self.msg_by_hash.contains_key(hash) {
-                        let idx = self.add_message(msg, false);
-                        self.msg_by_hash.insert(hash.to_string(), idx);
-                    }
+                    && !self.msg_by_hash.contains_key(hash)
+                {
+                    let idx = self.add_message(msg, false);
+                    self.msg_by_hash.insert(hash.to_string(), idx);
+                }
             }
             Some("api-request-shape") => {
                 if let (Some(hash), Some(shape)) = (str_at(&v, "shapeHash"), v.get("shape"))
-                    && !self.shapes_by_hash.contains_key(hash) {
-                        let idx = self.add_shape(shape);
-                        self.shapes_by_hash.insert(hash.to_string(), idx);
-                    }
+                    && !self.shapes_by_hash.contains_key(hash)
+                {
+                    let idx = self.add_shape(shape);
+                    self.shapes_by_hash.insert(hash.to_string(), idx);
+                }
             }
             Some("system") if str_at(&v, "subtype") == Some("compact_boundary") => {
                 if let Some(ts) = parse_ts_ms(v.get("timestamp")) {
@@ -256,8 +262,9 @@ impl Parser {
                 }
             }
             Some("system") if str_at(&v, "subtype") == Some("api_error") => self.api_error(&v),
-            Some("system") if str_at(&v, "subtype") == Some("informational")
-                && str_at(&v, "content").is_some_and(|c| IDLE_NOTICES.iter().any(|n| c.starts_with(n))) => {
+            Some("system")
+                if str_at(&v, "subtype") == Some("informational") && str_at(&v, "content").is_some_and(|c| IDLE_NOTICES.iter().any(|n| c.starts_with(n))) =>
+            {
                 if let Some(ts) = parse_ts_ms(v.get("timestamp")) {
                     self.idle_notices.push(ts);
                 }
@@ -287,14 +294,18 @@ impl Parser {
 
     fn note_meta(&mut self, v: &Value) {
         if let Some(id) = str_at(v, "sessionId")
-            && self.session.id != id && self.responses.is_empty() && self.requests.is_empty() {
-                self.session.id = id.to_string();
-            }
+            && self.session.id != id
+            && self.responses.is_empty()
+            && self.requests.is_empty()
+        {
+            self.session.id = id.to_string();
+        }
         if self.session.cwd.is_none()
-            && let Some(cwd) = str_at(v, "cwd") {
-                self.session.cwd = Some(cwd.to_string());
-                self.session.project = display_path(cwd, None, &self.home);
-            }
+            && let Some(cwd) = str_at(v, "cwd")
+        {
+            self.session.cwd = Some(cwd.to_string());
+            self.session.project = display_path(cwd, None, &self.home);
+        }
     }
 
     fn user(&mut self, v: &Value) {
@@ -313,24 +324,25 @@ impl Parser {
             self.msg_by_hash.insert(hash, idx);
         }
         let sidechain = v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false);
+        if !meta && let Some(event) = prompt_text(msg).and_then(user_event) {
+            let chain = self.chain_key(v);
+            self.pending.entry(chain).or_default().event(event);
+        }
         if !meta
-            && let Some(event) = prompt_text(msg).and_then(user_event) {
-                let chain = self.chain_key(v);
-                self.pending.entry(chain).or_default().event(event);
-            }
-        if !meta && !sidechain && !self.subagent_file
-            && let Some(origin) = prompt_text(msg).and_then(|t| self.turn_origin(t)) {
-                self.turn = Some(origin);
-            }
+            && !sidechain
+            && !self.subagent_file
+            && let Some(origin) = prompt_text(msg).and_then(|t| self.turn_origin(t))
+        {
+            self.turn = Some(origin);
+        }
         let main = !meta && self.main_line(v);
-        if main
-            && let Some(text) = prompt_text(msg).filter(|t| user_event(t) == Some(Trigger::Prompt)) {
-                let ts_ms = parse_ts_ms(v.get("timestamp")).unwrap_or(0);
-                let label = typed_label(text);
-                if self.session.typed.last().is_none_or(|m| m.ts_ms != ts_ms || m.label != label) {
-                    self.session.typed.push(TypedMessage { ts_ms, label });
-                }
+        if main && let Some(text) = prompt_text(msg).filter(|t| user_event(t) == Some(Trigger::Prompt)) {
+            let ts_ms = parse_ts_ms(v.get("timestamp")).unwrap_or(0);
+            let label = typed_label(text);
+            if self.session.typed.last().is_none_or(|m| m.ts_ms != ts_ms || m.label != label) {
+                self.session.typed.push(TypedMessage { ts_ms, label });
             }
+        }
         if main {
             self.note_user_handoffs(v, msg);
         }
@@ -362,11 +374,12 @@ impl Parser {
         let kind = prompt_text(msg).and_then(user_handoff);
         let mut answered = false;
         if !self.questions.is_empty()
-            && let Some(Value::Array(items)) = msg.get("content") {
-                for id in items.iter().filter(|i| str_at(i, "type") == Some("tool_result")).filter_map(|i| str_at(i, "tool_use_id")) {
-                    answered |= self.questions.remove(id);
-                }
+            && let Some(Value::Array(items)) = msg.get("content")
+        {
+            for id in items.iter().filter(|i| str_at(i, "type") == Some("tool_result")).filter_map(|i| str_at(i, "tool_use_id")) {
+                answered |= self.questions.remove(id);
             }
+        }
         let Some(kind) = kind.or(answered.then_some(HandoffKind::Answer)) else { return };
         if let Some(ts_ms) = parse_ts_ms(v.get("timestamp")) {
             self.session.push_handoff(ts_ms, kind);
@@ -420,10 +433,11 @@ impl Parser {
         let chain = self.chain_key(v);
         let pending = self.pending.entry(chain).or_default();
         if let Some(id) = message_id
-            && !self.trigger_by_message.contains_key(id) {
-                self.trigger_by_message.insert(id.to_string(), (pending.trigger(), pending.activity()));
-                *pending = Pending::default();
-            }
+            && !self.trigger_by_message.contains_key(id)
+        {
+            self.trigger_by_message.insert(id.to_string(), (pending.trigger(), pending.activity()));
+            *pending = Pending::default();
+        }
         for item in content.iter().filter(|i| str_at(i, "type") == Some("tool_use")) {
             pending.call(call_class(str_at(item, "name").unwrap_or_default(), item.get("input").unwrap_or(&Value::Null)));
         }
@@ -437,7 +451,9 @@ impl Parser {
         if is_reminder(t) || ["[Request interrupted", "This session is being continued", "<bash-"].iter().any(|p| t.starts_with(p)) {
             return None;
         }
-        if t.starts_with("<command-") && let Some(name) = tag_text(t, "command-name") {
+        if t.starts_with("<command-")
+            && let Some(name) = tag_text(t, "command-name")
+        {
             return Some(format!("command:/{}", name.trim_start_matches('/')));
         }
         if t.starts_with("<task-notification>") {
@@ -505,10 +521,7 @@ impl Parser {
             return;
         }
         let request_ref = str_at(v, "requestRef").map(str::to_string);
-        let key = request_ref
-            .clone()
-            .or_else(|| str_at(v, "requestId").map(str::to_string))
-            .or_else(|| message_id.clone());
+        let key = request_ref.clone().or_else(|| str_at(v, "requestId").map(str::to_string)).or_else(|| message_id.clone());
         let Some(key) = key else { return };
         let ts = parse_ts_ms(v.get("timestamp")).unwrap_or(0);
         if let Some(&i) = self.response_by_key.get(&key) {
@@ -550,11 +563,8 @@ impl Parser {
     /// request-audit lines, the chain keeps it for its next response. Seen in 2.1.287–2.1.316.
     fn api_error(&mut self, v: &Value) {
         let Some(ts_ms) = parse_ts_ms(v.get("timestamp")) else { return };
-        let error = v
-            .get("error")
-            .and_then(|e| str_at(e, "formatted").or_else(|| str_at(e, "message")))
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty());
+        let error =
+            v.get("error").and_then(|e| str_at(e, "formatted").or_else(|| str_at(e, "message"))).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
         let agent = if self.subagent_file { None } else { Some(str_at(v, "agentId").unwrap_or_default()) };
         let attempt = self.requests.iter_mut().rev().find(|r| agent.is_none_or(|a| r.stream.0 == a));
         if let Some(attempt) = attempt.filter(|r| !self.response_by_key.contains_key(&r.id)) {
@@ -568,11 +578,8 @@ impl Parser {
     /// turn when the response stopped for anything but a tool call. The lines of one response give
     /// one end, at the latest of their times.
     fn note_response_handoffs(&mut self, v: &Value, msg: &Value, message_id: Option<&str>, content: &[Value]) {
-        let questions: Vec<Option<&str>> = content
-            .iter()
-            .filter(|i| str_at(i, "type") == Some("tool_use") && str_at(i, "name").is_some_and(asks_the_user))
-            .map(|i| str_at(i, "id"))
-            .collect();
+        let questions: Vec<Option<&str>> =
+            content.iter().filter(|i| str_at(i, "type") == Some("tool_use") && str_at(i, "name").is_some_and(asks_the_user)).map(|i| str_at(i, "id")).collect();
         let ends = str_at(msg, "stop_reason").is_some_and(|s| !s.is_empty() && s != "tool_use");
         let same_response = matches!((&self.last_end, message_id), (Some((last, _)), Some(id)) if last == id);
         if questions.is_empty() && !ends && !same_response {
@@ -644,18 +651,11 @@ impl Parser {
         });
         self.requests.push(ApiRequest {
             id: id.to_string(),
-            stream: (
-                str_at(v, "agentId").unwrap_or_default().to_string(),
-                str_at(v, "querySource").unwrap_or_default().to_string(),
-            ),
+            stream: (str_at(v, "agentId").unwrap_or_default().to_string(), str_at(v, "querySource").unwrap_or_default().to_string()),
             ts_ms: parse_ts_ms(v.get("timestamp")).unwrap_or(0),
             version: str_at(v, "version").map(str::to_string),
             keep: u64_at(v, "keep") as usize,
-            tail: v
-                .get("tail")
-                .and_then(Value::as_array)
-                .map(|t| t.iter().filter_map(Value::as_str).map(str::to_string).collect())
-                .unwrap_or_default(),
+            tail: v.get("tail").and_then(Value::as_array).map(|t| t.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
             shape: str_at(v, "shapeHash").map(str::to_string),
             params: Params {
                 effort: params.pointer("/output_config/effort").and_then(Value::as_str).map(str::to_string),
@@ -676,9 +676,7 @@ impl Parser {
         let mut tool_names = Vec::new();
         for tool in shape.get("tools").and_then(Value::as_array).into_iter().flatten() {
             let name = str_at(tool, "name").unwrap_or("?").to_string();
-            let chars = name.len() as u64
-                + str_at(tool, "description").map_or(0, |d| d.len() as u64)
-                + tool.get("input_schema").map_or(0, json_len);
+            let chars = name.len() as u64 + str_at(tool, "description").map_or(0, |d| d.len() as u64) + tool.get("input_schema").map_or(0, json_len);
             self.session.blocks.push(Block {
                 class: Class::None,
                 kind: BlockKind::Tools,
@@ -698,12 +696,7 @@ impl Parser {
         strip_cache_control(&mut stripped);
         let mut hasher = DefaultHasher::new();
         canonical_string(&stripped).hash(&mut hasher);
-        self.session.shapes.push(Shape {
-            blocks: start..self.session.blocks.len(),
-            fingerprint: hasher.finish(),
-            tool_names,
-            system_chars,
-        });
+        self.session.shapes.push(Shape { blocks: start..self.session.blocks.len(), fingerprint: hasher.finish(), tool_names, system_chars });
         self.session.shapes.len() - 1
     }
 
@@ -741,10 +734,7 @@ impl Parser {
                     match ty {
                         "text" => text(&mut blocks, str_at(item, "text").unwrap_or_default(), &mut prompt),
                         "thinking" | "redacted_thinking" => {
-                            let chars = str_at(item, "thinking").map_or_else(
-                                || str_at(item, "data").map_or(0, |d| d.len() as u64 / 2),
-                                |t| t.len() as u64,
-                            );
+                            let chars = str_at(item, "thinking").map_or_else(|| str_at(item, "data").map_or(0, |d| d.len() as u64 / 2), |t| t.len() as u64);
                             blocks.push(Block { class: Class::None, kind: BlockKind::Thinking, chars, tool: None, target: None });
                         }
                         "tool_use" | "server_tool_use" => {
@@ -765,9 +755,8 @@ impl Parser {
                         }
                         _ if ty == "tool_result" || ty.ends_with("_tool_result") => {
                             tool_result = true;
-                            let (tool, target) = str_at(item, "tool_use_id")
-                                .and_then(|id| self.tools_by_id.get(id).cloned())
-                                .map_or((None, None), |(t, g)| (Some(t), g));
+                            let (tool, target) =
+                                str_at(item, "tool_use_id").and_then(|id| self.tools_by_id.get(id).cloned()).map_or((None, None), |(t, g)| (Some(t), g));
                             let chars = result_chars(item.get("content").unwrap_or(&Value::Null));
                             if let Some(id) = str_at(item, "tool_use_id") {
                                 self.blocks_by_call.entry(id.to_string()).or_default().push(self.session.blocks.len() + blocks.len());
@@ -807,12 +796,7 @@ impl Parser {
             })
         };
 
-        let by_ref: HashMap<&str, usize> = self
-            .responses
-            .iter()
-            .enumerate()
-            .filter_map(|(i, r)| r.request_ref.as_deref().map(|id| (id, i)))
-            .collect();
+        let by_ref: HashMap<&str, usize> = self.responses.iter().enumerate().filter_map(|(i, r)| r.request_ref.as_deref().map(|id| (id, i))).collect();
         let mut used = vec![false; self.responses.len()];
         // Per stream, the attempts that failed with an API error since its latest other request.
         let mut retried: HashMap<(String, String), FailedAttempts> = HashMap::new();
@@ -821,11 +805,7 @@ impl Parser {
             let (name, kind) = stream_chain(&req.stream.0, &req.stream.1, self.subagent_file);
             let ci = chain_for(req.stream.clone(), name, kind, &mut chains);
             let tail = req.tail.iter().map(|h| resolve(h, &mut session, &mut self.msg_by_hash)).collect();
-            let delta = PromptDelta {
-                shape: req.shape.as_ref().and_then(|h| self.shapes_by_hash.get(h).copied()),
-                keep: req.keep,
-                tail,
-            };
+            let delta = PromptDelta { shape: req.shape.as_ref().and_then(|h| self.shapes_by_hash.get(h).copied()), keep: req.keep, tail };
             let mut base = Request {
                 ts_ms: req.ts_ms,
                 params: Some(req.params.clone()),
@@ -1028,7 +1008,9 @@ fn prompt_text(msg: &Value) -> Option<&str> {
 /// its last paragraph.
 fn typed_label(text: &str) -> String {
     let t = text.trim_start();
-    if t.starts_with("<command-") && let Some(name) = tag_text(t, "command-name") {
+    if t.starts_with("<command-")
+        && let Some(name) = tag_text(t, "command-name")
+    {
         let args = tag_text(t, "command-args").unwrap_or_default();
         return message_label(&format!("/{} {args}", name.trim_start_matches('/')));
     }
@@ -1081,13 +1063,7 @@ fn tag_text<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 fn push_response(chain: &mut Chain, base: Request, resp: &Response, prompt: Option<PromptDelta>, produced: Option<usize>) {
     let iterations = resp.usage.get("iterations").and_then(Value::as_array).filter(|i| i.len() > 1);
     let Some(iterations) = iterations else {
-        chain.requests.push(Request {
-            model: resp.model.clone(),
-            usage: usage_of(&resp.usage),
-            prompt,
-            produced,
-            ..base
-        });
+        chain.requests.push(Request { model: resp.model.clone(), usage: usage_of(&resp.usage), prompt, produced, ..base });
         return;
     };
     // Iterations after the first read the same prompt plus what the response added so far,
@@ -1333,9 +1309,7 @@ mod tests {
     }
 
     fn reported_cost(states: &[(i64, f64)]) -> Option<f64> {
-        let lines: Vec<Value> = states.iter()
-            .map(|(start, usd)| json!({"type": "cost-state", "startTime": start, "totalCostUSD": usd}))
-            .collect();
+        let lines: Vec<Value> = states.iter().map(|(start, usd)| json!({"type": "cost-state", "startTime": start, "totalCostUSD": usd})).collect();
         session_from(&lines).reported_usd.map(|usd| (usd * 100.0).round() / 100.0)
     }
 
@@ -1382,10 +1356,14 @@ mod tests {
     #[test]
     fn compactions_get_their_kind() {
         let reply = |id: &str, ts: &str| assistant_line(id, json!({"timestamp": ts}), json!([{"type": "text", "text": "ok"}]));
-        let boundary = |ts: &str, trigger: &str| json!({"type": "system", "subtype": "compact_boundary", "timestamp": ts,
-            "compactMetadata": {"trigger": trigger, "preTokens": 440991, "postTokens": 8728}});
-        let notice = |ts: &str| json!({"type": "system", "subtype": "informational", "timestamp": ts, "isMeta": false,
-            "content": "Compacted while idle, before the prompt cache expired · turn off with \"idleCompaction\": false in settings.json"});
+        let boundary = |ts: &str, trigger: &str| {
+            json!({"type": "system", "subtype": "compact_boundary", "timestamp": ts,
+            "compactMetadata": {"trigger": trigger, "preTokens": 440991, "postTokens": 8728}})
+        };
+        let notice = |ts: &str| {
+            json!({"type": "system", "subtype": "informational", "timestamp": ts, "isMeta": false,
+            "content": "Compacted while idle, before the prompt cache expired · turn off with \"idleCompaction\": false in settings.json"})
+        };
         let s = session_from(&[
             reply("m1", "2026-10-29T18:18:52Z"),
             boundary("2026-10-29T19:13:39Z", "auto"),
@@ -1417,7 +1395,9 @@ mod tests {
             json!({"type": "api-request", "id": "r1", "querySource": "sdk", "timestamp": "2026-10-19T15:07:22Z", "keep": 0, "tail": []}),
             assistant_line("m4", json!({"requestRef": "r1", "timestamp": "2026-10-19T15:07:30Z"}), json!([{"type": "text", "text": "ok"}])),
         ]);
-        let mut chains: Vec<(i64, Vec<bool>)> = s.chains.iter()
+        let mut chains: Vec<(i64, Vec<bool>)> = s
+            .chains
+            .iter()
             .filter(|c| c.kind == ChainKind::Main)
             .map(|c| (c.requests[0].ts_ms, c.requests.iter().map(|r| r.compacted_before).collect()))
             .collect();
@@ -1547,7 +1527,8 @@ mod tests {
         let call = |id: &str, name: &str, input: Value| json!({"type": "tool_use", "id": id, "name": name, "input": input});
         let mut typed = user_line("Tool results take 47%\n  advice ▸ trim\n\nwhat else can we analyze?");
         typed["timestamp"] = json!("2026-10-01T10:00:00Z");
-        let mut command = user_line("<command-message>goal</command-message>\n<command-name>/goal</command-name>\n<command-args>finish the parser</command-args>");
+        let mut command =
+            user_line("<command-message>goal</command-message>\n<command-name>/goal</command-name>\n<command-args>finish the parser</command-args>");
         command["timestamp"] = json!("2026-10-01T10:10:00Z");
         let s = session_from(&[
             typed,
@@ -1616,9 +1597,7 @@ mod tests {
 
     #[test]
     fn a_request_without_a_response_is_sent_but_never_ends() {
-        let s = session_from(&[
-            json!({"type": "api-request", "id": "r1", "querySource": "sdk", "timestamp": "2026-10-01T10:00:00Z", "keep": 0, "tail": []}),
-        ]);
+        let s = session_from(&[json!({"type": "api-request", "id": "r1", "querySource": "sdk", "timestamp": "2026-10-01T10:00:00Z", "keep": 0, "tail": []})]);
         assert_eq!(times(&s), [(Some(ms("2026-10-01T10:00:00Z")), Some(ms("2026-10-01T10:00:00Z")), None)]);
     }
 
@@ -1646,7 +1625,10 @@ mod tests {
             at(assistant_line("m1", json!({"requestRef": "r4"}), json!([{"type": "text", "text": "hi"}])), "2026-11-03T07:04:15Z"),
         ]);
         let answered = s.chains[0].requests.iter().find(|r| r.usage.output > 0).unwrap();
-        assert_eq!((answered.first_sent_ms, answered.sent_ms, answered.retries), (Some(ms("2026-11-03T07:04:05.589Z")), Some(ms("2026-11-03T07:04:09.426Z")), 3));
+        assert_eq!(
+            (answered.first_sent_ms, answered.sent_ms, answered.retries),
+            (Some(ms("2026-11-03T07:04:05.589Z")), Some(ms("2026-11-03T07:04:09.426Z")), 3)
+        );
         assert_eq!(answered.retry_error.as_deref(), Some("502 local proxy: upstream request failed"));
         assert_eq!(answered.retry_ms(), 3_837);
         // The failed attempts keep no time of their own.
@@ -1682,7 +1664,10 @@ mod tests {
         assert_eq!(reqs.len(), 2);
         assert_eq!((reqs[0].sent_ms, reqs[0].retries), (None, 0));
         let last = &reqs[1];
-        assert_eq!((last.first_sent_ms, last.sent_ms, last.ended_ms, last.retries), (Some(ms("2026-11-03T07:04:05Z")), Some(ms("2026-11-03T07:04:06Z")), None, 1));
+        assert_eq!(
+            (last.first_sent_ms, last.sent_ms, last.ended_ms, last.retries),
+            (Some(ms("2026-11-03T07:04:05Z")), Some(ms("2026-11-03T07:04:06Z")), None, 1)
+        );
         assert_eq!(last.retry_error.as_deref(), Some("502 local proxy: upstream request failed"));
     }
 
@@ -1711,13 +1696,22 @@ mod tests {
         let s = session_from(&[
             user_line("look"),
             assistant_line("m1", json!({}), calls),
-            at(json!({"type": "user", "message": {"role": "user", "content": [
+            at(
+                json!({"type": "user", "message": {"role": "user", "content": [
                 {"type": "tool_result", "tool_use_id": "t1", "is_error": true, "content": "File does not exist. Note: your current working directory is /w."},
-                {"type": "tool_result", "tool_use_id": "t3", "content": [{"type": "text", "text": "a.rs"}]}]}}), "2026-10-01T10:00:06Z"),
+                {"type": "tool_result", "tool_use_id": "t3", "content": [{"type": "text", "text": "a.rs"}]}]}}),
+                "2026-10-01T10:00:06Z",
+            ),
             denied,
         ]);
         let end = |tool: &str, kind: BlockKind| {
-            let mut found: Vec<Outcome> = s.blocks.iter().enumerate().filter(|(_, b)| b.kind == kind && b.target.as_deref().is_some_and(|t| t.contains(tool))).map(|(i, _)| s.outcome(i)).collect();
+            let mut found: Vec<Outcome> = s
+                .blocks
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| b.kind == kind && b.target.as_deref().is_some_and(|t| t.contains(tool)))
+                .map(|(i, _)| s.outcome(i))
+                .collect();
             found.dedup();
             found
         };
@@ -1793,10 +1787,7 @@ mod tests {
         ]);
         let origins: Vec<Option<String>> = s.chains[0].requests.iter().map(|r| r.origin.as_ref().map(ToString::to_string)).collect();
         let origins: Vec<Option<&str>> = origins.iter().map(|o| o.as_deref()).collect();
-        assert_eq!(
-            origins,
-            [Some("prompt"), Some("command:/goal"), Some("skill:code-review"), Some("command:/goal"), Some("notification")]
-        );
+        assert_eq!(origins, [Some("prompt"), Some("command:/goal"), Some("skill:code-review"), Some("command:/goal"), Some("notification")]);
         assert_eq!(s.title.as_deref(), Some("Mine"), "the user's own title wins, without the archive mark");
     }
 
@@ -1875,10 +1866,7 @@ mod tests {
         let got = reminder_parts(&text);
         let labels: Vec<&str> = got.iter().map(|(_, l)| *l).collect();
         // Neighbours of one source stay one part: the restored file and the note on another.
-        assert_eq!(labels, [
-            "background notifications", "hook context", "attached files", "skills",
-            "deferred tool lists", "other", "skills", "other",
-        ]);
+        assert_eq!(labels, ["background notifications", "hook context", "attached files", "skills", "deferred tool lists", "other", "skills", "other",]);
         assert_eq!(got.iter().map(|(c, _)| c).sum::<u64>(), text.len() as u64);
         assert_eq!(got[0].0, parts[0].len() as u64 + 2);
         // A message with one reminder stays whole, even when its text has a heading of its own.
@@ -1992,11 +1980,7 @@ mod tests {
         assert_eq!(handoffs(&p.into_session()), ends);
 
         // An end whose response goes on after another hand-off moves behind it.
-        let s = session_from(&[
-            lines[1].clone(),
-            at(user_line("[Request interrupted by user]"), "2026-10-01T10:00:35Z"),
-            lines[2].clone(),
-        ]);
+        let s = session_from(&[lines[1].clone(), at(user_line("[Request interrupted by user]"), "2026-10-01T10:00:35Z"), lines[2].clone()]);
         assert_eq!(handoffs(&s), [(ms("2026-10-01T10:00:35Z"), Interrupt), (ms("2026-10-01T10:00:40Z"), TurnEnd)]);
     }
 
@@ -2030,7 +2014,9 @@ mod tests {
 
     #[test]
     fn a_background_result_or_another_session_wakes_the_agent() {
-        let note = |summary: &str| format!("<task-notification>\n<task-id>b7x2k9</task-id>\n<status>completed</status>\n<summary>{summary}</summary>\n</task-notification>");
+        let note = |summary: &str| {
+            format!("<task-notification>\n<task-id>b7x2k9</task-id>\n<status>completed</status>\n<summary>{summary}</summary>\n</task-notification>")
+        };
         let s = session_from(&[
             at(user_line(&note("Background command \"Run the tests\" completed (exit code 0)")), "2026-10-01T10:00:00Z"),
             at(user_line(&note("Agent \"Review the diff\" finished")), "2026-10-01T10:01:00Z"),
@@ -2041,14 +2027,17 @@ mod tests {
             at(user_line("thanks, go on"), "2026-10-01T10:06:00Z"),
         ]);
         use HandoffKind::*;
-        assert_eq!(handoffs(&s), [
-            (ms("2026-10-01T10:00:00Z"), Wake(WakeSource::Command)),
-            (ms("2026-10-01T10:01:00Z"), Wake(WakeSource::Subagent)),
-            (ms("2026-10-01T10:02:00Z"), Wake(WakeSource::Command)),
-            (ms("2026-10-01T10:03:00Z"), Wake(WakeSource::Other)),
-            (ms("2026-10-01T10:04:00Z"), Wake(WakeSource::Other)),
-            (ms("2026-10-01T10:05:00Z"), Wake(WakeSource::Other)),
-        ]);
+        assert_eq!(
+            handoffs(&s),
+            [
+                (ms("2026-10-01T10:00:00Z"), Wake(WakeSource::Command)),
+                (ms("2026-10-01T10:01:00Z"), Wake(WakeSource::Subagent)),
+                (ms("2026-10-01T10:02:00Z"), Wake(WakeSource::Command)),
+                (ms("2026-10-01T10:03:00Z"), Wake(WakeSource::Other)),
+                (ms("2026-10-01T10:04:00Z"), Wake(WakeSource::Other)),
+                (ms("2026-10-01T10:05:00Z"), Wake(WakeSource::Other)),
+            ]
+        );
     }
 
     #[test]
@@ -2094,9 +2083,8 @@ mod tests {
 
     #[test]
     fn a_question_to_the_user_and_its_answer() {
-        let call = |id: &str, ts: &str, name: &str, call: &str| {
-            stopped(id, ts, "tool_use", json!([{"type": "tool_use", "id": call, "name": name, "input": {}}]))
-        };
+        let call =
+            |id: &str, ts: &str, name: &str, call: &str| stopped(id, ts, "tool_use", json!([{"type": "tool_use", "id": call, "name": name, "input": {}}]));
         let s = session_from(&[
             at(user_line("plan the parser"), "2026-10-01T10:00:00Z"),
             call("m1", "2026-10-01T10:01:00Z", "AskUserQuestion", "q1"),

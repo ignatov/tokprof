@@ -5,8 +5,8 @@ use std::borrow::Borrow;
 
 use crate::analysis::LiveContext;
 use crate::model::{Request, Session};
-use crate::source::AgentId;
 use crate::pricing::{Price, Pricing};
+use crate::source::AgentId;
 
 /// Prompt-cache state of the main conversation.
 #[derive(Clone, Debug)]

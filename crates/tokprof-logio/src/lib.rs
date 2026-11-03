@@ -15,8 +15,7 @@ use sha2::{Digest, Sha256};
 pub fn open(path: &Path) -> Result<Box<dyn BufRead>> {
     let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     if path.extension().is_some_and(|e| e == "zst") {
-        let decoder = ruzstd::decoding::StreamingDecoder::new(BufReader::new(file))
-            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        let decoder = ruzstd::decoding::StreamingDecoder::new(BufReader::new(file)).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
         Ok(Box::new(BufReader::with_capacity(1 << 20, decoder)))
     } else {
         Ok(Box::new(BufReader::with_capacity(1 << 20, file)))
@@ -225,9 +224,6 @@ mod tests {
     #[test]
     fn canonical_form_sorts_keys_and_keeps_unicode() {
         let v = json!({"role": "user", "content": [{"type": "text", "text": "привет \"x\"\n"}]});
-        assert_eq!(
-            canonical_string(&v),
-            r#"{"content":[{"text":"привет \"x\"\n","type":"text"}],"role":"user"}"#
-        );
+        assert_eq!(canonical_string(&v), r#"{"content":[{"text":"привет \"x\"\n","type":"text"}],"role":"user"}"#);
     }
 }

@@ -5,20 +5,20 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
-use tokprof_core::catalog::Catalog;
-use tokprof_core::query::Query;
-use tokprof_core::scan::{OnUnreadable, scan};
-use tokprof_core::labels::display_path;
-use tokprof_core::source::{AgentId, SessionRef};
-use tokprof_core::analysis::{self, Component};
-use tokprof_core::export;
-use tokprof_core::profile::Measure;
-use tokprof_core::report::{self, Collector, Dim};
-use tokprof_core::pauses::Pauses;
-use tokprof_core::rhythm::{self, Timeline, View};
 use crate::day::{keeps_client, temp_folders};
+use tokprof_core::analysis::{self, Component};
+use tokprof_core::catalog::Catalog;
+use tokprof_core::export;
+use tokprof_core::labels::display_path;
+use tokprof_core::pauses::Pauses;
 use tokprof_core::pool;
+use tokprof_core::profile::Measure;
+use tokprof_core::query::Query;
+use tokprof_core::report::{self, Collector, Dim};
+use tokprof_core::rhythm::{self, Timeline, View};
+use tokprof_core::scan::{OnUnreadable, scan};
 use tokprof_core::share::{self, Share};
+use tokprof_core::source::{AgentId, SessionRef};
 use tokprof_core::{bench, fmt, handoff, xray};
 
 mod clipboard;
@@ -293,7 +293,8 @@ fn main() -> Result<()> {
         Command::Sessions { limit, cost } => {
             let rows = xray::rows(&catalog, &select, *limit);
             let now = now_ms();
-            let glances: Vec<Option<xray::Glance>> = if *cost { xray::glances(&catalog, &rows, &pricing, now).into_iter().map(Some).collect() } else { vec![None; rows.len()] };
+            let glances: Vec<Option<xray::Glance>> =
+                if *cost { xray::glances(&catalog, &rows, &pricing, now).into_iter().map(Some).collect() } else { vec![None; rows.len()] };
             print!("{}", render_sessions::sessions(&rows, &glances, *cost, &style, now));
             return Ok(());
         }
@@ -339,11 +340,7 @@ fn main() -> Result<()> {
     if let Command::Bench { requests, min_context, keep_warm, svg } = &command {
         let started = Instant::now();
         // Returns happen in main conversations, so subagent logs are left out.
-        let files: Vec<SessionRef> = catalog
-            .discover(&agents)
-            .into_iter()
-            .filter(|f| !f.subagent && select.holds(f))
-            .collect();
+        let files: Vec<SessionRef> = catalog.discover(&agents).into_iter().filter(|f| !f.subagent && select.holds(f)).collect();
         if files.is_empty() {
             bail!("no session logs found for {}", cli.agent.join(", "));
         }

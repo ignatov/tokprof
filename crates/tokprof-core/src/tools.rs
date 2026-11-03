@@ -79,9 +79,10 @@ impl ToolRow {
         self.failed += o.failed;
         self.after.add(o.after);
         if let Some(e) = &o.latest_error
-            && self.latest_error.as_ref().is_none_or(|l| e.0 >= l.0) {
-                self.latest_error = Some(e.clone());
-            }
+            && self.latest_error.as_ref().is_none_or(|l| e.0 >= l.0)
+        {
+            self.latest_error = Some(e.clone());
+        }
     }
 
     /// The share of its calls that failed.
@@ -273,7 +274,8 @@ impl Sink for ToolTable {
         let main = matches!(r.chain_kind, ChainKind::Main | ChainKind::Advisor);
         // A new chain, or a new turn of a main conversation, closes the open windows: a failure
         // never worked past it, so its window keeps its first request only.
-        let ended = w.latest.is_some_and(|(_, prev, _)| main && w.turn_ends[w.turn_ends.partition_point(|&t| t < prev)..].first().is_some_and(|&t| t < r.ts_ms));
+        let ended =
+            w.latest.is_some_and(|(_, prev, _)| main && w.turn_ends[w.turn_ends.partition_point(|&t| t < prev)..].first().is_some_and(|&t| t < r.ts_ms));
         if w.chain != Some(r.chain_index) || ended {
             if w.chain != Some(r.chain_index) {
                 w.counted.clear();

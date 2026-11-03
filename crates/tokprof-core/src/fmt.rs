@@ -105,8 +105,7 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
 
 pub fn table(rows: &[Vec<String>], right_from: usize) -> String {
     let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let widths: Vec<usize> =
-        (0..cols).map(|c| rows.iter().filter_map(|r| r.get(c)).map(|s| s.chars().count()).max().unwrap_or(0)).collect();
+    let widths: Vec<usize> = (0..cols).map(|c| rows.iter().filter_map(|r| r.get(c)).map(|s| s.chars().count()).max().unwrap_or(0)).collect();
     let mut out = String::new();
     for row in rows {
         let mut line = String::new();
@@ -125,9 +124,7 @@ pub fn table(rows: &[Vec<String>], right_from: usize) -> String {
 }
 
 pub fn local_time(ts_ms: i64, format: &str) -> String {
-    chrono::DateTime::from_timestamp_millis(ts_ms)
-        .map(|t| t.with_timezone(&chrono::Local).format(format).to_string())
-        .unwrap_or_default()
+    chrono::DateTime::from_timestamp_millis(ts_ms).map(|t| t.with_timezone(&chrono::Local).format(format).to_string()).unwrap_or_default()
 }
 
 pub struct Style {
@@ -158,12 +155,18 @@ mod tests {
 
     #[test]
     fn a_count_of_one_takes_the_singular() {
-        assert_eq!((count(1u64, "miss", "misses"), count(0u64, "miss", "misses"), count(2u64, "miss", "misses")), ("1 miss".into(), "0 misses".into(), "2 misses".into()));
+        assert_eq!(
+            (count(1u64, "miss", "misses"), count(0u64, "miss", "misses"), count(2u64, "miss", "misses")),
+            ("1 miss".into(), "0 misses".into(), "2 misses".into())
+        );
     }
 
     #[test]
     fn negative_amounts_put_the_sign_first() {
-        assert_eq!((usd(-1.83), usd(-1234.0), usd(1.83), usd(-0.001), usd(0.0)), ("-$1.83".into(), "-$1,234".into(), "$1.83".into(), "$0.00".into(), "$0.00".into()));
+        assert_eq!(
+            (usd(-1.83), usd(-1234.0), usd(1.83), usd(-0.001), usd(0.0)),
+            ("-$1.83".into(), "-$1,234".into(), "$1.83".into(), "$0.00".into(), "$0.00".into())
+        );
     }
 
     #[test]
@@ -175,9 +178,6 @@ mod tests {
     #[test]
     fn the_wrap_keeps_an_estimate_with_its_amount() {
         let line = "The context fills 27% of the window. At 4 requests per prompt, each prompt costs ≈ $0.22 in reads alone.";
-        assert_eq!(
-            wrap(line, 82),
-            ["The context fills 27% of the window. At 4 requests per prompt, each prompt costs", "≈ $0.22 in reads alone."]
-        );
+        assert_eq!(wrap(line, 82), ["The context fills 27% of the window. At 4 requests per prompt, each prompt costs", "≈ $0.22 in reads alone."]);
     }
 }

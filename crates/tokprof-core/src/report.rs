@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::analysis::{Component, Fact, Filter, MissEvent, RequestRecord, Sink};
 use crate::model::{ChainKind, Session, Usage};
-use crate::profile::{Frame, Stacks, Tint, TimedStacks, Values};
+use crate::profile::{Frame, Stacks, TimedStacks, Tint, Values};
 use crate::setup::SetupSpend;
 use crate::source::AgentId;
 use crate::tools::{BlockEntry, ToolShare, ToolTable};
@@ -98,9 +98,7 @@ impl Dim {
             Dim::Model => (f.model.to_string(), Tint::Structure),
             Dim::Turn => (
                 match f.turn {
-                    Some(0) | None if matches!(f.kind, crate::model::BlockKind::Tools | crate::model::BlockKind::System) => {
-                        "setup".to_string()
-                    }
+                    Some(0) | None if matches!(f.kind, crate::model::BlockKind::Tools | crate::model::BlockKind::System) => "setup".to_string(),
                     Some(t) => format!("turn {t}"),
                     None => return None,
                 },
@@ -592,7 +590,10 @@ impl ModelSpend {
                 *e = (e.0 + s.ours, e.1 + r, e.2 + 1);
             }
         }
-        by_agent.into_iter().map(|(agent, (ours_usd, reported_usd, sessions))| Reconciliation { agent: agent.clone(), sessions, reported_usd, ours_usd }).collect()
+        by_agent
+            .into_iter()
+            .map(|(agent, (ours_usd, reported_usd, sessions))| Reconciliation { agent: agent.clone(), sessions, reported_usd, ours_usd })
+            .collect()
     }
 }
 
@@ -604,7 +605,8 @@ mod tests {
     fn a_pair_of_sinks_gets_everything_both_would() {
         use crate::model::{Chain, Request};
         let mut s = Session::new(crate::testing::claude(), "s".into());
-        let request = Request { ts_ms: 1, model: "claude-opus-5-5".into(), usage: Usage { cache_read: 1_000, output: 10, ..Usage::default() }, ..Request::default() };
+        let request =
+            Request { ts_ms: 1, model: "claude-opus-5-5".into(), usage: Usage { cache_read: 1_000, output: 10, ..Usage::default() }, ..Request::default() };
         s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests: vec![request] });
         let pricing = crate::pricing::Pricing::defaults();
         let mut pair = (ModelSpend::default(), Work::default());
@@ -668,10 +670,8 @@ mod tests {
 
     #[test]
     fn a_client_filter_leaves_mixed_sessions_out_of_the_reconciliation() {
-        let sessions = [
-            session_of_clients("s1", &[Some("cli"), Some("sdk-ts")], 1_000, Some(1.0)),
-            session_of_clients("s2", &[Some("sdk-ts")], 1_000, Some(2.0)),
-        ];
+        let sessions =
+            [session_of_clients("s1", &[Some("cli"), Some("sdk-ts")], 1_000, Some(1.0)), session_of_clients("s2", &[Some("sdk-ts")], 1_000, Some(2.0))];
         let all = collect(&sessions, &Filter::default());
         assert_eq!(all.spend.reconciliation(&Filter::default())[0].sessions, 2);
         let sdk = Filter { client: Some("sdk-ts".into()), ..Filter::default() };
@@ -684,7 +684,8 @@ mod tests {
     fn a_task_shows_the_origin_most_of_its_spend_came_from() {
         let price = crate::pricing::Pricing::defaults().get("claude-opus-5-5", 0, 1);
         let mut w = Work::default();
-        for (origin, task, read) in [("prompt", "Fix the parser", 1_000), ("skill:code-review", "Fix the parser", 5_000), ("agent:Explore", "Scan docs", 2_000)] {
+        for (origin, task, read) in [("prompt", "Fix the parser", 1_000), ("skill:code-review", "Fix the parser", 5_000), ("agent:Explore", "Scan docs", 2_000)]
+        {
             w.add(&RequestRecord {
                 agent: &crate::testing::claude(),
                 ts_ms: 0,

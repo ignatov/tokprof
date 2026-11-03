@@ -341,11 +341,7 @@ impl Request {
     /// the trigger's name when no call did.
     pub fn activity(&self) -> &'static str {
         let trigger = self.trigger();
-        if trigger.from_calls() {
-            self.activity.map_or(CallClass::OtherTools.name(), CallClass::name)
-        } else {
-            trigger.name()
-        }
+        if trigger.from_calls() { self.activity.map_or(CallClass::OtherTools.name(), CallClass::name) } else { trigger.name() }
     }
 }
 
@@ -646,7 +642,8 @@ impl Session {
             let ts = c.requests.iter().map(|r| r.ts_ms);
             (ts.clone().min().unwrap_or(0), ts.max().unwrap_or(0))
         };
-        let mut chains: Vec<usize> = (0..self.chains.len()).filter(|&i| self.chains[i].kind == ChainKind::Main && !self.chains[i].requests.is_empty()).collect();
+        let mut chains: Vec<usize> =
+            (0..self.chains.len()).filter(|&i| self.chains[i].kind == ChainKind::Main && !self.chains[i].requests.is_empty()).collect();
         chains.sort_by_key(|&i| span(&self.chains[i]).0);
         let mut out: Vec<(&str, Vec<usize>, i64)> = Vec::new();
         for i in chains {
@@ -679,28 +676,14 @@ impl Session {
     pub fn push_message(&mut self, blocks: Vec<Block>, starts_turn: bool) -> usize {
         let start = self.blocks.len();
         self.blocks.extend(blocks);
-        self.messages.push(Message {
-            blocks: start..self.blocks.len(),
-            starts_turn,
-            resolved: true,
-        });
+        self.messages.push(Message { blocks: start..self.blocks.len(), starts_turn, resolved: true });
         self.messages.len() - 1
     }
 
     pub fn push_unresolved_message(&mut self) -> usize {
         let start = self.blocks.len();
-        self.blocks.push(Block {
-            class: Class::None,
-            kind: BlockKind::Unknown,
-            chars: 0,
-            tool: None,
-            target: None,
-        });
-        self.messages.push(Message {
-            blocks: start..self.blocks.len(),
-            starts_turn: false,
-            resolved: false,
-        });
+        self.blocks.push(Block { class: Class::None, kind: BlockKind::Unknown, chars: 0, tool: None, target: None });
+        self.messages.push(Message { blocks: start..self.blocks.len(), starts_turn: false, resolved: false });
         self.messages.len() - 1
     }
 }

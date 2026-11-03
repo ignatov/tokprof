@@ -7,11 +7,11 @@ use tokprof_core::advice;
 use tokprof_core::analysis::{Component, MissEvent};
 use tokprof_core::busy;
 use tokprof_core::fmt::{Style, clip_end, count, human_duration, local_time, tokens, usd, wrap};
-use tokprof_core::rhythm::duration;
 use tokprof_core::labels::display_path;
 use tokprof_core::model::{BlockKind, CompactionTrigger};
 use tokprof_core::profile::Values;
 use tokprof_core::report::Spend;
+use tokprof_core::rhythm::duration;
 use tokprof_core::setup::SetupCost;
 use tokprof_core::xray::{Composition, ContextNow, XRay};
 
@@ -678,13 +678,33 @@ mod tests {
         let mut x = xray(Vec::new());
         assert!(render(&x, tool_lines).is_empty(), "no tool calls, no block");
         let v = |usd| Values { tokens: 1.0, usd, avoidable: 0.0 };
-        x.tools.rows.insert(("Bash".into(), Some("sed -n".into())), ToolRow { class: Class::Tool(ToolClass::Execute), calls: 56, single: 48, results: 56, result_tokens: 56.0 * 1_300.0, inputs: 56, input_tokens: 56.0 * 53.0, rent: v(5.21), trips: v(3.75), ..ToolRow::default() });
+        x.tools.rows.insert(
+            ("Bash".into(), Some("sed -n".into())),
+            ToolRow {
+                class: Class::Tool(ToolClass::Execute),
+                calls: 56,
+                single: 48,
+                results: 56,
+                result_tokens: 56.0 * 1_300.0,
+                inputs: 56,
+                input_tokens: 56.0 * 53.0,
+                rent: v(5.21),
+                trips: v(3.75),
+                ..ToolRow::default()
+            },
+        );
         x.tools.spend = v(27.37);
         let text = render(&x, tool_lines);
         assert!(text.starts_with("\ntools     calls, sizes, rent and trips by tool (see tokprof tools)"), "{text}");
         let row = text.lines().find(|l| l.contains("sed -n")).unwrap();
-        assert_eq!(row.split_whitespace().collect::<Vec<_>>(), ["Bash", "sed", "-n", "56", "1.3k", "53", "$5.21", "$3.75", "86%", "batch", "independent", "reads"]);
-        assert!(text.contains("spend $27.37 · rent of these tools $5.21 · trips of these tools $3.75 (two views of the same money; do not add them)"), "{text}");
+        assert_eq!(
+            row.split_whitespace().collect::<Vec<_>>(),
+            ["Bash", "sed", "-n", "56", "1.3k", "53", "$5.21", "$3.75", "86%", "batch", "independent", "reads"]
+        );
+        assert!(
+            text.contains("spend $27.37 · rent of these tools $5.21 · trips of these tools $3.75 (two views of the same money; do not add them)"),
+            "{text}"
+        );
         assert!(!text.contains("failed") && !text.contains(" after"), "the X-ray's tools block keeps its columns: {text}");
     }
 
@@ -707,7 +727,10 @@ mod tests {
     fn tool_rows_of_what_cost_the_most_count_their_calls() {
         let mut x = xray(Vec::new());
         let key = |t: &str| (Some("Bash".to_string()), Some(t.to_string()));
-        x.content = vec![((BlockKind::ToolResult, key("sed -n").0, key("sed -n").1), Values { tokens: 1.0, usd: 2.75, avoidable: 0.0 }), ((BlockKind::ToolUse, key("cat >").0, key("cat >").1), Values { tokens: 1.0, usd: 1.0, avoidable: 0.0 })];
+        x.content = vec![
+            ((BlockKind::ToolResult, key("sed -n").0, key("sed -n").1), Values { tokens: 1.0, usd: 2.75, avoidable: 0.0 }),
+            ((BlockKind::ToolUse, key("cat >").0, key("cat >").1), Values { tokens: 1.0, usd: 1.0, avoidable: 0.0 }),
+        ];
         x.calls.insert(key("sed -n"), 412);
         x.calls.insert(key("cat >"), 1);
         let text = render(&x, costly_content_lines);
@@ -730,9 +753,16 @@ mod tests {
             rows: vec![("instructions".into(), cost(23.56, 22.10)), ("skills".into(), cost(21.92, 21.03)), ("tool schemas".into(), cost(28.42, 27.10))],
             has_subagents,
             main: has_subagents.then(|| Start { by_source: by(&[("instructions", 11_100.0), ("skills", 7_100.0)]), brief: 600.0 }),
-            subagents: has_subagents.then(|| MeanStart { count: 96, by_source: by(&[("instructions", 9_700.0), ("skills", 9_600.0), ("tool schemas", 11_900.0)]), brief: 1_800.0 }),
+            subagents: has_subagents.then(|| MeanStart {
+                count: 96,
+                by_source: by(&[("instructions", 9_700.0), ("skills", 9_600.0), ("tool schemas", 11_900.0)]),
+                brief: 1_800.0,
+            }),
             leftover: None,
-            hint: Some(("skills".into(), "lower skillListingBudgetFraction (default 0.01 of the context window), or turn unused skills off with skillOverrides in settings.json".into())),
+            hint: Some((
+                "skills".into(),
+                "lower skillListingBudgetFraction (default 0.01 of the context window), or turn unused skills off with skillOverrides in settings.json".into(),
+            )),
         }
     }
 
@@ -743,8 +773,18 @@ mod tests {
         let text = render(&x, setup_lines);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[1], "setup     what every request carries before the work, subagents included: $73.90, 14% of the session");
-        assert!(lines[2].contains("source") && lines[2].contains("subagents") && lines[2].contains("main starts") && lines[2].contains("each subagent"), "{text}");
-        assert!(lines[3].contains("instructions") && lines[3].contains("$23.56") && lines[3].contains("$22.10") && lines[3].contains("11.1k") && lines[3].contains("9.7k"), "{text}");
+        assert!(
+            lines[2].contains("source") && lines[2].contains("subagents") && lines[2].contains("main starts") && lines[2].contains("each subagent"),
+            "{text}"
+        );
+        assert!(
+            lines[3].contains("instructions")
+                && lines[3].contains("$23.56")
+                && lines[3].contains("$22.10")
+                && lines[3].contains("11.1k")
+                && lines[3].contains("9.7k"),
+            "{text}"
+        );
         assert!(lines[5].contains("tool schemas") && lines[5].contains("–"), "no tool schemas in the main start: {text}");
         let total = lines.iter().find(|l| l.trim_start().starts_with("total")).unwrap();
         assert!(total.contains("$73.90") && total.contains("$70.23") && total.contains("31.2k"), "{text}");
@@ -766,7 +806,14 @@ mod tests {
     fn the_setup_block_says_what_a_compaction_left() {
         let mut v = setup_view(true);
         let at = 1_791_905_499_953;
-        let parts = [("background notifications", 37_100.0), ("attached files", 20_300.0), ("user prompt", 13_200.0), ("skills", 11_400.0), ("tool schemas", 8_300.0), ("other", 1_200.0)];
+        let parts = [
+            ("background notifications", 37_100.0),
+            ("attached files", 20_300.0),
+            ("user prompt", 13_200.0),
+            ("skills", 11_400.0),
+            ("tool schemas", 8_300.0),
+            ("other", 1_200.0),
+        ];
         v.leftover = Some(tokprof_core::setup::Leftover { at_ms: at, size_tokens: 134_857, parts: parts.iter().map(|(k, t)| (k.to_string(), *t)).collect() });
         let mut x = xray(Vec::new());
         x.setup = Some(v);
@@ -817,7 +864,10 @@ mod tests {
         let shown = text(&x, &Style::with_color(false), Path::new("/tmp"), Path::new("/h"));
         let lines: Vec<&str> = shown.lines().collect();
         let at = lines.iter().position(|l| l.starts_with("time")).unwrap();
-        assert_eq!(lines[at + 1], "rhythm    34 turns, 2.1h of work · the agent's turn median 3.5m · your answer median 4.0m · 12 it started itself · 2 interrupts");
+        assert_eq!(
+            lines[at + 1],
+            "rhythm    34 turns, 2.1h of work · the agent's turn median 3.5m · your answer median 4.0m · 12 it started itself · 2 interrupts"
+        );
     }
 
     const MIN: i64 = 60_000;
@@ -843,7 +893,8 @@ mod tests {
         b.retry_errors.insert("408 Request body idle read timed out within 15s".into(), 1);
         (b.slow, b.slow_main, b.longest) = (103, 17, Some((372_000, 41_200)));
         let start = 1_790_812_800_000; // 2026-10-01 00:00 UTC
-        b.waits = vec![Wait { kind: busy::BACKGROUND, start_ms: start, ms: 108 * MIN }, Wait { kind: busy::SUBAGENTS, start_ms: start + 60 * MIN, ms: 25 * MIN }];
+        b.waits =
+            vec![Wait { kind: busy::BACKGROUND, start_ms: start, ms: 108 * MIN }, Wait { kind: busy::SUBAGENTS, start_ms: start + 60 * MIN, ms: 25 * MIN }];
         b
     }
 
@@ -863,7 +914,14 @@ mod tests {
         assert!(lines[8].starts_with("  2 more ") && lines[8].ends_with("8.0m"), "the seventh and later kinds fold: {}", lines[8]);
         assert_eq!(lines[9], "  slow: 103 requests took a minute or more, 17 of them in the main conversation; the longest took 6.2m and wrote 41.2k tokens");
         let local = |ms| local_time(ms, "%m-%d %H:%M");
-        assert_eq!(lines[10], format!("  longest waits: 1.8h for background commands at {} · 25m for subagents at {}", local(1_790_812_800_000), local(1_790_812_800_000 + 60 * MIN)));
+        assert_eq!(
+            lines[10],
+            format!(
+                "  longest waits: 1.8h for background commands at {} · 25m for subagents at {}",
+                local(1_790_812_800_000),
+                local(1_790_812_800_000 + 60 * MIN)
+            )
+        );
         x.busy.slow = 0;
         x.busy.waits.clear();
         let text = render(&x, waits_lines);
@@ -880,20 +938,46 @@ mod tests {
         assert!(render(&x, failure_lines).is_empty(), "every call worked, no block");
         let v = |usd| Values { tokens: 1.0, usd, avoidable: 0.0 };
         let err = |s: &str| Some((1, s.to_string()));
-        x.tools.rows.insert(("advisor".into(), None), ToolRow { class: Class::Tool(ToolClass::Other), calls: 15, failed: 15, after: v(32.92), latest_error: err("Error: No such tool available: advisor"), ..ToolRow::default() });
-        x.tools.rows.insert(("Read".into(), None), ToolRow { class: Class::Tool(ToolClass::Read), calls: 300, failed: 3, after: v(0.07), latest_error: err(&format!("File does not exist. Note: your current working directory is {}", "/very/long".repeat(8))), ..ToolRow::default() });
+        x.tools.rows.insert(
+            ("advisor".into(), None),
+            ToolRow {
+                class: Class::Tool(ToolClass::Other),
+                calls: 15,
+                failed: 15,
+                after: v(32.92),
+                latest_error: err("Error: No such tool available: advisor"),
+                ..ToolRow::default()
+            },
+        );
+        x.tools.rows.insert(
+            ("Read".into(), None),
+            ToolRow {
+                class: Class::Tool(ToolClass::Read),
+                calls: 300,
+                failed: 3,
+                after: v(0.07),
+                latest_error: err(&format!("File does not exist. Note: your current working directory is {}", "/very/long".repeat(8))),
+                ..ToolRow::default()
+            },
+        );
         x.tools.spend = v(390.0);
         (x.tools.failed, x.tools.refused, x.tools.after) = (18, 2, v(32.99));
         let text = render(&x, failure_lines);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[1], "failures  calls that failed, and what the requests after them cost until the tool worked again");
         assert!(lines[2].starts_with("  tool ") && lines[2].ends_with("failed  of calls   after  latest error"), "{}", lines[2]);
-        assert_eq!(lines[3].split_whitespace().collect::<Vec<_>>(), ["advisor", "15", "100%", "$32.92", "Error:", "No", "such", "tool", "available:", "advisor"]);
+        assert_eq!(
+            lines[3].split_whitespace().collect::<Vec<_>>(),
+            ["advisor", "15", "100%", "$32.92", "Error:", "No", "such", "tool", "available:", "advisor"]
+        );
         assert!(lines[4].starts_with("  Read ") && lines[4].ends_with('…') && lines[4].contains("1%"), "a long error is cut: {}", lines[4]);
         assert_eq!(lines[5], "  failed 18 calls, after them $32.99 until the tool worked again · you refused 2");
         x.tools.rows.clear();
         (x.tools.failed, x.tools.after) = (0, Values::default());
-        assert_eq!(render(&x, failure_lines), "\nfailures  calls that failed, and what the requests after them cost until the tool worked again\n  you refused 2\n");
+        assert_eq!(
+            render(&x, failure_lines),
+            "\nfailures  calls that failed, and what the requests after them cost until the tool worked again\n  you refused 2\n"
+        );
     }
 
     #[test]
@@ -903,7 +987,10 @@ mod tests {
         let mut x = xray(Vec::new());
         x.busy = busy();
         let v = |usd| Values { tokens: 1.0, usd, avoidable: 0.0 };
-        x.tools.rows.insert(("Read".into(), None), ToolRow { class: Class::Tool(ToolClass::Read), calls: 300, failed: 3, after: v(0.07), rent: v(2.0), ..ToolRow::default() });
+        x.tools.rows.insert(
+            ("Read".into(), None),
+            ToolRow { class: Class::Tool(ToolClass::Read), calls: 300, failed: 3, after: v(0.07), rent: v(2.0), ..ToolRow::default() },
+        );
         x.tools.spend = v(390.0);
         (x.tools.failed, x.tools.after) = (3, v(0.07));
         let shown = text(&x, &Style::with_color(false), Path::new("/tmp"), Path::new("/h"));

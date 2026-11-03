@@ -14,10 +14,10 @@ use std::collections::HashMap;
 
 use crate::api::ApiId;
 use crate::model::{BlockKind, Chain, ChainKind, Class, Outcome, PromptDelta, Request, Session, Usage};
-use crate::tools::{BlockEntry, ToolShare};
-use crate::source::AgentId;
-use crate::trigger::Trigger;
 use crate::pricing::{Price, Pricing};
+use crate::source::AgentId;
+use crate::tools::{BlockEntry, ToolShare};
+use crate::trigger::Trigger;
 use cache::{Cause, Edit, Prev};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -31,8 +31,7 @@ pub enum Component {
 }
 
 impl Component {
-    pub const ALL: [Component; 5] =
-        [Component::Read, Component::Write, Component::Rewrite, Component::Uncached, Component::Output];
+    pub const ALL: [Component; 5] = [Component::Read, Component::Write, Component::Rewrite, Component::Uncached, Component::Output];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -243,19 +242,11 @@ pub fn message_chars(s: &Session) -> Vec<u64> {
 /// Prompt layout: tools and system prompt, then the messages in order, sized in characters.
 /// Unresolved messages count as an average resolved one. `on_block` sees every message block
 /// with its turn number. Returns the number of turns.
-fn layout(
-    s: &Session,
-    msg_chars: &[u64],
-    shape: Option<usize>,
-    list: &[usize],
-    spans: &mut Vec<(Slot, f64)>,
-    mut on_block: impl FnMut(usize, u32),
-) -> u32 {
+fn layout(s: &Session, msg_chars: &[u64], shape: Option<usize>, list: &[usize], spans: &mut Vec<(Slot, f64)>, mut on_block: impl FnMut(usize, u32)) -> u32 {
     if let Some(shape) = shape {
         spans.extend(s.shapes[shape].blocks.clone().map(|b| (Slot::Block(b), s.blocks[b].chars as f64)));
     }
-    let (known, count) =
-        list.iter().filter(|&&m| s.messages[m].resolved).fold((0u64, 0u64), |(c, n), &m| (c + msg_chars[m], n + 1));
+    let (known, count) = list.iter().filter(|&&m| s.messages[m].resolved).fold((0u64, 0u64), |(c, n), &m| (c + msg_chars[m], n + 1));
     let unresolved_chars = if count > 0 { known as f64 / count as f64 } else { 1.0 };
     let mut turn = 0;
     for &m in list {
@@ -545,12 +536,7 @@ impl<'a> Walker<'a> {
 
         let verdict = match (&self.prev, req.advisor) {
             (Some(prev), false) => {
-                let edit = edit_at.map(|at| Edit {
-                    at,
-                    len_before,
-                    removed: &removed,
-                    added: &self.list[at..self.list.len().min(at + removed.len())],
-                });
+                let edit = edit_at.map(|at| Edit { at, len_before, removed: &removed, added: &self.list[at..self.list.len().min(at + removed.len())] });
                 cache::judge(s, prev, req, self.shape, edit.as_ref(), tail_blocks)
             }
             _ => None,
@@ -661,7 +647,8 @@ impl<'a> Walker<'a> {
         for &b in &triggers {
             sink.tool_share(&share(Some(b), input_tokens / n, input_usd / n, None));
         }
-        let calls: Vec<usize> = req.produced.map(|m| s.messages[m].blocks.clone().filter(|&b| block(b).kind == BlockKind::ToolUse).collect()).unwrap_or_default();
+        let calls: Vec<usize> =
+            req.produced.map(|m| s.messages[m].blocks.clone().filter(|&b| block(b).kind == BlockKind::ToolUse).collect()).unwrap_or_default();
         if calls.is_empty() {
             sink.tool_share(&share(None, usage.output as f64, output_usd, None));
         }
@@ -802,41 +789,42 @@ impl<'a> Walker<'a> {
         let s = self.s;
         let chain_name = |label: usize| if label == ADVISOR { "advisor" } else { self.chain.name.as_str() };
         let task = self.task;
-        let fact = |(label, model, origin): (usize, usize, usize), slot: Slot, component: Component, tokens: f64, usd: f64, cause: Option<Cause>, avoidable: f64| {
-            let first = self.first_ts.unwrap_or(0);
-            let (kind, tool, target, turn, ts_ms, class) = match slot {
-                Slot::Block(b) => {
-                    let blk = &s.blocks[b];
-                    (blk.kind, blk.tool.as_deref(), blk.target.as_deref(), self.block_turn[b], self.block_ts[b].unwrap_or(first), blk.class)
+        let fact =
+            |(label, model, origin): (usize, usize, usize), slot: Slot, component: Component, tokens: f64, usd: f64, cause: Option<Cause>, avoidable: f64| {
+                let first = self.first_ts.unwrap_or(0);
+                let (kind, tool, target, turn, ts_ms, class) = match slot {
+                    Slot::Block(b) => {
+                        let blk = &s.blocks[b];
+                        (blk.kind, blk.tool.as_deref(), blk.target.as_deref(), self.block_turn[b], self.block_ts[b].unwrap_or(first), blk.class)
+                    }
+                    Slot::UnknownContext => (BlockKind::Unknown, None, None, None, first, Class::None),
+                    Slot::Response => (BlockKind::Text, None, None, None, first, Class::None),
+                    Slot::HiddenThinking => (BlockKind::Thinking, None, None, None, first, Class::None),
+                };
+                Fact {
+                    agent: &s.agent,
+                    project: &s.project,
+                    session: s.short_id(),
+                    chain: chain_name(label),
+                    chain_kind: if label == ADVISOR { ChainKind::Advisor } else { self.chain.kind },
+                    origin: &self.origins[origin].0,
+                    trigger: self.origins[origin].1,
+                    activity: self.origins[origin].2,
+                    task,
+                    model: &self.models[model],
+                    turn,
+                    component,
+                    cause,
+                    kind,
+                    tool,
+                    target,
+                    class,
+                    tokens,
+                    usd: self.priced.get(&model).copied().unwrap_or(false).then_some(usd),
+                    avoidable_usd: avoidable,
+                    ts_ms,
                 }
-                Slot::UnknownContext => (BlockKind::Unknown, None, None, None, first, Class::None),
-                Slot::Response => (BlockKind::Text, None, None, None, first, Class::None),
-                Slot::HiddenThinking => (BlockKind::Thinking, None, None, None, first, Class::None),
             };
-            Fact {
-                agent: &s.agent,
-                project: &s.project,
-                session: s.short_id(),
-                chain: chain_name(label),
-                chain_kind: if label == ADVISOR { ChainKind::Advisor } else { self.chain.kind },
-                origin: &self.origins[origin].0,
-                trigger: self.origins[origin].1,
-                activity: self.origins[origin].2,
-                task,
-                model: &self.models[model],
-                turn,
-                component,
-                cause,
-                kind,
-                tool,
-                target,
-                class,
-                tokens,
-                usd: self.priced.get(&model).copied().unwrap_or(false).then_some(usd),
-                avoidable_usd: avoidable,
-                ts_ms,
-            }
-        };
         let emit_input = |sink: &mut dyn Sink, key: (usize, usize, usize), slot: Slot, row: &[f64; 6]| {
             for (i, component) in [Component::Read, Component::Write, Component::Uncached].into_iter().enumerate() {
                 if row[2 * i] > 0.0 {
@@ -891,7 +879,8 @@ mod tests {
     #[test]
     fn a_compaction_that_re_sends_prompts_does_not_count_them_again() {
         let mut s = Session::new(crate::testing::codex(), "s".into());
-        let mut message = |kind, starts_turn| s.push_message(vec![Block { class: crate::model::Class::None, kind, chars: 10, tool: None, target: None }], starts_turn);
+        let mut message =
+            |kind, starts_turn| s.push_message(vec![Block { class: crate::model::Class::None, kind, chars: 10, tool: None, target: None }], starts_turn);
         let typed: Vec<usize> = (0..300).map(|_| message(BlockKind::Prompt, true)).collect();
         let output = message(BlockKind::Text, false);
         // The compaction re-sends the last 20 prompts as new items, then a summary.
@@ -942,7 +931,8 @@ mod tests {
     #[test]
     fn a_continued_chain_does_not_count_the_turns_typed_before_it() {
         let mut s = Session::new(crate::testing::claude(), "s".into());
-        let mut message = |kind, starts_turn| s.push_message(vec![Block { class: crate::model::Class::None, kind, chars: 10, tool: None, target: None }], starts_turn);
+        let mut message =
+            |kind, starts_turn| s.push_message(vec![Block { class: crate::model::Class::None, kind, chars: 10, tool: None, target: None }], starts_turn);
         let earlier: Vec<usize> = (0..5).map(|_| message(BlockKind::Prompt, true)).collect();
         let output = message(BlockKind::Text, false);
         let typed = message(BlockKind::Prompt, true);
@@ -1061,15 +1051,38 @@ mod tests {
         use crate::model::{Class, ToolClass};
         use crate::tools::ToolTable;
         let mut s = Session::new(crate::testing::claude(), "s".into());
-        let blk = |kind, tool: Option<&str>, target: Option<&str>, class, chars| Block { class, kind, chars, tool: tool.map(str::to_string), target: target.map(str::to_string) };
+        let blk = |kind, tool: Option<&str>, target: Option<&str>, class, chars| Block {
+            class,
+            kind,
+            chars,
+            tool: tool.map(str::to_string),
+            target: target.map(str::to_string),
+        };
         let read = Class::Tool(ToolClass::Read);
         let shell = Class::Tool(ToolClass::Execute);
         let prompt = s.push_message(vec![blk(BlockKind::Prompt, None, None, Class::None, 400)], true);
-        let calls = s.push_message(vec![blk(BlockKind::ToolUse, Some("Read"), Some("a.rs"), read, 100), blk(BlockKind::ToolUse, Some("Bash"), Some("grep -n"), shell, 100)], false);
-        let results = s.push_message(vec![blk(BlockKind::ToolResult, Some("Read"), Some("a.rs"), read, 300), blk(BlockKind::ToolResult, Some("Bash"), Some("grep -n"), shell, 100)], false);
+        let calls = s.push_message(
+            vec![blk(BlockKind::ToolUse, Some("Read"), Some("a.rs"), read, 100), blk(BlockKind::ToolUse, Some("Bash"), Some("grep -n"), shell, 100)],
+            false,
+        );
+        let results = s.push_message(
+            vec![blk(BlockKind::ToolResult, Some("Read"), Some("a.rs"), read, 300), blk(BlockKind::ToolResult, Some("Bash"), Some("grep -n"), shell, 100)],
+            false,
+        );
         let usage = |read, output| Usage { cache_read: read, output, ..Usage::default() };
-        let req = |ts_ms, keep, tail: Vec<usize>, u, produced| Request { ts_ms, model: "claude-opus-5-5".into(), usage: u, prompt: Some(PromptDelta { shape: None, keep, tail }), produced, ..Request::default() };
-        let requests = vec![req(1, 0, vec![prompt], usage(1_000, 100), Some(calls)), req(2, 1, vec![calls, results], usage(2_000, 50), None), req(3, 3, vec![], usage(2_000, 10), None)];
+        let req = |ts_ms, keep, tail: Vec<usize>, u, produced| Request {
+            ts_ms,
+            model: "claude-opus-5-5".into(),
+            usage: u,
+            prompt: Some(PromptDelta { shape: None, keep, tail }),
+            produced,
+            ..Request::default()
+        };
+        let requests = vec![
+            req(1, 0, vec![prompt], usage(1_000, 100), Some(calls)),
+            req(2, 1, vec![calls, results], usage(2_000, 50), None),
+            req(3, 3, vec![], usage(2_000, 10), None),
+        ];
         s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
         let pricing = Pricing::defaults();
         let mut t = ToolTable::default();
@@ -1092,7 +1105,12 @@ mod tests {
     fn a_request_without_a_prompt_gives_no_trips() {
         use crate::tools::ToolTable;
         let mut s = Session::new(crate::testing::claude(), "s".into());
-        let requests = vec![Request { ts_ms: 1, model: "claude-opus-5-5".into(), usage: Usage { cache_read: 1_000, output: 10, ..Usage::default() }, ..Request::default() }];
+        let requests = vec![Request {
+            ts_ms: 1,
+            model: "claude-opus-5-5".into(),
+            usage: Usage { cache_read: 1_000, output: 10, ..Usage::default() },
+            ..Request::default()
+        }];
         s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
         let mut t = ToolTable::default();
         analyze(&s, &Pricing::defaults(), &Filter::default(), &mut t);
@@ -1104,7 +1122,8 @@ mod tests {
         use crate::trigger::{CallClass, Trigger};
         let mut s = Session::new(crate::testing::claude(), "s".into());
         let usage = Usage { cache_read: 1000, output: 100, ..Usage::default() };
-        let request = |ts_ms, trigger, activity| Request { ts_ms, model: "claude-opus-5-5".into(), usage, trigger: Some(trigger), activity, ..Request::default() };
+        let request =
+            |ts_ms, trigger, activity| Request { ts_ms, model: "claude-opus-5-5".into(), usage, trigger: Some(trigger), activity, ..Request::default() };
         let requests = vec![request(1, Trigger::Prompt, None), request(2, Trigger::Run, Some(CallClass::Building))];
         s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
         let mut c = crate::report::Collector::new(Some(crate::report::dims("activity,component")), None);
@@ -1154,7 +1173,14 @@ mod tests {
         // A session started in the terminal and resumed through the agent SDK two hours later.
         let mut s = Session::new(crate::testing::claude(), "s".into());
         let hour = 3_600_000;
-        let request = |ts_ms, client: &str, usage| Request { ts_ms, api: crate::api::ApiId::Anthropic, model: "claude-opus-5-5".into(), usage, client: Some(client.into()), ..Request::default() };
+        let request = |ts_ms, client: &str, usage| Request {
+            ts_ms,
+            api: crate::api::ApiId::Anthropic,
+            model: "claude-opus-5-5".into(),
+            usage,
+            client: Some(client.into()),
+            ..Request::default()
+        };
         let requests = vec![
             request(0, "cli", Usage { write_long: 50_000, output: 100, ..Usage::default() }),
             request(2 * hour, "sdk-ts", Usage { write_long: 50_000, output: 100, ..Usage::default() }),

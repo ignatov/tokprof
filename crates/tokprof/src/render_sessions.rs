@@ -9,14 +9,18 @@ use tokprof_core::xray::{Glance, SessionRow};
 pub fn sessions(rows: &[SessionRow], glances: &[Option<Glance>], cost: bool, style: &Style, now: i64) -> String {
     let mut out = String::new();
     let (cost_head, next_head) = if cost { ("cost", "next request") } else { ("", "") };
-    let _ = writeln!(out, "{}", style.dim(&format!("{:<16}  {:<6}  {:<18}  {:>8}  {:>9}  {:<12}  project", "active", "agent", "session", "size", cost_head, next_head)));
+    let _ = writeln!(
+        out,
+        "{}",
+        style.dim(&format!("{:<16}  {:<6}  {:<18}  {:>8}  {:>9}  {:<12}  project", "active", "agent", "session", "size", cost_head, next_head))
+    );
     for (r, g) in rows.iter().zip(glances) {
         let g = *g;
         let extra = if r.subagents.is_empty() { String::new() } else { style.dim(&format!("  +{}", count(r.subagents.len() as u64, "subagent", "subagents"))) };
-        let next = g.as_ref().and_then(|g| next_cell(g, now)).map_or_else(
-            || " ".repeat(12),
-            |(cell, cold)| style.paint(if cold { "31" } else { "32" }, &format!("{cell:<12}")),
-        );
+        let next = g
+            .as_ref()
+            .and_then(|g| next_cell(g, now))
+            .map_or_else(|| " ".repeat(12), |(cell, cold)| style.paint(if cold { "31" } else { "32" }, &format!("{cell:<12}")));
         let _ = writeln!(
             out,
             "{}  {:<6}  {:<18}  {:>8}  {:>9}  {next}  {}{extra}",

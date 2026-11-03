@@ -291,7 +291,8 @@ pub fn text(p: &Pool, by_file: bool) -> String {
         out.push_str(&money_table(p, t, &["item"], "avoidable", "files 5%+", true, by_file));
         if !p.cold_by_client.is_empty() {
             out.push_str("\nCold returns by client\n\n");
-            let mut rows = vec![["agent", "client", "active hours", "cold returns", "per active hour", "avoidable per active hour"].map(str::to_string).to_vec()];
+            let mut rows =
+                vec![["agent", "client", "active hours", "cold returns", "per active hour", "avoidable per active hour"].map(str::to_string).to_vec()];
             for r in &p.cold_by_client {
                 rows.push(vec![
                     r.agent.clone().unwrap_or_default(),
@@ -416,11 +417,14 @@ mod tests {
         let p = pool_of([2_140.0, 3_900.0, 6_310.0, 9_870.0, 19_000.0].map(|s| file(s, Some("team-2026-11"))).to_vec());
         let text = text(&p, false);
         let lines: Vec<&str> = text.lines().take(3).collect();
-        assert_eq!(lines, [
-            "pool    5 files · 2026-10-04 – 2026-11-03 · survey team-2026-11",
-            "agents  claude 5",
-            "spend   $41,220 in all · per file: median $6,310, quarters $3,900 and $9,870",
-        ]);
+        assert_eq!(
+            lines,
+            [
+                "pool    5 files · 2026-10-04 – 2026-11-03 · survey team-2026-11",
+                "agents  claude 5",
+                "spend   $41,220 in all · per file: median $6,310, quarters $3,900 and $9,870",
+            ]
+        );
         assert!(text.contains("median file") && text.contains("files 5%+"), "{text}");
         assert!(text.contains("  agent:general-purpose"), "a name sits under its kind: {text}");
     }
@@ -447,7 +451,8 @@ mod tests {
         f["activity"] = json!({"active_days": days, "active_hours": hours, "busy_ms": 365.0 * 3_600_000.0});
         let a = &mut f["agents"]["claude"];
         a["failures"] = json!({"failed": 0, "refused": 0, "denied": 0, "after": {"usd": 0.0, "tokens": 0}});
-        a["time"] = json!({"kinds": {"model": {"ms": 3_600_000, "after_turns_ms": 0}}, "requests": 10, "slow": 0, "slow_main": 0, "longest_ms": 30_000, "retried": 0});
+        a["time"] =
+            json!({"kinds": {"model": {"ms": 3_600_000, "after_turns_ms": 0}}, "requests": 10, "slow": 0, "slow_main": 0, "longest_ms": 30_000, "retried": 0});
         a["handoffs"] = json!({"turn_ends": 0, "interrupts": 0, "typed_while_working": 0, "questions": 0, "answers": 0, "wakes": {"subagent": 0, "command": 0, "other": 0}});
         a["prompts"] = json!({"held": {"requests": 10, "usd": spend, "tokens": 1}, "all": {"requests": 10, "usd": spend, "tokens": 1}});
         a["pauses"] = json!({"typed_messages": 0});
@@ -491,7 +496,8 @@ mod tests {
             "time": {"kinds": {"API retries": {"ms": 3_600_000, "after_turns_ms": 0}}, "requests": 83_890, "slow": 3_001, "slow_main": 2_000, "longest_ms": 1_380_000, "retried": 92},
         });
         let t = text(&pool_of(vec![friction_file(11_200.0, 141.0, 18.0, extra)]), false);
-        let row = |name: &str| t.lines().find(|l| l.starts_with(name)).unwrap_or_else(|| panic!("{name}: {t}")).split_whitespace().rev().take(2).collect::<Vec<_>>();
+        let row =
+            |name: &str| t.lines().find(|l| l.starts_with(name)).unwrap_or_else(|| panic!("{name}: {t}")).split_whitespace().rev().take(2).collect::<Vec<_>>();
         assert_eq!(row("failed tool calls"), ["9.86", "1,390"]);
         assert_eq!(row("spend after failures"), ["$1.60", "$226"]);
         assert!(t.lines().any(|l| l.starts_with("requests of a minute or more") && l.contains("3,001 (3.6%)")), "{t}");
@@ -531,9 +537,26 @@ mod tests {
 
     #[test]
     fn the_sections_come_in_their_order_and_format_1_files_have_none_of_the_new_ones() {
-        let t = text(&pool_of(vec![friction_file(1_000.0, 10.0, 2.0, json!({"handoffs": {"turn_ends": 3, "interrupts": 1, "typed_while_working": 0, "questions": 0, "answers": 0, "wakes": {"subagent": 0, "command": 0, "other": 0}}, "pauses": {"typed_messages": 4}}))]), false);
+        let t = text(
+            &pool_of(vec![friction_file(
+                1_000.0,
+                10.0,
+                2.0,
+                json!({"handoffs": {"turn_ends": 3, "interrupts": 1, "typed_while_working": 0, "questions": 0, "answers": 0, "wakes": {"subagent": 0, "command": 0, "other": 0}}, "pauses": {"typed_messages": 4}}),
+            )]),
+            false,
+        );
         let at = |title: &str| t.find(title).unwrap_or_else(|| panic!("{title}: {t}"));
-        let order = ["Where the money went", "What could have been saved", "Problems", "Habits that cost the most", "Where the agent's time went", "Working with the agent", "Tools and commands", "Versions"];
+        let order = [
+            "Where the money went",
+            "What could have been saved",
+            "Problems",
+            "Habits that cost the most",
+            "Where the agent's time went",
+            "Working with the agent",
+            "Tools and commands",
+            "Versions",
+        ];
         let positions: Vec<usize> = order.iter().map(|o| at(o)).collect();
         assert!(positions.windows(2).all(|w| w[0] < w[1]), "{positions:?}");
         let mut old = file(1_000.0, None);
@@ -550,7 +573,11 @@ mod tests {
         assert!(p.problems.iter().all(|r| r.files_with_part == 1 || r.name == "longest request"), "{:?}", p.problems);
         assert_eq!(p.time_files, 1);
         let t = text(&p, false);
-        assert!(t.contains("failed tool calls (in 1 of 2 files)") && t.contains("Where the agent's time went: what it waited on while it was busy, in 1 of 2 files"), "{t}");
+        assert!(
+            t.contains("failed tool calls (in 1 of 2 files)")
+                && t.contains("Where the agent's time went: what it waited on while it was busy, in 1 of 2 files"),
+            "{t}"
+        );
         assert!(t.lines().any(|l| l.starts_with("activity") && l.ends_with("(in 1 of 2 files)")), "{t}");
     }
 

@@ -404,7 +404,11 @@ impl Days {
         match self.starts.get(i + 1) {
             None => format!("night     before the day {}; the day runs until now", pause(before)),
             Some(DayStart { night: Some(after), .. }) => {
-                format!("night     before the day {}, after it {}; a day runs from the middle of one night to the middle of the next", pause(before), pause(*after))
+                format!(
+                    "night     before the day {}, after it {}; a day runs from the middle of one night to the middle of the next",
+                    pause(before),
+                    pause(*after)
+                )
             }
             Some(_) => format!("night     before the day {}; the next day starts at midnight", pause(before)),
         }
@@ -519,12 +523,8 @@ impl Summary {
             let i = s.sittings.partition_point(|(a, _)| *a <= ts);
             i > 0 && ts <= s.sittings[i - 1].1
         };
-        let mut ends: Vec<(i64, bool, bool)> = lanes
-            .iter()
-            .flat_map(|l| &l.turns)
-            .filter(|t| t.ended_by_agent() && inside(t.end))
-            .map(|t| (t.end, present(t.end), t.by == Start::Wake))
-            .collect();
+        let mut ends: Vec<(i64, bool, bool)> =
+            lanes.iter().flat_map(|l| &l.turns).filter(|t| t.ended_by_agent() && inside(t.end)).map(|t| (t.end, present(t.end), t.by == Start::Wake)).collect();
         ends.sort_unstable();
         s.ends = ends;
         let work = union(lanes.iter().flat_map(|l| l.work.iter().copied()));
@@ -732,16 +732,14 @@ pub fn median(v: &[i64]) -> Option<i64> {
 /// A duration as the X-ray's span shows it, with one decimal from one to ten minutes.
 pub fn duration(ms: i64) -> String {
     let s = ms as f64 / 1000.0;
-    if (60.0..600.0).contains(&s) {
-        format!("{:.1}m", s / 60.0)
-    } else {
-        fmt::human_duration(s)
-    }
+    if (60.0..600.0).contains(&s) { format!("{:.1}m", s / 60.0) } else { fmt::human_duration(s) }
 }
 
 /// The line on the sessions left out, if any were.
 pub fn left_out_line(n: usize) -> Option<String> {
-    (n > 0).then(|| format!("left out  {} that nobody typed in: a program ran them, or they ran in a temporary folder", fmt::count(n as u64, "session", "sessions")))
+    (n > 0).then(|| {
+        format!("left out  {} that nobody typed in: a program ran them, or they ran in a temporary folder", fmt::count(n as u64, "session", "sessions"))
+    })
 }
 
 /// The sessions a view read, with where their days start.
@@ -933,7 +931,16 @@ impl Strip {
     /// each timeline with its lane. It covers 24 hours from `axis`, by default the whole hour at
     /// or before `from`, in the shortest column that fits `columns`.
     #[allow(clippy::too_many_arguments)]
-    pub fn of(lanes: &[(&Timeline, &Lane)], summary: &Summary, (from, to): (i64, i64), days: &Days, layout: Layout, axis: Option<i64>, style: &fmt::Style, offset: Offset) -> Option<Strip> {
+    pub fn of(
+        lanes: &[(&Timeline, &Lane)],
+        summary: &Summary,
+        (from, to): (i64, i64),
+        days: &Days,
+        layout: Layout,
+        axis: Option<i64>,
+        style: &fmt::Style,
+        offset: Offset,
+    ) -> Option<Strip> {
         let (label_width, columns) = (layout.label, layout.columns);
         summary.sittings.first()?;
         let local = |ts: i64| ts + offset(ts);
@@ -982,11 +989,8 @@ impl Strip {
             span(&mut you, a, b, Cell::Present);
         }
         lines.push(format!("{:w$} {}", "you", paint(&you, style), w = label_width));
-        let mut shown: Vec<(&Timeline, &Lane, usize)> = lanes
-            .iter()
-            .map(|(t, l)| (*t, *l, l.actions.iter().filter(|(ts, _)| *ts >= from && *ts < to).count()))
-            .filter(|(_, _, n)| *n > 0)
-            .collect();
+        let mut shown: Vec<(&Timeline, &Lane, usize)> =
+            lanes.iter().map(|(t, l)| (*t, *l, l.actions.iter().filter(|(ts, _)| *ts >= from && *ts < to).count())).filter(|(_, _, n)| *n > 0).collect();
         shown.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.id.cmp(&b.0.id)));
         // Lanes fill the rows, the most active first; the last row counts the rest.
         let fit = if shown.len() <= layout.rows { shown.len() } else { layout.rows.saturating_sub(1).max(1) };
@@ -1005,7 +1009,13 @@ impl Strip {
                 span(&mut row, ask, ask, Cell::Question);
             }
             for &(ts, e) in &l.actions {
-                let c = if e == Event::Interrupt { Cell::Interrupt } else if e.is_message() { Cell::Message } else { continue };
+                let c = if e == Event::Interrupt {
+                    Cell::Interrupt
+                } else if e.is_message() {
+                    Cell::Message
+                } else {
+                    continue;
+                };
                 span(&mut row, ts, ts, c);
             }
             let id: String = t.id.chars().take(6).collect();
@@ -1080,7 +1090,16 @@ mod tests {
     fn a_turn_the_agent_started_itself_and_a_wake_during_a_turn() {
         let lane = Lane::of(&timeline(
             "a",
-            &[(t(10, 0), Typed), (t(10, 1), Request), (t(10, 2), Wake), (t(10, 3), Request), (t(10, 4), TurnEnd), (t(10, 30), Wake), (t(10, 31), Request), (t(10, 32), TurnEnd)],
+            &[
+                (t(10, 0), Typed),
+                (t(10, 1), Request),
+                (t(10, 2), Wake),
+                (t(10, 3), Request),
+                (t(10, 4), TurnEnd),
+                (t(10, 30), Wake),
+                (t(10, 31), Request),
+                (t(10, 32), TurnEnd),
+            ],
         ));
         let by: Vec<Start> = lane.turns.iter().map(|t| t.by).collect();
         assert_eq!(by, [Start::Typed, Start::Wake], "the wake at 10:02 starts no turn");
@@ -1183,7 +1202,10 @@ mod tests {
         let s = start_of(&d, nov2()).unwrap();
         assert_eq!((s.at, s.night), (t(4, 21), Some((t(0, 22), t(8, 20)))));
         assert_eq!(d.bounds(nov2(), &off), (t(4, 21), t(28, 14) + 30_000), "it ends in the middle of the next night");
-        assert_eq!(d.line(nov2(), &off), "night     before the day 00:22–08:20 (8.0h), after it 22:26–10:03 (11.6h); a day runs from the middle of one night to the middle of the next");
+        assert_eq!(
+            d.line(nov2(), &off),
+            "night     before the day 00:22–08:20 (8.0h), after it 22:26–10:03 (11.6h); a day runs from the middle of one night to the middle of the next"
+        );
     }
 
     #[test]
@@ -1253,10 +1275,19 @@ mod tests {
 
     #[test]
     fn the_nights_line_gives_the_median_start() {
-        assert_eq!(night().nights_line((i64::MIN, i64::MAX), &off), "nights    a day runs from the middle of one night to the middle of the next; days started at a median 05:00");
+        assert_eq!(
+            night().nights_line((i64::MIN, i64::MAX), &off),
+            "nights    a day runs from the middle of one night to the middle of the next; days started at a median 05:00"
+        );
         assert_eq!(Days::default().nights_line((i64::MIN, i64::MAX), &off), "nights    no night in this time; days start at midnight");
         // A start in the evening before counts before midnight, not after.
-        let late = Days { starts: [t(-1, 30), t(24, 30), t(49, 30)].iter().enumerate().map(|(k, &at)| DayStart { date: nov2() + k as i64, at, night: Some((at - HOUR, at + HOUR)) }).collect() };
+        let late = Days {
+            starts: [t(-1, 30), t(24, 30), t(49, 30)]
+                .iter()
+                .enumerate()
+                .map(|(k, &at)| DayStart { date: nov2() + k as i64, at, night: Some((at - HOUR, at + HOUR)) })
+                .collect(),
+        };
         assert_eq!(late.median_start((i64::MIN, i64::MAX), &off), Some(30));
     }
 
@@ -1331,7 +1362,15 @@ mod tests {
 
     #[test]
     fn the_session_line() {
-        let r = SessionRhythm { turns: 34, work_ms: 126 * MINUTE, turn_median: Some(210_000), answer_median: Some(4 * MINUTE), self_started: 12, interrupts: 2, questions: 0 };
+        let r = SessionRhythm {
+            turns: 34,
+            work_ms: 126 * MINUTE,
+            turn_median: Some(210_000),
+            answer_median: Some(4 * MINUTE),
+            self_started: 12,
+            interrupts: 2,
+            questions: 0,
+        };
         assert_eq!(r.line(), "rhythm    34 turns, 2.1h of work · the agent's turn median 3.5m · your answer median 4.0m · 12 it started itself · 2 interrupts");
         let bare = SessionRhythm { turns: 1, work_ms: 60_000, turn_median: None, answer_median: None, self_started: 0, interrupts: 0, questions: 0 };
         assert_eq!(bare.line(), "rhythm    1 turn, 1.0m of work");
@@ -1411,7 +1450,10 @@ mod tests {
         assert_eq!(cells[16], '!', "the interrupt at 10:20");
         assert_eq!(cells.len(), 53, "the row ends at the message at 22:26");
         assert!(lines[1].starts_with(&format!("{:20} {}", "you", " ".repeat(10))) && lines[1].contains('▓'), "{}", lines[1]);
-        assert_eq!(lines.last().unwrap(), "█ agent working   ░ waiting for your answer   * your message   ? its question   ! you stopped it   ▓ you were there");
+        assert_eq!(
+            lines.last().unwrap(),
+            "█ agent working   ░ waiting for your answer   * your message   ? its question   ! you stopped it   ▓ you were there"
+        );
     }
 
     #[test]
@@ -1478,7 +1520,11 @@ mod tests {
     fn a_terminal_never_spaces_its_lanes() {
         let lines = strip(&sessions(3));
         assert!(!lines.iter().any(|l| l.contains('·')), "{lines:?}");
-        assert_eq!(lines[2], format!("{:20} {}*", "s00 a title that ru…", " ".repeat(15)), "labels of 20 characters; 10:00 is column 15 of 20 minutes from 05:00");
+        assert_eq!(
+            lines[2],
+            format!("{:20} {}*", "s00 a title that ru…", " ".repeat(15)),
+            "labels of 20 characters; 10:00 is column 15 of 20 minutes from 05:00"
+        );
     }
 
     #[test]
@@ -1511,7 +1557,9 @@ mod tests {
         let none = Summary::default();
         assert_eq!(
             none.advice(&cold(23, 107.2), &files(CLAUDE)),
-            ["23 returns after the cache expired cost $107 that a warm cache would have saved; their breaks had a median of 1.4h. Come back before the cache expires, or before a longer break run /compact or start the next session from a handoff (tokprof handoff)."]
+            [
+                "23 returns after the cache expired cost $107 that a warm cache would have saved; their breaks had a median of 1.4h. Come back before the cache expires, or before a longer break run /compact or start the next session from a handoff (tokprof handoff)."
+            ]
         );
         let one = Returns { count: 1, saved_usd: 12.5, pauses_ms: vec![84 * MINUTE], priced: true };
         assert!(none.advice(&one, &[])[0].starts_with("1 return after the cache expired cost $12.50 that a warm cache would have saved; its break was 1.4h. "));
@@ -1524,7 +1572,9 @@ mod tests {
         let s = Summary { questions: 1, question_answers: vec![78 * MINUTE], ..Summary::default() };
         assert_eq!(
             s.advice(&Returns::default(), &files(CLAUDE)),
-            ["The agent's questions waited a median 1.3h for your answer (1 question). Answer them as they come, or let the agent decide small things: add \"when a choice is small, pick one, say which, and go on\" to CLAUDE.md."]
+            [
+                "The agent's questions waited a median 1.3h for your answer (1 question). Answer them as they come, or let the agent decide small things: add \"when a choice is small, pick one, say which, and go on\" to CLAUDE.md."
+            ]
         );
         assert!(s.advice(&Returns::default(), &files(&["CLAUDE.md", "AGENTS.md"]))[0].ends_with(" to CLAUDE.md or AGENTS.md."));
         let quick = Summary { questions: 3, question_answers: vec![10 * MINUTE; 3], ..Summary::default() };
@@ -1539,7 +1589,9 @@ mod tests {
         };
         assert_eq!(
             worked(19).advice(&Returns::default(), &[]),
-            ["After you left, the agents stood still a median 4.0m into a median 38m break and worked through 19% of it. Before a break, give each session its next steps too, or a plan it can work through without asking."]
+            [
+                "After you left, the agents stood still a median 4.0m into a median 38m break and worked through 19% of it. Before a break, give each session its next steps too, or a plan it can work through without asking."
+            ]
         );
         assert!(worked(30).advice(&Returns::default(), &[]).is_empty(), "30%");
         assert!(Summary::default().advice(&Returns::default(), &[]).is_empty(), "no break");
@@ -1556,11 +1608,16 @@ mod tests {
         };
         assert_eq!(
             steps(210_000, 36 * MINUTE).advice(&Returns::default(), &[]),
-            ["While you were there, an agent ended a turn every 3.6m, after turns of a median 3.5m: you led it step by step. Give it a goal and a way to check it, not a step, and leave between its turns."]
+            [
+                "While you were there, an agent ended a turn every 3.6m, after turns of a median 3.5m: you led it step by step. Give it a goal and a way to check it, not a step, and leave between its turns."
+            ]
         );
         assert!(steps(5 * MINUTE, 36 * MINUTE).advice(&Returns::default(), &[]).is_empty(), "a median turn of 5 minutes");
         assert!(steps(210_000, 50 * MINUTE).advice(&Returns::default(), &[]).is_empty(), "a turn ending every 5 minutes");
-        assert!(Summary { ends: Vec::new(), ..steps(210_000, 36 * MINUTE) }.advice(&Returns::default(), &[]).is_empty(), "no turn ended while the user was there");
+        assert!(
+            Summary { ends: Vec::new(), ..steps(210_000, 36 * MINUTE) }.advice(&Returns::default(), &[]).is_empty(),
+            "no turn ended while the user was there"
+        );
     }
 
     #[test]
@@ -1581,9 +1638,17 @@ mod tests {
     #[test]
     fn the_cold_returns_of_all_agents() {
         use crate::pauses::{AgentPauses, Starter};
-        let ret = |ts_ms: i64, premium_usd: f64| ColdReturn { ts_ms, pause_ms: 84 * MINUTE, usd: premium_usd + 0.2, premium_usd, context: 0, starter: Starter::Typed };
+        let ret = |ts_ms: i64, premium_usd: f64| ColdReturn {
+            ts_ms,
+            pause_ms: 84 * MINUTE,
+            usd: premium_usd + 0.2,
+            premium_usd,
+            context: 0,
+            starter: Starter::Typed,
+        };
         let mut p = Pauses::default();
-        p.agents.insert(crate::testing::claude(), AgentPauses { returns: vec![ret(t(9, 0), 6.0), ret(t(23, 0), 50.0)], priced: true, ..AgentPauses::default() });
+        p.agents
+            .insert(crate::testing::claude(), AgentPauses { returns: vec![ret(t(9, 0), 6.0), ret(t(23, 0), 50.0)], priced: true, ..AgentPauses::default() });
         p.agents.insert(crate::testing::codex(), AgentPauses { returns: vec![ret(t(10, 0), 5.0)], ..AgentPauses::default() });
         let r = Returns::within(&p, (t(0, 0), t(12, 0)));
         assert_eq!(r, Returns { count: 2, saved_usd: 11.0, pauses_ms: vec![84 * MINUTE; 2], priced: true });

@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use anyhow::{Result, bail};
 
+use tokprof_core::Session;
 use tokprof_core::analysis::{self, Filter};
 use tokprof_core::catalog::Catalog;
 use tokprof_core::fmt::Style;
@@ -14,7 +15,6 @@ use tokprof_core::query::Query;
 use tokprof_core::rhythm::{self, Offset, Timeline, View};
 use tokprof_core::scan::{OnUnreadable, scan};
 use tokprof_core::source::SessionRef;
-use tokprof_core::Session;
 
 const HOUR_MS: i64 = 3_600_000;
 
@@ -62,7 +62,16 @@ pub fn window(date: Option<i64>, now_ms: i64, offset: Offset) -> (i64, i64) {
 /// The day view of a date, or of the day of the latest action, with its strip in `layout` over the
 /// 24 hours from `axis_hour` on the day's date, by default from the hour the day starts in.
 #[allow(clippy::too_many_arguments)]
-pub fn build(catalog: &Catalog, select: &Query, pricing: &Pricing, date: Option<i64>, now_ms: i64, layout: rhythm::Layout, axis_hour: Option<i64>, style: &Style) -> Result<Day> {
+pub fn build(
+    catalog: &Catalog,
+    select: &Query,
+    pricing: &Pricing,
+    date: Option<i64>,
+    now_ms: i64,
+    layout: rhythm::Layout,
+    axis_hour: Option<i64>,
+    style: &Style,
+) -> Result<Day> {
     let started = Instant::now();
     let offset: Offset = &rhythm::local_offset;
     let (from, to) = window(date, now_ms, offset);

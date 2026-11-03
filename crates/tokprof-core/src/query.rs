@@ -61,7 +61,8 @@ impl Query {
 
     /// Whether a parsed session passes the project and session filters, for the reports.
     pub fn accepts(&self, s: &Session, f: &SessionRef) -> bool {
-        self.project.as_ref().is_none_or(|p| s.project.contains(p.as_str())) && self.session.as_ref().is_none_or(|id| id_starts_with(&s.id, id) || self.holds(f))
+        self.project.as_ref().is_none_or(|p| s.project.contains(p.as_str()))
+            && self.session.as_ref().is_none_or(|id| id_starts_with(&s.id, id) || self.holds(f))
     }
 }
 

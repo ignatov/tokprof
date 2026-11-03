@@ -68,7 +68,9 @@ pub fn report(b: &Bench, style: &Style) -> String {
         );
         let mut saved: Vec<(f64, f64)> = returns
             .iter()
-            .map(|r| (r.after(Strategy::Resume, n) - r.after(Strategy::Handoff, n), 1.0 - r.after(Strategy::Handoff, n) / r.after(Strategy::Resume, n).max(1e-9)))
+            .map(|r| {
+                (r.after(Strategy::Resume, n) - r.after(Strategy::Handoff, n), 1.0 - r.after(Strategy::Handoff, n) / r.after(Strategy::Resume, n).max(1e-9))
+            })
             .collect();
         let cheaper = saved.iter().filter(|(usd, _)| *usd > 0.0).count();
         saved.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -84,7 +86,11 @@ pub fn report(b: &Bench, style: &Style) -> String {
         );
         match break_even(&returns, Strategy::Compact, Strategy::Resume, n) {
             Some(k) => {
-                let _ = writeln!(out, "  /compact first costs more up front and is cheaper than resuming from request {k} on ({} over all).", usd(resume - compact));
+                let _ = writeln!(
+                    out,
+                    "  /compact first costs more up front and is cheaper than resuming from request {k} on ({} over all).",
+                    usd(resume - compact)
+                );
             }
             None => {
                 let _ = writeln!(out, "  /compact first does not pay off within {n} requests.");
@@ -111,7 +117,12 @@ pub fn report(b: &Bench, style: &Style) -> String {
         let elsewhere = b.elsewhere.get(&agent).copied().unwrap_or_default();
         let net = |cost: f64, subject: &str| {
             if cost <= resume {
-                format!("{subject} {} {} ({:.0}%)", if subject == "it" { "saves" } else { "save" }, usd(resume - cost), 100.0 * (resume - cost) / resume.max(1e-9))
+                format!(
+                    "{subject} {} {} ({:.0}%)",
+                    if subject == "it" { "saves" } else { "save" },
+                    usd(resume - cost),
+                    100.0 * (resume - cost) / resume.max(1e-9)
+                )
             } else {
                 format!("{subject} {} {} more than resuming", if subject == "it" { "costs" } else { "cost" }, usd(cost - resume))
             }
@@ -169,13 +180,11 @@ pub fn report(b: &Bench, style: &Style) -> String {
     let _ = writeln!(
         out,
         "{}",
-        style.dim(
-            &format!(
-                "A compaction re-writes the cold context and outputs {} tokens; a handoff note is {} tokens written while the cache was warm.",
-                tokens(SUMMARY_TOKENS),
-                tokens(SUMMARY_TOKENS)
-            )
-        )
+        style.dim(&format!(
+            "A compaction re-writes the cold context and outputs {} tokens; a handoff note is {} tokens written while the cache was warm.",
+            tokens(SUMMARY_TOKENS),
+            tokens(SUMMARY_TOKENS)
+        ))
     );
     let _ = writeln!(
         out,
@@ -277,12 +286,8 @@ fn text_width(text: &str, size: f64) -> f64 {
 /// read resets the cache lifetime, against those on one that does.
 fn assumption(b: &Bench) -> String {
     let titles = |documented: bool| {
-        let mut t: Vec<&str> = b
-            .returns
-            .iter()
-            .filter(|r| r.api.rules().is_some_and(|c| c.read_resets_ttl_documented == documented))
-            .map(|r| agent_title(&r.agent))
-            .collect();
+        let mut t: Vec<&str> =
+            b.returns.iter().filter(|r| r.api.rules().is_some_and(|c| c.read_resets_ttl_documented == documented)).map(|r| agent_title(&r.agent)).collect();
         t.sort();
         t.dedup();
         t.join(" and ")
@@ -368,12 +373,13 @@ fn svg(b: &Bench, t: &Theme) -> String {
     );
     let _ = writeln!(o, r#"<title id="title">Coming back to a big session after its prompt cache expired</title>"#);
     let _ = writeln!(o, r#"<desc id="desc">Mean cost per return. {}</desc>"#, desc.trim_end());
+    let _ = writeln!(o, "<style>.num{{font-variant-numeric:tabular-nums}} .cross{{opacity:0}} .col:hover .cross{{opacity:1}}</style>");
+    let _ = writeln!(o, r#"<rect width="{W}" height="{h}" rx="10" fill="{}"/>"#, t.surface);
     let _ = writeln!(
         o,
-        "<style>.num{{font-variant-numeric:tabular-nums}} .cross{{opacity:0}} .col:hover .cross{{opacity:1}}</style>"
+        r#"<text x="{PAD}" y="34" font-size="17" font-weight="600" fill="{}">Coming back to a big session after its prompt cache expired</text>"#,
+        t.ink
     );
-    let _ = writeln!(o, r#"<rect width="{W}" height="{h}" rx="10" fill="{}"/>"#, t.surface);
-    let _ = writeln!(o, r#"<text x="{PAD}" y="34" font-size="17" font-weight="600" fill="{}">Coming back to a big session after its prompt cache expired</text>"#, t.ink);
     let _ = writeln!(
         o,
         r#"<text x="{PAD}" y="56" font-size="12.5" fill="{}">Mean cost per return over the requests that follow, for cold returns to sessions of {}+ tokens in local logs</text>"#,
@@ -428,13 +434,8 @@ fn svg(b: &Bench, t: &Theme) -> String {
             v += step;
         }
         for k in (0..=n).step_by(xstep) {
-            let _ = writeln!(
-                o,
-                r#"<text class="num" x="{:.1}" y="{}" font-size="11.5" text-anchor="middle" fill="{}">{k}</text>"#,
-                x(k as f64),
-                y1 + 18.0,
-                t.ink2
-            );
+            let _ =
+                writeln!(o, r#"<text class="num" x="{:.1}" y="{}" font-size="11.5" text-anchor="middle" fill="{}">{k}</text>"#, x(k as f64), y1 + 18.0, t.ink2);
         }
         let _ = writeln!(
             o,
@@ -491,12 +492,7 @@ fn svg(b: &Bench, t: &Theme) -> String {
             if (ly - ey).abs() > 3.0 {
                 let _ = writeln!(o, r#"<line x1="{:.1}" y1="{ey:.1}" x2="{:.1}" y2="{ly:.1}" stroke="{}" stroke-width="1"/>"#, x1 + 5.0, x1 + 9.0, t.muted);
             }
-            let _ = writeln!(
-                o,
-                r#"<circle cx="{x1:.1}" cy="{ey:.1}" r="4" fill="{}" stroke="{}" stroke-width="2"/>"#,
-                t.series[s as usize],
-                t.surface
-            );
+            let _ = writeln!(o, r#"<circle cx="{x1:.1}" cy="{ey:.1}" r="4" fill="{}" stroke="{}" stroke-width="2"/>"#, t.series[s as usize], t.surface);
         }
         for (e, ly) in ends.iter().zip(&placed) {
             let value = e.1;
@@ -558,7 +554,6 @@ fn svg(b: &Bench, t: &Theme) -> String {
     o
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,7 +605,10 @@ mod tests {
         assert!(out.contains("Heartbeats for up to 2h would have kept 2 of 3 returns warm, for $0.61 of pings, and saved $7.20 of $11.73 (61%)."), "{out}");
         assert!(out.contains("They cost less than a handoff note in 2 of 3 returns.\n  Breaks that were not cold returns would have taken another 12 pings for $1.20; with them, heartbeats save $6.00 (51%)."), "{out}");
         assert!(out.contains("Heartbeats for up to 2h, then a compaction, would have kept 2 of 3 returns warm and compacted 1, for $0.91 of pings and compactions, and saved $9.10 of $11.73 (78%)."), "{out}");
-        assert!(out.contains("Breaks that were not cold returns would have taken another 12 pings and 2 compactions for $1.80; with them, it saves $7.30 (62%)."), "{out}");
+        assert!(
+            out.contains("Breaks that were not cold returns would have taken another 12 pings and 2 compactions for $1.80; with them, it saves $7.30 (62%)."),
+            "{out}"
+        );
         assert!(out.contains("Heartbeats, then compaction sends the same pings and, at the next ping time past the window, a compaction that reads the warm context and outputs 10.0k tokens."), "{out}");
     }
 
@@ -624,7 +622,10 @@ mod tests {
             assert!(light.contains(&format!(">{name} (")), "{name} in the legend");
         }
         assert!(light.contains("heartbeats, then compaction (replayed)"));
-        assert!(light.contains(r##"stroke="#e87ba4" stroke-width="2" stroke-linecap="round" stroke-dasharray="7 3 1 3""##), "the legend key is dash-dotted in slot 5");
+        assert!(
+            light.contains(r##"stroke="#e87ba4" stroke-width="2" stroke-linecap="round" stroke-dasharray="7 3 1 3""##),
+            "the legend key is dash-dotted in slot 5"
+        );
         assert!(svg(&b, &DARK).contains(r##"stroke="#d55181""##));
         assert!(light.contains("heartbeats, then compaction: the same pings"), "the note");
     }

@@ -300,8 +300,7 @@ impl Busy {
             // A main request that runs keeps the agent busy, even past the end of a turn that the
             // log does not tell.
             let running = has(Layer::Kind(Kind::Model)) || has(Layer::Kind(Kind::Retries));
-            let busy = running
-                || if in_turn { !has(Layer::Question) } else { has(Layer::Kind(Kind::Subagents)) || has(Layer::Kind(Kind::Background)) };
+            let busy = running || if in_turn { !has(Layer::Question) } else { has(Layer::Kind(Kind::Subagents)) || has(Layer::Kind(Kind::Background)) };
             if !busy {
                 close(&mut run);
                 continue;
@@ -470,7 +469,11 @@ mod tests {
 
     #[test]
     fn a_question_is_no_busy_time() {
-        let s = session(&[t(10, 0)], &[(t(10, 2), Question), (t(10, 7), Answer), (t(10, 9), TurnEnd)], vec![req(t(10, 0), t(10, 2)), after(t(10, 7), t(10, 9), Trigger::Run, CallClass::OtherTools)]);
+        let s = session(
+            &[t(10, 0)],
+            &[(t(10, 2), Question), (t(10, 7), Answer), (t(10, 9), TurnEnd)],
+            vec![req(t(10, 0), t(10, 2)), after(t(10, 7), t(10, 9), Trigger::Run, CallClass::OtherTools)],
+        );
         let b = Busy::of(&s, &[]);
         assert_eq!(b.total_ms(), 4 * MIN, "busy 10:00–10:02 and 10:07–10:09");
     }
@@ -508,10 +511,18 @@ mod tests {
 
     #[test]
     fn a_message_from_another_session_or_the_user_first_is_no_busy_time() {
-        let other = session(&[t(10, 0)], &[(t(10, 4), TurnEnd), (t(12, 0), Wake(WakeSource::Other)), (t(12, 1), TurnEnd)], vec![req(t(10, 0), t(10, 4)), req(t(12, 0), t(12, 1))]);
+        let other = session(
+            &[t(10, 0)],
+            &[(t(10, 4), TurnEnd), (t(12, 0), Wake(WakeSource::Other)), (t(12, 1), TurnEnd)],
+            vec![req(t(10, 0), t(10, 4)), req(t(12, 0), t(12, 1))],
+        );
         assert_eq!(Busy::of(&other, &[]).total_ms(), 5 * MIN);
         // The user types at 10:10, before the wake of the background command at 10:19.
-        let first = session(&[t(10, 0), t(10, 10)], &[(t(10, 4), TurnEnd), (t(10, 19), Wake(WakeSource::Command)), (t(10, 20), TurnEnd)], vec![req(t(10, 0), t(10, 4)), req(t(10, 10), t(10, 20))]);
+        let first = session(
+            &[t(10, 0), t(10, 10)],
+            &[(t(10, 4), TurnEnd), (t(10, 19), Wake(WakeSource::Command)), (t(10, 20), TurnEnd)],
+            vec![req(t(10, 0), t(10, 4)), req(t(10, 10), t(10, 20))],
+        );
         let b = Busy::of(&first, &[]);
         assert_eq!(b.total_ms(), 14 * MIN, "busy 10:00–10:04 and 10:10–10:20");
         assert_eq!(time(&b, BACKGROUND), (0, 0));
@@ -519,7 +530,12 @@ mod tests {
 
     #[test]
     fn requests_retries_and_requests_without_a_response() {
-        let retried = Request { first_sent_ms: Some(at(10, 0, 0)), retries: 2, retry_error: Some("502 local proxy: upstream request failed".into()), ..req(at(10, 0, 20), at(10, 0, 30)) };
+        let retried = Request {
+            first_sent_ms: Some(at(10, 0, 0)),
+            retries: 2,
+            retry_error: Some("502 local proxy: upstream request failed".into()),
+            ..req(at(10, 0, 20), at(10, 0, 30))
+        };
         let s = session(&[t(10, 0)], &[(at(10, 0, 30), TurnEnd)], vec![retried]);
         let b = Busy::of(&s, &[]);
         assert_eq!((time(&b, API_RETRIES).0, time(&b, MODEL).0), (20_000, 10_000));
@@ -535,11 +551,8 @@ mod tests {
 
     #[test]
     fn subagents_while_the_main_conversation_waits_and_while_it_runs() {
-        let s = session(
-            &[t(10, 0)],
-            &[(t(10, 22), TurnEnd)],
-            vec![req(t(10, 0), t(10, 1)), after(t(10, 21), t(10, 22), Trigger::Subagent, CallClass::Subagents)],
-        );
+        let s =
+            session(&[t(10, 0)], &[(t(10, 22), TurnEnd)], vec![req(t(10, 0), t(10, 1)), after(t(10, 21), t(10, 22), Trigger::Subagent, CallClass::Subagents)]);
         let b = Busy::of(&s, &[subagent(t(10, 1), t(10, 20))]);
         assert_eq!(time(&b, SUBAGENTS).0, 20 * MIN, "10:01–10:20 the subagent worked, and the minute after it went to its call");
         let b = Busy::of(&s, &[subagent(t(10, 0), t(10, 1))]);

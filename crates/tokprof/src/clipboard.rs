@@ -15,12 +15,8 @@ enum Input {
     Utf16,
 }
 
-const ORDER: [(&str, &[&str], Input); 4] = [
-    ("pbcopy", &[], Input::Utf8),
-    ("wl-copy", &[], Input::Utf8),
-    ("xclip", &["-selection", "clipboard"], Input::Utf8),
-    ("clip.exe", &[], Input::Utf16),
-];
+const ORDER: [(&str, &[&str], Input); 4] =
+    [("pbcopy", &[], Input::Utf8), ("wl-copy", &[], Input::Utf8), ("xclip", &["-selection", "clipboard"], Input::Utf8), ("clip.exe", &[], Input::Utf16)];
 
 /// Copies text to the clipboard; returns the tool that did it, or `None` if none worked.
 pub fn copy(text: &str) -> Option<&'static str> {

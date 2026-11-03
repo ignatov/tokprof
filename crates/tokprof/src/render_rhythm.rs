@@ -17,7 +17,17 @@ fn date_name(date: i64) -> String {
 /// The day view of a date that runs `[from, to)`, with the cold returns of its requests and a
 /// strip in `layout` over the 24 hours from `axis`. The current day ends at `i64::MAX`.
 #[allow(clippy::too_many_arguments)]
-pub fn day(view: &View, date: i64, (from, to): (i64, i64), offset: Offset, returns: &[ColdReturn], priced: bool, layout: rhythm::Layout, axis: Option<i64>, style: &fmt::Style) -> String {
+pub fn day(
+    view: &View,
+    date: i64,
+    (from, to): (i64, i64),
+    offset: Offset,
+    returns: &[ColdReturn],
+    priced: bool,
+    layout: rhythm::Layout,
+    axis: Option<i64>,
+    style: &fmt::Style,
+) -> String {
     let mut out = String::from("tokprof · day\n");
     let end = if to == i64::MAX { "now".to_string() } else { local_time(to, "%a %Y-%m-%d %H:%M") };
     let _ = writeln!(out, "day       {} → {end}", local_time(from, "%a %Y-%m-%d %H:%M"));
@@ -189,6 +199,9 @@ mod tests {
     #[test]
     fn a_section_with_no_message() {
         let view = View::new(Vec::new(), 0, &|_| 0);
-        assert_eq!(section(&view, (i64::MIN, i64::MAX), &|_| 0, &rhythm::Returns::default(), &fmt::Style::with_color(false)), "\nYour rhythm: when you sat at the agents and what they did meanwhile\n\nNo messages in this time.\n");
+        assert_eq!(
+            section(&view, (i64::MIN, i64::MAX), &|_| 0, &rhythm::Returns::default(), &fmt::Style::with_color(false)),
+            "\nYour rhythm: when you sat at the agents and what they did meanwhile\n\nNo messages in this time.\n"
+        );
     }
 }

@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use tokprof_core::analysis::{Component, Filter, MissEvent};
 use tokprof_core::analysis::cache::Cause;
+use tokprof_core::analysis::{Component, Filter, MissEvent};
 use tokprof_core::api::ApiId;
 use tokprof_core::fmt::{self, clip_end, table, tokens, usd};
 use tokprof_core::pauses::{Pauses, SHORT_FOLLOW};
@@ -13,8 +13,8 @@ use tokprof_core::pricing::{Price, Pricing};
 use tokprof_core::profile::Values;
 use tokprof_core::report::{Collector, ModelTotals, Spend, TriggerSpend, Work};
 use tokprof_core::setup::SetupSpend;
-use tokprof_core::tools::{RowOrder, ToolTable, hint};
 use tokprof_core::source::AgentId;
+use tokprof_core::tools::{RowOrder, ToolTable, hint};
 
 /// `window` is the time filter the requests were selected by; it limits the reconciliation to
 /// the sessions it holds whole.
@@ -22,7 +22,9 @@ use tokprof_core::source::AgentId;
 pub fn summary(c: &Collector, window: &Filter, price_file: &Path) -> String {
     let mut out = String::new();
     let mut rows = vec![
-        ["agent", "model", "requests", "prompt known"].iter().map(|s| s.to_string())
+        ["agent", "model", "requests", "prompt known"]
+            .iter()
+            .map(|s| s.to_string())
             .chain(Component::ALL.iter().map(|c| c.name().to_string()))
             .chain(["total".to_string()])
             .collect::<Vec<_>>(),
@@ -37,12 +39,8 @@ pub fn summary(c: &Collector, window: &Filter, price_file: &Path) -> String {
     for ((agent, model), m) in models {
         let sum: f64 = m.by_component.iter().map(|v| v.usd).sum();
         let cell = |v: &Values| if m.priced { usd(v.usd) } else { tokens(v.tokens) };
-        let mut row = vec![
-            agent.name().to_string(),
-            model.clone(),
-            m.requests.to_string(),
-            format!("{:.0}%", 100.0 * m.with_prompt as f64 / m.requests.max(1) as f64),
-        ];
+        let mut row =
+            vec![agent.name().to_string(), model.clone(), m.requests.to_string(), format!("{:.0}%", 100.0 * m.with_prompt as f64 / m.requests.max(1) as f64)];
         row.extend(m.by_component.iter().map(cell));
         row.push(if m.priced { usd(sum) } else { format!("{} tok", tokens(m.by_component.iter().map(|v| v.tokens).sum())) });
         rows.push(row);
@@ -104,16 +102,35 @@ pub fn pauses(p: &Pauses) -> String {
         if a.typed.is_empty() {
             out.push_str("No typed messages after an earlier request.\n");
         } else {
-            let _ = writeln!(out, "{} typed in main conversations after an earlier request, by the pause before them\n", fmt::count(a.typed.len() as u64, "message", "messages"));
+            let _ = writeln!(
+                out,
+                "{} typed in main conversations after an earlier request, by the pause before them\n",
+                fmt::count(a.typed.len() as u64, "message", "messages")
+            );
             let mut rows = vec![["pause", "messages", "share", "median context"].map(str::to_string).to_vec()];
             for r in a.pause_rows() {
                 let share = 100.0 * r.count as f64 / a.typed.len() as f64;
-                rows.push(vec![r.name.to_string(), r.count.to_string(), format!("{share:.1}%"), r.median_context.map_or_else(String::new, |t| tokens(t as f64))]);
+                rows.push(vec![
+                    r.name.to_string(),
+                    r.count.to_string(),
+                    format!("{share:.1}%"),
+                    r.median_context.map_or_else(String::new, |t| tokens(t as f64)),
+                ]);
             }
             out.push_str(&table(&rows, 1));
-            let shares: Vec<String> = a.lifetimes.iter().map(|&ms| (lifetime_name(ms), a.share_after(ms).round())).enumerate().map(|(i, (name, share))| {
-                if i == 0 { format!("On a {name} cache, {share:.0}% of these messages come after it expired") } else { format!("on a {name} cache, {share:.0}%") }
-            }).collect();
+            let shares: Vec<String> = a
+                .lifetimes
+                .iter()
+                .map(|&ms| (lifetime_name(ms), a.share_after(ms).round()))
+                .enumerate()
+                .map(|(i, (name, share))| {
+                    if i == 0 {
+                        format!("On a {name} cache, {share:.0}% of these messages come after it expired")
+                    } else {
+                        format!("on a {name} cache, {share:.0}%")
+                    }
+                })
+                .collect();
             if !shares.is_empty() {
                 let _ = writeln!(out, "\n{}.", shares.join("; "));
             }
@@ -125,11 +142,18 @@ pub fn pauses(p: &Pauses) -> String {
         } else {
             let mut rows = vec![["pause", "returns", "first request", "avoidable", "median context"].map(str::to_string).to_vec()];
             for r in &returns {
-                rows.push(vec![r.name.to_string(), r.count.to_string(), usd(r.usd), usd(r.premium_usd), r.median_context.map_or_else(String::new, |t| tokens(t as f64))]);
+                rows.push(vec![
+                    r.name.to_string(),
+                    r.count.to_string(),
+                    usd(r.usd),
+                    usd(r.premium_usd),
+                    r.median_context.map_or_else(String::new, |t| tokens(t as f64)),
+                ]);
             }
             out.push_str(&table(&rows, 1));
             let (n, first, premium) = returns.iter().fold((0, 0.0, 0.0), |(n, u, p), r| (n + r.count, u + r.usd, p + r.premium_usd));
-            let _ = writeln!(out, "\n{}: {} in first requests, {} of it avoidable.", fmt::count(n as u64, "cold return", "cold returns"), usd(first), usd(premium));
+            let _ =
+                writeln!(out, "\n{}: {} in first requests, {} of it avoidable.", fmt::count(n as u64, "cold return", "cold returns"), usd(first), usd(premium));
             let [typed, background, tool, other] = a.starters().map(|n| n as u64);
             let _ = writeln!(
                 out,
@@ -154,7 +178,13 @@ pub fn pauses(p: &Pauses) -> String {
         let mut rows = vec![["largest context", "sessions", "spend", "share", "cold returns"].map(str::to_string).to_vec()];
         for r in a.size_rows() {
             let part = if a.priced { r.usd } else { r.tokens };
-            rows.push(vec![r.name.to_string(), r.count.to_string(), amount(r.usd, r.tokens), format!("{:.1}%", 100.0 * part / total.max(1e-9)), r.cold_returns.to_string()]);
+            rows.push(vec![
+                r.name.to_string(),
+                r.count.to_string(),
+                amount(r.usd, r.tokens),
+                format!("{:.1}%", 100.0 * part / total.max(1e-9)),
+                r.cold_returns.to_string(),
+            ]);
         }
         out.push_str(&table(&rows, 1));
         busy_part(&mut out, &a.busy);
@@ -183,12 +213,8 @@ fn busy_part(out: &mut String, b: &tokprof_core::busy::Busy) {
         rows.push(vec![kind.to_string(), time(ms), format!("{:.1}%", 100.0 * ms as f64 / total as f64), after]);
     }
     out.push_str(&table(&rows, 1));
-    let slow = format!(
-        "\n{} of {} requests took a minute or more ({:.1}%)",
-        fmt::int(b.slow),
-        fmt::int(b.requests),
-        100.0 * b.slow as f64 / b.requests.max(1) as f64
-    );
+    let slow =
+        format!("\n{} of {} requests took a minute or more ({:.1}%)", fmt::int(b.slow), fmt::int(b.requests), 100.0 * b.slow as f64 / b.requests.max(1) as f64);
     match b.longest.filter(|_| b.slow > 0) {
         Some((ms, _)) => {
             let _ = writeln!(out, "{slow}; the longest took {}.", duration(ms));
@@ -256,7 +282,13 @@ pub fn setup(s: &SetupSpend) -> String {
     for agent in &agents {
         let mine: Vec<_> = rows.iter().filter(|(a, _, _)| a == agent).collect();
         for (_, source, cost) in mine.iter().take(ROWS_PER_AGENT) {
-            table_rows.push(vec![agent.name().to_string(), clip_end(source, 32), amount(&cost.all), amount(&cost.subagents), format!("{:.1}%", share(agent, &cost.all))]);
+            table_rows.push(vec![
+                agent.name().to_string(),
+                clip_end(source, 32),
+                amount(&cost.all),
+                amount(&cost.subagents),
+                format!("{:.1}%", share(agent, &cost.all)),
+            ]);
             hints.push(agent.info().setup_hints.iter().find(|(src, _)| src == source).map_or_else(String::new, |(_, h)| h.clone()));
         }
         if mine.len() > ROWS_PER_AGENT {
@@ -472,16 +504,11 @@ pub fn miss_causes(c: &Collector, include_expected: bool) -> String {
 pub fn misses(c: &Collector, top: usize, include_expected: bool) -> String {
     let mut out = miss_causes(c, include_expected);
     let mut events: Vec<&MissEvent> = c.misses.iter().filter(|m| include_expected || !m.cause.expected()).collect();
-    events.sort_by(|a, b| {
-        b.premium_usd.unwrap_or(0.0).total_cmp(&a.premium_usd.unwrap_or(0.0)).then(b.rewritten.cmp(&a.rewritten))
-    });
-    let mut rows = vec![["when", "agent", "project", "session", "chain", "context", "re-processed", "avoidable", "cause"]
-        .map(str::to_string)
-        .to_vec()];
+    events.sort_by(|a, b| b.premium_usd.unwrap_or(0.0).total_cmp(&a.premium_usd.unwrap_or(0.0)).then(b.rewritten.cmp(&a.rewritten)));
+    let mut rows = vec![["when", "agent", "project", "session", "chain", "context", "re-processed", "avoidable", "cause"].map(str::to_string).to_vec()];
     for m in events.into_iter().take(top) {
-        let when = chrono::DateTime::from_timestamp_millis(m.ts_ms)
-            .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
-            .unwrap_or_default();
+        let when =
+            chrono::DateTime::from_timestamp_millis(m.ts_ms).map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default();
         rows.push(vec![
             when,
             m.agent.name().to_string(),
@@ -511,25 +538,13 @@ pub fn whatif(c: &Collector, agents: &[AgentId]) -> String {
     );
     let mut rows = vec![["requests", "bucket", "actual", "simulated 5m", "simulated 1h"].map(str::to_string).to_vec()];
     for (i, name) in ["main conversation", "subagents and side requests"].into_iter().enumerate() {
-        rows.push(vec![
-            w.requests[i].to_string(),
-            name.to_string(),
-            usd(w.actual[i]),
-            usd(w.simulated[i][0]),
-            usd(w.simulated[i][1]),
-        ]);
+        rows.push(vec![w.requests[i].to_string(), name.to_string(), usd(w.actual[i]), usd(w.simulated[i][0]), usd(w.simulated[i][1])]);
     }
     out.push_str(&table(&rows, 0));
     let best = |i: usize| if w.simulated[i][0] < w.simulated[i][1] { "5m" } else { "1h" };
     let saving = (0..2).map(|i| w.simulated[i][1].max(w.simulated[i][0]) - w.simulated[i][1].min(w.simulated[i][0])).collect::<Vec<_>>();
-    let _ = writeln!(
-        out,
-        "\nCheapest: main conversation {} (saves {} over the other), subagents {} (saves {}).",
-        best(0),
-        usd(saving[0]),
-        best(1),
-        usd(saving[1])
-    );
+    let _ =
+        writeln!(out, "\nCheapest: main conversation {} (saves {} over the other), subagents {} (saves {}).", best(0), usd(saving[0]), best(1), usd(saving[1]));
     for agent in agents {
         if let Some((main, sub)) = &agent.info().ttl_settings {
             let _ = writeln!(out, "{} settings: {main} and {sub} (\"5m\" or \"1h\").", agent.info().title);
@@ -598,7 +613,6 @@ fn day(ts_ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ts_ms).map(|t| t.format("%Y-%m-%d").to_string()).unwrap_or_default()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,7 +623,6 @@ mod tests {
     fn claude() -> AgentId {
         AgentId::new(AgentInfo { cost_counter: Some("Claude Code's own cost counter".into()), ..AgentInfo::named("claude") })
     }
-
 
     #[test]
     fn the_pause_report_prints_its_parts_per_agent() {
@@ -625,7 +638,12 @@ mod tests {
             ],
             follows: vec![20, 2],
             cold_returns_by_client: Default::default(),
-            sessions: [("a".to_string(), SessionSize { largest: 966_000, usd: 412.0, tokens: 1.0, cold_returns: 2, span: None }), ("b".to_string(), SessionSize { largest: 30_000, usd: 8.0, tokens: 1.0, cold_returns: 0, span: None })].into_iter().collect(),
+            sessions: [
+                ("a".to_string(), SessionSize { largest: 966_000, usd: 412.0, tokens: 1.0, cold_returns: 2, span: None }),
+                ("b".to_string(), SessionSize { largest: 30_000, usd: 8.0, tokens: 1.0, cold_returns: 0, span: None }),
+            ]
+            .into_iter()
+            .collect(),
             priced: true,
             busy: {
                 let mut b = tokprof_core::busy::Busy::default();
@@ -636,7 +654,12 @@ mod tests {
             },
         };
         p.agents.insert(claude(), claude_pauses);
-        let codex = AgentPauses { lifetimes: [30 * minute].into_iter().collect(), sessions: [("c".to_string(), SessionSize { largest: 50_000, usd: 1.0, tokens: 1.0, cold_returns: 0, span: None })].into_iter().collect(), priced: true, ..AgentPauses::default() };
+        let codex = AgentPauses {
+            lifetimes: [30 * minute].into_iter().collect(),
+            sessions: [("c".to_string(), SessionSize { largest: 50_000, usd: 1.0, tokens: 1.0, cold_returns: 0, span: None })].into_iter().collect(),
+            priced: true,
+            ..AgentPauses::default()
+        };
         p.agents.insert(AgentId::new(AgentInfo { title: "Codex".into(), ..AgentInfo::named("codex") }), codex);
         let out = pauses(&p);
         // Claude Code first, then Codex.
@@ -647,7 +670,12 @@ mod tests {
         assert!(out.contains("On a 5-minute cache, 75% of these messages come after it expired; on a 1-hour cache, 50%."), "{out}");
         assert!(out.contains("2 cold returns: $10.50 in first requests, $10.10 of it avoidable."), "{out}");
         assert!(out.contains("Started by: 1 typed message, 1 background task, 0 tool results, 0 other."), "{out}");
-        assert!(out.contains("After a cold return: a median of 20 requests until the next cold pause or compaction (quarters 2 and 20); 1 return ended within 3 requests."), "{out}");
+        assert!(
+            out.contains(
+                "After a cold return: a median of 20 requests until the next cold pause or compaction (quarters 2 and 20); 1 return ended within 3 requests."
+            ),
+            "{out}"
+        );
         assert_eq!(row("800k+").unwrap(), ["800k+", "1", "$412", "98.1%", "2"]);
         // The busy time is the last part, most time first.
         let claude_part = &out[..out.find("Codex (codex)").unwrap()];
@@ -666,7 +694,10 @@ mod tests {
     fn the_client_table_lists_the_costliest_client_first() {
         use tokprof_core::report::ClientTotals;
         let mut c = Collector::new(None, None);
-        let row = |requests: u64, usd: f64, sessions: &[&str]| ClientTotals { spend: Spend { requests, tokens: 1.0, usd }, sessions: sessions.iter().map(|s| s.to_string()).collect() };
+        let row = |requests: u64, usd: f64, sessions: &[&str]| ClientTotals {
+            spend: Spend { requests, tokens: 1.0, usd },
+            sessions: sessions.iter().map(|s| s.to_string()).collect(),
+        };
         c.clients.rows.insert((claude(), "cli".into()), row(2_292, 424.0, &["a", "b"]));
         c.clients.rows.insert((claude(), "sdk-ts".into()), row(67_097, 8_534.0, &["b", "c", "d"]));
         c.misses = vec![MissEvent {
@@ -699,7 +730,10 @@ mod tests {
     fn a_trigger_row() {
         use tokprof_core::trigger::Trigger;
         let mut w = Work::default();
-        let row = |requests: u64, avg: f64, usd: f64| TriggerSpend { spend: Spend { requests, tokens: avg * requests as f64, usd }, prompt_tokens: avg * requests as f64 };
+        let row = |requests: u64, avg: f64, usd: f64| TriggerSpend {
+            spend: Spend { requests, tokens: avg * requests as f64, usd },
+            prompt_tokens: avg * requests as f64,
+        };
         w.by_trigger.insert(Trigger::Lookup, row(31_833, 263_000.0, 3_393.0));
         w.by_trigger.insert(Trigger::Prompt, row(10_000, 100_000.0, 5_703.0));
         let text = triggers(&w);
@@ -716,8 +750,36 @@ mod tests {
         use tokprof_core::tools::ToolRow;
         let v = |usd| Values { tokens: 1.0, usd, avoidable: 0.0 };
         let mut t = ToolTable::default();
-        t.rows.insert(("Bash".into(), Some("python3 -I".into())), ToolRow { class: Class::Tool(ToolClass::Execute), calls: 60, single: 50, results: 60, result_tokens: 60.0 * 120.0, inputs: 60, input_tokens: 60.0 * 702.0, rent: v(4.32), trips: v(7.04), ..ToolRow::default() });
-        t.rows.insert(("Read".into(), None), ToolRow { class: Class::Tool(ToolClass::Read), calls: 1, single: 1, results: 1, result_tokens: 16_900.0, inputs: 1, input_tokens: 20.0, rent: v(1.16), trips: v(0.2), ..ToolRow::default() });
+        t.rows.insert(
+            ("Bash".into(), Some("python3 -I".into())),
+            ToolRow {
+                class: Class::Tool(ToolClass::Execute),
+                calls: 60,
+                single: 50,
+                results: 60,
+                result_tokens: 60.0 * 120.0,
+                inputs: 60,
+                input_tokens: 60.0 * 702.0,
+                rent: v(4.32),
+                trips: v(7.04),
+                ..ToolRow::default()
+            },
+        );
+        t.rows.insert(
+            ("Read".into(), None),
+            ToolRow {
+                class: Class::Tool(ToolClass::Read),
+                calls: 1,
+                single: 1,
+                results: 1,
+                result_tokens: 16_900.0,
+                inputs: 1,
+                input_tokens: 20.0,
+                rent: v(1.16),
+                trips: v(0.2),
+                ..ToolRow::default()
+            },
+        );
         t.spend = v(27.37);
         let text = tools(&t, RowOrder::Rent, 25);
         assert!(text.starts_with("Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent do (trips)\n\n"));
@@ -727,7 +789,10 @@ mod tests {
         assert!(read.ends_with("$1.16  $0.20    100%"), "a large read once has no hint, and calls that all worked leave the failures cells empty: {read}");
         let by_trips = tools(&t, RowOrder::Trips, 1);
         assert!(by_trips.contains("1 more") && by_trips.lines().nth(3).unwrap().contains("python3"), "{by_trips}");
-        assert!(text.contains("spend $27.37 · rent of these tools $5.48 · trips of these tools $7.24 (two views of the same money; do not add them)"), "{text}");
+        assert!(
+            text.contains("spend $27.37 · rent of these tools $5.48 · trips of these tools $7.24 (two views of the same money; do not add them)"),
+            "{text}"
+        );
         assert!(!text.contains("until the tool worked again"), "no failure, no failures line: {text}");
         let hint_at = |l: &str| l.find("save long").or_else(|| l.find("hint"));
         assert_eq!(hint_at(text.lines().nth(2).unwrap()), hint_at(py), "hints stay in their column");
@@ -739,8 +804,14 @@ mod tests {
         use tokprof_core::tools::ToolRow;
         let v = |usd| Values { tokens: 1.0, usd, avoidable: 0.0 };
         let mut t = ToolTable::default();
-        t.rows.insert(("Bash".into(), Some("cargo test".into())), ToolRow { class: Class::Tool(ToolClass::Execute), calls: 9, single: 9, rent: v(3.0), trips: v(2.0), ..ToolRow::default() });
-        t.rows.insert(("Edit".into(), None), ToolRow { class: Class::Tool(ToolClass::Edit), calls: 40, single: 30, rent: v(1.0), trips: v(1.0), failed: 2, after: v(1.5), ..ToolRow::default() });
+        t.rows.insert(
+            ("Bash".into(), Some("cargo test".into())),
+            ToolRow { class: Class::Tool(ToolClass::Execute), calls: 9, single: 9, rent: v(3.0), trips: v(2.0), ..ToolRow::default() },
+        );
+        t.rows.insert(
+            ("Edit".into(), None),
+            ToolRow { class: Class::Tool(ToolClass::Edit), calls: 40, single: 30, rent: v(1.0), trips: v(1.0), failed: 2, after: v(1.5), ..ToolRow::default() },
+        );
         t.spend = v(27.37);
         (t.failed, t.refused, t.after) = (2, 1, v(1.5));
         let text = tools(&t, RowOrder::Failed, 25);
@@ -800,7 +871,10 @@ mod tests {
         let text = setup(&s);
         let rows: Vec<&str> = text.lines().skip(3).take_while(|l| !l.is_empty()).collect();
         assert_eq!(rows.len(), 2 + 8 + 1, "{text}");
-        assert!(rows[0].starts_with("claude") && rows[0].contains("instructions") && rows[1].contains("system prompt"), "Claude Code first, though Codex has a $40 source: {text}");
+        assert!(
+            rows[0].starts_with("claude") && rows[0].contains("instructions") && rows[1].contains("system prompt"),
+            "Claude Code first, though Codex has a $40 source: {text}"
+        );
         assert!(rows[2].starts_with("codex") && rows[2].contains("source 0"), "{text}");
         assert_eq!(rows[10].split_whitespace().collect::<Vec<_>>(), ["codex", "2", "more", "$3.00", "$0.00", "0.2%"]);
         assert!(text.find("Claude Code setup:").unwrap() < text.find("Codex setup:").unwrap(), "{text}");
@@ -814,7 +888,10 @@ mod tests {
     #[test]
     fn an_activity_row() {
         let mut w = Work::default();
-        let row = |requests: u64, avg: f64, usd: f64| TriggerSpend { spend: Spend { requests, tokens: avg * requests as f64, usd }, prompt_tokens: avg * requests as f64 };
+        let row = |requests: u64, avg: f64, usd: f64| TriggerSpend {
+            spend: Spend { requests, tokens: avg * requests as f64, usd },
+            prompt_tokens: avg * requests as f64,
+        };
         w.by_activity.insert("reading", row(100, 50_000.0, 6.0));
         w.by_activity.insert("building and testing", row(10, 80_000.0, 4.0));
         let text = activities(&w);
@@ -831,7 +908,12 @@ mod tests {
             s.reported_usd = Some(reported);
             let requests = times
                 .iter()
-                .map(|&ts_ms| Request { ts_ms, model: "claude-opus-5-5".into(), usage: Usage { cache_read: 1_000, output: 10, ..Usage::default() }, ..Request::default() })
+                .map(|&ts_ms| Request {
+                    ts_ms,
+                    model: "claude-opus-5-5".into(),
+                    usage: Usage { cache_read: 1_000, output: 10, ..Usage::default() },
+                    ..Request::default()
+                })
                 .collect();
             s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
             s

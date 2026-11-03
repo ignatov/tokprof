@@ -14,21 +14,21 @@ use std::time::{Duration, Instant};
 
 use ansi_to_tui::IntoText;
 use anyhow::{Result, bail};
-use rayon::prelude::*;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
+use rayon::prelude::*;
 
 use tokprof_core::catalog::Catalog;
-use tokprof_core::query::Query;
-use tokprof_core::labels::display_path;
-use tokprof_core::source::SessionRef;
-use tokprof_core::pricing::Pricing;
 use tokprof_core::fmt::usd;
+use tokprof_core::labels::display_path;
+use tokprof_core::pricing::Pricing;
+use tokprof_core::query::Query;
 use tokprof_core::rhythm;
+use tokprof_core::source::SessionRef;
 use tokprof_core::xray::{self, SessionRow};
 
 use crate::watch::{self, Change};
@@ -108,17 +108,7 @@ struct Entry {
 
 impl Entry {
     fn new(row: SessionRow) -> Entry {
-        Entry {
-            row,
-            version: 1,
-            glance: None,
-            glanced: 0,
-            glancing: false,
-            glance_after: Instant::now(),
-            report: None,
-            reported: 0,
-            gone: false,
-        }
+        Entry { row, version: 1, glance: None, glanced: 0, glancing: false, glance_after: Instant::now(), report: None, reported: 0, gone: false }
     }
 }
 
@@ -228,7 +218,9 @@ pub fn run(catalog: Arc<Catalog>, pricing: Pricing, dump: Option<(u16, u16)>, se
                 }
                 let (i, version, file) = job;
                 let started = Instant::now();
-                let text = xray::xray(&catalog, &file, &pricing, now_ms()).map(|x| crate::render_xray::text(&x, &tokprof_core::fmt::Style::with_color(true), &crate::paths::profile_dir(), catalog.home())).unwrap_or_else(|e| format!("error: {e:#}"));
+                let text = xray::xray(&catalog, &file, &pricing, now_ms())
+                    .map(|x| crate::render_xray::text(&x, &tokprof_core::fmt::Style::with_color(true), &crate::paths::profile_dir(), catalog.home()))
+                    .unwrap_or_else(|e| format!("error: {e:#}"));
                 if tx.send(Note::Report(i, version, text, started.elapsed())).is_err() {
                     return;
                 }
@@ -261,9 +253,11 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App, notes: &Re
         terminal.draw(|f| draw(f, app))?;
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press && !app.on_key(key, terminal.size()?.height) {
-                    return Ok(());
-                }
+            && key.kind == KeyEventKind::Press
+            && !app.on_key(key, terminal.size()?.height)
+        {
+            return Ok(());
+        }
     }
 }
 
@@ -288,7 +282,14 @@ fn dump_frame(app: &mut App, notes: &Receiver<Note>, width: u16, height: u16) ->
 }
 
 impl App {
-    fn new(catalog: Arc<Catalog>, rows: Vec<SessionRow>, pricing: Arc<Pricing>, xray_tx: Sender<(usize, u32, SessionRef)>, notes_tx: Sender<Note>, day_tx: Sender<DayJob>) -> App {
+    fn new(
+        catalog: Arc<Catalog>,
+        rows: Vec<SessionRow>,
+        pricing: Arc<Pricing>,
+        xray_tx: Sender<(usize, u32, SessionRef)>,
+        notes_tx: Sender<Note>,
+        day_tx: Sender<DayJob>,
+    ) -> App {
         let by_path = rows.iter().enumerate().map(|(i, r)| (r.file.path().to_path_buf(), i)).collect();
         let mut app = App {
             catalog,
@@ -746,7 +747,8 @@ fn draw_day(frame: &mut Frame, app: &App, area: Rect) {
     let noon = rhythm::midnight(date, offset) + 12 * 3_600_000;
     let updating = if shown.is_some() && app.day_pending.is_some_and(|p| Some(p.0) == app.day) { " · updating…" } else { "" };
     let title = format!(" day · {}{updating} ", tokprof_core::fmt::local_time(noon, "%a %Y-%m-%d"));
-    let text = shown.map(|d| d.text.clone()).unwrap_or_else(|| Text::raw(format!("computing the day of {}…", tokprof_core::fmt::local_time(noon, "%Y-%m-%d"))).dim());
+    let text =
+        shown.map(|d| d.text.clone()).unwrap_or_else(|| Text::raw(format!("computing the day of {}…", tokprof_core::fmt::local_time(noon, "%Y-%m-%d"))).dim());
     frame.render_widget(Paragraph::new(text).block(Block::bordered().title(title)).scroll((app.scroll, 0)), area);
 }
 
@@ -788,10 +790,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
         if app.out_of_date(now) { ", r re-sorts" } else { "" },
         if pending > 0 { format!(" · costing {pending}…") } else { String::new() }
     );
-    let list = List::new(items)
-        .block(Block::bordered().title(title))
-        .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
-        .highlight_symbol("▸ ");
+    let list = List::new(items).block(Block::bordered().title(title)).highlight_style(Style::new().add_modifier(Modifier::REVERSED)).highlight_symbol("▸ ");
     frame.render_stateful_widget(list, area, &mut app.list);
 }
 
@@ -799,9 +798,7 @@ fn draw_report(frame: &mut Frame, app: &App, area: Rect) {
     let (title, text) = match app.selected() {
         Some(i) => {
             let (e, r) = (&app.entries[i], &app.entries[i].row);
-            let text = e.report.clone().unwrap_or_else(|| {
-                Text::raw(format!("computing the X-ray of {} ({:.1} MB)…", r.id, r.bytes as f64 / 1e6)).dim()
-            });
+            let text = e.report.clone().unwrap_or_else(|| Text::raw(format!("computing the X-ray of {} ({:.1} MB)…", r.id, r.bytes as f64 / 1e6)).dim());
             // The session grew since this X-ray; a new one follows.
             let updating = if e.report.is_some() && e.reported < e.version { " · updating…" } else { "" };
             (format!(" {} {} · {}{updating} ", r.file.agent.name(), r.id, r.project), text)

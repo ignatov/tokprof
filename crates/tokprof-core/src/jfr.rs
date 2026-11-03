@@ -15,7 +15,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::profile::{Frame, Measure, Tint, TimedKey, TimedStacks};
+use crate::profile::{Frame, Measure, TimedKey, TimedStacks, Tint};
 
 pub struct Written {
     pub samples: u64,
@@ -55,8 +55,7 @@ const MINUTE_NS: u64 = 60 * TICKS_PER_SECOND;
 const MAX_SAMPLES: i64 = 2_000_000;
 
 pub fn write(path: &Path, stacks: &TimedStacks, measure: Measure) -> Result<Written> {
-    let mut entries: Vec<(&TimedKey, i64)> =
-        stacks.iter().map(|(k, v)| (k, measure.of(v))).filter(|(_, v)| *v > 0).collect();
+    let mut entries: Vec<(&TimedKey, i64)> = stacks.iter().map(|(k, v)| (k, measure.of(v))).filter(|(_, v)| *v > 0).collect();
     entries.sort_by(|a, b| (a.0.2, &a.0.0, &a.0.1).cmp(&(b.0.2, &b.0.0, &b.0.1)));
     let total: i64 = entries.iter().map(|(_, v)| v).sum();
     let mut quantum = if measure == Measure::Tokens { 100 } else { 1_000 };
@@ -309,11 +308,7 @@ impl<'a> Pools<'a> {
 /// The value part of a frame: `turn 12` reads `turn.12`, `miss: idle > TTL` reads
 /// `miss.idle > TTL`.
 fn method_name(f: &Frame) -> &str {
-    f.name
-        .strip_prefix(f.dim)
-        .and_then(|rest| rest.strip_prefix(": ").or_else(|| rest.strip_prefix(' ')))
-        .filter(|rest| !rest.is_empty())
-        .unwrap_or(&f.name)
+    f.name.strip_prefix(f.dim).and_then(|rest| rest.strip_prefix(": ").or_else(|| rest.strip_prefix(' '))).filter(|rest| !rest.is_empty()).unwrap_or(&f.name)
 }
 
 /// Java frame types only, so every viewer shows the frames; the type picks the color in
@@ -436,10 +431,7 @@ fn write_metadata(out: &mut Buf) {
     classes.push(s.class("jdk.types.FrameType", T_FRAME_TYPE, Some("Frame type"), true, fields));
     let fields = vec![s.field("name", T_STRING, Some("Name"), false, false)];
     classes.push(s.class("jdk.types.ThreadState", T_THREAD_STATE, Some("Java Thread State"), true, fields));
-    let fields = vec![
-        s.field("truncated", T_BOOLEAN, Some("Truncated"), false, false),
-        s.field("frames", T_STACK_FRAME, Some("Stack Frames"), false, true),
-    ];
+    let fields = vec![s.field("truncated", T_BOOLEAN, Some("Truncated"), false, false), s.field("frames", T_STACK_FRAME, Some("Stack Frames"), false, true)];
     classes.push(s.class("jdk.types.StackTrace", T_STACK_TRACE, Some("Stacktrace"), false, fields));
     let fields = vec![
         s.field("method", T_METHOD, Some("Java Method"), true, false),

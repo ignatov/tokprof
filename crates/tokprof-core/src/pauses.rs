@@ -404,7 +404,14 @@ impl Sink for Pauses {
         let (Some(last), Cause::IdleTtl) = (cur.last.take(), m.cause) else { return };
         let Some(pause_ms) = last.pause_ms else { return };
         let agent = agents.entry(cur.agent.clone()).or_default();
-        agent.returns.push(ColdReturn { ts_ms: last.ts_ms, pause_ms, usd: last.usd, premium_usd: m.premium_usd.unwrap_or(0.0), context: last.context, starter: Starter::of(last.trigger) });
+        agent.returns.push(ColdReturn {
+            ts_ms: last.ts_ms,
+            pause_ms,
+            usd: last.usd,
+            premium_usd: m.premium_usd.unwrap_or(0.0),
+            context: last.context,
+            starter: Starter::of(last.trigger),
+        });
         if let Some(size) = agent.sessions.get_mut(&cur.session) {
             size.cold_returns += 1;
         }
@@ -453,12 +460,19 @@ mod tests {
 
     #[test]
     fn typed_messages_fall_in_their_pause_range() {
-        let s = session("s", vec![("main", ChainKind::Main, vec![
-            req(0.0, Prompt, 0, 100_000),         // the first message: no pause
-            req(1.0, Lookup, 100_000, 1_000),
-            req(8.0, Prompt, 101_000, 1_000),     // 7 minutes later
-            req(13.0, Prompt, 102_000, 1_000),    // exactly 5 minutes later
-        ])]);
+        let s = session(
+            "s",
+            vec![(
+                "main",
+                ChainKind::Main,
+                vec![
+                    req(0.0, Prompt, 0, 100_000), // the first message: no pause
+                    req(1.0, Lookup, 100_000, 1_000),
+                    req(8.0, Prompt, 101_000, 1_000),  // 7 minutes later
+                    req(13.0, Prompt, 102_000, 1_000), // exactly 5 minutes later
+                ],
+            )],
+        );
         let p = pauses_of(&[s]);
         assert_eq!(p.typed.len(), 2, "the first message has no pause");
         let rows = p.pause_rows();
@@ -478,16 +492,32 @@ mod tests {
     #[test]
     fn a_split_conversation_keeps_its_pause_across_the_chains() {
         // Two chains of one name, the second starting 10 minutes after the first ends.
-        let s = session("s", vec![
-            ("main", ChainKind::Main, vec![req(0.0, Prompt, 0, 50_000), req(1.0, Lookup, 50_000, 1_000)]),
-            ("main", ChainKind::Main, vec![req(11.0, Prompt, 51_000, 1_000)]),
-        ]);
+        let s = session(
+            "s",
+            vec![
+                ("main", ChainKind::Main, vec![req(0.0, Prompt, 0, 50_000), req(1.0, Lookup, 50_000, 1_000)]),
+                ("main", ChainKind::Main, vec![req(11.0, Prompt, 51_000, 1_000)]),
+            ],
+        );
         assert_eq!(pauses_of(&[s]).typed, vec![(10 * MINUTE, 52_000)]);
     }
 
     #[test]
     fn shares_after_each_lifetime() {
-        let typed: Vec<(i64, u64)> = (0..961).map(|i| (if i < 485 { MINUTE } else if i < 793 { 30 * MINUTE } else { 2 * HOUR }, 1)).collect();
+        let typed: Vec<(i64, u64)> = (0..961)
+            .map(|i| {
+                (
+                    if i < 485 {
+                        MINUTE
+                    } else if i < 793 {
+                        30 * MINUTE
+                    } else {
+                        2 * HOUR
+                    },
+                    1,
+                )
+            })
+            .collect();
         let p = AgentPauses { typed, ..AgentPauses::default() };
         assert_eq!((p.share_after(5 * MINUTE).round(), p.share_after(HOUR).round()), (50.0, 17.0));
         // Codex: 40 of 400 after 30 minutes.
@@ -530,7 +560,8 @@ mod tests {
 
     #[test]
     fn starters_by_trigger() {
-        let sessions: Vec<Session> = [Prompt, Prompt, Notification, Run, Lookup, Trigger::Unknown].iter().enumerate().map(|(i, t)| with_return(&format!("s{i}"), 2.0, *t, 0)).collect();
+        let sessions: Vec<Session> =
+            [Prompt, Prompt, Notification, Run, Lookup, Trigger::Unknown].iter().enumerate().map(|(i, t)| with_return(&format!("s{i}"), 2.0, *t, 0)).collect();
         assert_eq!(pauses_of(&sessions).starters(), [2, 1, 2, 1]);
     }
 

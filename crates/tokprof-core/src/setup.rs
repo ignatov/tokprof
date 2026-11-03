@@ -163,12 +163,8 @@ impl SetupSpend {
 
     /// Every agent's rows, most expensive first, leaving out sources that cost nothing.
     pub fn rows(&self) -> Vec<(&AgentId, &str, SetupCost)> {
-        let mut rows: Vec<(&AgentId, &str, SetupCost)> = self
-            .by_source
-            .iter()
-            .filter(|(_, c)| self.amount(&c.all) > 0.0)
-            .map(|((agent, source), c)| (agent, source.as_str(), *c))
-            .collect();
+        let mut rows: Vec<(&AgentId, &str, SetupCost)> =
+            self.by_source.iter().filter(|(_, c)| self.amount(&c.all) > 0.0).map(|((agent, source), c)| (agent, source.as_str(), *c)).collect();
         rows.sort_by(|a, b| self.amount(&b.2.all).total_cmp(&self.amount(&a.2.all)).then_with(|| (a.0, a.1).cmp(&(b.0, b.1))));
         rows
     }
@@ -214,7 +210,14 @@ pub const MIN_SETUP_SHARE: f64 = 0.05;
 
 /// The setup block of a session whose shares fed `setup`, which spent `spend` in all; `None`
 /// below the thresholds.
-pub fn setup_view(setup: &SetupSpend, agent: &AgentId, spend: Values, main: Option<Start>, subagents: Option<MeanStart>, leftover: Option<Leftover>) -> Option<SetupView> {
+pub fn setup_view(
+    setup: &SetupSpend,
+    agent: &AgentId,
+    spend: Values,
+    main: Option<Start>,
+    subagents: Option<MeanStart>,
+    leftover: Option<Leftover>,
+) -> Option<SetupView> {
     let total = setup.total(agent);
     let (amount, whole) = if setup.priced { (total.all.usd, spend.usd) } else { (total.all.tokens, spend.tokens) };
     let share = if whole > 0.0 { amount / whole } else { 0.0 };
@@ -223,9 +226,7 @@ pub fn setup_view(setup: &SetupSpend, agent: &AgentId, spend: Values, main: Opti
     }
     let rows: Vec<(String, SetupCost)> = setup.rows().into_iter().filter(|(a, _, _)| *a == agent).map(|(_, source, cost)| (source.to_string(), cost)).collect();
     let has_subagents = subagents.is_some() || rows.iter().any(|(_, c)| setup.amount(&c.subagents) > 0.0);
-    let hint = rows.first().and_then(|(source, _)| {
-        agent.info().setup_hints.iter().find(|(s, _)| s == source).map(|(s, h)| (s.clone(), h.clone()))
-    });
+    let hint = rows.first().and_then(|(source, _)| agent.info().setup_hints.iter().find(|(s, _)| s == source).map(|(s, h)| (s.clone(), h.clone())));
     Some(SetupView { total, share, priced: setup.priced, rows, has_subagents, main, subagents, leftover, hint })
 }
 

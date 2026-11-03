@@ -64,11 +64,16 @@ mod tests {
     #[test]
     fn a_command_with_an_exit_code_failed_with_its_last_line() {
         let result = json!({"chunk_id": "c26f8a", "exit_code": 1, "output": "Traceback (most recent call last):\n  File \"<stdin>\", line 2\nModuleNotFoundError: No module named 'bs4'\n"});
-        let output = json!([{"type": "input_text", "text": "Script completed\nWall time 0.2 seconds\nOutput:\n"}, {"type": "input_text", "text": result.to_string()}]);
+        let output =
+            json!([{"type": "input_text", "text": "Script completed\nWall time 0.2 seconds\nOutput:\n"}, {"type": "input_text", "text": result.to_string()}]);
         assert_eq!(end(output), (Outcome::Failed, Some("exit code 1: ModuleNotFoundError: No module named 'bs4'".to_string())));
         let fine = json!({"exit_code": 0, "output": "ok"});
-        assert_eq!(end(json!([{"type": "input_text", "text": "Script completed\n"}, {"type": "input_text", "text": fine.to_string()}])), (Outcome::Worked, None));
-        let direct = "Chunk ID: 60d45d\nWall time: 0.4 seconds\nProcess exited with code 2\nOriginal token count: 9\nOutput:\nls: x: No such file or directory\n";
+        assert_eq!(
+            end(json!([{"type": "input_text", "text": "Script completed\n"}, {"type": "input_text", "text": fine.to_string()}])),
+            (Outcome::Worked, None)
+        );
+        let direct =
+            "Chunk ID: 60d45d\nWall time: 0.4 seconds\nProcess exited with code 2\nOriginal token count: 9\nOutput:\nls: x: No such file or directory\n";
         assert_eq!(end(json!(direct)), (Outcome::Failed, Some("exit code 2: ls: x: No such file or directory".to_string())));
         assert_eq!(end(json!("Process exited with code 0\nOutput:\nfine")), (Outcome::Worked, None));
     }

@@ -20,7 +20,10 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokprof_core::api::ApiId;
 use tokprof_core::labels::{command_head, display_path, message_label};
-use tokprof_core::model::{Block, BlockKind, CallEnd, Class, CompactionTrigger, HandoffKind, Origin, ReminderKind, ToolClass, Chain, ChainKind, Compaction, Params, PromptDelta, Request, Session, Shape, TypedMessage, Usage};
+use tokprof_core::model::{
+    Block, BlockKind, CallEnd, Chain, ChainKind, Class, Compaction, CompactionTrigger, HandoffKind, Origin, Params, PromptDelta, ReminderKind, Request,
+    Session, Shape, ToolClass, TypedMessage, Usage,
+};
 use tokprof_core::source::{AgentId, Decoder};
 use tokprof_core::trigger::{CallClass, Pending, Trigger, command_class};
 use tokprof_logio::{json_len, parse_ts_ms, str_at, u64_at};
@@ -233,11 +236,8 @@ impl Parser {
             };
             self.subagent = Some(role.map_or_else(|| "subagent".to_string(), |r| format!("subagent:{r}")));
             // The task name the parent gave the thread ends its agent path: `/root/fix_tests`.
-            self.session.task = spawn
-                .and_then(|s| str_at(s, "agent_path"))
-                .and_then(|p| p.rsplit('/').next())
-                .filter(|t| !t.is_empty())
-                .map(|t| t.replace('_', " "));
+            self.session.task =
+                spawn.and_then(|s| str_at(s, "agent_path")).and_then(|p| p.rsplit('/').next()).filter(|t| !t.is_empty()).map(|t| t.replace('_', " "));
             // The thread's requests count under its session, however deep the thread is.
             if let Some(parent) = str_at(payload, "parent_thread_id") {
                 self.session.id = (self.root_of)(parent);
@@ -292,9 +292,10 @@ impl Parser {
             self.blocks_by_call.entry(id.to_string()).or_default().extend(self.session.messages[idx].blocks.clone());
             self.call_of_message.insert(idx, id.to_string());
             if matches!(str_at(item, "type"), Some("function_call_output" | "custom_tool_call_output"))
-                && let Some(end) = tools::call_end(item.get("output").unwrap_or(&Value::Null)) {
-                    self.call_ends.insert(id.to_string(), end);
-                }
+                && let Some(end) = tools::call_end(item.get("output").unwrap_or(&Value::Null))
+            {
+                self.call_ends.insert(id.to_string(), end);
+            }
         }
         self.history.push(idx);
         self.trailing_outputs = if output { self.trailing_outputs + 1 } else { 0 };
@@ -342,13 +343,8 @@ impl Parser {
             }
             "reasoning" => {
                 let encrypted = str_at(item, "encrypted_content").map_or(0, |e| e.len() as u64 * 3 / 4);
-                let summary: u64 = item
-                    .get("summary")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .map(|s| str_at(s, "text").map_or(0, |t| t.len() as u64))
-                    .sum();
+                let summary: u64 =
+                    item.get("summary").and_then(Value::as_array).into_iter().flatten().map(|s| str_at(s, "text").map_or(0, |t| t.len() as u64)).sum();
                 (vec![block(BlockKind::Thinking, encrypted + summary, None, None)], true)
             }
             "function_call" | "custom_tool_call" => {
@@ -370,9 +366,7 @@ impl Parser {
                 (vec![block(BlockKind::ToolUse, name.len() as u64 + chars, Some(tool), target)], true)
             }
             "function_call_output" | "custom_tool_call_output" => {
-                let (tool, target) = str_at(item, "call_id")
-                    .and_then(|id| self.tools_by_call.get(id).cloned())
-                    .map_or((None, None), |(t, g)| (Some(t), g));
+                let (tool, target) = str_at(item, "call_id").and_then(|id| self.tools_by_call.get(id).cloned()).map_or((None, None), |(t, g)| (Some(t), g));
                 let chars = match item.get("output") {
                     Some(Value::String(s)) => s.len() as u64,
                     Some(Value::Array(items)) => items
@@ -403,10 +397,8 @@ impl Parser {
     fn request(&mut self, stream: usize, usage: &Value, ts_ms: i64) {
         let prompt_len = self.history.len() - self.trailing_outputs.min(self.history.len());
         let produced = (self.trailing_outputs > 0).then(|| {
-            let blocks: Vec<Block> = self.history[prompt_len..]
-                .iter()
-                .flat_map(|&m| self.session.blocks[self.session.messages[m].blocks.clone()].to_vec())
-                .collect();
+            let blocks: Vec<Block> =
+                self.history[prompt_len..].iter().flat_map(|&m| self.session.blocks[self.session.messages[m].blocks.clone()].to_vec()).collect();
             // The copy holds the calls too, so their outcome reaches it.
             let mut at = self.session.blocks.len();
             for &m in &self.history[prompt_len..] {
@@ -428,11 +420,7 @@ impl Parser {
         calls.iter().for_each(|&k| s.pending.call(k));
         s.ended_with_text = text && calls.is_empty();
         let keep = s.prompt_len.filter(|&prev| prev <= prompt_len).unwrap_or(0);
-        let delta = PromptDelta {
-            shape: if s.requests.is_empty() { self.shape } else { None },
-            keep,
-            tail: self.history[keep..prompt_len].to_vec(),
-        };
+        let delta = PromptDelta { shape: if s.requests.is_empty() { self.shape } else { None }, keep, tail: self.history[keep..prompt_len].to_vec() };
         let input = u64_at(usage, "input_tokens");
         let cached = u64_at(usage, "cached_input_tokens");
         let written = u64_at(usage, "cache_write_input_tokens");
@@ -695,7 +683,10 @@ mod tests {
             code_target("exec", "text(await tools.apply_patch(`*** Begin Patch\n*** Update File: /w/p/src/a.rs\n@@`))", cwd, Path::new("/h")),
             ("apply_patch".to_string(), Some("src/a.rs".to_string()))
         );
-        assert_eq!(code_target("exec", "await Promise.all([tools.exec_command({}), tools.write_stdin({})])", cwd, Path::new("/h")).1.as_deref(), Some("exec_command, write_stdin"));
+        assert_eq!(
+            code_target("exec", "await Promise.all([tools.exec_command({}), tools.write_stdin({})])", cwd, Path::new("/h")).1.as_deref(),
+            Some("exec_command, write_stdin")
+        );
     }
 
     #[test]
@@ -721,18 +712,27 @@ mod tests {
                 usage_line("2026-10-01T10:00:36Z", 2),
             ]
         };
-        let expected = [(Some(ms("2026-10-01T10:00:00Z")), Some(ms("2026-10-01T10:00:04Z"))), (Some(ms("2026-10-01T10:00:30Z")), Some(ms("2026-10-01T10:00:35Z")))];
+        let expected =
+            [(Some(ms("2026-10-01T10:00:00Z")), Some(ms("2026-10-01T10:00:04Z"))), (Some(ms("2026-10-01T10:00:30Z")), Some(ms("2026-10-01T10:00:35Z")))];
         // A usage record per response, logged before the tool ran.
-        let record = |ts: &str, n: u32| if ts.ends_with("31Z") { json!({"type": "event_msg", "timestamp": ts, "payload": {"type": "noop"}}) } else {
-            json!({"type": "token_usage_record", "timestamp": ts, "payload": {"response_id": format!("r{n}"), "usage": usage}})
+        let record = |ts: &str, n: u32| {
+            if ts.ends_with("31Z") {
+                json!({"type": "event_msg", "timestamp": ts, "payload": {"type": "noop"}})
+            } else {
+                json!({"type": "token_usage_record", "timestamp": ts, "payload": {"response_id": format!("r{n}"), "usage": usage}})
+            }
         };
         assert_eq!(times(&run(&record)), expected);
         // An older rollout's `token_count` comes after the tool's output, and the response still
         // ends at its last item.
         let total = std::cell::Cell::new(0);
-        let count = |ts: &str, _: u32| if ts.ends_with("04.500Z") { json!({"type": "event_msg", "timestamp": ts, "payload": {"type": "noop"}}) } else {
-            total.set(total.get() + 101);
-            json!({"type": "event_msg", "timestamp": ts, "payload": {"type": "token_count", "info": {"total_token_usage": {"total_tokens": total.get()}, "last_token_usage": usage}}})
+        let count = |ts: &str, _: u32| {
+            if ts.ends_with("04.500Z") {
+                json!({"type": "event_msg", "timestamp": ts, "payload": {"type": "noop"}})
+            } else {
+                total.set(total.get() + 101);
+                json!({"type": "event_msg", "timestamp": ts, "payload": {"type": "token_count", "info": {"total_token_usage": {"total_tokens": total.get()}, "last_token_usage": usage}}})
+            }
         };
         assert_eq!(times(&run(&count)), expected);
     }
@@ -747,7 +747,9 @@ mod tests {
             item(json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "fix it"}]})),
             item(json!({"type": "custom_tool_call", "name": "exec", "call_id": "c", "input": "text(await tools.exec_command({cmd: \"python3 x.py\"}))"})),
             json!({"type": "token_usage_record", "payload": {"response_id": "r1", "usage": {"input_tokens": 100, "output_tokens": 1}}}),
-            item(json!({"type": "custom_tool_call_output", "call_id": "c", "output": [{"type": "input_text", "text": "Script failed\nWall time 0.0 seconds\nOutput:\n"}, {"type": "input_text", "text": "Script error:\nReferenceError: x is not defined"}]})),
+            item(
+                json!({"type": "custom_tool_call_output", "call_id": "c", "output": [{"type": "input_text", "text": "Script failed\nWall time 0.0 seconds\nOutput:\n"}, {"type": "input_text", "text": "Script error:\nReferenceError: x is not defined"}]}),
+            ),
         ] {
             p.line(&v.to_string());
         }
@@ -798,7 +800,8 @@ mod tests {
         use serde_json::json;
         let mut p = parser("t");
         let item = |payload: Value| json!({"type": "response_item", "timestamp": "2026-10-01T10:00:00Z", "payload": payload});
-        let record = |n: u32| json!({"type": "token_usage_record", "payload": {"response_id": format!("r{n}"), "usage": {"input_tokens": 100, "output_tokens": 1}}});
+        let record =
+            |n: u32| json!({"type": "token_usage_record", "payload": {"response_id": format!("r{n}"), "usage": {"input_tokens": 100, "output_tokens": 1}}});
         let user = |t: &str| item(json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": t}]}));
         for v in [
             user("run the tests"),
@@ -831,12 +834,18 @@ mod tests {
     fn subagent_threads_get_their_task_and_origin() {
         let child = |source: Value| {
             let mut p = parser("c");
-            let meta = serde_json::json!({"type": "session_meta", "payload": {"id": "c", "parent_thread_id": "p", "cwd": "/w", "source": {"subagent": source}}});
+            let meta =
+                serde_json::json!({"type": "session_meta", "payload": {"id": "c", "parent_thread_id": "p", "cwd": "/w", "source": {"subagent": source}}});
             p.line(&meta.to_string());
-            p.line(&serde_json::json!({"type": "token_usage_record", "payload": {"response_id": "r1", "usage": {"input_tokens": 10, "output_tokens": 1}}}).to_string());
+            p.line(
+                &serde_json::json!({"type": "token_usage_record", "payload": {"response_id": "r1", "usage": {"input_tokens": 10, "output_tokens": 1}}})
+                    .to_string(),
+            );
             p.into_session()
         };
-        let s = child(serde_json::json!({"thread_spawn": {"parent_thread_id": "p", "depth": 1, "agent_path": "/root/fix_flaky_tests", "agent_nickname": "Carver", "agent_role": null}}));
+        let s = child(
+            serde_json::json!({"thread_spawn": {"parent_thread_id": "p", "depth": 1, "agent_path": "/root/fix_flaky_tests", "agent_nickname": "Carver", "agent_role": null}}),
+        );
         assert_eq!(s.task.as_deref(), Some("fix flaky tests"));
         // The parent's rollout is not on disk, so the thread counts under the parent's id.
         assert_eq!(s.id, "p");
@@ -852,9 +861,13 @@ mod tests {
         let mut p = parser("t");
         let mut line = |v: Value| p.line(&v.to_string());
         line(serde_json::json!({"type": "session_meta", "payload": {"id": "t", "cwd": "/w/p"}}));
-        line(serde_json::json!({"timestamp": "2026-10-29T10:00:00Z", "type": "token_usage_record", "payload": {"response_id": "r1", "usage": {"input_tokens": 100, "output_tokens": 1}}}));
+        line(
+            serde_json::json!({"timestamp": "2026-10-29T10:00:00Z", "type": "token_usage_record", "payload": {"response_id": "r1", "usage": {"input_tokens": 100, "output_tokens": 1}}}),
+        );
         line(serde_json::json!({"timestamp": "2026-10-29T10:05:00Z", "type": "compacted", "payload": {"replacement_history": []}}));
-        line(serde_json::json!({"timestamp": "2026-10-29T10:10:00Z", "type": "token_usage_record", "payload": {"response_id": "r2", "usage": {"input_tokens": 20, "output_tokens": 1}}}));
+        line(
+            serde_json::json!({"timestamp": "2026-10-29T10:10:00Z", "type": "token_usage_record", "payload": {"response_id": "r2", "usage": {"input_tokens": 20, "output_tokens": 1}}}),
+        );
         let s = p.into_session();
         let marked: Vec<bool> = s.chains[0].requests.iter().map(|r| r.compacted_before).collect();
         assert_eq!(marked, [false, true]);
@@ -866,7 +879,10 @@ mod tests {
         let mut p = parser("t");
         p.line(&serde_json::json!({"type": "session_meta", "payload": {"id": "t", "cwd": "/w"}}).to_string());
         p.line(&serde_json::json!({"type": "turn_context", "payload": {"model": "gpt-6-astra", "effort": "xhigh"}}).to_string());
-        p.line(&serde_json::json!({"type": "token_usage_record", "payload": {"response_id": "r1", "usage": {"input_tokens": 100, "output_tokens": 1}}}).to_string());
+        p.line(
+            &serde_json::json!({"type": "token_usage_record", "payload": {"response_id": "r1", "usage": {"input_tokens": 100, "output_tokens": 1}}})
+                .to_string(),
+        );
         let s = p.into_session();
         assert_eq!(s.chains[0].requests[0].params.as_ref().and_then(|x| x.effort.as_deref()), Some("xhigh"));
     }
@@ -877,7 +893,10 @@ mod tests {
             let mut p = parser("t");
             p.line(&serde_json::json!({"type": "session_meta", "payload": meta}).to_string());
             for (id, input) in [("r1", 100), ("r2", 120)] {
-                p.line(&serde_json::json!({"type": "token_usage_record", "payload": {"response_id": id, "usage": {"input_tokens": input, "output_tokens": 1}}}).to_string());
+                p.line(
+                    &serde_json::json!({"type": "token_usage_record", "payload": {"response_id": id, "usage": {"input_tokens": input, "output_tokens": 1}}})
+                        .to_string(),
+                );
             }
             p.into_session().chains[0].requests.iter().map(|r| r.client_name().to_string()).collect::<Vec<_>>()
         };
@@ -891,7 +910,10 @@ mod tests {
         let mut p = parser("t");
         for (meta, (id, input)) in metas.into_iter().zip([("r1", 100), ("r2", 120)]) {
             p.line(&serde_json::json!({"type": "session_meta", "payload": meta}).to_string());
-            p.line(&serde_json::json!({"type": "token_usage_record", "payload": {"response_id": id, "usage": {"input_tokens": input, "output_tokens": 1}}}).to_string());
+            p.line(
+                &serde_json::json!({"type": "token_usage_record", "payload": {"response_id": id, "usage": {"input_tokens": input, "output_tokens": 1}}})
+                    .to_string(),
+            );
         }
         p.into_session().chains[0].requests.iter().map(|r| r.version.clone()).collect()
     }
@@ -902,7 +924,11 @@ mod tests {
         let one = Some("0.166.0-alpha.5.1".to_string());
         assert_eq!(versions([meta(Some("0.166.0-alpha.5.1")), serde_json::json!({"id": "t", "cwd": "/w"})]), [one.clone(), one.clone()], "a Codex rollout");
         assert_eq!(versions([meta(Some("0.166.0-alpha.5.1")), meta(Some("0.167.0"))]), [one.clone(), one], "a later session_meta keeps the first version");
-        assert_eq!(versions([serde_json::json!({"id": "t", "cwd": "/w"}), serde_json::json!({"id": "t", "cwd": "/w"})]), [None, None], "a log without a version");
+        assert_eq!(
+            versions([serde_json::json!({"id": "t", "cwd": "/w"}), serde_json::json!({"id": "t", "cwd": "/w"})]),
+            [None, None],
+            "a log without a version"
+        );
     }
 
     #[test]
@@ -911,12 +937,20 @@ mod tests {
         let line = |v: Value| p.line(&v.to_string());
         let mut line = line;
         line(serde_json::json!({"type": "session_meta", "payload": {"id": "t", "cwd": "/w/p", "base_instructions": {"text": "be good"}}}));
-        line(serde_json::json!({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "fix it"}]}}));
+        line(
+            serde_json::json!({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "fix it"}]}}),
+        );
         line(serde_json::json!({"type": "response_item", "payload": {"type": "reasoning", "encrypted_content": "abcd"}}));
-        line(serde_json::json!({"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "arguments": "{\"cmd\":\"ls -la\"}", "call_id": "c1"}}));
-        line(serde_json::json!({"type": "token_usage_record", "payload": {"response_id": "r1", "usage": {"input_tokens": 100, "cached_input_tokens": 0, "output_tokens": 10}}}));
+        line(
+            serde_json::json!({"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "arguments": "{\"cmd\":\"ls -la\"}", "call_id": "c1"}}),
+        );
+        line(
+            serde_json::json!({"type": "token_usage_record", "payload": {"response_id": "r1", "usage": {"input_tokens": 100, "cached_input_tokens": 0, "output_tokens": 10}}}),
+        );
         line(serde_json::json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1", "output": "a b c"}}));
-        line(serde_json::json!({"type": "token_usage_record", "payload": {"response_id": "r2", "usage": {"input_tokens": 120, "cached_input_tokens": 100, "output_tokens": 5}}}));
+        line(
+            serde_json::json!({"type": "token_usage_record", "payload": {"response_id": "r2", "usage": {"input_tokens": 120, "cached_input_tokens": 100, "output_tokens": 5}}}),
+        );
         let s = p.into_session();
         let reqs = &s.chains[0].requests;
         assert_eq!(reqs.len(), 2);

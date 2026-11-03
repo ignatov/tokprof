@@ -518,7 +518,13 @@ mod tests {
     const HOUR: i64 = 3_600_000;
 
     fn request(ts_ms: i64, read: u64, write_long: u64, output: u64) -> Request {
-        Request { ts_ms, api: crate::api::ApiId::Anthropic, model: "claude-opus-5-5".into(), usage: Usage { cache_read: read, write_long, output, ..Usage::default() }, ..Request::default() }
+        Request {
+            ts_ms,
+            api: crate::api::ApiId::Anthropic,
+            model: "claude-opus-5-5".into(),
+            usage: Usage { cache_read: read, write_long, output, ..Usage::default() },
+            ..Request::default()
+        }
     }
 
     /// A 500k-token conversation that idles for two hours, comes back cold, does three more
@@ -634,7 +640,11 @@ mod tests {
     /// `idle_min` minutes later and reads all of the first prompt, then a third request.
     fn warm_break(context: u64, idle_min: i64) -> Session {
         let mut s = Session::new(crate::testing::claude(), "w".into());
-        let requests = vec![request(0, 0, context, 1_000), request(idle_min * 60_000, context, 1_000, 1_000), request(idle_min * 60_000 + 30_000, context + 1_000, 1_000, 1_000)];
+        let requests = vec![
+            request(0, 0, context, 1_000),
+            request(idle_min * 60_000, context, 1_000, 1_000),
+            request(idle_min * 60_000 + 30_000, context + 1_000, 1_000, 1_000),
+        ];
         s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
         s
     }
@@ -651,7 +661,12 @@ mod tests {
         assert_eq!((e.pings, e.compactions), (1, 0));
         assert!((e.ping_usd - (300_000.0 * 0.2 + 100.0 * 20.0) / 1e6).abs() < 1e-9);
         // A small context and a short break price nothing.
-        let priced = |context, idle_min| price_elsewhere(&scan(&warm_break(context, idle_min), &Filter::default(), 60, 100_000), &pricing, 6 * HOUR).get(&claude).copied().unwrap_or_default();
+        let priced = |context, idle_min| {
+            price_elsewhere(&scan(&warm_break(context, idle_min), &Filter::default(), 60, 100_000), &pricing, 6 * HOUR)
+                .get(&claude)
+                .copied()
+                .unwrap_or_default()
+        };
         assert_eq!(priced(60_000, 55), Elsewhere::default());
         assert_eq!(priced(300_000, 40), Elsewhere::default());
     }
@@ -662,11 +677,16 @@ mod tests {
         let claude = crate::testing::claude();
         // The last request of one conversation comes 10 hours before the latest one read.
         let mut found = scan(&warm_break(300_000, 1), &Filter::default(), 60, 100_000);
-        let other = scan(&{
-            let mut s = warm_break(10_000, 1);
-            s.chains[0].requests.iter_mut().for_each(|r| r.ts_ms += 10 * HOUR + 90_000);
-            s
-        }, &Filter::default(), 60, 100_000);
+        let other = scan(
+            &{
+                let mut s = warm_break(10_000, 1);
+                s.chains[0].requests.iter_mut().for_each(|r| r.ts_ms += 10 * HOUR + 90_000);
+                s
+            },
+            &Filter::default(),
+            60,
+            100_000,
+        );
         found = found.merge(other);
         let e = price_elsewhere(&found, &pricing, 6 * HOUR)[&claude];
         assert_eq!((e.pings, e.compactions), (7, 1), "seven pings to 5h50m, then a compaction at 6h40m");

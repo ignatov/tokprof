@@ -228,9 +228,10 @@ fn period(r: &Rates) -> Result<Period> {
     let since_ms = r.since.as_ref().map(moment).transpose().context("since")?;
     let until_ms = r.until.as_ref().map(moment).transpose().context("until")?;
     if let (Some(s), Some(u)) = (since_ms, until_ms)
-        && s >= u {
-            bail!("since must be before until");
-        }
+        && s >= u
+    {
+        bail!("since must be before until");
+    }
     Ok(Period {
         since_ms,
         until_ms,
@@ -298,7 +299,8 @@ mod tests {
         assert_eq!(p.get("m", 0, at("2026-08-21T17:00:00Z")).unwrap().input, 4.0);
         assert!(p.add_layer("test", None, "[models.m]\nsince = 2026-09-01\nuntil = 2026-08-01\ninput = 1\noutput = 1\n").is_err());
         // A gap between periods has no price rather than a guessed one.
-        p.add_layer("test", None, "[[models.g]]\nuntil = 2026-01-01\ninput = 1\noutput = 1\n[[models.g]]\nsince = 2026-02-01\ninput = 2\noutput = 2\n").unwrap();
+        p.add_layer("test", None, "[[models.g]]\nuntil = 2026-01-01\ninput = 1\noutput = 1\n[[models.g]]\nsince = 2026-02-01\ninput = 2\noutput = 2\n")
+            .unwrap();
         assert!(p.get("g", 0, at("2026-01-15")).is_none());
     }
 
