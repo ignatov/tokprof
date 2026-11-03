@@ -140,7 +140,7 @@ The rhythm SHALL leave out the sessions that a program ran (see session-logs) an
 - **THEN** it fails with `day picks its time by DATE; drop --since and --until`
 
 ### Requirement: Day strip
-The day view SHALL draw the day as a strip: a row of hours, a `you` lane that marks the sittings, and a lane per session with the user's actions that day, most actions first. The strip covers 24 hours from the whole hour at or before the day's start. A column covers the shortest of 10, 15, 20, 30 and 60 minutes that fits 24 hours into 72 columns, or into the width the browser leaves for it. A legend follows.
+The day view SHALL draw the day as a strip: a row of hours, a `you` lane that marks the sittings, and a lane per session with the user's actions that day, most actions first. The strip covers 24 hours from the whole hour at or before the day's start, in the shortest column of 10, 15, 20, 30 and 60 minutes that fits its width. Its labels, width and rows depend on where it is shown. A legend follows.
 
 #### Scenario: Columns
 - **WHEN** the day of 2026-11-02 starts at 04:21 and `tokprof day` draws it
@@ -164,13 +164,23 @@ The day view SHALL draw the day as a strip: a row of hours, a `you` lane that ma
 - **THEN** `█` is green, `░` yellow, `*` bold cyan, `?` bold magenta, `!` bold red and `▓` blue
 - **AND** without color the marks are the same and no escape code is written
 
+#### Scenario: In a terminal
+- **WHEN** `tokprof day` draws the strip
+- **THEN** labels take 20 characters, the strip 72 columns, and at most 8 lanes show
+
 #### Scenario: Lane labels
 - **WHEN** a session's id is `ecad11b9-…` and its title is `Инфографика прерываний`
-- **THEN** its lane starts with the first 6 characters of the id and the title, cut to 20 characters: `ecad11 Инфографика…`
+- **THEN** its lane starts with the first 6 characters of the id and the title, cut to the label's width: `ecad11 Инфографика…` in 20 characters
 
 #### Scenario: Many sessions
-- **WHEN** 11 sessions had actions in the day
-- **THEN** the strip has 8 lanes and then the line `3 more sessions`
+- **WHEN** 11 sessions had actions in the day and the strip has rows for 9 lines
+- **THEN** it has 8 lanes and then the line `3 more sessions`
+- **AND** with rows for 11 lanes or more it has all 11 and no such line
+
+#### Scenario: Room between lanes
+- **WHEN** the browser shows the strip and it has rows for twice its lanes
+- **THEN** each lane is followed by a row of dim `·` marks in the first column of each hour
+- **AND** `tokprof day` never spaces its lanes
 
 #### Scenario: Hours row
 - **WHEN** columns are 20 minutes or shorter

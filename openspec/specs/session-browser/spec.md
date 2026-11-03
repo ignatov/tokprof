@@ -328,7 +328,7 @@ The hidden option `tokprof ui --dump <width>x<height>` SHALL render one frame of
 - **THEN** the list title reads `by <order>` without `r re-sorts`, and `r` changes nothing
 
 ### Requirement: Day view in the browser
-`tokprof ui` SHALL show the day view of work-rhythm full screen when `d` is pressed. `d`, esc, `←`, `h` or Backspace go back to the list with the X-ray. `[` and `]` step to the day before and after, never past the current day, and keep the hours of the first day shown. The day is computed in the background, one at a time, and its strip fits the screen's width. While the current day is shown, it is computed again after a session writes to its log.
+`tokprof ui` SHALL show the day view of work-rhythm full screen when `d` is pressed. `d`, esc, `←`, `h` or Backspace go back to the list with the X-ray. `[` and `]` step to the day before and after, never past the current day, and keep the hours of the first day shown. The day is computed in the background, one at a time, and its strip fits the screen. While the current day is shown, it is computed again after a session writes to its log.
 
 #### Scenario: The first press
 - **WHEN** `d` is pressed
@@ -343,6 +343,12 @@ The hidden option `tokprof ui --dump <width>x<height>` SHALL render one frame of
 #### Scenario: Full screen
 - **WHEN** the day is shown
 - **THEN** it takes the whole screen and scrolls as the full-screen X-ray does, and esc goes back to the list with the X-ray
+
+#### Scenario: Fitting the screen
+- **WHEN** the screen is 190 columns by 50 rows and the day has 16 sessions
+- **THEN** labels take 38 characters, a fifth of the width, and the strip 149 columns of which 144 hold 10-minute columns
+- **AND** all 16 lanes show, each followed by a row of hour marks, since the 32 rows the screen leaves for lanes fit them
+- **AND** labels take at least 20 characters and at most 40, and the screen leaves for lanes its rows less 18
 
 #### Scenario: Keys in the footer
 - **WHEN** the list or the day is shown
