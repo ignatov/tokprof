@@ -469,7 +469,7 @@ tokprof SHALL take a Claude Code session's own cost counter from the `cost-state
 - **THEN** it shows the day of the sessions of `~/src/billing` only, and `tokprof --since 7d day` fails as work-rhythm says
 
 ### Requirement: Line about the logs read
-`summary`, `misses`, `whatif`, `tools`, `pauses`, `flame`, `bench` and `day` SHALL print one line to stderr after reading the logs: `read <agent> <N> files (<X.X> GB), … in <S.S>s`, for each agent with at least one file, with sizes on disk in units of 10^9 bytes. It counts every log file read, including subagent logs and logs that the project, id or time filters then leave out; `bench` and `day` read no subagent logs, and `day` only logs written in the 30 days before its day.
+`summary`, `misses`, `whatif`, `tools`, `pauses`, `flame`, `bench` and `day` SHALL print one line to stderr after reading the logs: `read <agent> <N> files (<X.X> GB), … in <S.S>s`, for each agent with at least one file, with sizes on disk in units of 10^9 bytes. It counts every log file read, including subagent logs and logs that the project, id or time filters then leave out; `bench` and `day` read no subagent logs, and `day` only the logs active around its day.
 
 #### Scenario: Both agents
 - **WHEN** 1,234 Claude Code files of 5.6 GB and 78 Codex files of 0.9 GB are read in 3.2 seconds
@@ -482,6 +482,10 @@ tokprof SHALL take a Claude Code session's own cost counter from the `cost-state
 #### Scenario: Filter that matches nothing
 - **WHEN** `--project` matches no session
 - **THEN** the line still counts every log that was read
+
+#### Scenario: The day view
+- **WHEN** `tokprof day` runs and 35 main logs of 0.10 GB were active around the day
+- **THEN** the line counts those 35 logs
 
 ### Requirement: Unreadable logs
 `summary`, `misses`, `whatif`, `flame` and `bench` SHALL carry on with the logs that can be read, and print `warning: <path>: <error>` to stderr, after the read line, for at most 5 logs that could not be opened, read or decompressed, then `warning: <n> more logs could not be read` for the rest. Inside a log, lines that are not valid JSON are skipped without a warning, and invalid UTF-8 is replaced.

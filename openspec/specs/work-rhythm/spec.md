@@ -76,23 +76,32 @@ For each break, the rhythm SHALL measure how long after the sitting ended the ag
 - **THEN** the agents stood still 6.0m after the user left, and some agent worked 10m of the 40m break, 25%
 
 ### Requirement: Start of the day
-Days SHALL start in the middle of the user's night. For each half hour of the day, tokprof counts the days, of the 30 before the end of what it shows, on which the user acted in that half hour. The night is the longest run of half hours with the lowest count, the run going on past midnight. The day starts that many half hours into the night, rounded down. With actions on fewer than 7 days, the day starts at midnight.
+A day SHALL run from the middle of the night before it to the middle of the night after it, or until now. The night before a day is the longest pause between the user's consecutive actions, across the sessions shown, whose middle falls between 18:00 the day before and 12:00 the day, in local time. Before that noon, only a pause of 4 hours or more counts. A day with no such pause starts at midnight.
 
 #### Scenario: The author's night
-- **WHEN** over the last 30 days the user never acted from 02:00 to 08:00
-- **THEN** the night is 02:00–08:00 and the day starts at 05:00
+- **WHEN** the user acted last at 00:22 on 2026-11-02 and next at 08:20, and no longer pause has its middle between 18:00 on 2026-11-01 and 12:00 on 2026-11-02
+- **THEN** the day of 2026-11-02 starts at 04:21
+
+#### Scenario: A pause in the afternoon
+- **WHEN** the night before a day ran from 01:00 to 08:00, and the user paused from 10:00 to 18:00 the same day
+- **THEN** the day starts at 04:30: the afternoon pause has its middle at 14:00, outside the window
 
 #### Scenario: A night that is not empty
-- **WHEN** the user acted at least once in every half hour, and least often, on 2 days each, from 02:30 to 07:00
-- **THEN** the night is 02:30–07:00 and the day starts at 04:30
+- **WHEN** the user worked through a night with breaks of at most 40 minutes, the longest from 03:10 to 03:50
+- **THEN** the day starts at 03:30, in the middle of that break
 
 #### Scenario: Too few days
-- **WHEN** the user acted on 5 days of the last 30
+- **WHEN** the logs hold no action from 18:00 the day before to 12:00 the day, as around a day off
 - **THEN** the day starts at midnight
 
+#### Scenario: A day with one action
+- **WHEN** the user acted on 2026-10-31 at 22:00 and at no other time from 18:00 on 2026-10-30 to 12:00 on 2026-11-01
+- **THEN** the day of 2026-10-31 starts in the middle of the pause that ends at 22:00
+
 #### Scenario: The night line
-- **WHEN** the night is 02:00–08:00 with no action, or 02:30–07:00 with actions on 2 days, or there are too few days
-- **THEN** the line reads `night     02:00–08:00 in the last 30 days, with no message then; days start at 05:00`, `night     02:30–07:00 in the last 30 days, with messages then on 2 days; days start at 04:30`, or `night     messages on fewer than 7 of the last 30 days; days start at midnight`
+- **WHEN** the day of 2026-11-02 has the night 00:22–08:20 before it and 22:26–10:03 after it, or the current day has only the night before it
+- **THEN** the line reads `night     before the day 00:22–08:20 (8.0h), after it 22:26–10:03 (11.6h); a day runs from the middle of one night to the middle of the next`, or `night     before the day 00:22–08:20 (8.0h); the day runs until now`
+- **AND** a day with no pause before it reads `night     no pause before the day; it starts at midnight`, and a day whose next day starts at midnight ends its line with `; the next day starts at midnight`
 
 ### Requirement: Sessions left out
 The rhythm SHALL leave out the sessions that a program ran (see session-logs) and the sessions whose working directory is in the system's temporary folder. When it leaves any out, it says how many.
@@ -106,15 +115,21 @@ The rhythm SHALL leave out the sessions that a program ran (see session-logs) an
 - **THEN** that session is left out
 
 ### Requirement: Day view
-`tokprof day [DATE]` SHALL show one day: the day that holds the current time, or the day that begins on DATE (YYYY-MM-DD) at the start of the day. It reads the main logs last written in the 30 days before the end of that day, applies the project, session and client filters, and prints the title `tokprof · day`, a `day` line, the `night` line, the `left out` line when there is one, the strip, the rhythm lines and the `cache` line.
+`tokprof day [DATE]` SHALL show one day: the day of the user's latest action, or the day of DATE (YYYY-MM-DD). It reads the main logs whose last line with a time is at or after 18:00 the day before, and that were created before 12:00 the day after. It applies the project, session and client filters, and prints the title `tokprof · day`, a `day` line, the `night` line, the `left out` line when there is one, the strip, the rhythm lines and the `cache` line.
+
+#### Scenario: The logs of a day
+- **WHEN** a main log was created on 2026-10-20, its last line with a time is at 2026-11-02 09:00, and the IDE appended lines without a time to it on 2026-11-03
+- **THEN** it is read for the day of 2026-11-02 and not for 2026-11-03
+- **AND** a log created on 2026-11-03 at 13:00 is not read for 2026-11-02
 
 #### Scenario: The day line
-- **WHEN** the day starts at 05:00 and DATE is 2026-11-02
-- **THEN** the day runs from 2026-11-02 05:00 to 2026-11-03 05:00, and the line reads `day       Mon 2026-11-02 05:00 → Tue 2026-11-03 05:00`
+- **WHEN** the day of 2026-11-02 runs from 04:21 to 04:15 the next morning
+- **THEN** the line reads `day       Mon 2026-11-02 04:21 → Tue 2026-11-03 04:15`
+- **AND** the current day's line ends with `→ now`, as in `day       Tue 2026-11-03 04:24 → now`
 
 #### Scenario: Today before the start of the day
-- **WHEN** `tokprof day` runs at 02:10 on 2026-11-03 and the day starts at 05:00
-- **THEN** it shows the day that began on 2026-11-02 at 05:00
+- **WHEN** `tokprof day` runs at 02:10 on 2026-11-03 and the user's latest action was at 01:50
+- **THEN** it shows the day of 2026-11-02, since no night has come since that day began
 
 #### Scenario: A day with no message
 - **WHEN** the user did not act in the day
@@ -125,11 +140,15 @@ The rhythm SHALL leave out the sessions that a program ran (see session-logs) an
 - **THEN** it fails with `day picks its time by DATE; drop --since and --until`
 
 ### Requirement: Day strip
-The day view SHALL draw the day as a strip: a row of hours, a `you` lane that marks the sittings with `#`, and a lane per session with the user's actions that day, most actions first. A column covers the shortest of 10, 15, 20, 30 and 60 minutes that fits the hours from the day's first action to its last into 72 columns. A legend follows.
+The day view SHALL draw the day as a strip: a row of hours, a `you` lane that marks the sittings with `#`, and a lane per session with the user's actions that day, most actions first. A column covers the shortest of 10, 15, 20, 30 and 60 minutes that fits the hours from the day's first action to its last into 72 columns, or into the width the browser leaves for it. A legend follows.
 
 #### Scenario: Columns
 - **WHEN** the day's first action is at 08:20 and its last at 22:26
 - **THEN** the strip runs from 08:00 to 23:00 in 15-minute columns, 60 of them
+
+#### Scenario: A narrow pane
+- **WHEN** the browser leaves 50 columns for the strip of a day from 08:00 to 23:00
+- **THEN** a column covers 20 minutes, and the strip has 45
 
 #### Scenario: Marks
 - **WHEN** a column of a lane holds an interrupt, a message, a question, work, or a wait for the user's answer
