@@ -100,6 +100,15 @@ jobs:
           name: tokprof-${{ matrix.target }}
           path: dist/
           if-no-files-found: error
+      # The rhythm splits time into local days. chrono reads TZ only on Unix, and a Windows runner
+      # does not always run in UTC (windows-11-arm ran in a US zone on 2026-11-03), so the smoke
+      # run sets the Windows system time zone to UTC first.
+      - name: Set the Windows time zone to UTC
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-TimeZone -Id UTC
+          Get-TimeZone
       # The binary from the archive writes a share file over the fixture logs; the compare job
       # checks that every platform wrote the same numbers.
       - name: Smoke run over the fixture logs

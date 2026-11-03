@@ -17,7 +17,7 @@
 - GitHub's runner images, as of 2026-11-03:
   - `windows-latest` is Windows Server 2025 and `windows-11-arm` is Windows 11 on ARM64;
   - both have Rust 1.99.1 with rustup, Git Bash, `jq` 1.8.2 and 7-Zip 26.05, and no `unzip`;
-  - both set the system time zone to UTC.
+  - both set the system time zone to UTC. On 2026-11-03 (the v0.1.1 run) `windows-11-arm` ran in a US zone instead.
 - tokprof's code takes the home directory from `USERPROFILE` on Windows, not from `HOME`. The paths it prints use `\`.
 - tokprof copies with the first of `pbcopy`, `wl-copy` and `xclip` that works, writing UTF-8 to its stdin. It opens a page with `open` on macOS and `xdg-open` elsewhere, and ignores a failure. On Windows none of these exist.
 
@@ -45,7 +45,7 @@
    - It unpacks a `.zip` with `7z` when it is installed, and with `unzip` otherwise (the author's Mac). Then it runs whichever of `tokprof.exe` and `tokprof` the archive holds.
    - Next to `HOME`, it points `USERPROFILE` into the temporary folder, so the Windows run does not read the runner's home either.
    - Under Git Bash, it turns the folders it passes to the binary into Windows paths with `cygpath -m`. The native binary then gets `D:/a/...` instead of `/d/a/...`, without relying on Git Bash's guesses about which variables hold paths.
-   - `TZ=UTC` stays. chrono reads `TZ` only on Unix, but the Windows runners run in UTC, and the comparison would catch one that did not.
+   - `TZ=UTC` stays. chrono reads `TZ` only on Unix, and the comparison caught a Windows runner that did not run in UTC (v0.1.1): the rhythm's `stood_still` and `worked_share_median` moved with the day boundary. The release workflow now sets the Windows system time zone to UTC with `Set-TimeZone -Id UTC` before the smoke run.
 4. **Checksums and attestations take both patterns:**
    - `sha256sum -- *.tar.gz *.zip`;
    - `subject-path` lists `dist/*.tar.gz` and `dist/*.zip`. actions/attest accepts a list of paths.

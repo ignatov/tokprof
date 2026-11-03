@@ -7,8 +7,8 @@
 #
 # The run reads nothing of the machine it runs on: HOME, USERPROFILE (where Windows takes the home
 # directory from), XDG_CONFIG_HOME and TOKPROF_DIR point into a temporary folder, so no price file
-# or profile directory is read. TZ=UTC keeps the window's days the same on every Unix runner; the
-# Windows runners run in UTC.
+# or profile directory is read. TZ=UTC keeps the window's days the same on every Unix runner. A
+# Windows binary ignores TZ, so the release workflow sets the Windows system time zone to UTC.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
