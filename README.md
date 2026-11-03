@@ -390,6 +390,10 @@ present   an agent ended a turn every 6.6m while you were there; it started 3% o
 answers   the agent's turn took a median 6.4m; you answered in a median 3.2m
 stops     2 interrupts, 0 messages typed while the agent worked, 3 questions from the agent answered in a median 2.7m
 cache     5 cold returns, $15.48 in their first requests, $14.91 of it avoidable
+advice    ▸ 5 returns after the cache expired cost $14.91 that a warm cache would have saved;
+            their breaks had a median of 1.6h. Come back before the cache expires, or before a
+            longer break run /compact or start the next session from a handoff (tokprof
+            handoff).
 ```
 
 - The strip covers 24 hours from the hour the day starts in, so every day has the same scale. It has a lane per session with your messages that day, most messages first, and folds the rest into one line. `█` (green) is the agent at work, `░` (yellow) a finished turn that waits for your answer, `*` (cyan) your message, `?` (magenta) the agent's question, `!` (red) your interrupt, and `▓` (blue) in the `you` lane your sittings. Colors show in a terminal and leave with `NO_COLOR` or a pipe. In `tokprof day` a column is 20 minutes. `tokprof ui` shows the day on the whole screen and fits it there: labels take a fifth of the width (20 to 40 characters), the strip the rest (10-minute columns on a screen 190 columns wide), and the lanes the rows, with a row of dim `·` hour marks after each lane when there is room.
@@ -399,6 +403,7 @@ cache     5 cold returns, $15.48 in their first requests, $14.91 of it avoidable
 - `answers` gives how long the agent's turn took after your message, and how long you took to answer after its turn ended, within one day.
 - `stops` counts your interrupts, the messages you typed while the agent worked, and the agent's questions with how long you took to answer them.
 - `cache` gives the day's cold returns, as `tokprof pauses` counts them.
+- `advice` has an item for each of four rules that holds, with the numbers it rests on and one thing to do, and is left out when none holds. Cold returns: a warm cache would have saved $10 or more on them. Questions: the agent's questions waited a median of more than 10 minutes for your answer. Out of work: the agents worked through less than 30% of a median break. Step by step: the agent's turns took a median of less than 5 minutes, and while you were there a turn ended more often than every 5 minutes. Over the author's 31 days to 2026-11-02 these fired on 21, 6, 19 and 16 days, two items on a median day.
 
 A day runs from the middle of one night to the middle of the next, so a sitting after midnight stays in its evening. The night before a day is the longest pause in your messages, answers and interrupts, across sessions, whose middle falls between 18:00 the day before and 12:00 the day. A long break in the afternoon has its middle outside that window, so it is no night. Until noon, only a pause of 4 hours counts, so at 02:00 you are still in the evening's day. The `night` line names the pause before the day and the one after it; over 30 days of the author's logs the days started at a median 05:14. A day with no pause around it starts at midnight.
 
@@ -406,7 +411,7 @@ A day runs from the middle of one night to the middle of the next, so a sitting 
 
 A session's work is its turns. A turn starts at your message, or at a background task that wakes the agent, and ends where the agent ends it or you stop it. Stretches of 15 minutes or more with no request inside a turn, and the time the agent waits for the answer to its question, are not work. Sessions that a program ran, such as `claude -p` and `codex exec`, and sessions in the temporary folder, such as an IDE's commit-message runs, are left out and counted on the `left out` line.
 
-`tokprof pauses` ends with the same lines over its time, for all agents together, and a table by hour of the day:
+`tokprof pauses` ends with the same lines and advice over its time, for all agents together, and a table by hour of the day:
 
 ```
 Your rhythm: when you sat at the agents and what they did meanwhile
@@ -414,16 +419,26 @@ Your rhythm: when you sat at the agents and what they did meanwhile
 nights    a day runs from the middle of one night to the middle of the next; days started at a median 05:14
 left out  127 sessions that nobody typed in: a program ran them, or they ran in a temporary folder
 
-sittings  313, 3.2d at the keyboard, 1337 messages to 188 sessions; median sitting 6.6m, median break 34m
-left      the agents stood still a median 6.4m after you left, and worked through 22% of a median break
+sittings  317, 3.2d at the keyboard, 1349 messages to 190 sessions; median sitting 6.5m, median break 34m
+left      the agents stood still a median 6.5m after you left, and worked through 23% of a median break
 present   an agent ended a turn every 4.2m while you were there; it started 32% of its turns itself
 answers   the agent's turn took a median 3.3m; you answered in a median 2.9m
-stops     40 interrupts, 35 messages typed while the agent worked, 75 questions from the agent answered in a median 2.4m
+stops     40 interrupts, 35 messages typed while the agent worked, 77 questions from the agent answered in a median 2.3m
+advice    ▸ 213 returns after the cache expired cost $763 that a warm cache would have saved;
+            their breaks had a median of 3.2h. Come back before the cache expires, or before a
+            longer break run /compact or start the next session from a handoff (tokprof
+            handoff).
+          ▸ After you left, the agents stood still a median 6.5m into a median 34m break and
+            worked through 23% of it. Before a break, give each session its next steps too, or
+            a plan it can work through without asking.
+          ▸ While you were there, an agent ended a turn every 4.2m, after turns of a median
+            3.3m: you led it step by step. Give it a goal and a way to check it, not a step,
+            and leave between its turns.
 
 hour  messages  turn ends  median answer
 10          63         84           2.7m
-14          82        144           1.9m
-17         117        170           1.9m
+14          90        152           2.5m
+17         117        174           1.9m
 21          72        128           7.2m
 22         110        166           7.6m
 ```

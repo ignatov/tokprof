@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use tokprof_core::advice::{self, Advice};
+use tokprof_core::advice;
 use tokprof_core::analysis::{Component, MissEvent};
 use tokprof_core::fmt::{Style, clip_end, count, human_duration, local_time, tokens, usd, wrap};
 use tokprof_core::labels::display_path;
@@ -64,7 +64,7 @@ pub fn text(x: &XRay, style: &Style, profile_dir: &Path, home: &Path) -> String 
     if let Some(context) = &x.context {
         out.push('\n');
         context_lines(&mut out, context, style);
-        advice_lines(&mut out, &x.advice, style);
+        advice_lines(&mut out, x.advice.iter().map(|a| a.text.as_str()), style);
     }
     out.push('\n');
     spend_lines(&mut out, x, style);
@@ -176,11 +176,12 @@ fn context_lines(out: &mut String, c: &ContextNow, style: &Style) {
     }
 }
 
-/// The advice, each item wrapped to fit the X-ray pane of `tokprof ui`.
-fn advice_lines(out: &mut String, items: &[Advice], style: &Style) {
-    for (i, item) in items.iter().enumerate() {
+/// The advice block, each item wrapped to fit the X-ray pane of `tokprof ui`. The day view and
+/// the pause report lay out theirs the same way.
+pub(crate) fn advice_lines<'a>(out: &mut String, items: impl IntoIterator<Item = &'a str>, style: &Style) {
+    for (i, item) in items.into_iter().enumerate() {
         let label = if i == 0 { style.dim(&format!("{:<9}", "advice")) } else { " ".repeat(9) };
-        for (j, part) in wrap(&item.text, advice::WIDTH).iter().enumerate() {
+        for (j, part) in wrap(item, advice::WIDTH).iter().enumerate() {
             let lead = if j == 0 { format!("{label} {} ", style.paint("33", "▸")) } else { " ".repeat(12) };
             let _ = writeln!(out, "{lead}{part}");
         }

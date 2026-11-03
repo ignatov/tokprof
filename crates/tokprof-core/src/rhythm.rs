@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 use crate::fmt;
 use crate::model::{HandoffKind, Session};
+use crate::pauses::{ColdReturn, Pauses};
 use crate::source::AgentId;
 
 const MINUTE: i64 = 60_000;
@@ -618,6 +619,95 @@ impl Summary {
     }
 }
 
+/// The thresholds of the rhythm advice: what a warm cache would have saved on the cold returns,
+/// the median wait of the agent's questions, the share of a median break the agents worked, and
+/// both the median turn and the time between turn ends while the user was there.
+pub const ADVICE_SAVED_USD: f64 = 10.0;
+pub const ADVICE_QUESTION_MS: i64 = 10 * MINUTE;
+pub const ADVICE_WORKED_PERCENT: f64 = 30.0;
+pub const ADVICE_STEP_MS: i64 = 5 * MINUTE;
+
+/// The cold returns of the time shown, as the pause report finds them: how many, what a warm
+/// cache would have saved on them, the breaks before them, and whether they had prices.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Returns {
+    pub count: usize,
+    pub saved_usd: f64,
+    pub pauses_ms: Vec<i64>,
+    pub priced: bool,
+}
+
+impl Returns {
+    pub fn of<'a>(returns: impl IntoIterator<Item = &'a ColdReturn>, priced: bool) -> Returns {
+        let mut out = Returns { priced, ..Returns::default() };
+        for r in returns {
+            out.count += 1;
+            out.saved_usd += r.premium_usd;
+            out.pauses_ms.push(r.pause_ms);
+        }
+        out
+    }
+
+    /// The cold returns of all agents of a pause report in `[from, to)`.
+    pub fn within(p: &Pauses, (from, to): (i64, i64)) -> Returns {
+        let returns = p.agents.values().flat_map(|a| &a.returns).filter(|r| r.ts_ms >= from && r.ts_ms < to);
+        Returns::of(returns, p.agents.values().any(|a| a.priced))
+    }
+}
+
+impl Summary {
+    /// The advice over this stretch of time, in the order its items come: cold returns,
+    /// questions, out of work, step by step. `files` are the instruction files of the agents
+    /// shown.
+    pub fn advice(&self, returns: &Returns, files: &[String]) -> Vec<String> {
+        let mut out = Vec::new();
+        if returns.priced && returns.saved_usd >= ADVICE_SAVED_USD {
+            let breaks = match (returns.count, median(&returns.pauses_ms)) {
+                (1, Some(p)) => format!("; its break was {}", duration(p)),
+                (_, Some(p)) => format!("; their breaks had a median of {}", duration(p)),
+                _ => String::new(),
+            };
+            let n = fmt::count(returns.count as u64, "return", "returns");
+            out.push(format!(
+                "{n} after the cache expired cost {} that a warm cache would have saved{breaks}. Come back before the cache expires, or before a longer break run /compact or start the next session from a handoff (tokprof handoff).",
+                fmt::usd(returns.saved_usd)
+            ));
+        }
+        if let Some(wait) = median(&self.question_answers).filter(|w| *w > ADVICE_QUESTION_MS) {
+            let file = if files.is_empty() { "the agent's instructions".to_string() } else { files.join(" or ") };
+            out.push(format!(
+                "The agent's questions waited a median {} for your answer ({}). Answer them as they come, or let the agent decide small things: add \"when a choice is small, pick one, say which, and go on\" to {file}.",
+                duration(wait),
+                fmt::count(self.questions as u64, "question", "questions")
+            ));
+        }
+        let still = median(&self.breaks.iter().map(|b| b.still_after).collect::<Vec<_>>());
+        let length = median(&self.breaks.iter().map(|b| b.to - b.from).collect::<Vec<_>>());
+        if let (Some(still), Some(length), Some(share)) = (still, length, self.worked_share())
+            && share < ADVICE_WORKED_PERCENT
+        {
+            out.push(format!(
+                "After you left, the agents stood still a median {} into a median {} break and worked through {share:.0}% of it. Before a break, give each session its next steps too, or a plan it can work through without asking.",
+                duration(still),
+                duration(length)
+            ));
+        }
+        let present = self.ends.iter().filter(|e| e.1).count() as i64;
+        if let Some(turn) = median(&self.turns)
+            && present > 0
+            && turn < ADVICE_STEP_MS
+            && self.keyboard_ms() / present < ADVICE_STEP_MS
+        {
+            out.push(format!(
+                "While you were there, an agent ended a turn every {}, after turns of a median {}: you led it step by step. Give it a goal and a way to check it, not a step, and leave between its turns.",
+                duration(self.keyboard_ms() / present),
+                duration(turn)
+            ));
+        }
+        out
+    }
+}
+
 /// The spans merged where they overlap, in time order.
 fn union(spans: impl Iterator<Item = (i64, i64)>) -> Vec<(i64, i64)> {
     let mut v: Vec<(i64, i64)> = spans.filter(|(a, b)| b > a).collect();
@@ -684,6 +774,21 @@ impl View {
     pub fn summary(&self, window: (i64, i64)) -> Summary {
         let lanes: Vec<&Lane> = self.kept().map(|(_, l)| l).collect();
         Summary::of(&lanes, window, &self.days)
+    }
+
+    /// The instruction files of the agents of the sessions shown: those kept with an action of
+    /// the user in `[from, to)`. Each file comes once, in the order of the agents' names.
+    pub fn instruction_files(&self, (from, to): (i64, i64)) -> Vec<String> {
+        let mut agents: Vec<&AgentId> = self.kept().filter(|(t, _)| t.actions().any(|ts| ts >= from && ts < to)).map(|(t, _)| &t.agent).collect();
+        agents.sort();
+        agents.dedup();
+        let mut files: Vec<String> = Vec::new();
+        for f in agents.iter().flat_map(|a| &a.info().instruction_files) {
+            if !files.contains(f) {
+                files.push(f.clone());
+            }
+        }
+        files
     }
 
     /// The strip of a day in a layout, over the 24 hours from `axis`, by default the whole hour
@@ -1389,5 +1494,108 @@ mod tests {
         // Rows for fewer than twice the lanes: no marks.
         let tight = strip_laid(&sessions(16), Layout { rows: 20, ..layout });
         assert!(!tight.iter().any(|l| l.contains('·')));
+    }
+
+    const CLAUDE: &[&str] = &["CLAUDE.md"];
+
+    fn files(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    fn cold(count: usize, saved_usd: f64) -> Returns {
+        Returns { count, saved_usd, pauses_ms: vec![HOUR, 84 * MINUTE, 2 * HOUR], priced: true }
+    }
+
+    #[test]
+    fn advice_on_cold_returns() {
+        let none = Summary::default();
+        assert_eq!(
+            none.advice(&cold(23, 107.2), &files(CLAUDE)),
+            ["23 returns after the cache expired cost $107 that a warm cache would have saved; their breaks had a median of 1.4h. Come back before the cache expires, or before a longer break run /compact or start the next session from a handoff (tokprof handoff)."]
+        );
+        let one = Returns { count: 1, saved_usd: 12.5, pauses_ms: vec![84 * MINUTE], priced: true };
+        assert!(none.advice(&one, &[])[0].starts_with("1 return after the cache expired cost $12.50 that a warm cache would have saved; its break was 1.4h. "));
+        assert!(none.advice(&cold(23, 9.99), &[]).is_empty(), "below $10");
+        assert!(none.advice(&Returns { priced: false, ..cold(23, 107.2) }, &[]).is_empty(), "without prices");
+    }
+
+    #[test]
+    fn advice_on_questions_that_waited() {
+        let s = Summary { questions: 1, question_answers: vec![78 * MINUTE], ..Summary::default() };
+        assert_eq!(
+            s.advice(&Returns::default(), &files(CLAUDE)),
+            ["The agent's questions waited a median 1.3h for your answer (1 question). Answer them as they come, or let the agent decide small things: add \"when a choice is small, pick one, say which, and go on\" to CLAUDE.md."]
+        );
+        assert!(s.advice(&Returns::default(), &files(&["CLAUDE.md", "AGENTS.md"]))[0].ends_with(" to CLAUDE.md or AGENTS.md."));
+        let quick = Summary { questions: 3, question_answers: vec![10 * MINUTE; 3], ..Summary::default() };
+        assert!(quick.advice(&Returns::default(), &files(CLAUDE)).is_empty(), "a median of 10 minutes");
+    }
+
+    #[test]
+    fn advice_on_agents_out_of_work() {
+        let worked = |share: i64| Summary {
+            breaks: vec![Break { from: 0, to: 38 * MINUTE, still_after: 4 * MINUTE, worked: 38 * MINUTE * share / 100 }],
+            ..Summary::default()
+        };
+        assert_eq!(
+            worked(19).advice(&Returns::default(), &[]),
+            ["After you left, the agents stood still a median 4.0m into a median 38m break and worked through 19% of it. Before a break, give each session its next steps too, or a plan it can work through without asking."]
+        );
+        assert!(worked(30).advice(&Returns::default(), &[]).is_empty(), "30%");
+        assert!(Summary::default().advice(&Returns::default(), &[]).is_empty(), "no break");
+    }
+
+    #[test]
+    fn advice_on_step_by_step() {
+        // Ten turns end in 36 minutes at the keyboard: one every 3.6m.
+        let steps = |turn: i64, sitting: i64| Summary {
+            sittings: vec![(0, sitting)],
+            ends: (0..10).map(|k| (k, true, false)).chain([(HOUR, false, false)]).collect(),
+            turns: vec![turn; 10],
+            ..Summary::default()
+        };
+        assert_eq!(
+            steps(210_000, 36 * MINUTE).advice(&Returns::default(), &[]),
+            ["While you were there, an agent ended a turn every 3.6m, after turns of a median 3.5m: you led it step by step. Give it a goal and a way to check it, not a step, and leave between its turns."]
+        );
+        assert!(steps(5 * MINUTE, 36 * MINUTE).advice(&Returns::default(), &[]).is_empty(), "a median turn of 5 minutes");
+        assert!(steps(210_000, 50 * MINUTE).advice(&Returns::default(), &[]).is_empty(), "a turn ending every 5 minutes");
+        assert!(Summary { ends: Vec::new(), ..steps(210_000, 36 * MINUTE) }.advice(&Returns::default(), &[]).is_empty(), "no turn ended while the user was there");
+    }
+
+    #[test]
+    fn the_advice_comes_in_order() {
+        let s = Summary {
+            sittings: vec![(0, 36 * MINUTE), (74 * MINUTE, 75 * MINUTE)],
+            breaks: vec![Break { from: 36 * MINUTE, to: 74 * MINUTE, still_after: 4 * MINUTE, worked: 4 * MINUTE }],
+            ends: (0..10).map(|k| (k, true, false)).collect(),
+            turns: vec![210_000],
+            questions: 1,
+            question_answers: vec![78 * MINUTE],
+            ..Summary::default()
+        };
+        let starts: Vec<String> = s.advice(&cold(23, 107.2), &files(CLAUDE)).iter().map(|a| a.split(' ').take(3).collect::<Vec<_>>().join(" ")).collect();
+        assert_eq!(starts, ["23 returns after", "The agent's questions", "After you left,", "While you were"]);
+    }
+
+    #[test]
+    fn the_cold_returns_of_all_agents() {
+        use crate::pauses::{AgentPauses, Starter};
+        let ret = |ts_ms: i64, premium_usd: f64| ColdReturn { ts_ms, pause_ms: 84 * MINUTE, usd: premium_usd + 0.2, premium_usd, context: 0, starter: Starter::Typed };
+        let mut p = Pauses::default();
+        p.agents.insert(crate::testing::claude(), AgentPauses { returns: vec![ret(t(9, 0), 6.0), ret(t(23, 0), 50.0)], priced: true, ..AgentPauses::default() });
+        p.agents.insert(crate::testing::codex(), AgentPauses { returns: vec![ret(t(10, 0), 5.0)], ..AgentPauses::default() });
+        let r = Returns::within(&p, (t(0, 0), t(12, 0)));
+        assert_eq!(r, Returns { count: 2, saved_usd: 11.0, pauses_ms: vec![84 * MINUTE; 2], priced: true });
+    }
+
+    #[test]
+    fn the_instruction_files_of_the_agents_shown() {
+        let codex = Timeline { agent: crate::testing::codex(), ..timeline("c", &[(t(10, 0), Typed), (t(10, 1), TurnEnd)]) };
+        let claude = timeline("a", &[(t(11, 0), Typed), (t(11, 1), TurnEnd)]);
+        let view = View::new(vec![codex, claude], t(12, 0), &off);
+        assert_eq!(view.instruction_files((t(0, 0), t(12, 0))), ["CLAUDE.md", "AGENTS.md"], "in the order of the agents' names");
+        assert_eq!(view.instruction_files((t(10, 30), t(12, 0))), ["CLAUDE.md"], "only the sessions with an action in the time");
+        assert!(view.instruction_files((t(10, 0) + 1, t(10, 30))).is_empty(), "an end of turn is no action of the user");
     }
 }

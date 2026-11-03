@@ -354,7 +354,9 @@ fn main() -> Result<()> {
         print!("{}", render_report::pauses(&p));
         let offset = &rhythm::local_offset;
         let view = View::new(timelines, filter.until_ms.unwrap_or_else(now_ms), offset);
-        print!("{}", render_rhythm::section(&view, (filter.since_ms.unwrap_or(i64::MIN), filter.until_ms.unwrap_or(i64::MAX)), offset));
+        let window = (filter.since_ms.unwrap_or(i64::MIN), filter.until_ms.unwrap_or(i64::MAX));
+        let returns = rhythm::Returns::within(&p, window);
+        print!("{}", render_rhythm::section(&view, window, offset, &returns, &style));
         return Ok(());
     }
     if let Command::Share { output } = &command {
