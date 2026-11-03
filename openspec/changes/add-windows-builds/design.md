@@ -58,9 +58,10 @@
 7. **Resolving the rebase conflict.**
    - Both sides of `release.yml` stay: the Windows matrix entries and zip packing from 12ae95a, and the smoke step, `compare` job and attestation from aa59541, widened to zips.
    - The README's attestation line from aa59541 stays, next to the Windows rows.
-8. **`clip.exe` for the clipboard, fed UTF-16LE after a byte order mark.**
+8. **`clip.exe` for the clipboard, fed UTF-16LE without a byte order mark.**
    - `clip.exe` comes with Windows, so no install and no new crate is needed.
-   - UTF-8 on its stdin does not survive outside ASCII, and the user's session titles are Cyrillic. UTF-16LE that starts with `FF FE` does. The Windows test reads the clipboard back to check exactly this.
+   - UTF-8 on its stdin does not survive outside ASCII, and the user's session titles are Cyrillic. UTF-16LE does.
+   - A byte order mark in front stays in the clipboard as U+FEFF: the first Windows run read back `\u{feff}tokprof · Привет`. So the text goes without one, and the Windows test reads the clipboard back to check that.
    - It comes last in the list. A Mac or Linux tries it only after its own tools fail, and WSL without `wl-copy` or `xclip` copies to the Windows clipboard through it.
    - Alternatives:
      - PowerShell's `Set-Clipboard`: it starts in about half a second, and its stdin needs its encoding set first.

@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Clipboard copy in a terminal
-When stdout is a terminal, `tokprof handoff` SHALL also copy the text it printed, the note included, to the clipboard with the first of `pbcopy`, `wl-copy`, `xclip -selection clipboard` and `clip.exe` that runs and succeeds. `clip.exe` gets the text as UTF-16LE after a byte order mark. It then says on stderr `copied to the clipboard: paste it into a new session`, or `no clipboard tool found (pbcopy, wl-copy, xclip, clip.exe): copy the text above` when none worked.
+When stdout is a terminal, `tokprof handoff` SHALL also copy the text it printed, the note included, to the clipboard with the first of `pbcopy`, `wl-copy`, `xclip -selection clipboard` and `clip.exe` that runs and succeeds. `clip.exe` gets the text as UTF-16LE with no byte order mark. It then says on stderr `copied to the clipboard: paste it into a new session`, or `no clipboard tool found (pbcopy, wl-copy, xclip, clip.exe): copy the text above` when none worked.
 
 #### Scenario: macOS terminal
 - **WHEN** the user runs `tokprof handoff` in a terminal on macOS

@@ -12,7 +12,7 @@
 - **LF everywhere:** text files check out with LF line endings on Windows too, so the fixture logs stay what the agents write.
 - **Two tests** stop expecting `/` in a printed path, and the share test sets `USERPROFILE`, where Windows takes the home directory from.
 - **The clipboard and the browser on Windows:**
-  - `tokprof handoff` and `c` in `tokprof ui` try `clip.exe` after `pbcopy`, `wl-copy` and `xclip`. It gets the text as UTF-16LE after a byte order mark, so Cyrillic session titles survive. The messages for a machine without a tool name `clip.exe` too.
+  - `tokprof handoff` and `c` in `tokprof ui` try `clip.exe` after `pbcopy`, `wl-copy` and `xclip`. It gets the text as UTF-16LE, so Cyrillic session titles survive, and without a byte order mark, which `clip.exe` would keep as a character. The messages for a machine without a tool name `clip.exe` too.
   - `o` in `tokprof ui` opens the HTML with `explorer`.
 - **README:** Install names both Windows targets and says to put `tokprof.exe` on the `PATH`. **AGENTS.md:** CI tests on Windows, and a test must not expect `/` in a printed path.
 
@@ -37,7 +37,7 @@ None.
   - Locally: `ci/smoke.sh` unpacks a zip packed as the workflow packs it and writes a share file from the fixtures. The comparison accepts the file next to the one from the `.tar.gz` of the same binary.
   - On GitHub: a run by hand ends with six archives, five smoke runs and a passing comparison. The first tag's release has six archives, six lines in `SHA256SUMS`, and an attestation that `gh attestation verify` accepts for a zip.
 - **The clipboard and the browser:**
-  - A unit test checks the bytes `clip.exe` gets for a line with Cyrillic: `FF FE`, then UTF-16LE.
+  - A unit test checks the bytes `clip.exe` gets for a line with Cyrillic: UTF-16LE, with no byte order mark in front.
   - On `windows-latest`, a test copies `tokprof · Привет` through the clipboard and reads it back with PowerShell's `Get-Clipboard`.
   - A unit test checks which command opens a page on each platform.
   - On the author's Mac, `tokprof handoff` in a terminal still copies with `pbcopy`, and `pbpaste` gives the printed line back.

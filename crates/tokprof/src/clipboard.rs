@@ -10,7 +10,8 @@ pub const TOOLS: &str = "pbcopy, wl-copy, xclip, clip.exe";
 #[derive(Clone, Copy)]
 enum Input {
     Utf8,
-    /// UTF-16LE after a byte order mark: clip.exe keeps letters beyond ASCII only so.
+    /// UTF-16LE: clip.exe keeps letters beyond ASCII only so. A byte order mark in front would
+    /// stay in the clipboard as U+FEFF, so the text goes without one.
     Utf16,
 }
 
@@ -40,7 +41,7 @@ pub fn copy(text: &str) -> Option<&'static str> {
 fn bytes(text: &str, input: Input) -> Vec<u8> {
     match input {
         Input::Utf8 => text.as_bytes().to_vec(),
-        Input::Utf16 => [0xFF, 0xFE].into_iter().chain(text.encode_utf16().flat_map(u16::to_le_bytes)).collect(),
+        Input::Utf16 => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
     }
 }
 
@@ -49,11 +50,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clip_exe_gets_utf16_after_a_byte_order_mark() {
+    fn clip_exe_gets_utf16_without_a_byte_order_mark() {
         let text = "tokprof · Привет";
         let b = bytes(text, Input::Utf16);
-        assert_eq!(b[..6], [0xFF, 0xFE, b't', 0, b'o', 0]);
-        let units: Vec<u16> = b[2..].chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        assert_eq!(b[..4], [b't', 0, b'o', 0]);
+        let units: Vec<u16> = b.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         assert_eq!(String::from_utf16(&units).unwrap(), text);
         assert_eq!(bytes(text, Input::Utf8), text.as_bytes(), "the other tools get UTF-8");
     }

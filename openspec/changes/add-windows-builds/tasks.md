@@ -35,8 +35,8 @@ The Windows commits 12ae95a, 219b4c5 and 9b36bde on the branch `windows-build` a
 
 ## 5. The clipboard and the browser on Windows
 
-- [x] 5.1 Make `clip.exe` the fourth clipboard tool, fed UTF-16LE after `FF FE`. Name it in the no-tool messages of `tokprof handoff` and of `c` in `tokprof ui`. Verify:
-  - a unit test next to the clipboard code checks the bytes for `tokprof · Привет`: `FF FE`, then each UTF-16 unit little-endian;
+- [x] 5.1 Make `clip.exe` the fourth clipboard tool, fed UTF-16LE without a byte order mark. Name it in the no-tool messages of `tokprof handoff` and of `c` in `tokprof ui`. Verify:
+  - a unit test next to the clipboard code checks the bytes for `tokprof · Привет`: each UTF-16 unit little-endian, with no `FF FE` in front;
   - the tests that check either message still pass;
   - on the author's Mac, `tokprof handoff` in a terminal still says `copied to the clipboard`, and `pbpaste` gives the printed line back.
 - [ ] 5.2 Add a Windows-only test that copies `tokprof · Привет` through the clipboard code and reads it back with `powershell -NoProfile -Command Get-Clipboard`, its output set to UTF-8. Verify: it passes on `windows-latest` in CI. If the runner has no clipboard, follow design.md, Risks, and record that here.
@@ -55,7 +55,7 @@ The Windows commits 12ae95a, 219b4c5 and 9b36bde on the branch `windows-build` a
 | branch `windows-build`, release run 41667570234 (before the rebase) | `tokprof 0.1.0` from both `tokprof.exe`; x86-64 zip 2,078,141 bytes, built in 2 min 47 s; ARM64 zip 1,920,195 bytes, built in 2 min 14 s |
 | 2.1 smoke run of a zip on the author's Mac: time, comparison with the `.tar.gz` | 2026-11-03: the Apple silicon release binary, packed as `.tar.gz` and as a zip; `tokprof 0.1.0` from both, share files with `claude` and `codex` in 0.76 s and 0.36 s; `--compare`: `the 2 files hold the same numbers` |
 | 5.1 `tokprof handoff` in a terminal on the author's Mac: message, `pbpaste` | 2026-11-03, on a pty over the real logs: stderr `copied to the clipboard: paste it into a new session`; `pbpaste` equals the printed line (176 characters) |
-| 5.2 the clipboard round trip on `windows-latest` | |
+| 5.2 the clipboard round trip on `windows-latest` | first run (CI 41676489941): Cyrillic survived, but `clip.exe` kept the byte order mark, and the clipboard read back `\u{feff}tokprof · Привет`. The text now goes without one. |
 | 6.2 run by hand on `main`: archives, smoke runs, comparison | |
 
 There is no run of the Windows binaries on the real logs: the author's logs are on a Mac. The comparison over the fixtures stands in for it. The code that changes only copies and opens files, and 5.1 checks it on the Mac.
