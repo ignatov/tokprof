@@ -1,0 +1,130 @@
+# Builds tokprof for macOS and Linux. A pushed tag vX.Y.Z also publishes a GitHub release with
+# the archives and their SHA256SUMS. A run by hand (Actions → Release → Run workflow) only keeps
+# the archives as artifacts of the run.
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    name: Checks
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          # Cross-built on the Apple silicon runner.
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          # Ubuntu 22.04 keeps the binaries on glibc 2.35, so they run on Ubuntu 22.04,
+          # Debian 12 and newer systems.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check the tag against the version in Cargo.toml
+        if: github.event_name == 'push'
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tokprof") | .version')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::The tag $GITHUB_REF_NAME does not match the version $version in Cargo.toml"
+            exit 1
+          fi
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --target "$TARGET" --no-self-update
+          rustup default stable
+      - name: Build
+        run: cargo build --release --locked --package tokprof --target "$TARGET"
+      - name: Package
+        run: |
+          staging="$RUNNER_TEMP/tokprof-$TARGET"
+          mkdir -p "$staging" dist
+          cp "target/$TARGET/release/tokprof" README.md LICENSE "$staging/"
+          # The x86_64 Mac binary cannot run on the arm64 runner, so it is only inspected.
+          if [ "$TARGET" = x86_64-apple-darwin ]; then
+            file "$staging/tokprof"
+          else
+            "$staging/tokprof" --version
+          fi
+          # COPYFILE_DISABLE keeps macOS tar from adding ._ metadata files.
+          COPYFILE_DISABLE=1 tar -czf "dist/tokprof-$TARGET.tar.gz" -C "$staging" tokprof README.md LICENSE
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tokprof-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [checks, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: tokprof-*
+          path: dist
+          merge-multiple: true
+      - name: Write the checksums
+        working-directory: dist
+        run: sha256sum -- *.tar.gz > SHA256SUMS && cat SHA256SUMS
+      # The notes list the commit subjects since the previous tag, without the OpenSpec
+      # "Archive <change>" commits.
+      - name: Write the notes
+        run: |
+          previous=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          {
+            echo "## Changes"
+            echo
+            git log --no-merges --reverse --format='- %s' "${previous:+$previous..}$GITHUB_REF_NAME" | grep -v '^- Archive ' || true
+            echo
+            echo "Archives for macOS and Linux are below, with their checksums in SHA256SUMS. See [Install](https://github.com/${GITHUB_REPOSITORY}#install)."
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          # A tag with a hyphen, such as v0.2.0-rc.1, is a pre-release.
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "tokprof $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md" "${prerelease[@]}"
