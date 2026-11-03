@@ -48,6 +48,10 @@ jobs:
     timeout-minutes: 30
     env:
       TARGET: ${{ matrix.target }}
+      # The release profile keeps line tables for the author's own builds. They are most of a
+      # 39 MB Linux binary, while a Mac binary (7 MB) keeps them out of the file anyway, so the
+      # archives go without them.
+      CARGO_PROFILE_RELEASE_STRIP: debuginfo
     steps:
       - uses: actions/checkout@v7
         with:
