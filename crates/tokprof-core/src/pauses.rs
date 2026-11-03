@@ -526,7 +526,7 @@ mod tests {
         let top = &rows[1];
         assert_eq!((top.count, top.cold_returns), (1, 1));
         // The subagent's spend lands on its main session.
-        let alone = pauses_of(&[big.clone()]);
+        let alone = pauses_of(std::slice::from_ref(&big));
         assert!(top.usd > alone.size_rows()[0].usd, "{} vs {}", top.usd, alone.size_rows()[0].usd);
         // Two partial collectors merge into the same rows as one.
         let mut a = Pauses::new(Filter::default());

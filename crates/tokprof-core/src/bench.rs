@@ -209,7 +209,7 @@ pub fn scan(s: &Session, filter: &Filter, requests: usize, min_context: u64) -> 
             }
         };
         if let Some(&last) = billed.last() {
-            no_return(&conversation[last], None, forecast::long_ttl(&conversation[..=last]));
+            no_return(conversation[last], None, forecast::long_ttl(&conversation[..=last]));
         }
         for (k, pair) in billed.windows(2).enumerate() {
             let (prev, r) = (&conversation[pair[0]], &conversation[pair[1]]);
