@@ -20,12 +20,12 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokprof_core::api::ApiId;
 use tokprof_core::labels::{command_head, display_path, message_label};
-use tokprof_core::model::{Block, BlockKind, Class, CompactionTrigger, HandoffKind, Origin, ReminderKind, ToolClass, Chain, ChainKind, Compaction, Params, PromptDelta, Request, Session, Shape, TypedMessage, Usage};
+use tokprof_core::model::{Block, BlockKind, CallEnd, Class, CompactionTrigger, HandoffKind, Origin, ReminderKind, ToolClass, Chain, ChainKind, Compaction, Params, PromptDelta, Request, Session, Shape, TypedMessage, Usage};
 use tokprof_core::source::{AgentId, Decoder};
 use tokprof_core::trigger::{CallClass, Pending, Trigger, command_class};
 use tokprof_logio::{json_len, parse_ts_ms, str_at, u64_at};
 
-use crate::tools::tool_target;
+use crate::tools::{self, tool_target};
 
 /// Size an image is counted as, in characters (roughly 1,400 tokens); low detail is 85 tokens.
 const IMAGE_CHARS: u64 = 5_000;
@@ -76,6 +76,23 @@ pub(crate) struct Parser {
     subagent: Option<String>,
     /// `session_meta.originator`: the program that ran Codex, for every request of the rollout.
     client: Option<Arc<str>>,
+    /// The time of the latest logged item that the model did not produce: the input of the next
+    /// response.
+    last_input_ms: Option<i64>,
+    /// The latest logged item was one the model produced.
+    prev_output: bool,
+    /// The latest run of items the model produced: the send of its response (the input before
+    /// it) and the time of its last item. Codex logs `token_count` after the outputs of the
+    /// tools a response called, so the run, not the usage line, says when the response ended.
+    run: Option<(i64, i64)>,
+    /// Per stream: it already gave `run` to a request.
+    run_used: [bool; 2],
+    /// The call id of each conversation item that is a call or its output, by message index.
+    call_of_message: HashMap<usize, String>,
+    /// The call and output blocks of each call id, in the items and in the responses' copies.
+    blocks_by_call: HashMap<String, Vec<usize>>,
+    /// The calls that did not work, by call id.
+    call_ends: HashMap<String, CallEnd>,
 }
 
 impl Parser {
@@ -96,6 +113,13 @@ impl Parser {
             last_total: String::new(),
             subagent: None,
             client: None,
+            last_input_ms: None,
+            prev_output: false,
+            run: None,
+            run_used: [false; 2],
+            call_of_message: HashMap::new(),
+            blocks_by_call: HashMap::new(),
+            call_ends: HashMap::new(),
         }
     }
 
@@ -256,8 +280,28 @@ impl Parser {
         if !calls.is_empty() {
             self.call_kinds.insert(idx, calls);
         }
+        if let Some(id) = str_at(item, "call_id") {
+            self.blocks_by_call.entry(id.to_string()).or_default().extend(self.session.messages[idx].blocks.clone());
+            self.call_of_message.insert(idx, id.to_string());
+            if matches!(str_at(item, "type"), Some("function_call_output" | "custom_tool_call_output"))
+                && let Some(end) = tools::call_end(item.get("output").unwrap_or(&Value::Null)) {
+                    self.call_ends.insert(id.to_string(), end);
+                }
+        }
         self.history.push(idx);
         self.trailing_outputs = if output { self.trailing_outputs + 1 } else { 0 };
+        // Items replayed from a compaction tell no time.
+        if let Some(ts) = ts_ms.filter(|&t| t > 0) {
+            match (output, self.prev_output, &mut self.run) {
+                (true, true, Some(run)) => run.1 = run.1.max(ts),
+                (true, _, _) => {
+                    self.run = Some((self.last_input_ms.unwrap_or(ts), ts));
+                    self.run_used = [false; 2];
+                }
+                (false, _, _) => self.last_input_ms = Some(ts),
+            }
+            self.prev_output = output;
+        }
     }
 
     /// The blocks of one conversation item, and whether the model produced it.
@@ -355,6 +399,15 @@ impl Parser {
                 .iter()
                 .flat_map(|&m| self.session.blocks[self.session.messages[m].blocks.clone()].to_vec())
                 .collect();
+            // The copy holds the calls too, so their outcome reaches it.
+            let mut at = self.session.blocks.len();
+            for &m in &self.history[prompt_len..] {
+                let n = self.session.messages[m].blocks.len();
+                if let Some(id) = self.call_of_message.get(&m) {
+                    self.blocks_by_call.entry(id.clone()).or_default().extend(at..at + n);
+                }
+                at += n;
+            }
             self.session.push_message(blocks, false)
         });
         let outputs = &self.history[prompt_len..];
@@ -375,6 +428,12 @@ impl Parser {
         let input = u64_at(usage, "input_tokens");
         let cached = u64_at(usage, "cached_input_tokens");
         let written = u64_at(usage, "cache_write_input_tokens");
+        // The response's run of items, once per stream; a response that added none is timed by its
+        // own line.
+        let run = self.run.filter(|_| !self.run_used[stream]);
+        self.run_used[stream] = true;
+        let (sent, ended) = run.unwrap_or((ts_ms, ts_ms));
+        let s = &mut self.streams[stream];
         s.requests.push(Request {
             ts_ms,
             model: if s.model.is_empty() { "unknown".to_string() } else { s.model.clone() },
@@ -395,6 +454,9 @@ impl Parser {
             trigger,
             activity,
             client: self.client.clone(),
+            first_sent_ms: Some(sent),
+            sent_ms: Some(sent),
+            ended_ms: Some(ended.max(sent)),
             ..Request::default()
         });
         s.compacted = false;
@@ -424,6 +486,11 @@ impl Parser {
         requests.iter_mut().for_each(|r| r.api = ApiId::OpenAi);
         self.session.chains.push(Chain { name, kind, requests });
         self.session.compactions.sort_by_key(|c| c.ts_ms);
+        for (id, end) in &self.call_ends {
+            for &b in self.blocks_by_call.get(id).into_iter().flatten() {
+                self.session.call_ends.insert(b, end.clone());
+            }
+        }
         self.session
     }
 }
@@ -433,6 +500,8 @@ fn class_of(b: &Block) -> Class {
     match b.kind {
         BlockKind::ToolUse | BlockKind::ToolResult => Class::Tool(match b.tool.as_deref().unwrap_or_default() {
             "exec_command" | "shell" => ToolClass::Execute,
+            // Reads what a command running in its session printed since, and how it exited.
+            "write_stdin" => ToolClass::ExecuteOutput,
             _ => ToolClass::Other,
         }),
         BlockKind::Reminder => Class::Reminder(ReminderKind::of_label(b.target.as_deref().unwrap_or_default())),
@@ -616,6 +685,67 @@ mod tests {
             ("apply_patch".to_string(), Some("src/a.rs".to_string()))
         );
         assert_eq!(code_target("exec", "await Promise.all([tools.exec_command({}), tools.write_stdin({})])", cwd, Path::new("/h")).1.as_deref(), Some("exec_command, write_stdin"));
+    }
+
+    #[test]
+    fn a_request_is_sent_after_its_input_and_ends_with_its_last_item() {
+        use serde_json::json;
+        let ms = |ts: &str| tokprof_logio::parse_ts_ms(Some(&Value::String(ts.to_string()))).unwrap();
+        let item = |ts: &str, payload: Value| json!({"type": "response_item", "timestamp": ts, "payload": payload});
+        let usage = json!({"input_tokens": 100, "output_tokens": 1});
+        let times = |lines: &[Value]| {
+            let mut p = parser("t");
+            lines.iter().for_each(|l| p.line(&l.to_string()));
+            p.into_session().chains[0].requests.iter().map(|r| (r.sent_ms, r.ended_ms)).collect::<Vec<_>>()
+        };
+        let run = |usage_line: &dyn Fn(&str, u32) -> Value| {
+            vec![
+                item("2026-10-01T10:00:00Z", json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "fix it"}]})),
+                item("2026-10-01T10:00:03Z", json!({"type": "reasoning", "summary": []})),
+                item("2026-10-01T10:00:04Z", json!({"type": "function_call", "name": "exec_command", "call_id": "d", "arguments": "{\"cmd\":\"cargo test\"}"})),
+                usage_line("2026-10-01T10:00:04.500Z", 1),
+                item("2026-10-01T10:00:30Z", json!({"type": "function_call_output", "call_id": "d", "output": "ok"})),
+                usage_line("2026-10-01T10:00:31Z", 1),
+                item("2026-10-01T10:00:35Z", json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "done"}]})),
+                usage_line("2026-10-01T10:00:36Z", 2),
+            ]
+        };
+        let expected = [(Some(ms("2026-10-01T10:00:00Z")), Some(ms("2026-10-01T10:00:04Z"))), (Some(ms("2026-10-01T10:00:30Z")), Some(ms("2026-10-01T10:00:35Z")))];
+        // A usage record per response, logged before the tool ran.
+        let record = |ts: &str, n: u32| if ts.ends_with("31Z") { json!({"type": "event_msg", "timestamp": ts, "payload": {"type": "noop"}}) } else {
+            json!({"type": "token_usage_record", "timestamp": ts, "payload": {"response_id": format!("r{n}"), "usage": usage}})
+        };
+        assert_eq!(times(&run(&record)), expected);
+        // An older rollout's `token_count` comes after the tool's output, and the response still
+        // ends at its last item.
+        let total = std::cell::Cell::new(0);
+        let count = |ts: &str, _: u32| if ts.ends_with("04.500Z") { json!({"type": "event_msg", "timestamp": ts, "payload": {"type": "noop"}}) } else {
+            total.set(total.get() + 101);
+            json!({"type": "event_msg", "timestamp": ts, "payload": {"type": "token_count", "info": {"total_token_usage": {"total_tokens": total.get()}, "last_token_usage": usage}}})
+        };
+        assert_eq!(times(&run(&count)), expected);
+    }
+
+    #[test]
+    fn a_failed_call_marks_the_call_its_response_made_and_its_output() {
+        use serde_json::json;
+        use tokprof_core::model::Outcome;
+        let mut p = parser("t");
+        let item = |payload: Value| json!({"type": "response_item", "timestamp": "2026-10-01T10:00:00Z", "payload": payload});
+        for v in [
+            item(json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "fix it"}]})),
+            item(json!({"type": "custom_tool_call", "name": "exec", "call_id": "c", "input": "text(await tools.exec_command({cmd: \"python3 x.py\"}))"})),
+            json!({"type": "token_usage_record", "payload": {"response_id": "r1", "usage": {"input_tokens": 100, "output_tokens": 1}}}),
+            item(json!({"type": "custom_tool_call_output", "call_id": "c", "output": [{"type": "input_text", "text": "Script failed\nWall time 0.0 seconds\nOutput:\n"}, {"type": "input_text", "text": "Script error:\nReferenceError: x is not defined"}]})),
+        ] {
+            p.line(&v.to_string());
+        }
+        let s = p.into_session();
+        let produced = s.chains[0].requests[0].produced.unwrap();
+        let call = s.messages[produced].blocks.clone().find(|&b| s.blocks[b].kind == BlockKind::ToolUse).unwrap();
+        assert_eq!((s.outcome(call), s.error_line(call)), (Outcome::Failed, Some("ReferenceError: x is not defined")));
+        let output = (0..s.blocks.len()).find(|&b| s.blocks[b].kind == BlockKind::ToolResult).unwrap();
+        assert_eq!(s.outcome(output), Outcome::Failed);
     }
 
     #[test]

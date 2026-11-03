@@ -16,6 +16,19 @@ pub fn tokens(n: f64) -> String {
     }
 }
 
+/// A whole number with its thousands apart: `1,021`.
+pub fn int(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// `1 miss`, `2 misses`: a count with the word for it.
 pub fn count(n: impl Into<u64>, one: &str, many: &str) -> String {
     let n = n.into();

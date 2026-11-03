@@ -58,6 +58,35 @@ pub fn message_label(text: &str) -> String {
     joined.chars().take(200).collect()
 }
 
+/// How long the line that tells why a call failed may be.
+pub const ERROR_LINE_CHARS: usize = 200;
+
+/// The line that tells why a call failed: the first non-empty line of its result, with its
+/// whitespace joined and cut to [`ERROR_LINE_CHARS`]; `None` for an empty result.
+pub fn first_line(text: &str) -> Option<String> {
+    text.lines().map(str::trim).find(|l| !l.is_empty()).map(|l| cut(l, ERROR_LINE_CHARS))
+}
+
+/// The line of a command that failed with an exit code: `exit code <n>: ` and the last
+/// non-empty line of its output, or `exit code <n>` alone when the output is empty.
+pub fn exit_line(code: i64, output: &str) -> String {
+    let line = match output.lines().map(str::trim).rfind(|l| !l.is_empty()) {
+        Some(last) => format!("exit code {code}: {last}"),
+        None => format!("exit code {code}"),
+    };
+    cut(&line, ERROR_LINE_CHARS)
+}
+
+fn cut(s: &str, width: usize) -> String {
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if s.chars().count() <= width {
+        return s;
+    }
+    let mut out: String = s.chars().take(width - 1).collect();
+    out.push('…');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +110,14 @@ mod tests {
         assert_eq!(message_label("  fix the parser  "), "fix the parser");
         assert_eq!(message_label(&"x".repeat(300)).len(), 200);
         assert_eq!(message_label(""), "");
+    }
+
+    #[test]
+    fn error_lines() {
+        assert_eq!(first_line("\n  File does not exist. Note: your current working directory is /w.\nmore").as_deref(), Some("File does not exist. Note: your current working directory is /w."));
+        assert_eq!(first_line(" \n "), None);
+        assert_eq!(first_line(&"x".repeat(300)).map(|l| l.chars().count()), Some(ERROR_LINE_CHARS));
+        assert_eq!(exit_line(101, "running 3 tests\n\nerror: test failed, to rerun pass --lib\n\n"), "exit code 101: error: test failed, to rerun pass --lib");
+        assert_eq!(exit_line(1, ""), "exit code 1");
     }
 }

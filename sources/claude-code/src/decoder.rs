@@ -20,12 +20,12 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use tokprof_core::api::ApiId;
 use tokprof_core::labels::{display_path, message_label};
-use tokprof_core::model::{Block, BlockKind, Class, CompactionTrigger, HandoffKind, Origin, ReminderKind, ToolClass, Chain, ChainKind, Compaction, Params, PromptDelta, Request, Session, Shape, TypedMessage, Usage};
+use tokprof_core::model::{Block, BlockKind, CallEnd, Class, CompactionTrigger, HandoffKind, Origin, ReminderKind, ToolClass, Chain, ChainKind, Compaction, Params, PromptDelta, Request, Session, Shape, TypedMessage, Usage, WakeSource};
 use tokprof_core::source::{AgentId, Decoder};
 use tokprof_core::trigger::{CallClass, Pending, Trigger};
 use tokprof_logio::{canonical_hash, canonical_string, json_len, parse_ts_ms, str_at, u64_at};
 
-use crate::tools::{asks_the_user, call_class, tool_target};
+use crate::tools::{self, asks_the_user, call_class, tool_target};
 
 /// Size an image is counted as, in characters (roughly 1,400 tokens).
 const IMAGE_CHARS: u64 = 5_000;
@@ -57,6 +57,18 @@ struct ApiRequest {
     tail: Vec<String>,
     shape: Option<String>,
     params: Params,
+    /// An `api_error` line followed the attempt, with the error's text: Claude Code sends the
+    /// request again.
+    failed: Option<Option<String>>,
+}
+
+/// An `api_error` line of a chain without request-audit lines: its time, the delay before the
+/// next attempt, and the error's text.
+#[derive(Clone)]
+struct ApiError {
+    ts_ms: i64,
+    retry_in_ms: i64,
+    error: Option<String>,
 }
 
 #[derive(Clone)]
@@ -77,6 +89,13 @@ struct Response {
     activity: Option<CallClass>,
     /// The `entrypoint` of the response's line: the program that ran Claude Code.
     client: Option<Arc<str>>,
+    /// The latest `user` line of its chain before the response's first line: its send when the
+    /// transcript has no `api-request` lines.
+    input_ms: Option<i64>,
+    /// The latest `timestamp` of the response's lines.
+    ended_ms: i64,
+    /// The `api_error` lines of its chain between its input and its first line.
+    errors: Vec<ApiError>,
 }
 
 /// Reads a Claude Code transcript, one line at a time.
@@ -127,6 +146,14 @@ pub(crate) struct Parser {
     last_end: Option<(String, usize)>,
     /// The questions the main conversation asked the user, by tool call id, until the answer.
     questions: HashSet<String>,
+    /// Per chain (agent id, sidechain): the time of its latest `user` line.
+    last_input: HashMap<(String, bool), i64>,
+    /// Per chain: the `api_error` lines since its latest `user` line or response.
+    api_errors: HashMap<(String, bool), Vec<ApiError>>,
+    /// The calls that did not work, by tool call id.
+    call_ends: HashMap<String, CallEnd>,
+    /// The call and result blocks of each tool call id, in every message that holds them.
+    blocks_by_call: HashMap<String, Vec<usize>>,
 }
 
 impl Parser {
@@ -159,6 +186,10 @@ impl Parser {
             entrypoint_seen: false,
             last_end: None,
             questions: HashSet::new(),
+            last_input: HashMap::new(),
+            api_errors: HashMap::new(),
+            call_ends: HashMap::new(),
+            blocks_by_call: HashMap::new(),
         }
     }
 
@@ -173,7 +204,9 @@ impl Parser {
             || line.contains("\"type\":\"ai-title\"")
             || line.contains("\"type\":\"custom-title\"")
             // A message the user typed while the agent worked.
-            || line.contains("\"queued_command\"");
+            || line.contains("\"queued_command\"")
+            // An attempt of a request that failed and is sent again.
+            || line.contains("\"api_error\"");
         if !interesting {
             return;
         }
@@ -213,6 +246,7 @@ impl Parser {
                     self.after_boundary = true;
                 }
             }
+            Some("system") if str_at(&v, "subtype") == Some("api_error") => self.api_error(&v),
             Some("system") if str_at(&v, "subtype") == Some("informational")
                 && str_at(&v, "content").is_some_and(|c| IDLE_NOTICES.iter().any(|n| c.starts_with(n))) => {
                 if let Some(ts) = parse_ts_ms(v.get("timestamp")) {
@@ -256,7 +290,13 @@ impl Parser {
 
     fn user(&mut self, v: &Value) {
         self.note_meta(v);
+        if let Some(ts) = parse_ts_ms(v.get("timestamp")) {
+            let chain = self.chain_key(v);
+            self.api_errors.remove(&chain);
+            self.last_input.insert(chain, ts);
+        }
         let Some(msg) = v.get("message") else { return };
+        self.note_call_ends(v, msg);
         let meta = v.get("isMeta").and_then(Value::as_bool).unwrap_or(false);
         let hash = canonical_hash(msg);
         if !self.msg_by_hash.contains_key(&hash) {
@@ -284,6 +324,20 @@ impl Parser {
             }
         if main {
             self.note_user_handoffs(v, msg);
+        }
+    }
+
+    /// The tool results of a `user` line: how each call ended, by its tool call id. The line's
+    /// `permissionDecision` applies to all its results.
+    fn note_call_ends(&mut self, v: &Value, msg: &Value) {
+        let Some(Value::Array(items)) = msg.get("content") else { return };
+        let rejected = v.get("permissionDecision").and_then(|d| str_at(d, "decision")) == Some("reject");
+        for item in items.iter().filter(|i| str_at(i, "type") == Some("tool_result")) {
+            let Some(id) = str_at(item, "tool_use_id") else { continue };
+            let is_error = item.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+            if let Some(end) = tools::call_end(is_error, &result_text(item.get("content").unwrap_or(&Value::Null)), rejected) {
+                self.call_ends.insert(id.to_string(), end);
+            }
         }
     }
 
@@ -447,8 +501,10 @@ impl Parser {
             .or_else(|| str_at(v, "requestId").map(str::to_string))
             .or_else(|| message_id.clone());
         let Some(key) = key else { return };
+        let ts = parse_ts_ms(v.get("timestamp")).unwrap_or(0);
         if let Some(&i) = self.response_by_key.get(&key) {
             self.responses[i].usage = usage.clone();
+            self.responses[i].ended_ms = self.responses[i].ended_ms.max(ts);
             return;
         }
         self.response_by_key.insert(key, self.responses.len());
@@ -458,8 +514,10 @@ impl Parser {
         let origin = attribution(v).or_else(|| if main { self.turn.clone() } else { None });
         let (trigger, activity) = message_id.as_ref().and_then(|id| self.trigger_by_message.get(id).copied()).unwrap_or_default();
         let client = self.client_of(v);
+        let input_ms = self.last_input.get(&self.chain_key(v)).copied();
+        let errors = self.api_errors.remove(&self.chain_key(v)).unwrap_or_default();
         self.responses.push(Response {
-            ts_ms: parse_ts_ms(v.get("timestamp")).unwrap_or(0),
+            ts_ms: ts,
             model: model.to_string(),
             usage: usage.clone(),
             message_id,
@@ -471,7 +529,30 @@ impl Parser {
             trigger,
             activity,
             client,
+            input_ms,
+            ended_ms: ts,
+            errors,
         });
+    }
+
+    /// A `system` line of subtype `api_error`: an attempt of a request failed, and Claude Code
+    /// will send it again. It follows the attempt's `api-request` line, which only the agent id
+    /// names, so it marks that agent's latest attempt while no response has come for it. Without
+    /// request-audit lines, the chain keeps it for its next response. Seen in 2.1.287–2.1.316.
+    fn api_error(&mut self, v: &Value) {
+        let Some(ts_ms) = parse_ts_ms(v.get("timestamp")) else { return };
+        let error = v
+            .get("error")
+            .and_then(|e| str_at(e, "formatted").or_else(|| str_at(e, "message")))
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty());
+        let agent = if self.subagent_file { None } else { Some(str_at(v, "agentId").unwrap_or_default()) };
+        let attempt = self.requests.iter_mut().rev().find(|r| agent.is_none_or(|a| r.stream.0 == a));
+        if let Some(attempt) = attempt.filter(|r| !self.response_by_key.contains_key(&r.id)) {
+            attempt.failed = Some(error.clone());
+        }
+        let retry_in_ms = v.get("retryInMs").and_then(Value::as_i64).unwrap_or(0);
+        self.api_errors.entry(self.chain_key(v)).or_default().push(ApiError { ts_ms, retry_in_ms, error });
     }
 
     /// The hand-offs of a main response line: the questions it asks the user, and the end of the
@@ -576,6 +657,7 @@ impl Parser {
                     ("context management", params.get("context_management").map(canonical_string)),
                 ],
             },
+            failed: None,
         });
     }
 
@@ -662,6 +744,7 @@ impl Parser {
                             let target = tool_target(&name, input, cwd.as_deref(), &self.home);
                             if let Some(id) = str_at(item, "id") {
                                 self.tools_by_id.insert(id.to_string(), (name.clone(), target.clone()));
+                                self.blocks_by_call.entry(id.to_string()).or_default().push(self.session.blocks.len() + blocks.len());
                             }
                             blocks.push(Block {
                                 class: Class::None,
@@ -677,6 +760,9 @@ impl Parser {
                                 .and_then(|id| self.tools_by_id.get(id).cloned())
                                 .map_or((None, None), |(t, g)| (Some(t), g));
                             let chars = result_chars(item.get("content").unwrap_or(&Value::Null));
+                            if let Some(id) = str_at(item, "tool_use_id") {
+                                self.blocks_by_call.entry(id.to_string()).or_default().push(self.session.blocks.len() + blocks.len());
+                            }
                             blocks.push(Block { class: Class::None, kind: BlockKind::ToolResult, chars, tool, target });
                         }
                         "image" => blocks.push(Block { class: Class::None, kind: BlockKind::Image, chars: IMAGE_CHARS, tool: None, target: None }),
@@ -719,6 +805,9 @@ impl Parser {
             .filter_map(|(i, r)| r.request_ref.as_deref().map(|id| (id, i)))
             .collect();
         let mut used = vec![false; self.responses.len()];
+        // Per stream, the attempts that failed with an API error since its latest other request:
+        // the first one's send, how many, the last error, and where the latest one is.
+        let mut retried: HashMap<(String, String), (i64, u32, Option<String>, (usize, usize))> = HashMap::new();
 
         for req in &self.requests {
             let (name, kind) = stream_chain(&req.stream.0, &req.stream.1, self.subagent_file);
@@ -729,18 +818,49 @@ impl Parser {
                 keep: req.keep,
                 tail,
             };
-            let base = Request {
+            let mut base = Request {
                 ts_ms: req.ts_ms,
                 params: Some(req.params.clone()),
                 version: req.version.clone(),
+                first_sent_ms: Some(req.ts_ms),
+                sent_ms: Some(req.ts_ms),
                 ..Request::default()
             };
+            // An attempt after failed ones repeats them: it takes over their first send, their count
+            // and their last error, and the attempt before it keeps no time of its own.
+            let before = retried.remove(&req.stream);
+            if let Some((first, count, error, (pci, pri))) = &before {
+                base.first_sent_ms = Some(*first);
+                base.retries = *count;
+                base.retry_error = error.as_deref().map(Arc::from);
+                let prev = &mut chains[*pci].requests[*pri];
+                (prev.first_sent_ms, prev.sent_ms, prev.retries, prev.retry_error) = (None, None, 0, None);
+            }
+            let answered = by_ref.contains_key(req.id.as_str());
+            if let (false, Some(error)) = (answered, &req.failed) {
+                // This attempt failed too, and the next attempt of the stream takes it over. Until
+                // then it is the last attempt of a request nobody answered, and keeps its error.
+                if let Some(e) = error {
+                    base.retry_error = Some(Arc::from(e.as_str()));
+                }
+                let first = before.as_ref().map_or(req.ts_ms, |b| b.0);
+                let at = (ci, chains[ci].requests.len());
+                let last = base.retry_error.as_deref().map(str::to_string);
+                retried.insert(req.stream.clone(), (first, base.retries + 1, last, at));
+            }
             match by_ref.get(req.id.as_str()) {
                 Some(&ri) => {
                     used[ri] = true;
                     let resp = &self.responses[ri];
                     let produced = resp.message_id.as_ref().and_then(|id| self.msg_by_assistant_id.get(id).copied());
-                    let base = Request { origin: origin_of(resp, &chains[ci], self.agent.as_ref()).map(|o| Origin::parse(&o)), trigger: resp.trigger, activity: resp.activity, client: resp.client.clone(), ..base };
+                    let base = Request {
+                        origin: origin_of(resp, &chains[ci], self.agent.as_ref()).map(|o| Origin::parse(&o)),
+                        trigger: resp.trigger,
+                        activity: resp.activity,
+                        client: resp.client.clone(),
+                        ended_ms: Some(resp.ended_ms.max(req.ts_ms)),
+                        ..base
+                    };
                     push_response(&mut chains[ci], base, resp, Some(delta), produced);
                 }
                 // Keep the request so later deltas still apply; it has no usage to attribute.
@@ -761,7 +881,23 @@ impl Parser {
             };
             let ci = chain_for((resp.agent_id.clone(), format!("legacy:{name}")), name, kind, &mut chains);
             let origin = origin_of(resp, &chains[ci], self.agent.as_ref());
-            let base = Request { ts_ms: resp.ts_ms, version: resp.version.clone(), origin: origin.map(|o| Origin::parse(&o)), trigger: resp.trigger, activity: resp.activity, client: resp.client.clone(), ..Request::default() };
+            let first = resp.input_ms.unwrap_or(resp.ts_ms);
+            // After API errors, the answered attempt went when the last error said it would.
+            let sent = resp.errors.last().map_or(first, |e| (e.ts_ms + e.retry_in_ms).clamp(first, resp.ended_ms.max(first)));
+            let base = Request {
+                ts_ms: resp.ts_ms,
+                version: resp.version.clone(),
+                origin: origin.map(|o| Origin::parse(&o)),
+                trigger: resp.trigger,
+                activity: resp.activity,
+                client: resp.client.clone(),
+                first_sent_ms: Some(first),
+                sent_ms: Some(sent),
+                ended_ms: Some(resp.ended_ms.max(sent)),
+                retries: resp.errors.len() as u32,
+                retry_error: resp.errors.iter().rev().find_map(|e| e.error.as_deref()).map(Arc::from),
+                ..Request::default()
+            };
             let produced = resp.message_id.as_ref().and_then(|id| self.msg_by_assistant_id.get(id).copied());
             push_response(&mut chains[ci], base, resp, None, produced);
         }
@@ -808,6 +944,12 @@ impl Parser {
             }
         }
         session.compactions = compaction_kinds(&self.compactions, &self.idle_notices, &chains);
+        // A call that did not work marks its call and its result, in every message that holds them.
+        for (id, end) in &self.call_ends {
+            for &b in self.blocks_by_call.get(id).into_iter().flatten() {
+                session.call_ends.insert(b, end.clone());
+            }
+        }
         for b in &mut session.blocks {
             b.class = class_of(b);
         }
@@ -900,13 +1042,16 @@ fn user_event(text: &str) -> Option<Trigger> {
 
 /// The hand-off a main user message's text tells: the user stopped the agent (`[Request
 /// interrupted by user]`, or `… for tool use]`), or a background task's result or another
-/// session's message woke it. Seen in 2.1.310–2.1.316.
+/// session's message woke it. Seen in 2.1.310–2.1.316. A background task's notification says in
+/// its `<summary>` what it reports (see `tools::wake_source`).
 fn user_handoff(text: &str) -> Option<HandoffKind> {
     let t = text.trim_start();
     if t.starts_with("[Request interrupted") {
         Some(HandoffKind::Interrupt)
-    } else if t.starts_with("<task-notification>") || t.starts_with("<cross-session-message") {
-        Some(HandoffKind::Wake)
+    } else if t.starts_with("<task-notification>") {
+        Some(HandoffKind::Wake(tools::wake_source(tag_text(t, "summary").unwrap_or_default())))
+    } else if t.starts_with("<cross-session-message") {
+        Some(HandoffKind::Wake(WakeSource::Other))
     } else {
         None
     }
@@ -951,14 +1096,17 @@ fn push_response(chain: &mut Chain, base: Request, resp: &Response, prompt: Opti
             (true, true) => Some(keep_all()),
             (true, false) => Some(prompt.take().unwrap_or_else(keep_all)),
         };
-        chain.requests.push(Request {
+        let last = Some(i) == last_executor;
+        // One response has one send and one end, which the iteration that wrote its message keeps.
+        let timed = |r: Request| if last { r } else { Request { first_sent_ms: None, sent_ms: None, ended_ms: None, retries: 0, retry_error: None, ..r } };
+        chain.requests.push(timed(Request {
             model: str_at(it, "model").unwrap_or(&resp.model).to_string(),
             usage,
             prompt: delta,
-            produced: if Some(i) == last_executor { produced } else { None },
+            produced: if last { produced } else { None },
             advisor,
             ..base.clone()
-        });
+        }));
     }
 }
 
@@ -1106,6 +1254,15 @@ fn reminder_label(text: &str) -> &'static str {
 fn is_reminder(text: &str) -> bool {
     let t = text.trim_start();
     t.starts_with("<system-reminder>") || t.starts_with("<local-command-") || t.starts_with("Caveat:")
+}
+
+/// The text of a `tool_result`'s content: the string, or its text items joined by lines.
+fn result_text(content: &Value) -> String {
+    match content {
+        Value::String(s) => s.clone(),
+        Value::Array(items) => items.iter().filter_map(|it| str_at(it, "text")).collect::<Vec<_>>().join("\n"),
+        _ => String::new(),
+    }
 }
 
 fn result_chars(content: &Value) -> u64 {
@@ -1399,6 +1556,166 @@ mod tests {
         let mut p = parser("agent-a1", true);
         p.line(&user_line("Find the handlers").to_string());
         assert!(p.into_session().typed.is_empty(), "a subagent's brief is not typed by the user");
+    }
+
+    /// `(first send, answered send, end)` of each request of the first chain.
+    fn times(s: &Session) -> Vec<(Option<i64>, Option<i64>, Option<i64>)> {
+        s.chains[0].requests.iter().map(|r| (r.first_sent_ms, r.sent_ms, r.ended_ms)).collect()
+    }
+
+    #[test]
+    fn an_audited_request_is_sent_at_its_request_line_and_ends_with_its_last_line() {
+        let s = session_from(&[
+            at(user_line("run the tests"), "2026-10-01T09:59:58Z"),
+            json!({"type": "api-request", "id": "r1", "querySource": "sdk", "timestamp": "2026-10-01T10:00:00Z", "keep": 0, "tail": []}),
+            at(assistant_line("m1", json!({"requestRef": "r1"}), json!([{"type": "thinking", "thinking": "…"}])), "2026-10-01T10:00:05Z"),
+            at(assistant_line("m1", json!({"requestRef": "r1"}), json!([{"type": "text", "text": "done"}])), "2026-10-01T10:00:12Z"),
+        ]);
+        let t = (Some(ms("2026-10-01T10:00:00Z")), Some(ms("2026-10-01T10:00:00Z")), Some(ms("2026-10-01T10:00:12Z")));
+        assert_eq!(times(&s), [t]);
+        assert_eq!(s.chains[0].requests[0].run_ms(), Some(12_000));
+    }
+
+    #[test]
+    fn without_audit_lines_a_request_is_sent_at_the_latest_user_line_of_its_chain() {
+        let s = session_from(&[
+            at(user_line("run the tests"), "2026-10-01T10:00:00Z"),
+            // Claude Code stamps some attachments with the response; they are no input.
+            at(json!({"type": "attachment", "attachment": {"type": "deferred_tools_record"}}), "2026-10-01T10:00:04Z"),
+            // A subagent's line in the main transcript belongs to another chain.
+            at(json!({"type": "user", "agentId": "a1", "message": {"role": "user", "content": "brief"}}), "2026-10-01T10:00:03Z"),
+            at(assistant_line("m1", json!({}), json!([{"type": "thinking", "thinking": "…"}])), "2026-10-01T10:00:05Z"),
+            at(assistant_line("m1", json!({}), json!([{"type": "text", "text": "done"}])), "2026-10-01T10:00:09Z"),
+        ]);
+        assert_eq!(times(&s), [(Some(ms("2026-10-01T10:00:00Z")), Some(ms("2026-10-01T10:00:00Z")), Some(ms("2026-10-01T10:00:09Z")))]);
+    }
+
+    #[test]
+    fn a_response_never_ends_before_its_send_and_one_without_input_is_sent_at_its_first_line() {
+        let first = session_from(&[at(assistant_line("m1", json!({}), json!([{"type": "text", "text": "hi"}])), "2026-10-01T10:00:05Z")]);
+        assert_eq!(times(&first), [(Some(ms("2026-10-01T10:00:05Z")), Some(ms("2026-10-01T10:00:05Z")), Some(ms("2026-10-01T10:00:05Z")))]);
+        // A user line stamped later than the response it led to.
+        let late = session_from(&[
+            at(user_line("go"), "2026-10-01T10:00:10Z"),
+            at(assistant_line("m1", json!({}), json!([{"type": "text", "text": "hi"}])), "2026-10-01T10:00:05Z"),
+        ]);
+        let r = &late.chains[0].requests[0];
+        assert_eq!((r.sent_ms, r.ended_ms, r.run_ms()), (Some(ms("2026-10-01T10:00:10Z")), Some(ms("2026-10-01T10:00:10Z")), Some(0)));
+    }
+
+    #[test]
+    fn a_request_without_a_response_is_sent_but_never_ends() {
+        let s = session_from(&[
+            json!({"type": "api-request", "id": "r1", "querySource": "sdk", "timestamp": "2026-10-01T10:00:00Z", "keep": 0, "tail": []}),
+        ]);
+        assert_eq!(times(&s), [(Some(ms("2026-10-01T10:00:00Z")), Some(ms("2026-10-01T10:00:00Z")), None)]);
+    }
+
+    fn attempt(id: &str, ts: &str) -> Value {
+        json!({"type": "api-request", "id": id, "querySource": "sdk", "timestamp": ts, "keep": 0, "tail": []})
+    }
+
+    fn api_error(ts: &str, attempt: u32, retry_in_ms: i64) -> Value {
+        json!({"type": "system", "subtype": "api_error", "level": "error", "isSidechain": false, "timestamp": ts,
+               "error": {"message": "502 local proxy: upstream request failed\n", "status": 502, "formatted": "502 local proxy: upstream request failed"},
+               "retryInMs": retry_in_ms, "retryAttempt": attempt, "maxRetries": 10, "source": "request_retry"})
+    }
+
+    #[test]
+    fn a_request_retried_after_api_errors_counts_from_its_first_attempt() {
+        let s = session_from(&[
+            at(user_line("go"), "2026-11-03T07:04:04Z"),
+            attempt("r1", "2026-11-03T07:04:05.589Z"),
+            api_error("2026-11-03T07:04:05.595Z", 1, 580),
+            attempt("r2", "2026-11-03T07:04:06.177Z"),
+            api_error("2026-11-03T07:04:06.181Z", 2, 1196),
+            attempt("r3", "2026-11-03T07:04:07.385Z"),
+            api_error("2026-11-03T07:04:07.390Z", 3, 2032),
+            attempt("r4", "2026-11-03T07:04:09.426Z"),
+            at(assistant_line("m1", json!({"requestRef": "r4"}), json!([{"type": "text", "text": "hi"}])), "2026-11-03T07:04:15Z"),
+        ]);
+        let answered = s.chains[0].requests.iter().find(|r| r.usage.output > 0).unwrap();
+        assert_eq!((answered.first_sent_ms, answered.sent_ms, answered.retries), (Some(ms("2026-11-03T07:04:05.589Z")), Some(ms("2026-11-03T07:04:09.426Z")), 3));
+        assert_eq!(answered.retry_error.as_deref(), Some("502 local proxy: upstream request failed"));
+        assert_eq!(answered.retry_ms(), 3_837);
+        // The failed attempts keep no time of their own.
+        let attempts: Vec<_> = s.chains[0].requests.iter().filter(|r| r.usage.output == 0).map(|r| r.sent_ms).collect();
+        assert_eq!(attempts, [None, None, None]);
+    }
+
+    #[test]
+    fn without_audit_lines_the_retries_come_between_the_input_and_the_response() {
+        let s = session_from(&[
+            at(user_line("go"), "2026-10-01T10:00:00Z"),
+            api_error("2026-10-01T10:00:01Z", 1, 1_500),
+            api_error("2026-10-01T10:00:03Z", 2, 3_000),
+            at(assistant_line("m1", json!({}), json!([{"type": "text", "text": "hi"}])), "2026-10-01T10:00:10Z"),
+        ]);
+        let r = &s.chains[0].requests[0];
+        assert_eq!((r.first_sent_ms, r.sent_ms, r.retries), (Some(ms("2026-10-01T10:00:00Z")), Some(ms("2026-10-01T10:00:06Z")), 2));
+        assert_eq!(r.run_ms(), Some(4_000));
+    }
+
+    #[test]
+    fn a_request_nobody_answered_keeps_its_retries_and_its_last_error() {
+        let mut synthetic = assistant_line("e1", json!({"isApiErrorMessage": true}), json!([{"type": "text", "text": "API Error: 502"}]));
+        synthetic["message"]["model"] = json!("<synthetic>");
+        let s = session_from(&[
+            attempt("r1", "2026-11-03T07:04:05Z"),
+            api_error("2026-11-03T07:04:05.100Z", 1, 500),
+            attempt("r2", "2026-11-03T07:04:06Z"),
+            api_error("2026-11-03T07:04:06.100Z", 2, 1000),
+            at(synthetic, "2026-11-03T07:04:07Z"),
+        ]);
+        let reqs = &s.chains[0].requests;
+        assert_eq!(reqs.len(), 2);
+        assert_eq!((reqs[0].sent_ms, reqs[0].retries), (None, 0));
+        let last = &reqs[1];
+        assert_eq!((last.first_sent_ms, last.sent_ms, last.ended_ms, last.retries), (Some(ms("2026-11-03T07:04:05Z")), Some(ms("2026-11-03T07:04:06Z")), None, 1));
+        assert_eq!(last.retry_error.as_deref(), Some("502 local proxy: upstream request failed"));
+    }
+
+    #[test]
+    fn an_api_error_after_an_answer_belongs_to_no_answered_request() {
+        let s = session_from(&[
+            attempt("r1", "2026-11-03T07:00:00Z"),
+            at(assistant_line("m1", json!({"requestRef": "r1"}), json!([{"type": "text", "text": "hi"}])), "2026-11-03T07:00:05Z"),
+            api_error("2026-11-03T07:00:06Z", 1, 500),
+        ]);
+        let r = &s.chains[0].requests[0];
+        assert_eq!((r.retries, r.first_sent_ms), (0, Some(ms("2026-11-03T07:00:00Z"))));
+    }
+
+    #[test]
+    fn a_call_that_did_not_work_marks_its_call_and_its_result() {
+        use tokprof_core::model::Outcome;
+        let calls = json!([
+            {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/w/missing.rs"}},
+            {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "rm -rf build"}},
+            {"type": "tool_use", "id": "t3", "name": "Bash", "input": {"command": "ls"}},
+        ]);
+        let mut denied = json!({"type": "user", "permissionDecision": {"decision": "reject", "reasonType": "rule", "source": "config"},
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "is_error": true, "content": "Blocked by a hook"}]}});
+        denied["timestamp"] = json!("2026-10-01T10:00:07Z");
+        let s = session_from(&[
+            user_line("look"),
+            assistant_line("m1", json!({}), calls),
+            at(json!({"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "is_error": true, "content": "File does not exist. Note: your current working directory is /w."},
+                {"type": "tool_result", "tool_use_id": "t3", "content": [{"type": "text", "text": "a.rs"}]}]}}), "2026-10-01T10:00:06Z"),
+            denied,
+        ]);
+        let end = |tool: &str, kind: BlockKind| {
+            let mut found: Vec<Outcome> = s.blocks.iter().enumerate().filter(|(_, b)| b.kind == kind && b.target.as_deref().is_some_and(|t| t.contains(tool))).map(|(i, _)| s.outcome(i)).collect();
+            found.dedup();
+            found
+        };
+        assert_eq!(end("missing.rs", BlockKind::ToolUse), [Outcome::Failed]);
+        assert_eq!(end("missing.rs", BlockKind::ToolResult), [Outcome::Failed]);
+        assert_eq!(end("rm -rf", BlockKind::ToolUse), [Outcome::Denied]);
+        assert_eq!(end("ls", BlockKind::ToolUse), [Outcome::Worked]);
+        let failed = s.call_ends.values().find(|e| e.outcome == Outcome::Failed).unwrap();
+        assert_eq!(failed.error.as_deref(), Some("File does not exist. Note: your current working directory is /w."));
     }
 
     #[test]
@@ -1702,13 +2019,25 @@ mod tests {
 
     #[test]
     fn a_background_result_or_another_session_wakes_the_agent() {
+        let note = |summary: &str| format!("<task-notification>\n<task-id>b7x2k9</task-id>\n<status>completed</status>\n<summary>{summary}</summary>\n</task-notification>");
         let s = session_from(&[
-            at(user_line("<task-notification>\n<task-id>b7x2k9</task-id>\n<status>completed</status>\n</task-notification>"), "2026-10-01T10:00:00Z"),
+            at(user_line(&note("Background command \"Run the tests\" completed (exit code 0)")), "2026-10-01T10:00:00Z"),
+            at(user_line(&note("Agent \"Review the diff\" finished")), "2026-10-01T10:01:00Z"),
+            at(user_line(&note("Monitor \"watch the build\" stream ended")), "2026-10-01T10:02:00Z"),
+            at(user_line(&note("Background shell command didn't finish before the previous session ended")), "2026-10-01T10:03:00Z"),
+            at(user_line("<task-notification>\n<task-id>b7x2k9</task-id>\n</task-notification>"), "2026-10-01T10:04:00Z"),
             at(user_line("<cross-session-message from=\"other\">the build is green</cross-session-message>"), "2026-10-01T10:05:00Z"),
             at(user_line("thanks, go on"), "2026-10-01T10:06:00Z"),
         ]);
         use HandoffKind::*;
-        assert_eq!(handoffs(&s), [(ms("2026-10-01T10:00:00Z"), Wake), (ms("2026-10-01T10:05:00Z"), Wake)]);
+        assert_eq!(handoffs(&s), [
+            (ms("2026-10-01T10:00:00Z"), Wake(WakeSource::Command)),
+            (ms("2026-10-01T10:01:00Z"), Wake(WakeSource::Subagent)),
+            (ms("2026-10-01T10:02:00Z"), Wake(WakeSource::Command)),
+            (ms("2026-10-01T10:03:00Z"), Wake(WakeSource::Other)),
+            (ms("2026-10-01T10:04:00Z"), Wake(WakeSource::Other)),
+            (ms("2026-10-01T10:05:00Z"), Wake(WakeSource::Other)),
+        ]);
     }
 
     #[test]

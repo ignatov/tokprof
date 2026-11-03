@@ -13,7 +13,7 @@ use tokprof_core::pricing::{Price, Pricing};
 use tokprof_core::profile::Values;
 use tokprof_core::report::{Collector, ModelTotals, Spend, TriggerSpend, Work};
 use tokprof_core::setup::SetupSpend;
-use tokprof_core::tools::{ToolTable, hint};
+use tokprof_core::tools::{RowOrder, ToolTable, hint};
 use tokprof_core::source::AgentId;
 
 /// `window` is the time filter the requests were selected by; it limits the reconciliation to
@@ -157,11 +157,46 @@ pub fn pauses(p: &Pauses) -> String {
             rows.push(vec![r.name.to_string(), r.count.to_string(), amount(r.usd, r.tokens), format!("{:.1}%", 100.0 * part / total.max(1e-9)), r.cold_returns.to_string()]);
         }
         out.push_str(&table(&rows, 1));
+        busy_part(&mut out, &a.busy);
     }
     if p.agents.is_empty() {
         out.push_str("\nNo requests in these logs.\n");
     }
     out
+}
+
+/// The last part of an agent's pause report: its busy time by kind, and the slow requests (see
+/// agent-time).
+fn busy_part(out: &mut String, b: &tokprof_core::busy::Busy) {
+    use tokprof_core::rhythm::duration;
+    out.push_str("\nWhere the agent's busy time went: what it waited on in its turns, and while its own background work ran after them\n\n");
+    let total = b.total_ms();
+    if total == 0 {
+        out.push_str("No busy time.\n");
+        return;
+    }
+    // Over many days, hours read better than days.
+    let time = |ms: i64| if ms >= 3_600_000 { format!("{:.1}h", ms as f64 / 3_600_000.0) } else { duration(ms) };
+    let mut rows = vec![["kind", "time", "share", "after turns"].map(str::to_string).to_vec()];
+    for (kind, ms, after) in b.sorted() {
+        let after = if after > 0 { time(after) } else { "–".to_string() };
+        rows.push(vec![kind.to_string(), time(ms), format!("{:.1}%", 100.0 * ms as f64 / total as f64), after]);
+    }
+    out.push_str(&table(&rows, 1));
+    let slow = format!(
+        "\n{} of {} requests took a minute or more ({:.1}%)",
+        fmt::int(b.slow),
+        fmt::int(b.requests),
+        100.0 * b.slow as f64 / b.requests.max(1) as f64
+    );
+    match b.longest.filter(|_| b.slow > 0) {
+        Some((ms, _)) => {
+            let _ = writeln!(out, "{slow}; the longest took {}.", duration(ms));
+        }
+        None => {
+            let _ = writeln!(out, "{slow}.");
+        }
+    }
 }
 
 /// Spend by client: one row per agent and client, most expensive first, with the main sessions
@@ -310,27 +345,60 @@ fn request_table(title: &str, label: &str, rows_in: Vec<(&str, TriggerSpend)>) -
     out
 }
 
-/// Spend by tool: the table of `tokprof tools`, its top `limit` rows by rent or trips.
-pub fn tools(t: &ToolTable, by_trips: bool, limit: usize) -> String {
+/// Spend by tool: the table of `tokprof tools`, its top `limit` rows in `order`, with the
+/// failures columns and line.
+pub fn tools(t: &ToolTable, order: RowOrder, limit: usize) -> String {
     let mut out = String::from("Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent do (trips)\n\n");
-    out.push_str(&tool_rows(t, by_trips, limit));
+    out.push_str(&tool_rows(t, order, limit, true));
+    if let Some(line) = failures_line(t) {
+        let _ = writeln!(out, "{line}");
+    }
     out
 }
 
-/// The tool table's rows, `<n> more` and the total line.
-pub fn tool_rows(t: &ToolTable, by_trips: bool, limit: usize) -> String {
+/// The line on the calls that did not work: how many failed, with the spend of the requests after
+/// them until the tool worked again, how many the user refused and how many rules denied. `None`
+/// when every call worked.
+pub fn failures_line(t: &ToolTable) -> Option<String> {
+    let priced = t.spend.usd > 0.0;
+    let mut parts = Vec::new();
+    if t.failed > 0 {
+        let after = if priced { usd(t.after.usd) } else { format!("{} tok", tokens(t.after.tokens)) };
+        parts.push(format!("failed {}, after them {after} until the tool worked again", count_int(t.failed, "call", "calls")));
+    }
+    if t.refused > 0 {
+        parts.push(format!("you refused {}", fmt::int(t.refused)));
+    }
+    if t.denied > 0 {
+        parts.push(format!("rules denied {}", fmt::int(t.denied)));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// `1 call`, `1,021 calls`.
+fn count_int(n: u64, one: &str, many: &str) -> String {
+    format!("{} {}", fmt::int(n), if n == 1 { one } else { many })
+}
+
+/// The tool table's rows, `<n> more` and the total line; with `failures`, the `failed` and
+/// `after` columns too.
+pub fn tool_rows(t: &ToolTable, order: RowOrder, limit: usize, failures: bool) -> String {
     let priced = t.spend.usd > 0.0;
     let amount = |v: &Values| if priced { usd(v.usd) } else { format!("{} tok", tokens(v.tokens)) };
     let size = |v: Option<f64>| v.map_or("–".to_string(), tokens);
-    let rows = t.sorted(by_trips);
-    let mut table_rows = vec![["tool", "calls", "avg result", "avg input", "rent", "trips", "single"].map(str::to_string).to_vec()];
+    let rows = t.sorted_by(order);
+    let mut header = vec!["tool", "calls", "avg result", "avg input", "rent", "trips", "single"];
+    if failures {
+        header.extend(["failed", "after"]);
+    }
+    let mut table_rows = vec![header.into_iter().map(str::to_string).collect::<Vec<_>>()];
     let mut hints = vec!["hint"];
     for (key, r) in rows.iter().take(limit) {
         let name = match &key.1 {
             Some(head) => format!("{} {head}", key.0),
             None => key.0.clone(),
         };
-        table_rows.push(vec![
+        let mut row = vec![
             clip_end(&name, 32),
             r.calls.to_string(),
             size(r.avg_result()),
@@ -338,13 +406,23 @@ pub fn tool_rows(t: &ToolTable, by_trips: bool, limit: usize) -> String {
             amount(&r.rent),
             amount(&r.trips),
             format!("{:.0}%", 100.0 * r.single_share()),
-        ]);
+        ];
+        if failures {
+            // A row whose calls all worked leaves both cells empty.
+            row.push(if r.failed > 0 { r.failed.to_string() } else { String::new() });
+            row.push(if r.failed > 0 { amount(&r.after) } else { String::new() });
+        }
+        table_rows.push(row);
         hints.push(hint(key, r).unwrap_or(""));
     }
-    // The hint is text, so it goes after the aligned columns.
+    // The hint is text, so it goes after the aligned columns, which the empty failures cells of a
+    // row would otherwise cut short.
     let mut out = String::new();
-    for (line, h) in table(&table_rows, 1).lines().zip(hints) {
-        let _ = writeln!(out, "{}", format!("{line}  {h}").trim_end());
+    let lines = table(&table_rows, 1);
+    let width = lines.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+    for (line, h) in lines.lines().zip(hints) {
+        let pad = width - line.chars().count();
+        let _ = writeln!(out, "{}", format!("{line}{}  {h}", " ".repeat(pad)).trim_end());
     }
     if rows.len() > limit {
         let _ = writeln!(out, "{} more", rows.len() - limit);
@@ -548,6 +626,13 @@ mod tests {
             follows: vec![20, 2],
             sessions: [("a".to_string(), SessionSize { largest: 966_000, usd: 412.0, tokens: 1.0, cold_returns: 2 }), ("b".to_string(), SessionSize { largest: 30_000, usd: 8.0, tokens: 1.0, cold_returns: 0 })].into_iter().collect(),
             priced: true,
+            busy: {
+                let mut b = tokprof_core::busy::Busy::default();
+                b.kinds.insert(tokprof_core::busy::SUBAGENTS, (60 * 60 * minute, 43 * 60 * minute));
+                b.kinds.insert(tokprof_core::busy::MODEL, (84 * 60 * minute, 0));
+                (b.requests, b.slow, b.longest) = (81_324, 2_652, Some((1_398_000, 9_000)));
+                b
+            },
         };
         p.agents.insert(claude(), claude_pauses);
         let codex = AgentPauses { lifetimes: [30 * minute].into_iter().collect(), sessions: [("c".to_string(), SessionSize { largest: 50_000, usd: 1.0, tokens: 1.0, cold_returns: 0 })].into_iter().collect(), priced: true, ..AgentPauses::default() };
@@ -563,10 +648,17 @@ mod tests {
         assert!(out.contains("Started by: 1 typed message, 1 background task, 0 tool results, 0 other."), "{out}");
         assert!(out.contains("After a cold return: a median of 20 requests until the next cold pause or compaction (quarters 2 and 20); 1 return ended within 3 requests."), "{out}");
         assert_eq!(row("800k+").unwrap(), ["800k+", "1", "$412", "98.1%", "2"]);
+        // The busy time is the last part, most time first.
+        let claude_part = &out[..out.find("Codex (codex)").unwrap()];
+        assert!(claude_part.find("Sessions by largest context").unwrap() < claude_part.find("Where the agent's busy time went").unwrap(), "{claude_part}");
+        assert_eq!(row("model").unwrap(), ["model", "84.0h", "58.3%", "–"], "no time after turns shows a dash");
+        assert_eq!(row("subagents").unwrap(), ["subagents", "60.0h", "41.7%", "43.0h"]);
+        assert!(claude_part.contains("2,652 of 81,324 requests took a minute or more (3.3%); the longest took 23m."), "{claude_part}");
         // Codex: no typed message, no cold return.
         let codex_part = &out[out.find("Codex (codex)").unwrap()..];
         assert!(codex_part.contains("No typed messages after an earlier request.") && codex_part.contains("No cold returns."), "{codex_part}");
         assert!(!codex_part.contains("Started by"), "{codex_part}");
+        assert!(codex_part.contains("Where the agent's busy time went") && codex_part.contains("No busy time."), "{codex_part}");
     }
 
     #[test]
@@ -623,18 +715,45 @@ mod tests {
         use tokprof_core::tools::ToolRow;
         let v = |usd| Values { tokens: 1.0, usd, avoidable: 0.0 };
         let mut t = ToolTable::default();
-        t.rows.insert(("Bash".into(), Some("python3 -I".into())), ToolRow { class: Class::Tool(ToolClass::Execute), calls: 60, single: 50, results: 60, result_tokens: 60.0 * 120.0, inputs: 60, input_tokens: 60.0 * 702.0, rent: v(4.32), trips: v(7.04) });
-        t.rows.insert(("Read".into(), None), ToolRow { class: Class::Tool(ToolClass::Read), calls: 1, single: 1, results: 1, result_tokens: 16_900.0, inputs: 1, input_tokens: 20.0, rent: v(1.16), trips: v(0.2) });
+        t.rows.insert(("Bash".into(), Some("python3 -I".into())), ToolRow { class: Class::Tool(ToolClass::Execute), calls: 60, single: 50, results: 60, result_tokens: 60.0 * 120.0, inputs: 60, input_tokens: 60.0 * 702.0, rent: v(4.32), trips: v(7.04), ..ToolRow::default() });
+        t.rows.insert(("Read".into(), None), ToolRow { class: Class::Tool(ToolClass::Read), calls: 1, single: 1, results: 1, result_tokens: 16_900.0, inputs: 1, input_tokens: 20.0, rent: v(1.16), trips: v(0.2), ..ToolRow::default() });
         t.spend = v(27.37);
-        let text = tools(&t, false, 25);
+        let text = tools(&t, RowOrder::Rent, 25);
         assert!(text.starts_with("Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent do (trips)\n\n"));
         let py = text.lines().find(|l| l.contains("python3")).unwrap();
-        assert!(py.ends_with("$4.32  $7.04     83%  save long scripts to a file; edit files with the edit tool"), "{py}");
+        assert!(py.contains("$4.32  $7.04     83%") && py.ends_with("  save long scripts to a file; edit files with the edit tool"), "{py}");
         let read = text.lines().find(|l| l.starts_with("Read")).unwrap();
-        assert!(read.ends_with("$1.16  $0.20    100%"), "a large read once has no hint: {read}");
-        let by_trips = tools(&t, true, 1);
+        assert!(read.ends_with("$1.16  $0.20    100%"), "a large read once has no hint, and calls that all worked leave the failures cells empty: {read}");
+        let by_trips = tools(&t, RowOrder::Trips, 1);
         assert!(by_trips.contains("1 more") && by_trips.lines().nth(3).unwrap().contains("python3"), "{by_trips}");
         assert!(text.contains("spend $27.37 · rent of these tools $5.48 · trips of these tools $7.24 (two views of the same money; do not add them)"), "{text}");
+        assert!(!text.contains("until the tool worked again"), "no failure, no failures line: {text}");
+        let hint_at = |l: &str| l.find("save long").or_else(|| l.find("hint"));
+        assert_eq!(hint_at(text.lines().nth(2).unwrap()), hint_at(py), "hints stay in their column");
+    }
+
+    #[test]
+    fn the_tools_table_counts_failures_and_sorts_by_them() {
+        use tokprof_core::model::{Class, ToolClass};
+        use tokprof_core::tools::ToolRow;
+        let v = |usd| Values { tokens: 1.0, usd, avoidable: 0.0 };
+        let mut t = ToolTable::default();
+        t.rows.insert(("Bash".into(), Some("cargo test".into())), ToolRow { class: Class::Tool(ToolClass::Execute), calls: 9, single: 9, rent: v(3.0), trips: v(2.0), ..ToolRow::default() });
+        t.rows.insert(("Edit".into(), None), ToolRow { class: Class::Tool(ToolClass::Edit), calls: 40, single: 30, rent: v(1.0), trips: v(1.0), failed: 2, after: v(1.5), ..ToolRow::default() });
+        t.spend = v(27.37);
+        (t.failed, t.refused, t.after) = (2, 1, v(1.5));
+        let text = tools(&t, RowOrder::Failed, 25);
+        let header = text.lines().nth(2).unwrap();
+        assert!(header.contains("single  failed  after"), "{header}");
+        let first = text.lines().nth(3).unwrap();
+        assert!(first.starts_with("Edit") && first.ends_with("2  $1.50"), "the row with failures comes first: {first}");
+        assert!(text.ends_with("failed 2 calls, after them $1.50 until the tool worked again · you refused 1\n"), "{text}");
+        (t.failed, t.refused, t.denied) = (0, 2, 0);
+        assert_eq!(failures_line(&t).as_deref(), Some("you refused 2"));
+        t.refused = 0;
+        assert_eq!(failures_line(&t), None);
+        t.failed = 1_021;
+        assert!(failures_line(&t).unwrap().starts_with("failed 1,021 calls"));
     }
 
     fn claude_with_hints() -> AgentId {

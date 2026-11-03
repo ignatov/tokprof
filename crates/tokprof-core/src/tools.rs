@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use crate::analysis::{Fact, MissEvent, RequestRecord, Sink};
-use crate::model::{BlockKind, Class, Session, ToolClass};
+use crate::model::{BlockKind, ChainKind, Class, HandoffKind, Outcome, Session, ToolClass};
 use crate::profile::Values;
 use crate::trigger::read_only_command;
 
@@ -29,6 +29,9 @@ pub struct ToolShare<'a> {
     pub tokens: f64,
     pub usd: f64,
     pub call: Option<bool>,
+    /// For the share of a call: how the call ended, and for a failure the line that tells why.
+    pub outcome: Outcome,
+    pub error: Option<&'a str>,
 }
 
 /// A row's key: the tool, and the command head for shell tools.
@@ -52,6 +55,12 @@ pub struct ToolRow {
     pub input_tokens: f64,
     pub rent: Values,
     pub trips: Values,
+    /// Calls that failed (see tool-breakdown, Failed, refused and denied calls).
+    pub failed: u64,
+    /// The spend of the requests after its failures, until a call of the row worked again.
+    pub after: Values,
+    /// The line of its latest failure, with the time of the request that made the call.
+    pub latest_error: Option<(i64, String)>,
 }
 
 impl ToolRow {
@@ -67,6 +76,17 @@ impl ToolRow {
         self.input_tokens += o.input_tokens;
         self.rent.add(o.rent);
         self.trips.add(o.trips);
+        self.failed += o.failed;
+        self.after.add(o.after);
+        if let Some(e) = &o.latest_error
+            && self.latest_error.as_ref().is_none_or(|l| e.0 >= l.0) {
+                self.latest_error = Some(e.clone());
+            }
+    }
+
+    /// The share of its calls that failed.
+    pub fn failed_share(&self) -> f64 {
+        if self.calls == 0 { 0.0 } else { self.failed as f64 / self.calls as f64 }
     }
 
     /// Mean tokens of a result, `None` when the log rebuilt none.
@@ -131,6 +151,41 @@ pub struct ToolTable {
     pub other_rent: Values,
     /// Input of requests no tool result triggered, and output of responses without calls.
     pub other_trips: Values,
+    /// Calls that failed, that the user refused, and that a rule denied.
+    pub failed: u64,
+    pub refused: u64,
+    pub denied: u64,
+    /// The spend of the failure windows of all rows, each request once.
+    pub after: Values,
+    /// The windows of the chain being walked.
+    windows: Windows,
+}
+
+/// What to sort the tool rows by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowOrder {
+    Rent,
+    Trips,
+    /// Failed calls, then the spend after them.
+    Failed,
+}
+
+/// The failure windows of one chain while the analysis walks it (see tool-breakdown, What came
+/// after a failure).
+#[derive(Clone, Debug, Default)]
+struct Windows {
+    /// The session's ends of turn and interrupts, in time order.
+    turn_ends: Vec<i64>,
+    /// The chain of the latest request, its number in that chain, and its time.
+    chain: Option<usize>,
+    count: usize,
+    latest: Option<(usize, i64, Values)>,
+    /// Rows whose call failed in the latest response: their window starts at the next request.
+    opening: Vec<ToolKey>,
+    /// Open windows by row: the requests after the first, held back until a call of the row works.
+    open: HashMap<ToolKey, Vec<(usize, Values)>>,
+    /// Requests of the chain that the table's total counts already.
+    counted: std::collections::HashSet<usize>,
 }
 
 impl ToolTable {
@@ -141,18 +196,51 @@ impl ToolTable {
         self.spend.add(o.spend);
         self.other_rent.add(o.other_rent);
         self.other_trips.add(o.other_trips);
+        self.failed += o.failed;
+        self.refused += o.refused;
+        self.denied += o.denied;
+        self.after.add(o.after);
     }
 
     /// Rows, by rent or by trips, most first: dollars when priced, tokens otherwise.
     pub fn sorted(&self, by_trips: bool) -> Vec<(&ToolKey, &ToolRow)> {
+        self.sorted_by(if by_trips { RowOrder::Trips } else { RowOrder::Rent })
+    }
+
+    /// Rows in the given order, most first: dollars when priced, tokens otherwise.
+    pub fn sorted_by(&self, order: RowOrder) -> Vec<(&ToolKey, &ToolRow)> {
         let priced = self.spend.usd > 0.0;
-        let key = |r: &ToolRow| {
-            let v = if by_trips { r.trips } else { r.rent };
-            if priced { v.usd } else { v.tokens }
+        let amount = |v: Values| if priced { v.usd } else { v.tokens };
+        let key = |r: &ToolRow| match order {
+            RowOrder::Rent => (0, amount(r.rent)),
+            RowOrder::Trips => (0, amount(r.trips)),
+            RowOrder::Failed => (r.failed, amount(r.after)),
         };
         let mut rows: Vec<(&ToolKey, &ToolRow)> = self.rows.iter().filter(|(_, r)| r.calls > 0 || r.rent.tokens > 0.0).collect();
-        rows.sort_by(|a, b| key(b.1).total_cmp(&key(a.1)).then(a.0.cmp(b.0)));
+        rows.sort_by(|a, b| {
+            let (ka, kb) = (key(a.1), key(b.1));
+            kb.0.cmp(&ka.0).then(kb.1.total_cmp(&ka.1)).then(a.0.cmp(b.0))
+        });
         rows
+    }
+
+    /// The rows whose calls failed, most spend after their failures first, then most failures.
+    pub fn failing(&self) -> Vec<(&ToolKey, &ToolRow)> {
+        let priced = self.spend.usd > 0.0;
+        let amount = |v: Values| if priced { v.usd } else { v.tokens };
+        let mut rows: Vec<(&ToolKey, &ToolRow)> = self.rows.iter().filter(|(_, r)| r.failed > 0).collect();
+        rows.sort_by(|a, b| amount(b.1.after).total_cmp(&amount(a.1.after)).then(b.1.failed.cmp(&a.1.failed)).then(a.0.cmp(b.0)));
+        rows
+    }
+
+    /// Adds a request of a failure window to its row, and to the total once.
+    fn commit(&mut self, key: &ToolKey, (index, cost): (usize, Values)) {
+        if let Some(r) = self.rows.get_mut(key) {
+            r.after.add(cost);
+        }
+        if self.windows.counted.insert(index) {
+            self.after.add(cost);
+        }
     }
 
     fn row(&mut self, key: ToolKey, class: Class) -> &mut ToolRow {
@@ -165,9 +253,44 @@ impl ToolTable {
 }
 
 impl Sink for ToolTable {
-    fn session(&mut self, _: &Session) {}
+    fn session(&mut self, s: &Session) {
+        let mut turn_ends: Vec<i64> = s.handoffs.iter().filter(|h| matches!(h.kind, HandoffKind::TurnEnd | HandoffKind::Interrupt)).map(|h| h.ts_ms).collect();
+        turn_ends.sort_unstable();
+        self.windows = Windows { turn_ends, ..Windows::default() };
+    }
 
-    fn request(&mut self, _: &RequestRecord) {}
+    fn request(&mut self, r: &RequestRecord) {
+        let w = &mut self.windows;
+        let main = matches!(r.chain_kind, ChainKind::Main | ChainKind::Advisor);
+        // A new chain, or a new turn of a main conversation, closes the open windows: a failure
+        // never worked past it, so its window keeps its first request only.
+        let ended = w.latest.is_some_and(|(_, prev, _)| main && w.turn_ends[w.turn_ends.partition_point(|&t| t < prev)..].first().is_some_and(|&t| t < r.ts_ms));
+        if w.chain != Some(r.chain_index) || ended {
+            if w.chain != Some(r.chain_index) {
+                w.counted.clear();
+                w.count = 0;
+            }
+            w.chain = Some(r.chain_index);
+            w.open.clear();
+            w.opening.clear();
+        }
+        let usd = r.price.map_or(0.0, |p| p.cost(&r.usage));
+        let cost = Values { tokens: (r.usage.prompt() + r.usage.output) as f64, usd, avoidable: 0.0 };
+        let index = w.count;
+        w.count += 1;
+        w.latest = Some((index, r.ts_ms, cost));
+        for held in w.open.values_mut() {
+            held.push((index, cost));
+        }
+        // The request that carried a failure opens the row's window, unless one is open already.
+        let opening = std::mem::take(&mut w.opening);
+        for key in opening {
+            if !self.windows.open.contains_key(&key) {
+                self.windows.open.insert(key.clone(), Vec::new());
+                self.commit(&key, (index, cost));
+            }
+        }
+    }
 
     fn miss(&mut self, _: MissEvent) {}
 
@@ -201,14 +324,52 @@ impl Sink for ToolTable {
         let v = Values { tokens: s.tokens, usd: s.usd, avoidable: 0.0 };
         match key_of(s.tool, s.target, s.class) {
             Some(k) => {
-                let r = self.row(k, s.class);
+                let ts = self.windows.latest.map_or(0, |l| l.1);
+                let r = self.row(k.clone(), s.class);
                 r.trips.add(v);
                 if let Some(alone) = s.call {
                     r.calls += 1;
                     r.single += u64::from(alone);
+                    if s.outcome == Outcome::Failed {
+                        r.failed += 1;
+                        if let Some(e) = s.error.filter(|_| r.latest_error.as_ref().is_none_or(|l| ts >= l.0)) {
+                            r.latest_error = Some((ts, e.to_string()));
+                        }
+                    }
+                }
+                if s.call.is_some() {
+                    self.call_ended(k, s.class, s.outcome);
                 }
             }
             None => self.other_trips.add(v),
+        }
+    }
+}
+
+impl ToolTable {
+    /// A call of the latest response ended: a failure opens its row's window at the next request,
+    /// and a call that worked closes the open windows of its tool's rows with all their requests;
+    /// any shell call that worked closes those of every shell row.
+    fn call_ended(&mut self, key: ToolKey, class: Class, outcome: Outcome) {
+        match outcome {
+            Outcome::Failed => {
+                self.failed += 1;
+                if !self.windows.opening.contains(&key) {
+                    self.windows.opening.push(key);
+                }
+            }
+            Outcome::Refused => self.refused += 1,
+            Outcome::Denied => self.denied += 1,
+            _ => {
+                let shell = |c: Class| matches!(c, Class::Tool(ToolClass::Execute | ToolClass::ExecuteOutput));
+                let closes = |k: &ToolKey| k.0 == key.0 || (shell(class) && self.rows.get(k).is_some_and(|r| shell(r.class)));
+                let rows: Vec<ToolKey> = self.windows.open.keys().filter(|k| closes(k)).cloned().collect();
+                for row in rows {
+                    for request in self.windows.open.remove(&row).unwrap_or_default() {
+                        self.commit(&row, request);
+                    }
+                }
+            }
         }
     }
 }
@@ -227,7 +388,7 @@ mod tests {
             inputs: calls,
             input_tokens: input * calls as f64,
             rent: Values { tokens: 1.0, usd: rent, avoidable: 0.0 },
-            trips: Values::default(),
+            ..ToolRow::default()
         }
     }
 
@@ -275,5 +436,140 @@ mod tests {
         a.merge(b);
         let r = &a.rows[&key("Read", None)];
         assert_eq!((r.calls, r.single, r.rent.usd), (5, 4, 3.0));
+    }
+
+    /// Feeds the table as the analysis does: a session, then per request its record and the
+    /// shares of the calls its response made. Requests have no price, so spend is in tokens.
+    struct Walk {
+        table: ToolTable,
+        agent: crate::source::AgentId,
+    }
+
+    impl Walk {
+        fn new(turn_ends: &[i64]) -> Walk {
+            let mut s = Session::new(crate::testing::claude(), "s".into());
+            for &t in turn_ends {
+                s.push_handoff(t, HandoffKind::TurnEnd);
+            }
+            let mut table = ToolTable::default();
+            table.session(&s);
+            Walk { table, agent: crate::testing::claude() }
+        }
+
+        /// A request of chain `chain` at `ts` whose prompt holds `tokens`.
+        fn request(&mut self, chain: usize, ts: i64, tokens: u64) -> &mut Walk {
+            let r = RequestRecord {
+                agent: &self.agent,
+                ts_ms: ts,
+                chain: "main",
+                chain_index: chain,
+                api: crate::api::ApiId::Anthropic,
+                chain_kind: ChainKind::Main,
+                advisor: false,
+                origin: "prompt",
+                trigger: crate::trigger::Trigger::Prompt,
+                activity: "prompt",
+                task: "",
+                model: "m",
+                price: None,
+                usage: crate::model::Usage { cache_read: tokens, ..crate::model::Usage::default() },
+                gap_s: None,
+                prev_prompt: None,
+                composition: true,
+                client: "cli",
+                effort: None,
+            };
+            self.table.request(&r);
+            self
+        }
+
+        /// A call of the latest response, by tool and command head.
+        fn call(&mut self, tool: &str, head: Option<&str>, outcome: Outcome) -> &mut Walk {
+            let class = Class::Tool(if head.is_some() { ToolClass::Execute } else { ToolClass::Edit });
+            self.table.tool_share(&ToolShare { tool: Some(tool), target: head, class, tokens: 0.0, usd: 0.0, call: Some(true), outcome, error: Some("why") });
+            self
+        }
+
+        fn after(&self, tool: &str, head: Option<&str>) -> (u64, f64) {
+            let r = &self.table.rows[&key(tool, head)];
+            (r.failed, r.after.tokens)
+        }
+    }
+
+    #[test]
+    fn failed_refused_and_denied_calls_are_counted_apart() {
+        let mut w = Walk::new(&[]);
+        w.request(0, 1, 100).call("Read", None, Outcome::Failed).call("Edit", None, Outcome::Refused).call("Bash", Some("rm -rf"), Outcome::Denied);
+        assert_eq!(w.after("Read", None).0, 1);
+        assert_eq!(w.after("Edit", None).0, 0, "a refused call is not a failure");
+        assert_eq!((w.table.failed, w.table.refused, w.table.denied), (1, 1, 1));
+        assert_eq!(w.table.rows[&key("Read", None)].latest_error.as_ref().map(|e| e.1.as_str()), Some("why"));
+    }
+
+    #[test]
+    fn read_again_then_edited() {
+        let mut w = Walk::new(&[]);
+        w.request(0, 1, 1).call("Edit", None, Outcome::Failed);
+        w.request(0, 2, 10).call("Read", None, Outcome::Worked);
+        w.request(0, 3, 100).call("Edit", None, Outcome::Worked);
+        w.request(0, 4, 1_000);
+        assert_eq!(w.after("Edit", None), (1, 110.0), "the request that read the file and the one that edited");
+        assert_eq!(w.table.after.tokens, 110.0);
+    }
+
+    #[test]
+    fn tried_again_at_once_and_two_failures_in_a_row() {
+        let mut w = Walk::new(&[]);
+        w.request(0, 1, 1).call("Bash", Some("cargo test"), Outcome::Failed);
+        w.request(0, 2, 10).call("Bash", Some("cargo test"), Outcome::Worked);
+        assert_eq!(w.after("Bash", Some("cargo test")), (1, 10.0), "the one request that carried the failure");
+        let mut w = Walk::new(&[]);
+        w.request(0, 1, 1).call("Bash", Some("git push"), Outcome::Failed);
+        w.request(0, 2, 10).call("Bash", Some("git push"), Outcome::Failed);
+        w.request(0, 3, 100).call("Bash", Some("git push"), Outcome::Worked);
+        assert_eq!(w.after("Bash", Some("git push")), (2, 110.0), "one window for both failures");
+    }
+
+    #[test]
+    fn a_failure_that_never_worked_again_keeps_its_first_request() {
+        // The turn ends at 5; the call of the row works only in the next turn.
+        let mut w = Walk::new(&[5]);
+        w.request(0, 1, 1).call("Edit", None, Outcome::Failed);
+        w.request(0, 2, 10);
+        w.request(0, 3, 100);
+        w.request(0, 6, 1_000).call("Edit", None, Outcome::Worked);
+        assert_eq!(w.after("Edit", None), (1, 10.0));
+        // Another chain ends the window as well.
+        let mut w = Walk::new(&[]);
+        w.request(0, 1, 1).call("Edit", None, Outcome::Failed);
+        w.request(0, 2, 10);
+        w.request(1, 3, 100).call("Edit", None, Outcome::Worked);
+        assert_eq!(w.after("Edit", None), (1, 10.0));
+    }
+
+    #[test]
+    fn a_shell_call_of_another_tool_ends_the_window() {
+        let mut w = Walk::new(&[]);
+        w.request(0, 1, 1).call("write_stdin", Some("poll"), Outcome::Failed);
+        w.request(0, 2, 10).call("exec_command", Some("cargo test"), Outcome::Worked);
+        w.request(0, 3, 100).call("write_stdin", Some("poll"), Outcome::Worked);
+        assert_eq!(w.after("write_stdin", Some("poll")), (1, 10.0), "Codex polls a command with write_stdin and runs one with exec_command");
+    }
+
+    #[test]
+    fn another_command_of_the_shell_ends_the_window() {
+        let mut w = Walk::new(&[]);
+        w.request(0, 1, 1).call("Bash", Some("cargo test"), Outcome::Failed);
+        w.request(0, 2, 10).call("Bash", Some("git diff"), Outcome::Worked);
+        w.request(0, 3, 100).call("Bash", Some("cargo test"), Outcome::Worked);
+        assert_eq!(w.after("Bash", Some("cargo test")), (1, 10.0), "git diff worked, so the shell worked again");
+    }
+
+    #[test]
+    fn the_windows_of_two_rows_count_a_request_once_in_the_total() {
+        let mut w = Walk::new(&[]);
+        w.request(0, 1, 1).call("Edit", None, Outcome::Failed).call("Bash", Some("cargo test"), Outcome::Failed);
+        w.request(0, 2, 10).call("Edit", None, Outcome::Worked).call("Bash", Some("cargo test"), Outcome::Worked);
+        assert_eq!((w.after("Edit", None).1, w.after("Bash", Some("cargo test")).1, w.table.after.tokens), (10.0, 10.0, 10.0));
     }
 }

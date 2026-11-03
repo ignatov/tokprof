@@ -125,6 +125,34 @@ A session's time is its last activity: the time of the last record in its log th
 
 Below the spend, the X-ray says what the session did with its money:
 - `work` gives the spend by origin, by task, and by activity: what the agent was doing before each request (see [What triggered a request](#what-triggered-a-request)).
+- `waits` gives where the agent's time went while it was busy: from the start of each turn to its end, without the waits for the answers to its questions, and after the turn while its own subagents worked or until a background command it started reported back. Each moment goes to the first that applies: the model, retries after API errors, subagents, what the agent waited on before its next request (the same activities as in `work`, or a compaction), background commands, and `nothing`. A stretch of `nothing` of 15 minutes or more, as after a local command that sent no request, is not busy time. For session 3edfd2e2:
+
+```
+waits     busy 6.9h: what the agent waited on in its turns, and while its own background work ran after them
+  background commands      ███████████████░░░░░░░░░░░░░░░░░   45.8%    3.2h
+  model                    █████████░░░░░░░░░░░░░░░░░░░░░░░   28.1%    1.9h  515 requests
+  subagents                ███████░░░░░░░░░░░░░░░░░░░░░░░░░   21.2%    1.5h  44m after the turn ended
+  running scripts          ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    1.6%    6.5m
+  version control          ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    1.4%    6.0m
+  reading                  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    0.9%    3.6m
+  4 more                   ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    1.0%    4.3m
+  slow: 133 requests took a minute or more, 17 of them in the main conversation; the longest took 5.8m and wrote 2.4k tokens
+  longest waits: 1.8h for background commands at 10-14 10:12 · 42m for subagents at 10-13 16:47 · 25m for subagents at 10-12 20:59
+```
+
+  The background notification says what reported back: `Agent "…" finished` is a subagent, `Background command "…" completed` a command. A wait for tests in the background is not "nothing running". A request is slow when its answered attempt ran a minute or more; the time it waited for retries is not part of it.
+- `failures` gives the tools whose calls failed, most spend after the failures first, with the latest error, and then how many calls you refused and how many permission rules denied (see [Spend by tool](#spend-by-tool)):
+
+```
+failures  calls that failed, and what the requests after them cost until the tool worked again
+  tool              failed  of calls  after  latest error
+  Agent                  2        5%  $1.43  Concurrent subagent limit reached. You can run 20 subagents…
+  Bash cargo test        1        4%  $0.77  exit code 101: error: test failed, to rerun pass --lib
+  Read                   2        0%  $0.41  File does not exist. Note: your current working directory i…
+  6 more
+  failed 15 calls, after them $4.35 until the tool worked again
+```
+
 - `prompts` gives what each message you typed cost: the requests from it to your next message, and the subagents started in that time. Each message is shown by its last paragraph, since a long message usually starts with pasted text. With many messages, the 8 most expensive are listed in their order, then the rest together.
 
 ```
@@ -236,10 +264,10 @@ Under `time`, the `rhythm` line counts the session's turns as [Your day with the
 
 ```sh
 tokprof summary             # spend by model and component, by client, by origin and task, by trigger and activity, setup, misses by cause, reconciliation
-tokprof tools               # spend by tool and shell command, with a hint per row (--by trips)
+tokprof tools               # spend by tool and shell command, with a hint per row (--by trips, --by failed)
 tokprof misses --top 20     # most expensive cache misses (--expected adds compactions and cleared tool results)
 tokprof whatif              # Claude input cost under 5m vs 1h cache lifetimes
-tokprof pauses              # pauses before typed messages, cold returns by pause, sessions by largest context, your rhythm
+tokprof pauses              # pauses before typed messages, cold returns by pause, sessions by largest context, busy time, your rhythm
 tokprof share               # one JSON file of these numbers with no names, to compare with other users
 tokprof bench               # cold returns to big sessions: resume vs /compact vs a new session vs heartbeats, with or without a compaction after them
 tokprof prices              # prices in effect and where each came from
@@ -283,6 +311,20 @@ After a cold return: a median of 21 requests until the next cold pause or compac
 ```
 
 A cold return is a request of a main conversation that missed the cache after a pause longer than its lifetime (`idle > TTL`). `first request` is what that request cost, and `avoidable` the part a warm cache would have saved. The report then ranges the sessions by the largest prompt of their main conversations, with their spend and cold returns. Here 22 sessions that reached 800k+ tokens made 59.7% of the spend.
+
+Each agent's part ends with where its busy time went, as the X-ray's `waits` block counts it, over the selected sessions and their subagents. `after turns` is the part after an end of turn, while the agent's own subagents or background commands still ran. 30 days of Claude Code:
+
+```
+kind                        time  share  after turns
+model                     146.2h  40.5%          32m
+subagents                  67.1h  18.6%        53.7h
+background commands        42.8h  11.9%        42.8h
+file and system commands   29.0h   8.0%            –
+API retries                23.5h   6.5%         3.1h
+running scripts            20.7h   5.7%            –
+
+2,979 of 82,757 requests took a minute or more (3.6%); the longest took 23m.
+```
 
 `Spend by trigger` says what made the agent send each request, and so what every pass over the context was for (see [What triggered a request](#what-triggered-a-request)):
 
@@ -533,12 +575,13 @@ These fields were seen in Claude Code 2.1.284–2.1.312 and Codex 0.146–0.163.
 `tokprof tools` gives one row per tool, and per command head for shell tools, such as `Bash sed -n`. The X-ray shows the session's top 8 rows under `tools`.
 
 ```
-tool                              calls  avg result  avg input    rent   trips  single  hint
-Read                              14874        3.0k         48  $1,296  $1,154     46%
-Write                              1608          88       3.9k    $318    $240     50%  edit instead of rewriting the file
-Bash sed -n                        3819        2.1k        138    $292    $287     91%  batch independent reads
-Bash python3 -I                    2493        1.1k        877    $243    $306     91%  save long scripts to a file; edit files with the edit tool
-spend $9,236 · rent of these tools $4,988 · trips of these tools $6,510 (two views of the same money; do not add them)
+tool                              calls  avg result  avg input    rent   trips  single  failed   after  hint
+Read                              14783        3.0k         48  $1,304  $1,155     45%      22   $6.80
+Write                              1578          89       3.9k    $318    $239     49%      12   $4.26  edit instead of rewriting the file
+Bash sed -n                        3850        2.1k        138    $297    $291     91%      41   $3.61  batch independent reads
+Bash python3 -I                    2568        1.1k        872    $250    $313     91%      32   $4.49  save long scripts to a file; edit files with the edit tool
+spend $9,110 · rent of these tools $5,028 · trips of these tools $6,538 (two views of the same money; do not add them)
+failed 854 calls, after them $114 until the tool worked again · you refused 54 · rules denied 92
 ```
 
 - `calls`: how many times the agent called it.
@@ -546,6 +589,8 @@ spend $9,236 · rent of these tools $4,988 · trips of these tools $6,510 (two v
 - `rent`: what keeping the results and inputs in the context cost. A result is re-read by every request after it until a compaction, so a 2k-token result kept for 300 requests pays for 600k tokens of cache reads.
 - `trips`: what the calls made the agent do. That is the input of the request each result triggered, since that request re-reads the whole context, plus the output of the response that made the call. A response's spend is split equally between its calls.
 - `single`: the share of calls made alone in their response. Every such call costs one more pass over the context.
+- `failed`: calls whose result was an error, as the agent's log marks it: `is_error` in Claude Code, `Script failed` or a non-zero exit code in Codex. Calls the user refused and calls a permission rule denied are counted apart, in the last line.
+- `after`: what the requests after the failures cost until the tool worked again. A window starts at the request that read the error and ends at the first response whose call of the same tool worked, any command of a shell tool, within the turn. A failure that never worked again in its turn keeps only the request that read it. The windows of a test run that failed are the fix, not waste.
 - `hint`: the first of five fixed rules that applies, for rows with at least 5 calls and $1:
   1. reads made one at a time, 60% or more single: batch independent reads;
   2. shell calls with inputs of 400 tokens or more: save long scripts to a file, and edit files with the edit tool;
@@ -555,7 +600,7 @@ spend $9,236 · rent of these tools $4,988 · trips of these tools $6,510 (two v
 
 Rent and trips divide the same money in two ways: by what sat in the context, and by what made the agent go round again. Each adds up to the whole spend with the content and requests no tool caused, so the two are never added.
 
-`--by trips` sorts by trips. A Codex `exec` call whose code calls one tool shows as that tool, such as `exec_command sed -n`; one that calls several shows as `exec`.
+`--by trips` sorts by trips, and `--by failed` by failed calls and then by `after`. A Codex `exec` call whose code calls one tool shows as that tool, such as `exec_command sed -n`; one that calls several shows as `exec`.
 
 ## What triggered a request
 

@@ -128,7 +128,7 @@ impl Timeline {
                 HandoffKind::TypedWhileWorking => Event::TypedWhileWorking,
                 HandoffKind::Question => Event::Question,
                 HandoffKind::Answer => Event::Answer,
-                HandoffKind::Wake => Event::Wake,
+                HandoffKind::Wake(_) => Event::Wake,
             };
             (h.ts_ms, e)
         }));

@@ -112,6 +112,9 @@ pub struct AgentPauses {
     pub sessions: HashMap<String, SessionSize>,
     /// Whether any request had a price; amounts are tokens otherwise.
     pub priced: bool,
+    /// Where the agent's busy time went over the sessions (see agent-time); the caller paints it
+    /// once every log of a session is read.
+    pub busy: crate::busy::Busy,
 }
 
 /// The upper of the two middle values, as the bench takes medians.
@@ -138,6 +141,7 @@ impl AgentPauses {
             e.cold_returns += s.cold_returns;
         }
         self.priced |= o.priced;
+        self.busy.merge(o.busy);
     }
 
     /// The typed messages per pause range, with the median prompt of their requests; every range,

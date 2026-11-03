@@ -5,7 +5,9 @@ use std::path::Path;
 
 use tokprof_core::advice;
 use tokprof_core::analysis::{Component, MissEvent};
+use tokprof_core::busy;
 use tokprof_core::fmt::{Style, clip_end, count, human_duration, local_time, tokens, usd, wrap};
+use tokprof_core::rhythm::duration;
 use tokprof_core::labels::display_path;
 use tokprof_core::model::{BlockKind, CompactionTrigger};
 use tokprof_core::profile::Values;
@@ -69,8 +71,10 @@ pub fn text(x: &XRay, style: &Style, profile_dir: &Path, home: &Path) -> String 
     out.push('\n');
     spend_lines(&mut out, x, style);
     work_lines(&mut out, x, style);
+    waits_lines(&mut out, x, style);
     prompt_lines(&mut out, x, style);
     tool_lines(&mut out, x, style);
+    failure_lines(&mut out, x, style);
     setup_lines(&mut out, x, style);
     if let Some(c) = &x.composition {
         out.push('\n');
@@ -260,6 +264,94 @@ fn work_lines(out: &mut String, x: &XRay, style: &Style) {
     }
 }
 
+/// Where the agent's busy time went: a line per kind, the slow requests and the longest waits
+/// (see agent-time).
+fn waits_lines(out: &mut String, x: &XRay, style: &Style) {
+    let b = &x.busy;
+    let total = b.total_ms();
+    if total < busy::WAIT_MS {
+        return;
+    }
+    out.push('\n');
+    let title = format!("busy {}: what the agent waited on in its turns, and while its own background work ran after them", duration(total));
+    let _ = writeln!(out, "{} {}", style.dim(&format!("{:<9}", "waits")), style.dim(&title));
+    let rows = b.sorted();
+    let line = |out: &mut String, name: &str, ms: i64, note: &str| {
+        let share = ms as f64 / total as f64;
+        let row = format!("  {:<24} {}  {:5.1}%  {:>6}", clip_end(name, 24), style.paint("36", &bar(share)), 100.0 * share, duration(ms));
+        let _ = writeln!(out, "{}", if note.is_empty() { row } else { format!("{row}  {}", style.dim(note)) });
+    };
+    for (kind, ms, after) in rows.iter().take(6) {
+        let note = match *kind {
+            busy::MODEL => count(b.main_requests, "request", "requests"),
+            busy::API_RETRIES => {
+                let n = count(b.retried, "request", "requests");
+                b.top_error().map_or(n.clone(), |e| format!("{n}, most often {}", clip_end(e, 50)))
+            }
+            busy::SUBAGENTS if *after > 0 => format!("{} after the turn ended", duration(*after)),
+            _ => String::new(),
+        };
+        line(out, kind, *ms, &note);
+    }
+    if rows.len() > 6 {
+        let rest: i64 = rows[6..].iter().map(|r| r.1).sum();
+        line(out, &format!("{} more", rows.len() - 6), rest, "");
+    }
+    let slow = match (b.slow, b.longest) {
+        (0, _) | (_, None) => "no request took a minute or more".to_string(),
+        (n, Some((ms, output))) => format!(
+            "{} a minute or more, {} of them in the main conversation; the longest took {} and wrote {} tokens",
+            match n {
+                1 => "1 request took".to_string(),
+                n => format!("{} requests took", tokprof_core::fmt::int(n)),
+            },
+            tokprof_core::fmt::int(b.slow_main),
+            duration(ms),
+            tokens(output as f64)
+        ),
+    };
+    let _ = writeln!(out, "  {}", style.dim(&format!("slow: {slow}")));
+    if !b.waits.is_empty() {
+        let waits: Vec<String> = b.waits.iter().map(|w| format!("{} for {} at {}", duration(w.ms), w.kind, local_time(w.start_ms, "%m-%d %H:%M"))).collect();
+        let _ = writeln!(out, "  {}", style.dim(&format!("longest waits: {}", waits.join(" · "))));
+    }
+}
+
+/// The calls that did not work: the tools whose calls failed, with what the requests after the
+/// failures cost until the tool worked again and the latest error, then the failures line.
+fn failure_lines(out: &mut String, x: &XRay, style: &Style) {
+    let Some(last) = crate::render_report::failures_line(&x.tools) else { return };
+    out.push('\n');
+    let title = "calls that failed, and what the requests after them cost until the tool worked again";
+    let _ = writeln!(out, "{} {}", style.dim(&format!("{:<9}", "failures")), style.dim(title));
+    let rows = x.tools.failing();
+    if !rows.is_empty() {
+        let priced = x.tools.spend.usd > 0.0;
+        let amount = |v: &Values| if priced { usd(v.usd) } else { format!("{} tok", tokens(v.tokens)) };
+        let mut table = vec![["tool", "failed", "of calls", "after"].map(str::to_string).to_vec()];
+        let mut errors = vec!["latest error".to_string()];
+        for (key, r) in rows.iter().take(5) {
+            let name = match &key.1 {
+                Some(head) => format!("{} {head}", key.0),
+                None => key.0.clone(),
+            };
+            table.push(vec![clip_end(&name, 32), r.failed.to_string(), format!("{:.0}%", 100.0 * r.failed_share()), amount(&r.after)]);
+            errors.push(r.latest_error.as_ref().map_or(String::new(), |e| clip_end(&e.1, 60)));
+        }
+        let lines = tokprof_core::fmt::table(&table, 1);
+        let width = lines.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+        for (i, (l, e)) in lines.lines().zip(&errors).enumerate() {
+            let pad = " ".repeat(width - l.chars().count());
+            let e = if i == 0 { e.clone() } else { style.dim(e) };
+            let _ = writeln!(out, "  {}", format!("{l}{pad}  {e}").trim_end());
+        }
+        if rows.len() > 5 {
+            let _ = writeln!(out, "  {} more", rows.len() - 5);
+        }
+    }
+    let _ = writeln!(out, "  {last}");
+}
+
 /// Spend by tool for the session: the top 8 rows by rent, then the rest and the total line.
 fn tool_lines(out: &mut String, x: &XRay, style: &Style) {
     if !x.tools.rows.values().any(|r| r.calls > 0) {
@@ -267,7 +359,7 @@ fn tool_lines(out: &mut String, x: &XRay, style: &Style) {
     }
     out.push('\n');
     let _ = writeln!(out, "{} {}", style.dim(&format!("{:<9}", "tools")), style.dim("calls, sizes, rent and trips by tool (see tokprof tools)"));
-    for line in crate::render_report::tool_rows(&x.tools, false, 8).lines() {
+    for line in crate::render_report::tool_rows(&x.tools, tokprof_core::tools::RowOrder::Rent, 8, false).lines() {
         let _ = writeln!(out, "  {line}");
     }
 }
@@ -539,6 +631,7 @@ mod tests {
             setup: None,
             misses: Vec::new(),
             rhythm: None,
+            busy: Default::default(),
         }
     }
 
@@ -585,13 +678,14 @@ mod tests {
         let mut x = xray(Vec::new());
         assert!(render(&x, tool_lines).is_empty(), "no tool calls, no block");
         let v = |usd| Values { tokens: 1.0, usd, avoidable: 0.0 };
-        x.tools.rows.insert(("Bash".into(), Some("sed -n".into())), ToolRow { class: Class::Tool(ToolClass::Execute), calls: 56, single: 48, results: 56, result_tokens: 56.0 * 1_300.0, inputs: 56, input_tokens: 56.0 * 53.0, rent: v(5.21), trips: v(3.75) });
+        x.tools.rows.insert(("Bash".into(), Some("sed -n".into())), ToolRow { class: Class::Tool(ToolClass::Execute), calls: 56, single: 48, results: 56, result_tokens: 56.0 * 1_300.0, inputs: 56, input_tokens: 56.0 * 53.0, rent: v(5.21), trips: v(3.75), ..ToolRow::default() });
         x.tools.spend = v(27.37);
         let text = render(&x, tool_lines);
         assert!(text.starts_with("\ntools     calls, sizes, rent and trips by tool (see tokprof tools)"), "{text}");
         let row = text.lines().find(|l| l.contains("sed -n")).unwrap();
         assert_eq!(row.split_whitespace().collect::<Vec<_>>(), ["Bash", "sed", "-n", "56", "1.3k", "53", "$5.21", "$3.75", "86%", "batch", "independent", "reads"]);
         assert!(text.contains("spend $27.37 · rent of these tools $5.21 · trips of these tools $3.75 (two views of the same money; do not add them)"), "{text}");
+        assert!(!text.contains("failed") && !text.contains(" after"), "the X-ray's tools block keeps its columns: {text}");
     }
 
     #[test]
@@ -724,5 +818,96 @@ mod tests {
         let lines: Vec<&str> = shown.lines().collect();
         let at = lines.iter().position(|l| l.starts_with("time")).unwrap();
         assert_eq!(lines[at + 1], "rhythm    34 turns, 2.1h of work · the agent's turn median 3.5m · your answer median 4.0m · 12 it started itself · 2 interrupts");
+    }
+
+    const MIN: i64 = 60_000;
+
+    fn busy() -> tokprof_core::busy::Busy {
+        use tokprof_core::busy::{self, Busy, Wait};
+        let mut b = Busy::default();
+        for (kind, ms, after) in [
+            (busy::MODEL, 138 * MIN, 0),
+            (busy::SUBAGENTS, 90 * MIN, 66 * MIN),
+            (busy::BACKGROUND, 84 * MIN, 84 * MIN),
+            ("building and testing", 30 * MIN, 0),
+            ("reading", 12 * MIN, 0),
+            (busy::API_RETRIES, 14 * MIN, 0),
+            ("editing", 5 * MIN, 0),
+            (busy::NOTHING, 3 * MIN, 0),
+        ] {
+            b.kinds.insert(kind, (ms, after));
+        }
+        b.main_requests = 412;
+        b.retried = 6;
+        b.retry_errors.insert("502 local proxy: upstream request failed".into(), 5);
+        b.retry_errors.insert("408 Request body idle read timed out within 15s".into(), 1);
+        (b.slow, b.slow_main, b.longest) = (103, 17, Some((372_000, 41_200)));
+        let start = 1_790_812_800_000; // 2026-10-01 00:00 UTC
+        b.waits = vec![Wait { kind: busy::BACKGROUND, start_ms: start, ms: 108 * MIN }, Wait { kind: busy::SUBAGENTS, start_ms: start + 60 * MIN, ms: 25 * MIN }];
+        b
+    }
+
+    #[test]
+    fn the_waits_block_shows_busy_time_by_kind_the_slow_requests_and_the_longest_waits() {
+        let mut x = xray(Vec::new());
+        assert!(render(&x, waits_lines).is_empty(), "no busy time, no block");
+        x.busy = busy();
+        let text = render(&x, waits_lines);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[1], "waits     busy 6.3h: what the agent waited on in its turns, and while its own background work ran after them");
+        assert!(lines[2].starts_with("  model ") && lines[2].ends_with("36.7%    2.3h  412 requests"), "{}", lines[2]);
+        assert!(lines[3].starts_with("  subagents ") && lines[3].ends_with("1.5h  1.1h after the turn ended"), "{}", lines[3]);
+        assert!(lines[4].starts_with("  background commands ") && lines[4].ends_with("1.4h"), "all of it after a turn, so no note: {}", lines[4]);
+        let retries = lines.iter().find(|l| l.trim_start().starts_with("API retries")).unwrap();
+        assert!(retries.ends_with("6 requests, most often 502 local proxy: upstream request failed"), "{retries}");
+        assert!(lines[8].starts_with("  2 more ") && lines[8].ends_with("8.0m"), "the seventh and later kinds fold: {}", lines[8]);
+        assert_eq!(lines[9], "  slow: 103 requests took a minute or more, 17 of them in the main conversation; the longest took 6.2m and wrote 41.2k tokens");
+        let local = |ms| local_time(ms, "%m-%d %H:%M");
+        assert_eq!(lines[10], format!("  longest waits: 1.8h for background commands at {} · 25m for subagents at {}", local(1_790_812_800_000), local(1_790_812_800_000 + 60 * MIN)));
+        x.busy.slow = 0;
+        x.busy.waits.clear();
+        let text = render(&x, waits_lines);
+        assert!(text.ends_with("  slow: no request took a minute or more\n"), "{text}");
+        x.busy.kinds = [(tokprof_core::busy::MODEL, (40_000, 0))].into_iter().collect();
+        assert!(render(&x, waits_lines).is_empty(), "busy for 40 seconds, no block");
+    }
+
+    #[test]
+    fn the_failures_block_shows_the_failing_tools_and_the_failures_line() {
+        use tokprof_core::model::{Class, ToolClass};
+        use tokprof_core::tools::ToolRow;
+        let mut x = xray(Vec::new());
+        assert!(render(&x, failure_lines).is_empty(), "every call worked, no block");
+        let v = |usd| Values { tokens: 1.0, usd, avoidable: 0.0 };
+        let err = |s: &str| Some((1, s.to_string()));
+        x.tools.rows.insert(("advisor".into(), None), ToolRow { class: Class::Tool(ToolClass::Other), calls: 15, failed: 15, after: v(32.92), latest_error: err("Error: No such tool available: advisor"), ..ToolRow::default() });
+        x.tools.rows.insert(("Read".into(), None), ToolRow { class: Class::Tool(ToolClass::Read), calls: 300, failed: 3, after: v(0.07), latest_error: err(&format!("File does not exist. Note: your current working directory is {}", "/very/long".repeat(8))), ..ToolRow::default() });
+        x.tools.spend = v(390.0);
+        (x.tools.failed, x.tools.refused, x.tools.after) = (18, 2, v(32.99));
+        let text = render(&x, failure_lines);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[1], "failures  calls that failed, and what the requests after them cost until the tool worked again");
+        assert!(lines[2].starts_with("  tool ") && lines[2].ends_with("failed  of calls   after  latest error"), "{}", lines[2]);
+        assert_eq!(lines[3].split_whitespace().collect::<Vec<_>>(), ["advisor", "15", "100%", "$32.92", "Error:", "No", "such", "tool", "available:", "advisor"]);
+        assert!(lines[4].starts_with("  Read ") && lines[4].ends_with('…') && lines[4].contains("1%"), "a long error is cut: {}", lines[4]);
+        assert_eq!(lines[5], "  failed 18 calls, after them $32.99 until the tool worked again · you refused 2");
+        x.tools.rows.clear();
+        (x.tools.failed, x.tools.after) = (0, Values::default());
+        assert_eq!(render(&x, failure_lines), "\nfailures  calls that failed, and what the requests after them cost until the tool worked again\n  you refused 2\n");
+    }
+
+    #[test]
+    fn the_new_blocks_take_their_place_in_the_layout() {
+        use tokprof_core::model::{Class, ToolClass};
+        use tokprof_core::tools::ToolRow;
+        let mut x = xray(Vec::new());
+        x.busy = busy();
+        let v = |usd| Values { tokens: 1.0, usd, avoidable: 0.0 };
+        x.tools.rows.insert(("Read".into(), None), ToolRow { class: Class::Tool(ToolClass::Read), calls: 300, failed: 3, after: v(0.07), rent: v(2.0), ..ToolRow::default() });
+        x.tools.spend = v(390.0);
+        (x.tools.failed, x.tools.after) = (3, v(0.07));
+        let shown = text(&x, &Style::with_color(false), Path::new("/tmp"), Path::new("/h"));
+        let at = |label: &str| shown.find(&format!("\n{label}")).unwrap_or_else(|| panic!("no {label}: {shown}"));
+        assert!(at("spend") < at("waits") && at("waits") < at("tools") && at("tools") < at("failures") && at("failures") < at("what cost the most"), "{shown}");
     }
 }

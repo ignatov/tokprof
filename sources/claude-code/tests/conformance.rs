@@ -30,13 +30,38 @@ fn the_fixtures_hand_off_once_of_each_kind() {
         (at("09:03:41"), TypedWhileWorking),
         // The two lines of one response end the turn once, at the later.
         (at("09:04:00"), TurnEnd),
-        (at("10:05:00"), Wake),
+        (at("10:05:00"), Wake(tokprof_core::model::WakeSource::Command)),
         (at("10:06:00"), Interrupt),
         // A `<synthetic>` API error ends the turn too.
         (at("10:07:30"), TurnEnd),
+        (at("10:08:00"), Wake(tokprof_core::model::WakeSource::Subagent)),
     ]);
     assert!(!main.scripted, "an IDE session");
     assert!(decode(true).handoffs.is_empty(), "a subagent has no hand-offs");
+}
+
+/// The fixture holds a failed, a refused and a denied call, and a request retried after an API
+/// error, so the checks above run over them.
+#[test]
+fn the_fixtures_hold_call_outcomes_and_a_retry() {
+    use tokprof_core::model::Outcome;
+    use tokprof_core::source::LogSource;
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let source = tokprof_source_claude_code::ClaudeCode::at(fixtures.join("projects"), Path::new("/h"));
+    let log = source.discover().into_iter().find(|s| !s.subagent).unwrap();
+    let mut d = source.decoder(&log);
+    source.open(&log).unwrap().for_each(&mut |r| d.feed(r)).unwrap();
+    let main = d.finish();
+    let mut outcomes: Vec<Outcome> = main.call_ends.values().map(|e| e.outcome).collect();
+    outcomes.sort_by_key(|o| format!("{o:?}"));
+    outcomes.dedup();
+    assert_eq!(outcomes, [Outcome::Denied, Outcome::Failed, Outcome::Refused]);
+    let failed = main.call_ends.values().find(|e| e.outcome == Outcome::Failed).unwrap();
+    assert_eq!(failed.error.as_deref(), Some("exit code 101: error: test failed, to rerun pass --lib"));
+    let at = |ts: &str| tokprof_logio::parse_ts_ms(Some(&serde_json::Value::String(format!("2026-10-30T{ts}Z")))).unwrap();
+    let retried = main.chains.iter().flat_map(|c| &c.requests).find(|r| r.retries > 0).unwrap();
+    assert_eq!((retried.first_sent_ms, retried.sent_ms, retried.retries), (Some(at("10:05:00")), Some(at("10:05:05")), 1));
+    assert_eq!(retried.retry_error.as_deref(), Some("502 local proxy: upstream request failed"));
 }
 
 #[test]

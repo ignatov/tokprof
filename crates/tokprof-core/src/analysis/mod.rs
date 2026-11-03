@@ -13,7 +13,7 @@ pub mod cache;
 use std::collections::HashMap;
 
 use crate::api::ApiId;
-use crate::model::{BlockKind, Chain, ChainKind, Class, PromptDelta, Request, Session, Usage};
+use crate::model::{BlockKind, Chain, ChainKind, Class, Outcome, PromptDelta, Request, Session, Usage};
 use crate::tools::{BlockEntry, ToolShare};
 use crate::source::AgentId;
 use crate::trigger::Trigger;
@@ -137,6 +137,8 @@ pub struct RequestRecord<'a> {
     pub ts_ms: i64,
     /// The chain's name, as profiles show it.
     pub chain: &'a str,
+    /// The chain's place in its session: chains of one name are told apart by it.
+    pub chain_index: usize,
     /// The API the request was sent to.
     pub api: ApiId,
     pub chain_kind: ChainKind,
@@ -437,6 +439,8 @@ const ADVISOR: usize = 1;
 struct Walker<'a> {
     s: &'a Session,
     chain: &'a Chain,
+    /// The chain's place in the session.
+    chain_index: usize,
     task: &'a str,
     msg_chars: &'a [u64],
     pricing: &'a Pricing,
@@ -468,6 +472,7 @@ impl<'a> Walker<'a> {
         Walker {
             s,
             chain,
+            chain_index: s.chains.iter().position(|c| std::ptr::eq(c, chain)).unwrap_or(0),
             task,
             msg_chars,
             pricing,
@@ -556,6 +561,7 @@ impl<'a> Walker<'a> {
                 agent: &s.agent,
                 ts_ms: req.ts_ms,
                 chain: &self.chain.name,
+                chain_index: self.chain_index,
                 api: req.api,
                 chain_kind: if req.advisor { ChainKind::Advisor } else { self.chain.kind },
                 advisor: req.advisor,
@@ -632,6 +638,8 @@ impl<'a> Walker<'a> {
         let input_tokens = usage.prompt() as f64;
         let share = |b: Option<usize>, tokens: f64, usd: f64, call: Option<bool>| {
             let blk = b.map(block);
+            // A call's share says how the call ended.
+            let ended = b.filter(|_| call.is_some());
             ToolShare {
                 tool: blk.and_then(|x| x.tool.as_deref()),
                 target: blk.and_then(|x| x.target.as_deref()),
@@ -639,6 +647,8 @@ impl<'a> Walker<'a> {
                 tokens,
                 usd,
                 call,
+                outcome: ended.map_or(Outcome::Worked, |b| s.outcome(b)),
+                error: ended.and_then(|b| s.error_line(b)),
             }
         };
         if triggers.is_empty() {

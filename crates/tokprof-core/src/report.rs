@@ -528,6 +528,7 @@ impl Sink for Collector {
     fn session(&mut self, s: &Session) {
         self.spend.session(s);
         self.clients.session(s);
+        self.tools.session(s);
     }
 
     fn request(&mut self, r: &RequestRecord) {
@@ -535,6 +536,7 @@ impl Sink for Collector {
         self.work.request(r);
         self.whatif.request(r);
         self.clients.request(r);
+        self.tools.request(r);
     }
 
     fn miss(&mut self, miss: MissEvent) {
@@ -687,6 +689,7 @@ mod tests {
                 agent: &crate::testing::claude(),
                 ts_ms: 0,
                 chain: "main",
+                chain_index: 0,
                 api: crate::api::ApiId::Anthropic,
                 chain_kind: ChainKind::Main,
                 advisor: false,

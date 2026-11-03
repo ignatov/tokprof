@@ -150,7 +150,7 @@ enum Command {
     /// Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent
     /// do (trips), with a hint per row.
     Tools {
-        /// Sort by rent or by trips.
+        /// Sort by rent, by trips, or by failed calls and then the spend after them.
         #[arg(long, value_enum, default_value = "rent")]
         by: By,
     },
@@ -184,6 +184,7 @@ enum Command {
 enum By {
     Rent,
     Trips,
+    Failed,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -330,25 +331,45 @@ fn main() -> Result<()> {
             bail!("no session logs found for {}", cli.agent.join(", "));
         }
         let temp = temp_folders();
-        let ((mut p, timelines), stats) = scan(
+        // Busy time needs every log of a session, which the scan reads one by one: each log gives
+        // its parts, keyed by agent and session id, and the parts of a session are painted at the end.
+        type Busy = std::collections::BTreeMap<(AgentId, String), tokprof_core::busy::Parts>;
+        let ((mut p, timelines, busy), stats) = scan(
             &catalog,
             &files,
             &select,
             OnUnreadable::Skip,
-            || (Pauses::new(filter.clone()), Vec::new()),
-            |(p, timelines): &mut (Pauses, Vec<Timeline>), session, f| {
+            || (Pauses::new(filter.clone()), Vec::new(), Busy::new()),
+            |(p, timelines, busy): &mut (Pauses, Vec<Timeline>, Busy), session, f| {
                 analysis::analyze(session, &pricing, &filter, p);
-                if !f.subagent && keeps_client(session, &filter) {
+                let kept = keeps_client(session, &filter);
+                if !f.subagent && kept {
                     timelines.push(Timeline::of(session, &temp));
+                }
+                let parts = if f.subagent {
+                    Some(tokprof_core::busy::Parts::of_subagent(session))
+                } else {
+                    kept.then(|| tokprof_core::busy::Parts::of_main(session))
+                };
+                if let Some(parts) = parts {
+                    busy.entry((session.agent.clone(), session.id.clone())).or_default().add(parts);
                 }
             },
             |mut a, b| {
                 a.0.merge(b.0);
                 a.1.extend(b.1);
+                for (k, parts) in b.2 {
+                    a.2.entry(k).or_default().add(parts);
+                }
                 a
             },
         )?;
         p.finish();
+        for ((agent, _), parts) in busy {
+            if let (true, Some(a)) = (parts.has_main, p.agents.get_mut(&agent)) {
+                a.busy.merge(parts.finish());
+            }
+        }
         eprintln!("{}", sources(&catalog, &files, started.elapsed().as_secs_f64()));
         warn(&stats.unreadable);
         print!("{}", render_report::pauses(&p));
@@ -474,7 +495,14 @@ fn main() -> Result<()> {
         Command::Summary => print!("{}", render_report::summary(&collector, &filter, &paths::user_prices())),
         Command::Misses { top, expected } => print!("{}", render_report::misses(&collector, top, expected)),
         Command::Whatif => print!("{}", render_report::whatif(&collector, &catalog.agents())),
-        Command::Tools { by } => print!("{}", render_report::tools(&collector.tools, matches!(by, By::Trips), 25)),
+        Command::Tools { by } => {
+            let order = match by {
+                By::Rent => tokprof_core::tools::RowOrder::Rent,
+                By::Trips => tokprof_core::tools::RowOrder::Trips,
+                By::Failed => tokprof_core::tools::RowOrder::Failed,
+            };
+            print!("{}", render_report::tools(&collector.tools, order, 25))
+        }
         Command::Flame { output, value, stack, title, highlight, .. } => {
             let output = output.expect("set above");
             let shown = display_path(&output.to_string_lossy(), None, catalog.home());

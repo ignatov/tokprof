@@ -145,11 +145,13 @@ struct RequestRow {
 }
 
 impl Sink for Totals {
-    fn session(&mut self, _: &Session) {
+    fn session(&mut self, s: &Session) {
         self.file += 1;
+        self.tools.session(s);
     }
 
     fn request(&mut self, r: &RequestRecord) {
+        self.tools.request(r);
         self.rows.push(RequestRow {
             file: self.file,
             chain: r.chain.to_string(),
@@ -243,6 +245,8 @@ pub struct XRay {
     pub misses: Vec<MissEvent>,
     /// The session's turns, work and answers; `None` without turns or when nobody typed in it.
     pub rhythm: Option<crate::rhythm::SessionRhythm>,
+    /// Where the agent's time went while it was busy, and its slow requests (see agent-time).
+    pub busy: crate::busy::Busy,
 }
 
 /// What one typed message cost: the requests from it to the next typed message, and the
@@ -367,6 +371,7 @@ pub fn xray(catalog: &Catalog, file: &SessionRef, pricing: &Pricing, now_ms: i64
         misses: totals.misses,
         work: totals.work,
         rhythm: crate::rhythm::SessionRhythm::of(main, now_ms, &crate::rhythm::local_offset),
+        busy: crate::busy::Busy::of(main, &sessions[1..]),
     })
 }
 

@@ -6,6 +6,7 @@
 //! previous request of the same chain (`keep` messages kept, `tail` appended), which is how
 //! prompts actually grow and what lets the analysis see where a prefix changed.
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -273,6 +274,17 @@ pub struct Request {
     /// The program that ran the agent for this request, as the log names it; see
     /// [`Request::client_name`].
     pub client: Option<Arc<str>>,
+    /// When the agent first tried to send the request: earlier than `sent_ms` when attempts
+    /// before the answered one failed with API errors, else the same.
+    pub first_sent_ms: Option<i64>,
+    /// When the attempt that got the response was sent, or the request's only attempt.
+    pub sent_ms: Option<i64>,
+    /// When the last part of the response was logged; `None` for a request without a response.
+    pub ended_ms: Option<i64>,
+    /// How many attempts failed with an API error before this one.
+    pub retries: u32,
+    /// The text of the last of those errors, as the log gives it.
+    pub retry_error: Option<Arc<str>>,
 }
 
 /// The client of a request whose log names none.
@@ -282,6 +294,21 @@ impl Request {
     /// The program that ran the agent for this request, as the log names it, or `unknown`.
     pub fn client_name(&self) -> &str {
         self.client.as_deref().unwrap_or(UNKNOWN_CLIENT)
+    }
+
+    /// How long the answered attempt ran, from its send to the end of its response, when the log
+    /// tells both; never negative.
+    pub fn run_ms(&self) -> Option<i64> {
+        Some((self.ended_ms? - self.sent_ms?).max(0))
+    }
+
+    /// How long the request waited for retries after API errors: from its first attempt's send to
+    /// the answered attempt's send.
+    pub fn retry_ms(&self) -> i64 {
+        match (self.first_sent_ms, self.sent_ms) {
+            (Some(first), Some(sent)) => (sent - first).max(0),
+            _ => 0,
+        }
     }
 
     /// What made the agent send the request: an advisor call and the first request after a
@@ -370,6 +397,31 @@ pub struct Session {
     pub handoffs: Vec<Handoff>,
     /// A program ran the session with nobody typing in it, as its log tells.
     pub scripted: bool,
+    /// The tool calls that did not work, by the index of their call and result blocks in
+    /// `blocks`: how each ended, and for a failure the line that tells why. A call that is not
+    /// here worked, or its log does not tell.
+    pub call_ends: BTreeMap<usize, CallEnd>,
+}
+
+/// How a tool call ended, as its result tells.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Outcome {
+    #[default]
+    Worked,
+    /// The result was an error.
+    Failed,
+    /// The user said no to the call, or stopped it.
+    Refused,
+    /// A permission rule or a safety check said no to the call.
+    Denied,
+}
+
+/// A call that did not work: how it ended and, for a failure, the line that tells why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallEnd {
+    pub outcome: Outcome,
+    pub error: Option<String>,
 }
 
 /// A moment when the work passed between the user and the agent, or when something else gave
@@ -395,7 +447,19 @@ pub enum HandoffKind {
     /// The user answered the agent's question.
     Answer,
     /// A background task or another session gave the agent work.
-    Wake,
+    Wake(WakeSource),
+}
+
+/// What a wake reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum WakeSource {
+    /// A subagent of the session finished, or waits for its own background work.
+    Subagent,
+    /// A command the agent ran in the background finished or printed.
+    Command,
+    /// Anything else: another session's message, a check-in, a notice written on resume.
+    Other,
 }
 
 /// A compaction the agent logged: when, and what started it.
@@ -522,7 +586,18 @@ impl Session {
             typed: Vec::new(),
             handoffs: Vec::new(),
             scripted: false,
+            call_ends: BTreeMap::new(),
         }
+    }
+
+    /// How the call or result in block `b` ended.
+    pub fn outcome(&self, b: usize) -> Outcome {
+        self.call_ends.get(&b).map_or(Outcome::Worked, |e| e.outcome)
+    }
+
+    /// The line that tells why the call or result in block `b` failed.
+    pub fn error_line(&self, b: usize) -> Option<&str> {
+        self.call_ends.get(&b).and_then(|e| e.error.as_deref())
     }
 
     /// Adds a hand-off, unless the one before it is the same: a line that a log repeats adds

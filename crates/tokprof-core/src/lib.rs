@@ -10,6 +10,7 @@ pub mod advice;
 pub mod api;
 pub mod analysis;
 pub mod bench;
+pub mod busy;
 pub mod catalog;
 pub mod export;
 pub mod fmt;
