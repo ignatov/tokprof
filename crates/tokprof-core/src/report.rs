@@ -1,7 +1,7 @@
 //! Collects analysis output: spend by model, component and work, misses, the cache-lifetime
 //! replay and the profile stacks. The CLI renders the reports from it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::analysis::{Component, Fact, Filter, MissEvent, RequestRecord, Sink};
 use crate::model::{ChainKind, Session, Usage};
@@ -257,12 +257,14 @@ pub struct ModelTotals {
     pub by_component: [Values; 5],
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct SessionTotals {
     ours: f64,
     reported: Option<f64>,
     /// The first and the last request of the session, in every chain and file.
     span: Option<(i64, i64)>,
+    /// The clients of its requests, in every chain and file.
+    clients: BTreeSet<String>,
 }
 
 fn union(a: Option<(i64, i64)>, b: Option<(i64, i64)>) -> Option<(i64, i64)> {
@@ -305,6 +307,7 @@ impl ModelSpend {
             s.ours += v.ours;
             s.reported = max_opt(s.reported, v.reported);
             s.span = union(s.span, v.span);
+            s.clients.extend(v.clients);
         }
     }
 }
@@ -317,6 +320,13 @@ impl Sink for ModelSpend {
         let times = s.chains.iter().flat_map(|c| &c.requests).map(|r| r.ts_ms);
         let span = times.clone().min().zip(times.max());
         e.span = union(e.span, span);
+        // Only requests with usage, the ones the analysis reports: a request record without a
+        // response has no client.
+        for r in s.chains.iter().flat_map(|c| &c.requests).filter(|r| r.usage.prompt() > 0 || r.usage.output > 0) {
+            if !e.clients.contains(r.client_name()) {
+                e.clients.insert(r.client_name().to_string());
+            }
+        }
     }
 
     fn request(&mut self, r: &RequestRecord) {
@@ -440,6 +450,50 @@ impl Sink for Profile {
     }
 }
 
+/// The spend of one client of one agent: its requests, their cost and tokens, and the main
+/// sessions they belong to, by short id.
+#[derive(Clone, Debug, Default)]
+pub struct ClientTotals {
+    pub spend: Spend,
+    pub sessions: HashSet<String>,
+}
+
+/// Spend by agent and client, the program that ran the agent (see `Request::client_name`).
+#[derive(Clone, Debug, Default)]
+pub struct ClientSpend {
+    pub rows: BTreeMap<(AgentId, String), ClientTotals>,
+    /// The short id of the session being read; subagent logs carry their main session's.
+    session: String,
+}
+
+impl ClientSpend {
+    pub fn merge(&mut self, o: ClientSpend) {
+        for (k, v) in o.rows {
+            let row = self.rows.entry(k).or_default();
+            row.spend.add(v.spend);
+            row.sessions.extend(v.sessions);
+        }
+    }
+}
+
+impl Sink for ClientSpend {
+    fn session(&mut self, s: &Session) {
+        self.session = s.short_id().to_string();
+    }
+
+    fn request(&mut self, r: &RequestRecord) {
+        let row = self.rows.entry((r.agent.clone(), r.client.to_string())).or_default();
+        row.spend.add(Spend { requests: 1, tokens: (r.usage.prompt() + r.usage.output) as f64, usd: r.price.map_or(0.0, |p| p.cost(&r.usage)) });
+        if !row.sessions.contains(&self.session) {
+            row.sessions.insert(self.session.clone());
+        }
+    }
+
+    fn miss(&mut self, _: MissEvent) {}
+
+    fn fact(&mut self, _: &Fact) {}
+}
+
 /// Everything the reports and the profile writers show, gathered in one pass.
 #[derive(Default)]
 pub struct Collector {
@@ -450,6 +504,7 @@ pub struct Collector {
     pub work: Work,
     pub tools: ToolTable,
     pub setup: SetupSpend,
+    pub clients: ClientSpend,
 }
 
 impl Collector {
@@ -465,18 +520,21 @@ impl Collector {
         self.work.merge(o.work);
         self.tools.merge(o.tools);
         self.setup.merge(o.setup);
+        self.clients.merge(o.clients);
     }
 }
 
 impl Sink for Collector {
     fn session(&mut self, s: &Session) {
         self.spend.session(s);
+        self.clients.session(s);
     }
 
     fn request(&mut self, r: &RequestRecord) {
         self.spend.request(r);
         self.work.request(r);
         self.whatif.request(r);
+        self.clients.request(r);
     }
 
     fn miss(&mut self, miss: MissEvent) {
@@ -518,12 +576,13 @@ pub struct Reconciliation {
 }
 
 impl ModelSpend {
-    /// One reconciliation per agent that reports its own cost, by agent. With a time window,
-    /// only the sessions it holds whole count, since an agent's counter covers a session's whole
-    /// life.
+    /// One reconciliation per agent that reports its own cost, by agent. With a time window or a
+    /// client filter, only the sessions whose every request it keeps count, since an agent's
+    /// counter covers a session's whole life.
     pub fn reconciliation(&self, window: &Filter) -> Vec<Reconciliation> {
         let windowed = window.since_ms.is_some() || window.until_ms.is_some();
-        let inside = |s: &SessionTotals| !windowed || s.span.is_some_and(|(first, last)| window.accepts(first) && window.accepts(last));
+        let in_time = |s: &SessionTotals| !windowed || s.span.is_some_and(|(first, last)| window.accepts(first) && window.accepts(last));
+        let inside = |s: &SessionTotals| in_time(s) && s.clients.iter().all(|c| window.keeps_client(c));
         let mut by_agent: BTreeMap<&AgentId, (f64, f64, usize)> = BTreeMap::new();
         for ((agent, _), s) in self.sessions.iter().filter(|(_, s)| inside(s)) {
             if let Some(r) = s.reported {
@@ -554,6 +613,71 @@ mod tests {
         assert_eq!(pair.1.origins().len(), whole.work.origins().len());
     }
 
+    /// A Claude Code session with one request per client given, a minute apart, each reading
+    /// `read` tokens from the cache.
+    fn session_of_clients(id: &str, clients: &[Option<&str>], read: u64, reported: Option<f64>) -> Session {
+        use crate::model::{Chain, Request};
+        let mut s = Session::new(crate::testing::claude(), id.into());
+        s.reported_usd = reported;
+        let requests = clients
+            .iter()
+            .enumerate()
+            .map(|(i, c)| Request {
+                ts_ms: 60_000 * i as i64,
+                api: crate::api::ApiId::Anthropic,
+                model: "claude-opus-5-5".into(),
+                usage: Usage { cache_read: read, output: 10, ..Usage::default() },
+                client: c.map(Into::into),
+                ..Request::default()
+            })
+            .collect();
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+        s
+    }
+
+    fn collect(sessions: &[Session], filter: &Filter) -> Collector {
+        let pricing = crate::pricing::Pricing::defaults();
+        let mut c = Collector::new(None, None);
+        for s in sessions {
+            crate::analysis::analyze(s, &pricing, filter, &mut c);
+        }
+        c
+    }
+
+    #[test]
+    fn spend_by_client_counts_requests_sessions_and_cost() {
+        let sessions = [
+            session_of_clients("s1", &[Some("cli"), Some("sdk-ts"), Some("sdk-ts")], 1_000_000, None),
+            session_of_clients("s2", &[Some("sdk-ts")], 1_000_000, None),
+            session_of_clients("s3", &[None], 1_000_000, None),
+        ];
+        let c = collect(&sessions, &Filter::default());
+        let row = |client: &str| c.clients.rows.get(&(crate::testing::claude(), client.to_string())).unwrap();
+        // A session in two clients counts in both rows, each request in one.
+        assert_eq!((row("sdk-ts").spend.requests, row("sdk-ts").sessions.len()), (3, 2));
+        assert_eq!((row("cli").spend.requests, row("cli").sessions.len()), (1, 1));
+        // Requests without a client form their own row.
+        assert_eq!(row("unknown").spend.requests, 1);
+        // The rows add up to the priced spend.
+        let rows: f64 = c.clients.rows.values().map(|r| r.spend.usd).sum();
+        let priced: f64 = c.spend.models.values().flat_map(|m| m.by_component.iter()).map(|v| v.usd).sum();
+        assert!((rows - priced).abs() < 1e-9, "{rows} vs {priced}");
+    }
+
+    #[test]
+    fn a_client_filter_leaves_mixed_sessions_out_of_the_reconciliation() {
+        let sessions = [
+            session_of_clients("s1", &[Some("cli"), Some("sdk-ts")], 1_000, Some(1.0)),
+            session_of_clients("s2", &[Some("sdk-ts")], 1_000, Some(2.0)),
+        ];
+        let all = collect(&sessions, &Filter::default());
+        assert_eq!(all.spend.reconciliation(&Filter::default())[0].sessions, 2);
+        let sdk = Filter { client: Some("sdk-ts".into()), ..Filter::default() };
+        let c = collect(&sessions, &sdk);
+        let r = &c.spend.reconciliation(&sdk)[0];
+        assert_eq!((r.sessions, r.reported_usd), (1, 2.0), "only the session whose every request is sdk-ts");
+    }
+
     #[test]
     fn a_task_shows_the_origin_most_of_its_spend_came_from() {
         let price = crate::pricing::Pricing::defaults().get("claude-opus-5-5", 0, 1);
@@ -576,6 +700,7 @@ mod tests {
                 gap_s: None,
                 prev_prompt: None,
                 composition: true,
+                client: "unknown",
             });
         }
         let tasks = w.tasks();

@@ -44,6 +44,10 @@ struct Cli {
     /// Only the session with this id prefix.
     #[arg(long, global = true)]
     session: Option<String>,
+    /// Only requests whose client, the program that ran the agent as its log names it (such as
+    /// sdk-ts or cli), contains this text, ignoring case.
+    #[arg(long, global = true)]
+    client: Option<String>,
     /// TOML price file applied over the built-in prices and ~/.config/tokprof/prices.toml.
     #[arg(long, global = true)]
     prices: Option<PathBuf>,
@@ -201,9 +205,11 @@ fn main() -> Result<()> {
         session: cli.session.clone(),
         since_ms: cli.since.as_deref().map(parse_since).transpose()?,
         until_ms: cli.until.as_deref().map(parse_date).transpose()?,
+        client: cli.client.clone(),
     };
     let filter = select.window();
-    let none_found = || if cli.project.is_some() || cli.session.is_some() || cli.since.is_some() || cli.until.is_some() { "no session logs found for these filters" } else { "no session logs found" };
+    let filtered = cli.project.is_some() || cli.session.is_some() || cli.since.is_some() || cli.until.is_some() || cli.client.is_some();
+    let none_found = || if filtered { "no session logs found for these filters" } else { "no session logs found" };
     match &command {
         Command::Scan { target } => {
             let file = match target {

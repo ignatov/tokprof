@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 use tokprof_core::api::ApiId;
@@ -74,6 +75,8 @@ struct Response {
     /// What the chain logged since its previous response.
     trigger: Option<Trigger>,
     activity: Option<CallClass>,
+    /// The `entrypoint` of the response's line: the program that ran Claude Code.
+    client: Option<Arc<str>>,
 }
 
 /// Reads a Claude Code transcript, one line at a time.
@@ -114,6 +117,8 @@ pub(crate) struct Parser {
     /// The highest `totalCostUSD` of each run of Claude Code's counter, keyed by `startTime`. A resumed
     /// process restores the counter with its `startTime`; a new `startTime` is a count from zero.
     counter_runs: Vec<(Option<i64>, f64)>,
+    /// The latest `entrypoint` value, shared by the responses that repeat it.
+    client: Option<Arc<str>>,
 }
 
 impl Parser {
@@ -142,6 +147,7 @@ impl Parser {
             pending: HashMap::new(),
             trigger_by_message: HashMap::new(),
             counter_runs: Vec::new(),
+            client: None,
         }
     }
 
@@ -372,6 +378,7 @@ impl Parser {
         let main = !self.subagent_file && agent_id.is_empty() && !sidechain;
         let origin = attribution(v).or_else(|| if main { self.turn.clone() } else { None });
         let (trigger, activity) = message_id.as_ref().and_then(|id| self.trigger_by_message.get(id).copied()).unwrap_or_default();
+        let client = self.client_of(v);
         self.responses.push(Response {
             ts_ms: parse_ts_ms(v.get("timestamp")).unwrap_or(0),
             model: model.to_string(),
@@ -384,7 +391,17 @@ impl Parser {
             origin,
             trigger,
             activity,
+            client,
         });
+    }
+
+    /// The `entrypoint` of a line, reusing the previous string while the value repeats.
+    fn client_of(&mut self, v: &Value) -> Option<Arc<str>> {
+        let name = str_at(v, "entrypoint")?;
+        if self.client.as_deref() != Some(name) {
+            self.client = Some(Arc::from(name));
+        }
+        self.client.clone()
     }
 
     fn finish_assistant(&mut self) {
@@ -598,7 +615,7 @@ impl Parser {
                     used[ri] = true;
                     let resp = &self.responses[ri];
                     let produced = resp.message_id.as_ref().and_then(|id| self.msg_by_assistant_id.get(id).copied());
-                    let base = Request { origin: origin_of(resp, &chains[ci], self.agent.as_ref()).map(|o| Origin::parse(&o)), trigger: resp.trigger, activity: resp.activity, ..base };
+                    let base = Request { origin: origin_of(resp, &chains[ci], self.agent.as_ref()).map(|o| Origin::parse(&o)), trigger: resp.trigger, activity: resp.activity, client: resp.client.clone(), ..base };
                     push_response(&mut chains[ci], base, resp, Some(delta), produced);
                 }
                 // Keep the request so later deltas still apply; it has no usage to attribute.
@@ -619,7 +636,7 @@ impl Parser {
             };
             let ci = chain_for((resp.agent_id.clone(), format!("legacy:{name}")), name, kind, &mut chains);
             let origin = origin_of(resp, &chains[ci], self.agent.as_ref());
-            let base = Request { ts_ms: resp.ts_ms, version: resp.version.clone(), origin: origin.map(|o| Origin::parse(&o)), trigger: resp.trigger, activity: resp.activity, ..Request::default() };
+            let base = Request { ts_ms: resp.ts_ms, version: resp.version.clone(), origin: origin.map(|o| Origin::parse(&o)), trigger: resp.trigger, activity: resp.activity, client: resp.client.clone(), ..Request::default() };
             let produced = resp.message_id.as_ref().and_then(|id| self.msg_by_assistant_id.get(id).copied());
             push_response(&mut chains[ci], base, resp, None, produced);
         }
@@ -1153,6 +1170,37 @@ mod tests {
 
     fn triggers(s: &Session, chain: usize) -> Vec<Trigger> {
         s.chains[chain].requests.iter().map(Request::trigger).collect()
+    }
+
+    fn clients(s: &Session) -> Vec<&str> {
+        s.chains.iter().flat_map(|c| &c.requests).map(Request::client_name).collect()
+    }
+
+    #[test]
+    fn each_request_carries_the_entrypoint_of_its_response() {
+        // A session started in the terminal and resumed in an IDE through the agent SDK.
+        let text = json!([{"type": "text", "text": "ok"}]);
+        let s = session_from(&[
+            user_line("start"),
+            assistant_line("m1", json!({"entrypoint": "cli"}), text.clone()),
+            assistant_line("m2", json!({"entrypoint": "cli"}), text.clone()),
+            user_line("go on"),
+            assistant_line("m3", json!({"entrypoint": "sdk-ts"}), text.clone()),
+            assistant_line("m4", json!({}), text),
+        ]);
+        assert_eq!(clients(&s), ["cli", "cli", "sdk-ts", "unknown"]);
+        // Repeated values share one string.
+        let r = &s.chains[0].requests;
+        assert!(std::sync::Arc::ptr_eq(r[0].client.as_ref().unwrap(), r[1].client.as_ref().unwrap()));
+    }
+
+    #[test]
+    fn a_subagent_transcript_has_the_client_of_its_lines() {
+        let mut p = parser("s", true);
+        for l in [user_line("look around"), assistant_line("m1", json!({"entrypoint": "sdk-ts", "agentId": "a1"}), json!([{"type": "text", "text": "ok"}]))] {
+            p.line(&l.to_string());
+        }
+        assert_eq!(clients(&p.into_session()), ["sdk-ts"]);
     }
 
     #[test]

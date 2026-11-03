@@ -233,6 +233,8 @@ pub struct Head {
     pub project: String,
     /// The agent's own session id, or the id the log's name gives.
     pub session_id: String,
+    /// The first client the log names: the program that ran the agent.
+    pub client: Option<String>,
 }
 
 /// How much of the work a source's logs show, which decides between two sources of one session.

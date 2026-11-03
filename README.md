@@ -209,13 +209,36 @@ The X-ray shows:
 ## Reports over all sessions
 
 ```sh
-tokprof summary             # spend by model and component, by origin and task, by trigger and activity, setup, misses by cause, reconciliation
+tokprof summary             # spend by model and component, by client, by origin and task, by trigger and activity, setup, misses by cause, reconciliation
 tokprof tools               # spend by tool and shell command, with a hint per row (--by trips)
 tokprof misses --top 20     # most expensive cache misses (--expected adds compactions and cleared tool results)
 tokprof whatif              # Claude input cost under 5m vs 1h cache lifetimes
 tokprof bench               # cold returns to big sessions: resume vs /compact vs a new session vs heartbeats
 tokprof prices              # prices in effect and where each came from
 ```
+
+`Spend by client` splits the spend by the program that ran the agent, as its log names it. A session resumed in another program counts in both rows, each request in its own; `avoidable` is the premium of its misses that the cause table lists:
+
+```
+agent   client   sessions  requests    cost  share  avoidable
+claude  sdk-ts        277     67763  $8,602  95.3%       $874
+claude  cli             8      2260    $421   4.7%       $157
+claude  sdk-cli        33        34   $3.16   0.0%      $0.07
+```
+
+The values come from the logs as they are written:
+
+| Agent | Log field | Values seen | What runs the agent |
+|---|---|---|---|
+| Claude Code | `entrypoint` of each response, 2.1.284–2.1.316 | `sdk-ts` | the TypeScript agent SDK, as IDE plugins that run Claude Code use it |
+| | | `cli` | the interactive terminal |
+| | | `sdk-cli` | `claude -p` |
+| Codex | `originator` of the rollout's `session_meta`, 0.147–0.166 | `codex_exec` | `codex exec` |
+| | | `codex-tui` | the terminal UI |
+| | | `Codex Desktop` | the desktop app |
+| | | an IDE plugin's own name | that plugin |
+
+A request whose log names no client is `unknown`. The X-ray shows the same in its header, as `client    sdk-ts`, or `client    cli ×412 · sdk-ts ×37` for a session that ran in two.
 
 `Spend by trigger` says what made the agent send each request, and so what every pass over the context was for (see [What triggered a request](#what-triggered-a-request)):
 
@@ -258,9 +281,10 @@ Every command but `tokprof prices` takes these filters:
 | `--until` | `2026-10-16`, excluded |
 | `--project` | text the project path contains, such as `billing`; a path under the home directory works with or without `~` |
 | `--session` | the start of a session id, with its subagents |
+| `--client` | text the client of a request contains, ignoring case, such as `sdk-ts`; `cli` also matches `sdk-cli` |
 | `--prices` | a price file, `FILE.toml` |
 
-The reports count the requests the filters select. `tokprof`, `scan`, `handoff`, `sessions` and `ui` pick or list the sessions they select: `--since` keeps sessions written since that day, `--until` sessions started before it. An X-ray still covers its session's whole log.
+The reports count the requests the filters select. `tokprof`, `scan`, `handoff`, `sessions` and `ui` pick or list the sessions they select: `--since` keeps sessions written since that day, `--until` sessions started before it, and `--client` sessions whose log first names a matching client. An X-ray still covers its session's whole log. With `--since`, `--until` or `--client`, the reconciliation line compares only the sessions whose every request the filters keep.
 
 A session id can be shortened to its start. Codex ids are shown by their first three groups, such as `01a197e1-4d9f-76b1`, because threads launched together share the first two. A start that several sessions share is an error that lists them.
 

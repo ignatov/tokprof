@@ -7,6 +7,7 @@
 //! prompts actually grow and what lets the analysis see where a prefix changed.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::api::ApiId;
 use crate::source::AgentId;
@@ -269,9 +270,20 @@ pub struct Request {
     pub trigger: Option<Trigger>,
     /// The class of the calls that gave the trigger; see [`Request::activity`].
     pub activity: Option<CallClass>,
+    /// The program that ran the agent for this request, as the log names it; see
+    /// [`Request::client_name`].
+    pub client: Option<Arc<str>>,
 }
 
+/// The client of a request whose log names none.
+pub const UNKNOWN_CLIENT: &str = "unknown";
+
 impl Request {
+    /// The program that ran the agent for this request, as the log names it, or `unknown`.
+    pub fn client_name(&self) -> &str {
+        self.client.as_deref().unwrap_or(UNKNOWN_CLIENT)
+    }
+
     /// What made the agent send the request: an advisor call and the first request after a
     /// compaction say so themselves, everything else is what the source saw, else `unknown`.
     pub fn trigger(&self) -> Trigger {
@@ -574,6 +586,13 @@ mod tests {
         assert_eq!(setup_source(BlockKind::Reminder, Class::None, None), Some("other"));
         assert_eq!(setup_source(BlockKind::ToolResult, Class::None, Some("src/main.rs")), None);
         assert_eq!(setup_source(BlockKind::Prompt, Class::None, None), None);
+    }
+
+    #[test]
+    fn a_request_without_a_client_reports_unknown() {
+        assert_eq!(Request::default().client_name(), "unknown");
+        let r = Request { client: Some("sdk-ts".into()), ..Request::default() };
+        assert_eq!(r.client_name(), "sdk-ts");
     }
 
     #[test]

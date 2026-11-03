@@ -49,7 +49,7 @@ pub fn latest(catalog: &Catalog, select: &Query) -> Option<SessionRef> {
         }
         if select.reads_meta() {
             let head = catalog.head(&f);
-            if !select.meta(&head.project, &head.session_id) {
+            if !select.meta(&head.project, &head.session_id, head.client.as_deref()) {
                 continue;
             }
         }
@@ -107,6 +107,7 @@ struct Totals {
     chains: BTreeMap<String, Values>,
     misses: Vec<MissEvent>,
     models: BTreeMap<String, u64>,
+    clients: BTreeMap<String, u64>,
     requests: u64,
     work: Work,
     /// One row per request, for the prompts block; the file's index among the session's logs.
@@ -161,6 +162,12 @@ impl Sink for Totals {
         });
         self.requests += 1;
         *self.models.entry(r.model.to_string()).or_default() += 1;
+        match self.clients.get_mut(r.client) {
+            Some(n) => *n += 1,
+            None => {
+                self.clients.insert(r.client.to_string(), 1);
+            }
+        }
         self.priced |= r.price.is_some();
         self.work.request(r);
     }
@@ -204,6 +211,9 @@ pub struct XRay {
     pub title: Option<String>,
     /// Models by name, with their request counts.
     pub models: Vec<(String, u64)>,
+    /// The clients of the session's requests, subagents included, with their request counts,
+    /// most requests first.
+    pub clients: Vec<(String, u64)>,
     /// The first and the last request, in epoch ms, when requests have times.
     pub span_ms: Option<(i64, i64)>,
     pub requests: u64,
@@ -333,6 +343,11 @@ pub fn xray(catalog: &Catalog, file: &SessionRef, pricing: &Pricing, now_ms: i64
         short_id: main.short_id().to_string(),
         title: main.title.clone(),
         models: totals.models.iter().map(|(m, n)| (m.clone(), *n)).collect(),
+        clients: {
+            let mut clients: Vec<(String, u64)> = totals.clients.iter().map(|(c, n)| (c.clone(), *n)).collect();
+            clients.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            clients
+        },
         span_ms,
         requests: totals.requests,
         subagents: files.len() - 1,
@@ -542,6 +557,8 @@ pub struct SessionRow {
     /// When the session last did something, in epoch ms: the time of the last record of its
     /// main log that carries one, never later than the log's last write.
     pub active_ms: i64,
+    /// The first client the main log names.
+    pub client: Option<String>,
 }
 
 impl SessionRow {
@@ -553,7 +570,7 @@ impl SessionRow {
         let bytes = file.size + subagents.iter().map(|s| s.size).sum::<u64>();
         let id = crate::model::short_id(&file.agent, &head.session_id).to_string();
         let active_ms = catalog.last_active(&file);
-        SessionRow { file, subagents, project: head.project, id, session_id: head.session_id, bytes, active_ms }
+        SessionRow { file, subagents, project: head.project, id, session_id: head.session_id, bytes, active_ms, client: head.client }
     }
 
     pub fn modified_ms(&self) -> i64 {
@@ -727,7 +744,7 @@ mod tests {
     fn listed(n: usize, written: i64, active: i64) -> SessionRow {
         let mut file = log(crate::testing::codex(), &format!("/r/{n:03}.jsonl"));
         file.modified_ns = written as i128 * 1_000_000;
-        SessionRow { file, subagents: Vec::new(), project: String::new(), id: n.to_string(), session_id: n.to_string(), bytes: 0, active_ms: active }
+        SessionRow { file, subagents: Vec::new(), project: String::new(), id: n.to_string(), session_id: n.to_string(), bytes: 0, active_ms: active, client: None }
     }
 
     /// `newest_rows` over these rows, with their logs in last-write order as discovery gives them,
@@ -804,6 +821,7 @@ mod tests {
             session_id: id.into(),
             bytes: 0,
             active_ms: 0,
+            client: None,
         };
         let rows: Vec<SessionRow> = (0..12).map(|i| row(&format!("01a197e1-4d{i:02}-76b1-b25d-cdd77b01e10f"))).collect();
         let text = ambiguous("01a197e1", &rows);

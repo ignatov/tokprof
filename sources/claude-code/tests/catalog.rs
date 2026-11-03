@@ -79,6 +79,7 @@ fn the_ui_export_leaves_out_unreadable_subagent_logs() {
         session_id: "5e5510f0-0000-0000-0000-000000000000".into(),
         bytes: 0,
         active_ms: 0,
+        client: None,
     };
     let written = xray::export(&c, &row, &Pricing::defaults(), &d.join("x.html")).unwrap();
     assert!(written.ends_with(", 1 unreadable log left out"), "{written}");
@@ -123,5 +124,26 @@ fn the_latest_session_is_the_one_active_last() {
     let local = |ts: &str| tokprof_core::fmt::local_time(ms(ts), "%Y-%m-%d %H:%M");
     assert!(lines[1].starts_with("  5e5510f0  ") && lines[1].contains(&local("2026-11-02T15:00:00Z")), "the busy session first, at its last activity: {}", lines[1]);
     assert!(lines[2].contains(&local("2026-11-02T08:27:39Z")), "then the idle one, at its last activity: {}", lines[2]);
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn a_client_filter_picks_the_latest_session_of_that_client() {
+    let d = dir("client");
+    let c = catalog(&d);
+    let user = |ts: &str, id: &str, entrypoint: &str| serde_json::json!({"type": "user", "timestamp": ts, "sessionId": id, "cwd": "/w/p", "entrypoint": entrypoint, "message": {"content": "go"}});
+    let ide = "1f000000-0000-0000-0000-000000000000";
+    let terminal = "2f000000-0000-0000-0000-000000000000";
+    log(&c, &d, &format!("{ide}.jsonl"), &[user("2026-11-02T08:00:00Z", ide, "sdk-ts")]);
+    log(&c, &d, &format!("{terminal}.jsonl"), &[user("2026-11-02T09:00:00Z", terminal, "cli")]);
+    let pick = |client: Option<&str>| {
+        let q = Query { agents: c.agents(), client: client.map(str::to_string), ..Query::default() };
+        xray::latest(&c, &q).map(|f| f.session_id)
+    };
+    assert_eq!(pick(None).as_deref(), Some(terminal), "the latest session of all");
+    assert_eq!(pick(Some("sdk-ts")).as_deref(), Some(ide), "the latest session of the client");
+    assert_eq!(pick(Some("desktop")), None);
+    let listed: Vec<String> = xray::rows(&c, &Query { agents: c.agents(), client: Some("sdk-ts".into()), ..Query::default() }, 20).into_iter().map(|r| r.session_id).collect();
+    assert_eq!(listed, [ide]);
     std::fs::remove_dir_all(d).unwrap();
 }

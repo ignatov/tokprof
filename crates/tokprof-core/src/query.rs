@@ -19,12 +19,15 @@ pub struct Query {
     /// Requests before this time; for commands that pick or list sessions, the main log was
     /// created before it.
     pub until_ms: Option<i64>,
+    /// Text the client of a request contains, ignoring case; for commands that pick or list
+    /// sessions, the first client the main log names.
+    pub client: Option<String>,
 }
 
 impl Query {
-    /// The time window of the requests that reports count.
+    /// The requests that reports count: the time window and the client.
     pub fn window(&self) -> Filter {
-        Filter { since_ms: self.since_ms, until_ms: self.until_ms }
+        Filter { since_ms: self.since_ms, until_ms: self.until_ms, client: self.client.clone() }
     }
 
     /// Whether the times of a session's main log pass; this needs no reading.
@@ -33,18 +36,20 @@ impl Query {
         self.since_ms.is_none_or(|s| f.modified_ms() >= s) && self.until_ms.is_none_or(|u| created < u)
     }
 
-    /// Whether the id and the project pass, as the first lines of the log tell them.
-    pub(crate) fn meta(&self, project: &str, id: &str) -> bool {
-        self.project.as_ref().is_none_or(|p| project.contains(p.as_str())) && self.session.as_ref().is_none_or(|s| id_starts_with(id, s))
+    /// Whether the id, the project and the client pass, as the first lines of the log tell them.
+    pub(crate) fn meta(&self, project: &str, id: &str, client: Option<&str>) -> bool {
+        self.project.as_ref().is_none_or(|p| project.contains(p.as_str()))
+            && self.session.as_ref().is_none_or(|s| id_starts_with(id, s))
+            && self.window().keeps_client(client.unwrap_or(crate::model::UNKNOWN_CLIENT))
     }
 
     pub(crate) fn reads_meta(&self) -> bool {
-        self.project.is_some() || self.session.is_some()
+        self.project.is_some() || self.session.is_some() || self.client.is_some()
     }
 
     /// Whether a listed session passes.
     pub fn row(&self, row: &SessionRow) -> bool {
-        self.times(&row.file) && self.meta(&row.project, &row.session_id)
+        self.times(&row.file) && self.meta(&row.project, &row.session_id, row.client.as_deref())
     }
 
     /// Whether a log belongs to the session `session` names, for the reports: its own id, or
@@ -106,6 +111,34 @@ mod tests {
     #[test]
     fn a_project_filter_reads_the_written_project() {
         let q = Query { project: Some("~/src/app".into()), ..Query::default() };
-        assert!(q.meta("~/src/app/web", "id") && !q.meta("~/src/other", "id"));
+        assert!(q.meta("~/src/app/web", "id", None) && !q.meta("~/src/other", "id", None));
+    }
+
+    fn request(client: Option<&str>) -> crate::model::Request {
+        crate::model::Request { client: client.map(Into::into), ..crate::model::Request::default() }
+    }
+
+    #[test]
+    fn a_client_filter_keeps_the_requests_whose_client_contains_the_text() {
+        let q = |text: &str| Query { client: Some(text.into()), ..Query::default() }.window();
+        // Part of a value.
+        let sdk = q("sdk");
+        assert!(sdk.keeps(&request(Some("sdk-ts"))) && sdk.keeps(&request(Some("sdk-cli"))));
+        assert!(!sdk.keeps(&request(Some("cli"))));
+        // Case.
+        assert!(q("codex desktop").keeps(&request(Some("Codex Desktop"))));
+        // Requests without a client.
+        let unknown = q("unknown");
+        assert!(unknown.keeps(&request(None)) && !unknown.keeps(&request(Some("cli"))));
+        // No filter keeps everything.
+        assert!(Query::default().window().keeps(&request(None)));
+    }
+
+    #[test]
+    fn the_session_lists_take_the_client_from_the_log_head() {
+        let q = Query { client: Some("sdk-ts".into()), ..Query::default() };
+        assert!(q.reads_meta());
+        assert!(q.meta("~/src/app", "id", Some("sdk-ts")));
+        assert!(!q.meta("~/src/app", "id", Some("cli")) && !q.meta("~/src/app", "id", None));
     }
 }

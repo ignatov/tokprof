@@ -56,15 +56,29 @@ impl Component {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+/// The requests a report counts: a time window and the text their client contains.
+#[derive(Clone, Debug, Default)]
 pub struct Filter {
     pub since_ms: Option<i64>,
     pub until_ms: Option<i64>,
+    /// Text the client of a request contains, ignoring case (see `Request::client_name`).
+    pub client: Option<String>,
 }
 
 impl Filter {
+    /// Whether a moment falls in the time window.
     pub fn accepts(&self, ts_ms: i64) -> bool {
         self.since_ms.is_none_or(|s| ts_ms >= s) && self.until_ms.is_none_or(|u| ts_ms < u)
+    }
+
+    /// Whether a client passes the client filter.
+    pub fn keeps_client(&self, client: &str) -> bool {
+        self.client.as_deref().is_none_or(|text| client.to_lowercase().contains(&text.to_lowercase()))
+    }
+
+    /// Whether a report counts a request: its time is in the window and its client passes.
+    pub fn keeps(&self, r: &Request) -> bool {
+        self.accepts(r.ts_ms) && self.keeps_client(r.client_name())
     }
 }
 
@@ -114,6 +128,8 @@ pub struct MissEvent {
     pub context: u64,
     pub rewritten: u64,
     pub premium_usd: Option<f64>,
+    /// The client of the request that missed (see `Request::client_name`).
+    pub client: String,
 }
 
 pub struct RequestRecord<'a> {
@@ -135,6 +151,8 @@ pub struct RequestRecord<'a> {
     pub gap_s: Option<f64>,
     pub prev_prompt: Option<u64>,
     pub composition: bool,
+    /// The program that ran the agent (see `Request::client_name`).
+    pub client: &'a str,
 }
 
 pub trait Sink {
@@ -529,7 +547,7 @@ impl<'a> Walker<'a> {
             _ => None,
         };
 
-        if self.filter.accepts(req.ts_ms) {
+        if self.filter.keeps(req) {
             let price = self.pricing.get(&req.model, prompt, req.ts_ms);
             let origin = origin_name(req);
             sink.request(&RequestRecord {
@@ -549,6 +567,7 @@ impl<'a> Walker<'a> {
                 gap_s: self.prev.as_ref().map(|p| (req.ts_ms - p.ts_ms) as f64 / 1000.0),
                 prev_prompt: self.prev.as_ref().map(|p| p.prompt),
                 composition: req.prompt.is_some(),
+                client: req.client_name(),
             });
             let premium = self.attribute(req, price, verdict.as_ref());
             self.tool_shares(req, price, sink);
@@ -565,6 +584,7 @@ impl<'a> Walker<'a> {
                     context: prompt,
                     rewritten: v.rewritten,
                     premium_usd: price.map(|_| premium),
+                    client: req.client_name().to_string(),
                 });
             }
         }
@@ -1111,5 +1131,25 @@ mod tests {
         analyze(&s5, &Pricing::defaults(), &Filter::default(), &mut c);
         assert_eq!((c.misses.len(), c.misses[0].cause), (1, Cause::IdleTtl));
         assert_eq!(c.misses[0].detail, "20m idle, 5m TTL");
+    }
+
+    #[test]
+    fn a_client_filter_still_judges_a_request_against_the_one_it_leaves_out() {
+        // A session started in the terminal and resumed through the agent SDK two hours later.
+        let mut s = Session::new(crate::testing::claude(), "s".into());
+        let hour = 3_600_000;
+        let request = |ts_ms, client: &str, usage| Request { ts_ms, api: crate::api::ApiId::Anthropic, model: "claude-opus-5-5".into(), usage, client: Some(client.into()), ..Request::default() };
+        let requests = vec![
+            request(0, "cli", Usage { write_long: 50_000, output: 100, ..Usage::default() }),
+            request(2 * hour, "sdk-ts", Usage { write_long: 50_000, output: 100, ..Usage::default() }),
+        ];
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+        let filter = Filter { client: Some("sdk".into()), ..Filter::default() };
+        let mut c = crate::report::Collector::new(None, None);
+        analyze(&s, &Pricing::defaults(), &filter, &mut c);
+        let requests: u64 = c.spend.models.values().map(|m| m.requests).sum();
+        assert_eq!(requests, 1, "only the sdk-ts request is counted");
+        assert_eq!(c.misses.len(), 1);
+        assert_eq!((c.misses[0].cause, c.misses[0].client.as_str()), (Cause::IdleTtl, "sdk-ts"), "judged against the cli request before it");
     }
 }

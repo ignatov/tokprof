@@ -147,10 +147,10 @@ impl LogSource for ClaudeCode {
     }
 
     fn head(&self, s: &SessionRef) -> Head {
-        let (mut project, mut id) = (String::new(), String::new());
+        let (mut project, mut id, mut client) = (String::new(), String::new(), None);
         if let Ok(reader) = tokprof_logio::open(s.path()) {
             for line in reader.lines().take(200).map_while(Result::ok) {
-                if !line.contains("\"cwd\"") && !line.contains("essionId") {
+                if !line.contains("\"cwd\"") && !line.contains("essionId") && !line.contains("\"entrypoint\"") {
                     continue;
                 }
                 let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
@@ -164,7 +164,10 @@ impl LogSource for ClaudeCode {
                 {
                     id = i.to_string();
                 }
-                if !project.is_empty() && !id.is_empty() {
+                if client.is_none() {
+                    client = v.get("entrypoint").and_then(Value::as_str).map(str::to_string);
+                }
+                if !project.is_empty() && !id.is_empty() && client.is_some() {
                     break;
                 }
             }
@@ -172,7 +175,7 @@ impl LogSource for ClaudeCode {
         if id.is_empty() {
             id = s.session_id.clone();
         }
-        Head { project, session_id: id }
+        Head { project, session_id: id, client }
     }
 
     fn subagents(&self, s: &SessionRef) -> Vec<SessionRef> {
@@ -291,6 +294,32 @@ mod tests {
 
     fn ms(ts: &str) -> Option<i64> {
         parse_ts_ms(Some(&Value::String(ts.to_string())))
+    }
+
+    #[test]
+    fn the_head_names_the_first_client() {
+        let path = std::env::temp_dir().join(format!("tokprof-claude-head-{}.jsonl", std::process::id()));
+        let lines = [
+            r#"{"type":"file-history-snapshot","messageId":"x"}"#,
+            r#"{"type":"user","sessionId":"s1","cwd":"/h/src/app","entrypoint":"cli","message":{"role":"user","content":"go"}}"#,
+            r#"{"type":"user","sessionId":"s1","cwd":"/h/src/app","entrypoint":"sdk-ts","message":{"role":"user","content":"on"}}"#,
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let source = ClaudeCode::at(PathBuf::from("/h/.claude/projects"), Path::new("/h"));
+        let file = SessionRef {
+            source: "claude-code",
+            agent: ClaudeCode::agent(),
+            locator: Locator::File(path.clone()),
+            session_id: "s1".into(),
+            main_id: "s1".into(),
+            subagent: false,
+            size: 0,
+            modified_ns: 0,
+            created_ms: None,
+        };
+        let head = source.head(&file);
+        std::fs::remove_file(&path).ok();
+        assert_eq!((head.project.as_str(), head.session_id.as_str(), head.client.as_deref()), ("~/src/app", "s1", Some("cli")));
     }
 
     #[test]

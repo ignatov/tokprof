@@ -69,6 +69,8 @@ pub fn summary(c: &Collector, window: &Filter, price_file: &Path) -> String {
         let _ = writeln!(out, "{counter} for {what}: {}; tokprof for the same sessions: {}", usd(r.reported_usd), usd(r.ours_usd));
     }
     out.push('\n');
+    out.push_str(&clients(c));
+    out.push('\n');
     out.push_str(&work(&c.work, 15, 15));
     out.push('\n');
     out.push_str(&triggers(&c.work));
@@ -81,6 +83,38 @@ pub fn summary(c: &Collector, window: &Filter, price_file: &Path) -> String {
     }
     out.push('\n');
     out.push_str(&miss_causes(c, false));
+    out
+}
+
+/// Spend by client: one row per agent and client, most expensive first, with the main sessions
+/// that had a request of the client and the premium of its misses that the cause table lists.
+pub fn clients(c: &Collector) -> String {
+    let rows = &c.clients.rows;
+    let priced = rows.values().any(|r| r.spend.usd > 0.0);
+    let key = |s: &Spend| if priced { s.usd } else { s.tokens };
+    let total: f64 = rows.values().map(|r| key(&r.spend)).sum();
+    let mut avoidable: BTreeMap<(&AgentId, &str), f64> = BTreeMap::new();
+    for m in c.misses.iter().filter(|m| !m.cause.expected()) {
+        *avoidable.entry((&m.agent, m.client.as_str())).or_default() += m.premium_usd.unwrap_or(0.0);
+    }
+    let mut sorted: Vec<_> = rows.iter().collect();
+    sorted.sort_by(|a, b| key(&b.1.spend).total_cmp(&key(&a.1.spend)).then(a.0.cmp(b.0)));
+    let mut table_rows = vec![["agent", "client", "sessions", "requests", "cost", "share", "avoidable"].map(str::to_string).to_vec()];
+    for ((agent, client), r) in sorted {
+        let amount = if priced { usd(r.spend.usd) } else { format!("{} tok", tokens(r.spend.tokens)) };
+        let saved = avoidable.get(&(agent, client.as_str())).copied().unwrap_or(0.0);
+        table_rows.push(vec![
+            agent.name().to_string(),
+            clip_end(client, 32),
+            r.sessions.len().to_string(),
+            r.spend.requests.to_string(),
+            amount,
+            format!("{:.1}%", 100.0 * key(&r.spend) / total.max(1e-9)),
+            usd(saved),
+        ]);
+    }
+    let mut out = String::from("Spend by client: the program that ran the agent, as its log names it\n\n");
+    out.push_str(&table(&table_rows, 2));
     out
 }
 
@@ -422,6 +456,39 @@ mod tests {
 
 
     #[test]
+    fn the_client_table_lists_the_costliest_client_first() {
+        use tokprof_core::report::ClientTotals;
+        let mut c = Collector::new(None, None);
+        let row = |requests: u64, usd: f64, sessions: &[&str]| ClientTotals { spend: Spend { requests, tokens: 1.0, usd }, sessions: sessions.iter().map(|s| s.to_string()).collect() };
+        c.clients.rows.insert((claude(), "cli".into()), row(2_292, 424.0, &["a", "b"]));
+        c.clients.rows.insert((claude(), "sdk-ts".into()), row(67_097, 8_534.0, &["b", "c", "d"]));
+        c.misses = vec![MissEvent {
+            agent: claude(),
+            project: String::new(),
+            session: "c".into(),
+            chain: "main".into(),
+            ts_ms: 0,
+            model: "claude-opus-5-5".into(),
+            cause: Cause::IdleTtl,
+            detail: String::new(),
+            context: 0,
+            rewritten: 0,
+            premium_usd: Some(7.41),
+            client: "sdk-ts".into(),
+        }];
+        let text = clients(&c);
+        assert!(text.starts_with("Spend by client: the program that ran the agent, as its log names it\n\n"), "{text}");
+        let lines: Vec<Vec<&str>> = text.lines().skip(2).map(|l| l.split_whitespace().collect()).collect();
+        assert_eq!(lines[0], ["agent", "client", "sessions", "requests", "cost", "share", "avoidable"]);
+        assert_eq!(lines[1], ["claude", "sdk-ts", "3", "67097", "$8,534", "95.3%", "$7.41"]);
+        assert_eq!(lines[2], ["claude", "cli", "2", "2292", "$424", "4.7%", "$0.00"]);
+        // In the summary, after the totals and before the spend by origin.
+        let out = summary(&c, &Filter::default(), Path::new("prices.toml"));
+        let at = |s: &str| out.find(s).unwrap_or_else(|| panic!("{s} in {out}"));
+        assert!(at("Total priced") < at("Spend by client") && at("Spend by client") < at("Spend by origin"));
+    }
+
+    #[test]
     fn a_trigger_row() {
         use tokprof_core::trigger::Trigger;
         let mut w = Work::default();
@@ -536,7 +603,7 @@ mod tests {
             s
         };
         let pricing = Pricing::defaults();
-        let window = Filter { since_ms: Some(10), until_ms: None };
+        let window = Filter { since_ms: Some(10), ..Filter::default() };
         let mut c = Collector::new(None, None);
         for s in [session("inside", &[10, 20], 1.0), session("across", &[5, 20], 2.0)] {
             tokprof_core::analysis::analyze(&s, &pricing, &window, &mut c);
@@ -553,6 +620,7 @@ mod tests {
             context: 0,
             rewritten: 0,
             premium_usd: Some(premium),
+            client: "unknown".into(),
         };
         c.misses = vec![miss(Cause::IdleTtl, 0.5), miss(Cause::Compaction, 0.2)];
 
@@ -562,7 +630,7 @@ mod tests {
         let all = summary(&c, &Filter::default(), Path::new("prices.toml"));
         assert!(all.contains("own cost counter for 2 sessions: $3.00;"), "{all}");
         // No session lies wholly inside a window that ends before the last request.
-        let early = Filter { since_ms: None, until_ms: Some(15) };
+        let early = Filter { until_ms: Some(15), ..Filter::default() };
         assert!(!summary(&c, &early, Path::new("prices.toml")).contains("own cost counter"));
     }
 

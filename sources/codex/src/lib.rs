@@ -227,7 +227,7 @@ impl LogSource for Codex {
     }
 
     fn head(&self, s: &SessionRef) -> Head {
-        let (mut project, mut id) = (String::new(), String::new());
+        let (mut project, mut id, mut client) = (String::new(), String::new(), None);
         if let Ok(reader) = tokprof_logio::open(s.path()) {
             for line in reader.lines().take(200).map_while(Result::ok) {
                 if !line.contains("\"cwd\"") && !line.contains("essionId") && !line.contains("session_meta") {
@@ -245,6 +245,9 @@ impl LogSource for Codex {
                 {
                     id = i.to_string();
                 }
+                if client.is_none() && v.get("type").and_then(Value::as_str) == Some("session_meta") {
+                    client = payload.get("originator").and_then(Value::as_str).map(str::to_string);
+                }
                 if !project.is_empty() && !id.is_empty() {
                     break;
                 }
@@ -253,7 +256,7 @@ impl LogSource for Codex {
         if id.is_empty() {
             id = s.session_id.clone();
         }
-        Head { project, session_id: id }
+        Head { project, session_id: id, client }
     }
 
     fn subagents(&self, s: &SessionRef) -> Vec<SessionRef> {
@@ -391,6 +394,28 @@ fn read_thread(path: &Path) -> (Option<Thread>, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_head_names_the_originator() {
+        let path = std::env::temp_dir().join(format!("tokprof-codex-head-{}.jsonl", std::process::id()));
+        let meta = r#"{"type":"session_meta","payload":{"id":"t1","cwd":"/h/src/app","originator":"codex_exec"}}"#;
+        std::fs::write(&path, meta).unwrap();
+        let source = Codex::at(PathBuf::from("/h/.codex"), Path::new("/h"));
+        let file = SessionRef {
+            source: "codex",
+            agent: Codex::agent(),
+            locator: Locator::File(path.clone()),
+            session_id: "t1".into(),
+            main_id: "t1".into(),
+            subagent: false,
+            size: 0,
+            modified_ns: 0,
+            created_ms: None,
+        };
+        let head = source.head(&file);
+        std::fs::remove_file(&path).ok();
+        assert_eq!((head.project.as_str(), head.session_id.as_str(), head.client.as_deref()), ("~/src/app", "t1", Some("codex_exec")));
+    }
 
     #[test]
     fn thread_ids_come_from_file_names() {

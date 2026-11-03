@@ -693,6 +693,7 @@ mod tests {
             session_id: format!("id{i}"),
             bytes: 1 + at,
             active_ms: at as i64 * 1000,
+            client: None,
         }
     }
 

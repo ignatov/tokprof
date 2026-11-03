@@ -153,7 +153,7 @@ pub fn scan(s: &Session, filter: &Filter, requests: usize, min_context: u64) -> 
             }
             let history = &conversation[..=pair[0]];
             let long_ttl = forecast::long_ttl(history);
-            if prev.usage.prompt() < min_context || r.model != prev.model || !filter.accepts(r.ts_ms) || !cold_return(long_ttl, prev, r) {
+            if prev.usage.prompt() < min_context || r.model != prev.model || !filter.keeps(r) || !cold_return(long_ttl, prev, r) {
                 continue;
             }
             let mut steps = vec![r];

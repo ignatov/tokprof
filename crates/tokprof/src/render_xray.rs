@@ -31,6 +31,16 @@ fn component_color(c: Component) -> &'static str {
     }
 }
 
+/// The `client` line: one client alone, or each with its request count, most requests first;
+/// `None` for a session without requests.
+fn client_line(clients: &[(String, u64)]) -> Option<String> {
+    match clients {
+        [] => None,
+        [(one, _)] => Some(one.clone()),
+        many => Some(many.iter().map(|(c, n)| format!("{c} ×{n}")).collect::<Vec<_>>().join(" · ")),
+    }
+}
+
 /// The X-ray as text. Its last line names the profile `tokprof flame` writes into `profile_dir`.
 pub fn text(x: &XRay, style: &Style, profile_dir: &Path, home: &Path) -> String {
     let mut out = String::new();
@@ -39,6 +49,9 @@ pub fn text(x: &XRay, style: &Style, profile_dir: &Path, home: &Path) -> String 
     let _ = writeln!(out, "{} {}  {}  {}", label("session"), x.agent.name(), style.bold(&x.project), x.id);
     if let Some(title) = &x.title {
         let _ = writeln!(out, "{} {}", label("title"), clip_end(title, 82));
+    }
+    if let Some(line) = client_line(&x.clients) {
+        let _ = writeln!(out, "{} {line}", label("client"));
     }
     if !x.models.is_empty() {
         let models = x.models.iter().map(|(m, n)| format!("{m} ×{n}")).collect::<Vec<_>>().join(", ");
@@ -504,6 +517,7 @@ mod tests {
             short_id: "s".into(),
             title: None,
             models: Vec::new(),
+            clients: Vec::new(),
             span_ms: None,
             requests: 0,
             subagents: 0,
@@ -665,5 +679,25 @@ mod tests {
     #[test]
     fn no_setup_block_below_its_thresholds() {
         assert_eq!(render(&xray(Vec::new()), setup_lines), "");
+    }
+
+    #[test]
+    fn the_header_names_the_clients() {
+        let header = |clients: &[(&str, u64)], title: Option<&str>| {
+            let mut x = xray(Vec::new());
+            x.clients = clients.iter().map(|(c, n)| (c.to_string(), *n)).collect();
+            x.title = title.map(str::to_string);
+            text(&x, &Style::with_color(false), Path::new("/tmp"), Path::new("/h"))
+        };
+        // One client, on the line after the title.
+        let one = header(&[("sdk-ts", 657)], Some("Fix the parser"));
+        let lines: Vec<&str> = one.lines().collect();
+        assert_eq!((lines[2], lines[3]), ("title     Fix the parser", "client    sdk-ts"), "{one}");
+        // Several, most requests first.
+        assert!(header(&[("cli", 412), ("sdk-ts", 37)], None).contains("\nclient    cli ×412 · sdk-ts ×37\n"));
+        // None of the requests had one.
+        assert!(header(&[("unknown", 5)], None).contains("\nclient    unknown\n"));
+        // A session without requests has no line.
+        assert!(!header(&[], None).contains("client"));
     }
 }

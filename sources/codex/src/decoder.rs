@@ -74,6 +74,8 @@ pub(crate) struct Parser {
     seen: HashSet<String>,
     last_total: String,
     subagent: Option<String>,
+    /// `session_meta.originator`: the program that ran Codex, for every request of the rollout.
+    client: Option<Arc<str>>,
 }
 
 impl Parser {
@@ -93,6 +95,7 @@ impl Parser {
             seen: HashSet::new(),
             last_total: String::new(),
             subagent: None,
+            client: None,
         }
     }
 
@@ -167,6 +170,9 @@ impl Parser {
     fn session_meta(&mut self, payload: &Value) {
         if let Some(id) = str_at(payload, "id") {
             self.session.id = id.to_string();
+        }
+        if let Some(originator) = str_at(payload, "originator") {
+            self.client = Some(Arc::from(originator));
         }
         self.note_cwd(payload);
         if payload.get("parent_thread_id").is_some_and(|p| !p.is_null()) {
@@ -374,6 +380,7 @@ impl Parser {
             context_window: s.context_window,
             trigger,
             activity,
+            client: self.client.clone(),
             ..Request::default()
         });
         s.compacted = false;
@@ -697,6 +704,20 @@ mod tests {
         let marked: Vec<bool> = s.chains[0].requests.iter().map(|r| r.compacted_before).collect();
         assert_eq!(marked, [false, true]);
         assert_eq!(s.compactions, [Compaction { ts_ms: parse_ts_ms(Some(&Value::from("2026-10-29T10:05:00Z"))).unwrap(), kind: CompactionTrigger::Unknown }]);
+    }
+
+    #[test]
+    fn every_request_of_a_rollout_has_its_originator() {
+        let clients = |meta: Value| {
+            let mut p = parser("t");
+            p.line(&serde_json::json!({"type": "session_meta", "payload": meta}).to_string());
+            for (id, input) in [("r1", 100), ("r2", 120)] {
+                p.line(&serde_json::json!({"type": "token_usage_record", "payload": {"response_id": id, "usage": {"input_tokens": input, "output_tokens": 1}}}).to_string());
+            }
+            p.into_session().chains[0].requests.iter().map(|r| r.client_name().to_string()).collect::<Vec<_>>()
+        };
+        assert_eq!(clients(serde_json::json!({"id": "t", "cwd": "/w", "originator": "codex_exec"})), ["codex_exec", "codex_exec"]);
+        assert_eq!(clients(serde_json::json!({"id": "t", "cwd": "/w"})), ["unknown", "unknown"]);
     }
 
     #[test]
