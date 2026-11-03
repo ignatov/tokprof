@@ -499,29 +499,38 @@ impl Session {
     /// the audited ones. Such chains follow one another in time and are joined. Chains of one name
     /// that overlap in time are separate conversations and stay apart.
     pub fn main_conversations(&self) -> Vec<(&str, Vec<&Request>)> {
+        self.main_conversation_chains()
+            .into_iter()
+            .map(|chains| {
+                let mut requests: Vec<&Request> = chains.iter().flat_map(|&i| &self.chains[i].requests).collect();
+                requests.sort_by_key(|r| r.ts_ms);
+                (self.chains[chains[0]].name.as_str(), requests)
+            })
+            .collect()
+    }
+
+    /// The chains of each main conversation, as indices into `chains` in time order, joined as
+    /// [`Session::main_conversations`] joins them.
+    pub fn main_conversation_chains(&self) -> Vec<Vec<usize>> {
         let span = |c: &Chain| {
             let ts = c.requests.iter().map(|r| r.ts_ms);
             (ts.clone().min().unwrap_or(0), ts.max().unwrap_or(0))
         };
-        let mut chains: Vec<&Chain> = self.chains.iter().filter(|c| c.kind == ChainKind::Main && !c.requests.is_empty()).collect();
-        chains.sort_by_key(|c| span(c).0);
-        let mut out: Vec<(&str, Vec<&Request>, i64)> = Vec::new();
-        for c in chains {
+        let mut chains: Vec<usize> = (0..self.chains.len()).filter(|&i| self.chains[i].kind == ChainKind::Main && !self.chains[i].requests.is_empty()).collect();
+        chains.sort_by_key(|&i| span(&self.chains[i]).0);
+        let mut out: Vec<(&str, Vec<usize>, i64)> = Vec::new();
+        for i in chains {
+            let c = &self.chains[i];
             let (first, last) = span(c);
             match out.iter_mut().filter(|(name, _, end)| *name == c.name && *end < first).max_by_key(|(_, _, end)| *end) {
                 Some(conversation) => {
-                    conversation.1.extend(&c.requests);
+                    conversation.1.push(i);
                     conversation.2 = last;
                 }
-                None => out.push((&c.name, c.requests.iter().collect(), last)),
+                None => out.push((&c.name, vec![i], last)),
             }
         }
-        out.into_iter()
-            .map(|(name, mut requests, _)| {
-                requests.sort_by_key(|r| r.ts_ms);
-                (name, requests)
-            })
-            .collect()
+        out.into_iter().map(|(_, chains, _)| chains).collect()
     }
 
     /// What the session's requests work on: what a subagent was asked to do, the title, or

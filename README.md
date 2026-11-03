@@ -213,6 +213,7 @@ tokprof summary             # spend by model and component, by client, by origin
 tokprof tools               # spend by tool and shell command, with a hint per row (--by trips)
 tokprof misses --top 20     # most expensive cache misses (--expected adds compactions and cleared tool results)
 tokprof whatif              # Claude input cost under 5m vs 1h cache lifetimes
+tokprof pauses              # pauses before typed messages, cold returns by pause, sessions by largest context
 tokprof bench               # cold returns to big sessions: resume vs /compact vs a new session vs heartbeats
 tokprof prices              # prices in effect and where each came from
 ```
@@ -239,6 +240,22 @@ The values come from the logs as they are written:
 | | | an IDE plugin's own name | that plugin |
 
 A request whose log names no client is `unknown`. The X-ray shows the same in its header, as `client    sdk-ts`, or `client    cli ×412 · sdk-ts ×37` for a session that ran in two.
+
+`tokprof pauses` shows how long you pause before typing again, and what that costs through the prompt cache. Its first table counts the messages typed in main conversations by the pause since the conversation's previous request. The line below it says how many of them would find each cache lifetime the agent can use expired. 30 days of IDE sessions, `--client sdk-ts`:
+
+```
+On a 5-minute cache, 49% of these messages come after it expired; on a 1-hour cache, 17%.
+
+pause    returns  first request  avoidable  median context
+1–2h          79           $271       $257          436.3k
+8–16h         47           $188       $179          490.7k
+
+204 cold returns: $775 in first requests, $738 of it avoidable.
+Started by: 165 typed messages, 12 background tasks, 12 tool results, 15 other.
+After a cold return: a median of 21 requests until the next cold pause or compaction (quarters 7 and 73); 17 returns ended within 3 requests.
+```
+
+A cold return is a request of a main conversation that missed the cache after a pause longer than its lifetime (`idle > TTL`). `first request` is what that request cost, and `avoidable` the part a warm cache would have saved. The report then ranges the sessions by the largest prompt of their main conversations, with their spend and cold returns. Here 22 sessions that reached 800k+ tokens made 59.7% of the spend.
 
 `Spend by trigger` says what made the agent send each request, and so what every pass over the context was for (see [What triggered a request](#what-triggered-a-request)):
 

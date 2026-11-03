@@ -18,6 +18,7 @@ pub mod handoff;
 pub mod jfr;
 pub mod labels;
 pub mod model;
+pub mod pauses;
 pub mod pricing;
 pub mod profile;
 pub mod query;

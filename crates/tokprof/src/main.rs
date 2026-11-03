@@ -14,6 +14,7 @@ use tokprof_core::analysis::{self, Component};
 use tokprof_core::export;
 use tokprof_core::profile::Measure;
 use tokprof_core::report::{self, Collector, Dim};
+use tokprof_core::pauses::Pauses;
 use tokprof_core::{bench, fmt, handoff, xray};
 
 mod clipboard;
@@ -122,6 +123,10 @@ enum Command {
     },
     /// Replay Claude requests under 5m and 1h cache lifetimes.
     Whatif,
+    /// How long you pause before typing again, and what that costs through the prompt cache:
+    /// pauses before typed messages, the share after each cache lifetime, cold returns by pause,
+    /// and sessions by their largest context.
+    Pauses,
     /// Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent
     /// do (trips), with a hint per row.
     Tools {
@@ -285,6 +290,32 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
+    if let Command::Pauses = &command {
+        let started = Instant::now();
+        let mut files = catalog.discover(&agents);
+        // A session's subagent logs go with it.
+        files.retain(|f| select.holds(f));
+        if files.is_empty() {
+            bail!("no session logs found for {}", cli.agent.join(", "));
+        }
+        let (mut p, stats) = scan(
+            &catalog,
+            &files,
+            &select,
+            OnUnreadable::Skip,
+            || Pauses::new(filter.clone()),
+            |p, session, _| analysis::analyze(session, &pricing, &filter, p),
+            |mut a, b| {
+                a.merge(b);
+                a
+            },
+        )?;
+        p.finish();
+        eprintln!("{}", sources(&catalog, &files, started.elapsed().as_secs_f64()));
+        warn(&stats.unreadable);
+        print!("{}", render_report::pauses(&p));
+        return Ok(());
+    }
 
     let parse_dims = |names: &[String]| {
         names
@@ -348,7 +379,8 @@ fn main() -> Result<()> {
         | Command::Handoff { .. }
         | Command::Ui { .. }
         | Command::Prices { .. }
-        | Command::Bench { .. } => {
+        | Command::Bench { .. }
+        | Command::Pauses => {
             unreachable!("handled before reading logs")
         }
         Command::Summary => print!("{}", render_report::summary(&collector, &filter, &paths::user_prices())),

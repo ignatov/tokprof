@@ -7,7 +7,8 @@ use std::path::Path;
 use tokprof_core::analysis::{Component, Filter, MissEvent};
 use tokprof_core::analysis::cache::Cause;
 use tokprof_core::api::ApiId;
-use tokprof_core::fmt::{clip_end, table, tokens, usd};
+use tokprof_core::fmt::{self, clip_end, table, tokens, usd};
+use tokprof_core::pauses::{Pauses, SHORT_FOLLOW};
 use tokprof_core::pricing::{Price, Pricing};
 use tokprof_core::profile::Values;
 use tokprof_core::report::{Collector, ModelTotals, Spend, TriggerSpend, Work};
@@ -83,6 +84,83 @@ pub fn summary(c: &Collector, window: &Filter, price_file: &Path) -> String {
     }
     out.push('\n');
     out.push_str(&miss_causes(c, false));
+    out
+}
+
+/// A cache lifetime as the pause report names it: `5-minute`, `1-hour`.
+fn lifetime_name(ms: i64) -> String {
+    const HOUR: i64 = 3_600_000;
+    if ms % HOUR == 0 { format!("{}-hour", ms / HOUR) } else { format!("{}-minute", ms / 60_000) }
+}
+
+/// `tokprof pauses`: per agent, the pauses before typed messages, the share after each cache
+/// lifetime, the cold returns by pause with who started them and what followed, and the
+/// sessions by largest context.
+pub fn pauses(p: &Pauses) -> String {
+    let mut out = String::from("Pauses before typed messages, and what they cost through the prompt cache\n");
+    for (agent, a) in &p.agents {
+        let amount = |dollars: f64, count: f64| if a.priced { usd(dollars) } else { format!("{} tok", tokens(count)) };
+        let _ = writeln!(out, "\n{} ({})\n", agent.info().title, agent.name());
+        if a.typed.is_empty() {
+            out.push_str("No typed messages after an earlier request.\n");
+        } else {
+            let _ = writeln!(out, "{} typed in main conversations after an earlier request, by the pause before them\n", fmt::count(a.typed.len() as u64, "message", "messages"));
+            let mut rows = vec![["pause", "messages", "share", "median context"].map(str::to_string).to_vec()];
+            for r in a.pause_rows() {
+                let share = 100.0 * r.count as f64 / a.typed.len() as f64;
+                rows.push(vec![r.name.to_string(), r.count.to_string(), format!("{share:.1}%"), r.median_context.map_or_else(String::new, |t| tokens(t as f64))]);
+            }
+            out.push_str(&table(&rows, 1));
+            let shares: Vec<String> = a.lifetimes.iter().map(|&ms| (lifetime_name(ms), a.share_after(ms).round())).enumerate().map(|(i, (name, share))| {
+                if i == 0 { format!("On a {name} cache, {share:.0}% of these messages come after it expired") } else { format!("on a {name} cache, {share:.0}%") }
+            }).collect();
+            if !shares.is_empty() {
+                let _ = writeln!(out, "\n{}.", shares.join("; "));
+            }
+        }
+        out.push_str("\nCold returns: requests of main conversations that missed the cache after a pause longer than its lifetime\n\n");
+        let returns = a.return_rows();
+        if returns.is_empty() {
+            out.push_str("No cold returns.\n");
+        } else {
+            let mut rows = vec![["pause", "returns", "first request", "avoidable", "median context"].map(str::to_string).to_vec()];
+            for r in &returns {
+                rows.push(vec![r.name.to_string(), r.count.to_string(), usd(r.usd), usd(r.premium_usd), r.median_context.map_or_else(String::new, |t| tokens(t as f64))]);
+            }
+            out.push_str(&table(&rows, 1));
+            let (n, first, premium) = returns.iter().fold((0, 0.0, 0.0), |(n, u, p), r| (n + r.count, u + r.usd, p + r.premium_usd));
+            let _ = writeln!(out, "\n{}: {} in first requests, {} of it avoidable.", fmt::count(n as u64, "cold return", "cold returns"), usd(first), usd(premium));
+            let [typed, background, tool, other] = a.starters().map(|n| n as u64);
+            let _ = writeln!(
+                out,
+                "Started by: {}, {}, {}, {} other.",
+                fmt::count(typed, "typed message", "typed messages"),
+                fmt::count(background, "background task", "background tasks"),
+                fmt::count(tool, "tool result", "tool results"),
+                other
+            );
+            if let Some((median, q1, q3, short)) = a.follow_stats() {
+                let _ = writeln!(
+                    out,
+                    "After a cold return: a median of {} until the next cold pause or compaction (quarters {q1} and {q3}); {} within {SHORT_FOLLOW} requests.",
+                    fmt::count(median, "request", "requests"),
+                    fmt::count(short as u64, "return ended", "returns ended")
+                );
+            }
+        }
+        out.push_str("\nSessions by largest context: the largest prompt of each session's main conversations\n\n");
+        let (spend_usd, spend_tokens) = a.spend();
+        let total = if a.priced { spend_usd } else { spend_tokens };
+        let mut rows = vec![["largest context", "sessions", "spend", "share", "cold returns"].map(str::to_string).to_vec()];
+        for r in a.size_rows() {
+            let part = if a.priced { r.usd } else { r.tokens };
+            rows.push(vec![r.name.to_string(), r.count.to_string(), amount(r.usd, r.tokens), format!("{:.1}%", 100.0 * part / total.max(1e-9)), r.cold_returns.to_string()]);
+        }
+        out.push_str(&table(&rows, 1));
+    }
+    if p.agents.is_empty() {
+        out.push_str("\nNo requests in these logs.\n");
+    }
     out
 }
 
@@ -454,6 +532,42 @@ mod tests {
         AgentId::new(AgentInfo { cost_counter: Some("Claude Code's own cost counter".into()), ..AgentInfo::named("claude") })
     }
 
+
+    #[test]
+    fn the_pause_report_prints_its_parts_per_agent() {
+        use tokprof_core::pauses::{AgentPauses, ColdReturn, SessionSize, Starter};
+        let minute = 60_000;
+        let mut p = Pauses::default();
+        let claude_pauses = AgentPauses {
+            typed: vec![(30_000, 100_000), (7 * minute, 300_000), (90 * minute, 420_000), (100 * minute, 600_000)],
+            lifetimes: [5 * minute, 60 * minute].into_iter().collect(),
+            returns: vec![
+                ColdReturn { pause_ms: 90 * minute, usd: 3.5, premium_usd: 3.3, context: 420_000, starter: Starter::Typed },
+                ColdReturn { pause_ms: 570 * minute, usd: 7.0, premium_usd: 6.8, context: 878_000, starter: Starter::Background },
+            ],
+            follows: vec![20, 2],
+            sessions: [("a".to_string(), SessionSize { largest: 966_000, usd: 412.0, tokens: 1.0, cold_returns: 2 }), ("b".to_string(), SessionSize { largest: 30_000, usd: 8.0, tokens: 1.0, cold_returns: 0 })].into_iter().collect(),
+            priced: true,
+        };
+        p.agents.insert(claude(), claude_pauses);
+        let codex = AgentPauses { lifetimes: [30 * minute].into_iter().collect(), sessions: [("c".to_string(), SessionSize { largest: 50_000, usd: 1.0, tokens: 1.0, cold_returns: 0 })].into_iter().collect(), priced: true, ..AgentPauses::default() };
+        p.agents.insert(AgentId::new(AgentInfo { title: "Codex".into(), ..AgentInfo::named("codex") }), codex);
+        let out = pauses(&p);
+        // Claude Code first, then Codex.
+        assert!(out.find("(claude)").unwrap() < out.find("Codex (codex)").unwrap(), "{out}");
+        let row = |name: &str| out.lines().find(|l| l.starts_with(name)).map(|l| l.split_whitespace().collect::<Vec<_>>());
+        assert_eq!(row("5–15m").unwrap(), ["5–15m", "1", "25.0%", "300.0k"]);
+        assert_eq!(row("1–2h").unwrap(), ["1–2h", "2", "50.0%", "600.0k"], "the pause table comes first, with the upper of the two middle contexts");
+        assert!(out.contains("On a 5-minute cache, 75% of these messages come after it expired; on a 1-hour cache, 50%."), "{out}");
+        assert!(out.contains("2 cold returns: $10.50 in first requests, $10.10 of it avoidable."), "{out}");
+        assert!(out.contains("Started by: 1 typed message, 1 background task, 0 tool results, 0 other."), "{out}");
+        assert!(out.contains("After a cold return: a median of 20 requests until the next cold pause or compaction (quarters 2 and 20); 1 return ended within 3 requests."), "{out}");
+        assert_eq!(row("800k+").unwrap(), ["800k+", "1", "$412", "98.1%", "2"]);
+        // Codex: no typed message, no cold return.
+        let codex_part = &out[out.find("Codex (codex)").unwrap()..];
+        assert!(codex_part.contains("No typed messages after an earlier request.") && codex_part.contains("No cold returns."), "{codex_part}");
+        assert!(!codex_part.contains("Started by"), "{codex_part}");
+    }
 
     #[test]
     fn the_client_table_lists_the_costliest_client_first() {
