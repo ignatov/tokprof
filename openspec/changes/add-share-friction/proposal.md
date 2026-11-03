@@ -32,10 +32,11 @@ Files cannot be collected twice, so these parts must be in the file before the f
 - **The report**, for `tokprof share` and `tokprof pool`:
   - an `activity` line in the header: active days, active hours, busy hours, and dollars per active hour;
   - `What could have been saved` gets a `per active hour` column, and a table of cold returns by client per active hour, the baseline for changes in a client;
-  - a new section `Problems`: failed, refused and denied calls, the spend after failures, the time waiting for retries, slow requests and the longest one, pooled and per active hour;
+  - a new section `Problems`: failed, refused and denied calls, the spend after failures, the time waiting for retries and slow requests, pooled and per active hour;
   - a new section `Where the agent's time went`: busy time by kind;
   - a new section `Working with the agent`: the hand-offs, per 100 typed messages;
-  - a table of the highest effort by client;
+  - a table of the highest effort by client, costliest first;
+  - a line under the model table that names the models without a price;
   - a line under the content table with the share of spend whose prompts the logs hold, when it is below 100%;
   - the `Tools and commands` table gets `failed`.
 

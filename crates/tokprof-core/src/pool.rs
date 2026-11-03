@@ -141,8 +141,8 @@ pub struct RateRow {
     pub value: f64,
     /// What the value is a part of, such as all requests for the slow ones.
     pub of: Option<f64>,
-    /// The pooled value over the pooled base, and the median of each file's own rate. `None` for a
-    /// row without a rate, such as the longest request.
+    /// The pooled value over the pooled base, and the median of each file's own rate. `None` when no
+    /// file has a base for it.
     pub rate: Option<f64>,
     pub median_rate: Option<f64>,
     /// The files where the value is above zero, and those that have the row's parts.
@@ -172,6 +172,8 @@ pub struct TimeRow {
 pub struct EffortRow {
     pub agent: String,
     pub client: String,
+    /// The client's pooled dollars, as its effort levels count them.
+    pub usd: f64,
     /// The share of the client's spend, and of its requests, at `max` or `xhigh`.
     pub spend_share: f64,
     pub request_share: f64,
@@ -201,6 +203,15 @@ pub struct Coverage {
     pub files_below_90: usize,
 }
 
+/// A model that some files have no price for: its tokens there count as $0.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Unpriced {
+    pub agent: String,
+    pub model: String,
+    pub tokens: f64,
+    pub files: usize,
+}
+
 /// The pooled report.
 #[derive(Clone, Debug, Serialize)]
 pub struct Pool {
@@ -218,7 +229,11 @@ pub struct Pool {
     pub time_files: usize,
     pub working: Vec<RateRow>,
     pub effort_by_client: Vec<EffortRow>,
+    /// The clients past the shown ones, folded: how many and their cost.
+    pub effort_more: Option<(usize, f64)>,
     pub coverage: Option<Coverage>,
+    /// The models without a price, the most tokens first.
+    pub unpriced: Vec<Unpriced>,
 }
 
 impl Pool {
@@ -771,14 +786,17 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
         }
     }
     let activity = activity_of(&infos, &spends);
+    let (effort_rows, effort_more) = effort_by_client(&files, min_files, spends.iter().sum());
     Pool {
         cold_by_client: cold_by_client(&files, min_files),
         problems: problems(&files, &hours),
         time: time_rows(&files),
         time_files: files.iter().filter(|f| part(f, "time", |_, _, _| {}).is_some()).count(),
         working: working(&files, &hours),
-        effort_by_client: effort_by_client(&files, min_files),
+        effort_by_client: effort_rows,
+        effort_more,
         coverage: coverage(&files),
+        unpriced: unpriced(&files, min_files),
         activity,
         files: infos,
         spend_usd: spends.iter().sum(),
@@ -891,29 +909,6 @@ fn problems(files: &[Value], hours: &[Option<f64>]) -> Vec<RateRow> {
         let mut row = rate_row("requests of a minute or more", Unit::Count, &slow, hours, 1.0);
         row.of = Some(each("/time/requests").iter().flatten().sum());
         out.push(row);
-    }
-    let longest: Vec<Option<f64>> = files
-        .iter()
-        .map(|f| {
-            let mut best: Option<f64> = None;
-            for (_, a) in agents(f) {
-                if let Some(ms) = a.pointer("/time/longest_ms").and_then(Value::as_f64) {
-                    best = Some(best.map_or(ms, |b: f64| b.max(ms)));
-                }
-            }
-            best
-        })
-        .collect();
-    if longest.iter().any(Option::is_some) {
-        out.push(RateRow {
-            name: "longest request".into(),
-            unit: Unit::Ms,
-            value: longest.iter().flatten().copied().fold(0.0, f64::max),
-            files: longest.iter().flatten().filter(|v| **v > 0.0).count(),
-            files_with_part: longest.iter().flatten().count(),
-            by_file: longest.clone(),
-            ..RateRow::default()
-        });
     }
     out
 }
@@ -1030,8 +1025,13 @@ fn cold_by_client(files: &[Value], min_files: usize) -> Vec<RateRow> {
 /// A client's dollars at the highest effort and in all, then its requests the same way.
 type EffortSums = (f64, f64, f64, f64);
 
-/// The share of each client's spend and requests at `max` or `xhigh`.
-fn effort_by_client(files: &[Value], min_files: usize) -> Vec<EffortRow> {
+/// The share of the pooled spend a client needs for a row of its own in the effort table.
+const MIN_CLIENT_SHARE: f64 = 0.01;
+
+/// The share of each client's spend and requests at `max` or `xhigh`, costliest first: the clients
+/// with [`MIN_CLIENT_SHARE`] of the pooled spend or more, at most [`TOP_ROWS`], and the rest folded
+/// into how many they are and their cost.
+fn effort_by_client(files: &[Value], min_files: usize, spend: f64) -> (Vec<EffortRow>, Option<(usize, f64)>) {
     let mut by: BTreeMap<(String, String), Vec<Option<EffortSums>>> = BTreeMap::new();
     for (i, f) in files.iter().enumerate() {
         for (agent, a) in agents(f) {
@@ -1054,13 +1054,13 @@ fn effort_by_client(files: &[Value], min_files: usize) -> Vec<EffortRow> {
     }
     let mut rows: Vec<EffortRow> = by
         .into_iter()
-        .filter(|(_, v)| v.iter().flatten().count() >= min_files.max(1))
         .map(|((agent, client), per)| {
             let sum = |k: usize| per.iter().flatten().map(|t| [t.0, t.1, t.2, t.3][k]).sum::<f64>();
             let by_file: Vec<Option<f64>> = per.iter().map(|t| t.map(|t| t.0 / t.1.max(1e-9))).collect();
             EffortRow {
                 agent,
                 client,
+                usd: sum(1),
                 spend_share: sum(0) / sum(1).max(1e-9),
                 request_share: sum(2) / sum(3).max(1e-9),
                 median_file: median_of(by_file.iter().flatten().copied()),
@@ -1069,9 +1069,39 @@ fn effort_by_client(files: &[Value], min_files: usize) -> Vec<EffortRow> {
             }
         })
         .collect();
-    rows.sort_by(|a, b| b.spend_share.total_cmp(&a.spend_share).then_with(|| a.client.cmp(&b.client)));
-    rows.truncate(TOP_ROWS);
-    rows
+    rows.sort_by(|a, b| b.usd.total_cmp(&a.usd).then_with(|| a.client.cmp(&b.client)));
+    let (mut shown, mut rest) = (Vec::new(), (0, 0.0));
+    for r in rows {
+        if shown.len() < TOP_ROWS && r.files >= min_files.max(1) && r.usd >= MIN_CLIENT_SHARE * spend {
+            shown.push(r);
+        } else {
+            rest.0 += 1;
+            rest.1 += r.usd;
+        }
+    }
+    (shown, (rest.0 > 0).then_some(rest))
+}
+
+/// The models some file has no price for, the most tokens first. `--min-files` leaves out a model
+/// that fewer files have, as it does a version.
+fn unpriced(files: &[Value], min_files: usize) -> Vec<Unpriced> {
+    let mut by: BTreeMap<(String, String), (f64, usize)> = BTreeMap::new();
+    for f in files {
+        for (agent, a) in agents(f) {
+            for (model, m) in entries(&a["spend"]) {
+                let tokens = m.pointer("/total/tokens").and_then(Value::as_f64).unwrap_or(0.0);
+                if m.get("priced").and_then(Value::as_bool) == Some(false) && tokens > 0.0 {
+                    let e = by.entry((agent.clone(), model.clone())).or_default();
+                    e.0 += tokens;
+                    e.1 += 1;
+                }
+            }
+        }
+    }
+    let mut out: Vec<Unpriced> =
+        by.into_iter().filter(|(_, (_, n))| *n >= min_files.max(1)).map(|((agent, model), (tokens, files))| Unpriced { agent, model, tokens, files }).collect();
+    out.sort_by(|a, b| b.tokens.total_cmp(&a.tokens).then_with(|| a.model.cmp(&b.model)));
+    out
 }
 
 /// The share of spend whose prompts the logs hold, over the files with the part.

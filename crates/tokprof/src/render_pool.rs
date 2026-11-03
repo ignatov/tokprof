@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use tokprof_core::fmt::{int, table, usd};
+use tokprof_core::fmt::{count, int, table, tokens, usd};
 use tokprof_core::pool::{Pool, RateRow, Row, Table, Unit};
 use tokprof_core::rhythm::duration;
 
@@ -278,6 +278,17 @@ pub fn text(p: &Pool, by_file: bool) -> String {
         let Some(t) = p.table(key).filter(present) else { continue };
         let _ = write!(out, "\n{}", coverage_line(t, n));
         out.push_str(&money_table(p, t, cols, "cost", "files", false, by_file));
+        if key == "model" && !p.unpriced.is_empty() {
+            let models: Vec<String> = p
+                .unpriced
+                .iter()
+                .map(|u| {
+                    let files = if one { String::new() } else { format!(", {}", count(u.files as u64, "file", "files")) };
+                    format!("{} ({} tokens{files})", u.model, tokens(u.tokens))
+                })
+                .collect();
+            let _ = writeln!(out, "models without a price: {}; their tokens count as $0", models.join(", "));
+        }
         if let (true, Some(c)) = (key == "content", &p.coverage)
             && c.share < 0.9995
         {
@@ -370,7 +381,7 @@ pub fn text(p: &Pool, by_file: bool) -> String {
     }
     if !p.effort_by_client.is_empty() {
         out.push_str("\nHighest effort by client: the share at max or xhigh\n\n");
-        let mut head = ["agent", "client", "spend", "requests"].map(str::to_string).to_vec();
+        let mut head = ["agent", "client", "cost", "of spend", "of requests"].map(str::to_string).to_vec();
         if !one {
             head.extend(["median file", "files"].map(str::to_string));
         }
@@ -379,7 +390,7 @@ pub fn text(p: &Pool, by_file: bool) -> String {
         }
         let mut rows = vec![head];
         for r in &p.effort_by_client {
-            let mut cells = vec![r.agent.clone(), r.client.clone(), pct(r.spend_share), pct(r.request_share)];
+            let mut cells = vec![r.agent.clone(), r.client.clone(), usd(r.usd), pct(r.spend_share), pct(r.request_share)];
             if !one {
                 cells.push(pct(r.median_file));
                 cells.push(r.files.to_string());
@@ -388,6 +399,9 @@ pub fn text(p: &Pool, by_file: bool) -> String {
                 cells.extend(r.by_file.iter().map(|x| x.map_or("–".to_string(), pct)));
             }
             rows.push(cells);
+        }
+        if let Some((n, sum)) = p.effort_more {
+            rows.push(vec![String::new(), format!("{n} more"), usd(sum)]);
         }
         out.push_str(&table(&rows, 2));
     }
@@ -522,7 +536,8 @@ mod tests {
         assert_eq!(row("failed tool calls"), ["9.86", "1,390"]);
         assert_eq!(row("spend after failures"), ["$1.60", "$226"]);
         assert!(t.lines().any(|l| l.starts_with("requests of a minute or more") && l.contains("3,001 (3.6%)")), "{t}");
-        assert!(t.lines().any(|l| l.starts_with("longest request") && l.contains("23m") && l.trim_end().ends_with('–')), "{t}");
+        // One sleep of the computer during a request would decide the longest one.
+        assert!(!t.contains("longest request"), "{t}");
     }
 
     #[test]
@@ -555,10 +570,44 @@ mod tests {
         let t = text(&pool_of(vec![friction_file(1_000.0, 10.0, 2.0, extra)]), false);
         let section = &t[t.find("Highest effort by client").unwrap()..];
         let effort: Vec<&str> = section.lines().find(|l| l.starts_with("claude  sdk-ts")).unwrap().split_whitespace().collect();
-        assert_eq!(effort[2..], ["94.1%", "90.0%"]);
+        assert_eq!(effort[2..], ["$850", "94.1%", "90.0%"]);
         assert!(t.contains("prompts the logs hold: 88.2% of the spend; the rest is unknown\n"), "{t}");
         let git: Vec<&str> = t.lines().find(|l| l.starts_with("Bash git")).unwrap().split_whitespace().collect();
         assert_eq!(git[2..4], ["300", "120"]);
+    }
+
+    #[test]
+    fn small_clients_fold_into_more_costliest_first() {
+        let client = |usd: f64, max: f64| {
+            json!({"requests": 10, "usd": usd, "avoidable_usd": 0.0, "main_sessions": 1, "cold_returns": 0, "cache_writes": {"short": 0, "long": 0}, "active_hours": 1,
+            "effort": {"max": {"requests": 9, "usd": usd * max}, "medium": {"requests": 1, "usd": usd * (1.0 - max)}}})
+        };
+        let extra = json!({"clients": {"sdk-ts": client(8_999.0, 0.8), "cli": client(421.0, 0.0), "JetBrains.IntelliJ IDEA": client(0.91, 0.982), "codex_exec": client(27.46, 0.27)}});
+        let p = pool_of(vec![friction_file(11_356.0, 395.0, 30.0, extra)]);
+        let names: Vec<&str> = p.effort_by_client.iter().map(|r| r.client.as_str()).collect();
+        assert_eq!(names, ["sdk-ts", "cli"], "the costliest first, and only those with 1% of the spend or more");
+        let (n, sum) = p.effort_more.unwrap();
+        assert_eq!(n, 2);
+        assert!((sum - 28.37).abs() < 1e-9, "{sum}");
+        let t = text(&p, false);
+        let section = &t[t.find("Highest effort by client").unwrap()..];
+        assert!(section.lines().any(|l| l.split_whitespace().collect::<Vec<_>>() == ["2", "more", "$28.37"]), "{section}");
+        assert!(!section.contains("JetBrains"), "{section}");
+    }
+
+    #[test]
+    fn models_without_a_price_are_named_under_the_model_table() {
+        let mut f = file(11_356.0, None);
+        f["agents"]["codex"] =
+            json!({"spend": {"codex-auto-review": {"requests": 1_947, "priced": false, "components": {}, "total": {"usd": 0.0, "tokens": 101_273_848}}}});
+        let t = text(&pool_of(vec![f.clone()]), false);
+        let models = &t[t.find("agent   model").unwrap()..t.find("cost component").unwrap()];
+        assert!(models.ends_with("models without a price: codex-auto-review (101.3M tokens); their tokens count as $0\n\n"), "{models}");
+        // In a pool, the model names its files, and --min-files leaves out one that fewer have.
+        let pool = text(&pool_of(vec![f.clone(), file(1_000.0, None)]), false);
+        assert!(pool.contains("models without a price: codex-auto-review (101.3M tokens, 1 file); their tokens count as $0\n"), "{pool}");
+        let named = vec![("a".to_string(), f), ("b".to_string(), file(1_000.0, None))];
+        assert!(!text(&pool::build(&named, 2), false).contains("models without a price"));
     }
 
     #[test]
@@ -596,7 +645,7 @@ mod tests {
     #[test]
     fn a_file_without_the_new_parts_counts_in_none_of_them() {
         let p = pool_of(vec![friction_file(1_000.0, 10.0, 2.0, json!({})), file(1_000.0, None)]);
-        assert!(p.problems.iter().all(|r| r.files_with_part == 1 || r.name == "longest request"), "{:?}", p.problems);
+        assert!(p.problems.iter().all(|r| r.files_with_part == 1), "{:?}", p.problems);
         assert_eq!(p.time_files, 1);
         let t = text(&p, false);
         assert!(

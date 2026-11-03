@@ -21,7 +21,7 @@ The header SHALL have an `activity` line after `spend`. For one file it gives th
 - **THEN** its row in `Cold returns by client` shows `312`, `206`, `0.66` and `$2.37`
 
 ### Requirement: Problems
-The report SHALL print `Problems`, with the rows `failed tool calls`, `spend after failures`, `calls the user refused`, `calls a rule denied`, `requests that waited for retries`, `time waiting for retries`, `requests of a minute or more` and `longest request`. The columns are `pooled`, `per active hour`, `median file` (of each file's value per active hour) and `files` (the files where the value is above zero). The longest request is the longest of all files, and has no rate.
+The report SHALL print `Problems`, with the rows `failed tool calls`, `spend after failures`, `calls the user refused`, `calls a rule denied`, `requests that waited for retries`, `time waiting for retries` and `requests of a minute or more`, and no row for the longest request. The columns are `pooled`, `per active hour`, `median file` (of each file's value per active hour) and `files` (the files where the value is above zero).
 
 #### Scenario: Failures of one person
 - **WHEN** one file has 1,390 failed calls, $226 of spend after them, and 141 active hours
@@ -30,6 +30,10 @@ The report SHALL print `Problems`, with the rows `failed tool calls`, `spend aft
 #### Scenario: Slow requests
 - **WHEN** 3,001 of 83,890 requests took a minute or more
 - **THEN** the row `requests of a minute or more` shows `3,001 (3.6%)` under `pooled`
+
+#### Scenario: A request across a sleep
+- **WHEN** a Codex request seems to take 2 hours, because the computer slept between a tool's output and the model's answer, and Codex logs no send times
+- **THEN** the report has no row for the longest request, which such a request would decide, and the request counts once among the requests of a minute or more
 
 ### Requirement: Where the agent's time went
 The report SHALL print `Where the agent's time went`, one row per kind of busy time (see agent-time), most time first, with `time` in hours, `share` of the busy time, `median file` (each file's share), `files` and `after turns`.
@@ -54,11 +58,15 @@ The report SHALL print `Working with the agent`, with the rows of the scenario b
 - **THEN** the `ends of turn` row shows `2,671`, `6.76` and `–` under `per 100 typed messages`
 
 ### Requirement: Highest effort by client
-The report SHALL print `Highest effort by client`, one row per agent and client, with the share of the client's spend and of its requests at `max` or `xhigh`, then `median file` (of the share of spend) and `files`.
+The report SHALL print `Highest effort by client`, one row per agent and client, costliest first. The columns are `cost`, the client's pooled spend; `of spend` and `of requests`, the share of that spend and of its requests at `max` or `xhigh`; then `median file` (of the share of spend) and `files`. It shows the clients with 1% of the pooled spend or more, at most 8, then `<n> more` with the cost of the rest.
 
 #### Scenario: A client at max
 - **WHEN** a client spent $800 of $850 at `max`, in 900 of 1,000 requests
-- **THEN** its row shows `94.1%` and `90.0%`
+- **THEN** its row shows `$850`, `94.1%` and `90.0%`
+
+#### Scenario: A small client
+- **WHEN** a client spent $0.91 of a file's $11,356, 98.2% of it at `max`
+- **THEN** it has no row of its own, and its cost counts in `<n> more`
 
 ### Requirement: Prompt coverage line
 When the share of spend whose prompts the logs hold is below 100%, the report SHALL print, under the content table, `prompts the logs hold: <x>% of the spend; the rest is unknown`. It counts the files that have the part. For a pool, the line ends with `, in <k> files below 90%`.
@@ -66,6 +74,17 @@ When the share of spend whose prompts the logs hold is below 100%, the report SH
 #### Scenario: One file with old transcripts
 - **WHEN** 88.2% of a file's spend comes from requests whose prompts its logs hold
 - **THEN** the line reads `prompts the logs hold: 88.2% of the spend; the rest is unknown`
+
+### Requirement: Models without a price
+When a file has a model without a price (see share-export, Spend parts), the report SHALL print, under the model table, `models without a price:` and each such model with its tokens, then `; their tokens count as $0`. For a pool, each model also names its files, and `--min-files` leaves a model out as it does a version. The line leaves out the price file that pricing names for such models: each file was priced on its own machine (see pricing, Requests without a price).
+
+#### Scenario: Codex's auto-review
+- **WHEN** a file's requests to `codex-auto-review` used 101,273,848 tokens, and that model has no price
+- **THEN** the line reads `models without a price: codex-auto-review (101.3M tokens); their tokens count as $0`
+
+#### Scenario: A pool
+- **WHEN** 3 of 5 files have requests to `codex-auto-review` without a price
+- **THEN** its entry in the line ends with `, 3 files)`
 
 ### Requirement: Failures in the tool table
 `Tools and commands` SHALL show `failed`, the failed calls of each row, after `calls`.

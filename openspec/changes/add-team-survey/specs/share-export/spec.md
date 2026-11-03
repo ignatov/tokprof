@@ -37,11 +37,15 @@ The file SHALL start with `format` (the number 2), `tokprof` (the version that w
 - **THEN** the header has no `survey` and no `mcp_names`
 
 ### Requirement: Spend parts
-Each agent's object SHALL hold `spend`, by model and cost component in dollars and tokens, as the summary's model table counts it (see cost-attribution). It SHALL also hold `clients`, by client (see session-logs), with requests, cost, avoidable dollars, main sessions, cold returns (see pause-report), and the tokens written to the cache with the short and with the long lifetime.
+Each agent's object SHALL hold `spend`, by model and cost component in dollars and tokens, as the summary's model table counts it (see cost-attribution), and per model `priced`: whether it has a price (see pricing). It SHALL also hold `clients`, by client (see session-logs), with requests, cost, avoidable dollars, main sessions, cold returns (see pause-report), and the tokens written to the cache with the short and with the long lifetime.
 
 #### Scenario: The same totals as the summary
 - **WHEN** `tokprof summary` and `tokprof share` run with the same filters
 - **THEN** each model's components and total in `spend` equal the summary's figures before rounding
+
+#### Scenario: A model without a price
+- **WHEN** the selected requests include 1,947 to `codex-auto-review`, which has no price
+- **THEN** its row in `spend` has `"priced": false`, its tokens, and no dollars
 
 #### Scenario: Clients
 - **WHEN** the selected Claude Code requests ran under `sdk-ts` and `cli`

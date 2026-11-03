@@ -393,7 +393,7 @@ Per agent, the file holds:
 | field | what it is |
 |---|---|
 | `sessions`, `main_sessions` | logs with a selected request, subagent logs included, and the main sessions among them |
-| `spend` | per model: requests and the five cost components, in dollars and tokens, as in `Spend by model` |
+| `spend` | per model: requests and the five cost components, in dollars and tokens, as in `Spend by model`, and whether the model has a price |
 | `clients` | per client: requests, cost and avoidable dollars as in `Spend by client`, main sessions, cold returns and their avoidable dollars, the tokens written with each cache lifetime, active hours, and requests and dollars by effort level |
 | `cache_writes` | tokens written with the short and the long lifetime, for main conversations and for subagents |
 | `misses` | per cause: misses, re-processed tokens and avoidable dollars, as in `Cache misses by cause` |
@@ -423,14 +423,14 @@ It holds no project, path, session id, title, task, prompt or tool text, and no 
 
 `tokprof pool` reads share files, or folders of them, and prints one report, pooled and for the median file:
 - the header, with the activity: active days and hours, busy hours, and dollars per active hour;
-- where the money went, with the share of spend whose prompts the logs hold under the content table;
+- where the money went, with the models without a price under the model table, and the share of spend whose prompts the logs hold under the content table;
 - what could have been saved, per active hour too, and the cold returns of each client and their avoidable dollars per active hour;
 - problems: failed, refused and denied calls, the spend after failures, the waits for retries, and slow requests, per active hour;
 - the habits that cost the most;
 - where the agent's time went, by what it waited on;
 - working with the agent: the hand-offs per active hour, and per 100 typed messages for those a typed message starts;
 - tools and commands, with their failed calls;
-- the highest effort by client;
+- the highest effort by client, costliest first;
 - agent versions.
 
 ```sh
