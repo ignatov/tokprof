@@ -20,6 +20,7 @@ pub mod jfr;
 pub mod labels;
 pub mod model;
 pub mod pauses;
+pub mod pool;
 pub mod pricing;
 pub mod profile;
 pub mod query;
@@ -50,7 +51,18 @@ pub(crate) const TEST_NOW_MS: i64 = 1_793_620_800_000;
 /// Agents for tests, with the facts the real sources give them.
 #[cfg(test)]
 pub(crate) mod testing {
-    use crate::source::{AgentId, AgentInfo, Harness, Pickup};
+    use crate::source::{AgentId, AgentInfo, Harness, Pickup, PublicNames};
+
+    /// Some of the names that ship with each agent, as its source lists them.
+    const CLAUDE_NAMES: PublicNames = PublicNames {
+        tools: &["Agent", "Bash", "Edit", "Grep", "Read", "Write"],
+        commands: &["goal", "model"],
+        skills: &["simplify"],
+        subagent_types: &["general-purpose", "Explore"],
+        mcp: Some(("mcp__", "__")),
+    };
+    const CODEX_NAMES: PublicNames =
+        PublicNames { tools: &["apply_patch", "exec_command"], commands: &[], skills: &[], subagent_types: &["default"], mcp: Some(("mcp__", "__")) };
 
     pub fn claude() -> AgentId {
         AgentId::new(AgentInfo {
@@ -64,6 +76,7 @@ pub(crate) mod testing {
             )],
             cost_counter: Some("Claude Code's own cost counter".into()),
             harness: Harness { pickup: Some(Pickup { taken_tokens: 8_000.0, requests: 4.0, output_tokens: 2_000.0 }) },
+            public_names: CLAUDE_NAMES,
             ..AgentInfo::named("claude")
         })
     }
@@ -74,6 +87,7 @@ pub(crate) mod testing {
             title: "Codex".into(),
             instruction_files: vec!["AGENTS.md".into()],
             harness: Harness { pickup: Some(Pickup { taken_tokens: 30_000.0, requests: 6.0, output_tokens: 4_000.0 }) },
+            public_names: CODEX_NAMES,
             ..AgentInfo::named("codex")
         })
     }

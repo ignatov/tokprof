@@ -1,0 +1,86 @@
+# Running a survey
+
+This page is for someone who wants to know where a group's coding-agent money goes. Each person's agent downloads tokprof, writes one share file of totals, and the person sends the file back. `tokprof pool` then reads all the files together.
+
+## What a person sends
+
+`tokprof share` reads the Claude Code and Codex logs on the machine and writes one JSON file. It holds:
+- spend by model and cost component;
+- spend by what fills the context, by kind of origin, by activity, by prompt size, by how long the sessions ran, and by client;
+- cache misses by cause, cold returns, cache lifetimes, and what the other lifetime would have cost;
+- tools and shell programs, with the tool hints;
+- effort levels, compactions and agent versions.
+
+The file holds no project or file path, no session id or title, no prompt or tool text, and no user or host name. It keeps only these names:
+- names that ship with the agent: built-in tools such as `Bash`, slash commands such as `/goal`, skills bundled with the agent, and built-in subagent types such as `general-purpose`;
+- well-known programs such as `git` and `sed`;
+- model, client and version names.
+
+A person's own skills, commands, subagent types, MCP servers and scripts count only as `skill`, `command`, `agent`, `mcp` and `other`.
+
+Before writing, tokprof searches the file for the home path, the user and host names, and the ids and titles of the sessions, and writes nothing if it finds one. After writing, it prints what the file says, and then `words to review`: every word in the file that tokprof did not make, so the person can check them before sending.
+
+The file is anonymous in what it holds, not in how it is sent. Whoever collects the files knows who sent which, and sees each person's spend. When that matters, collect them in a shared folder or a form that does not show the sender.
+
+## The prompt
+
+Fill in these three things, then send the prompt. Each person pastes it into their coding agent, such as Claude Code or Codex.
+- `<tag>`: a release, such as `v0.2.0`.
+- `<label>`: a label for this survey, such as `team-2026-11`.
+- `<recipient>`: where the file goes.
+
+```
+Please run a survey of my coding-agent logs with tokprof <tag>, an open-source profiler
+(https://github.com/ignatov/tokprof). It reads the Claude Code and Codex logs on this machine
+and writes one JSON file of totals with no names in it. It makes no network calls.
+
+1. Make a new temporary folder.
+2. Pick the archive for this machine:
+   - Mac with Apple silicon: tokprof-aarch64-apple-darwin.tar.gz
+   - Mac with Intel: tokprof-x86_64-apple-darwin.tar.gz
+   - Linux on x86-64: tokprof-x86_64-unknown-linux-gnu.tar.gz
+   - Linux on ARM64: tokprof-aarch64-unknown-linux-gnu.tar.gz
+   - Windows on x86-64: tokprof-x86_64-pc-windows-msvc.zip
+   - Windows on ARM64: tokprof-aarch64-pc-windows-msvc.zip
+3. Download it and SHA256SUMS from https://github.com/ignatov/tokprof/releases/download/<tag>/
+   into the folder. If a sandbox blocks the network, ask me to allow these two downloads.
+4. Check the archive's SHA-256 against its line in SHA256SUMS. If they differ, stop and tell me.
+   If gh is installed, also run: gh attestation verify <archive> -R ignatov/tokprof
+5. Unpack the archive in the folder, and from there run
+   ./tokprof --since 30d share --survey <label> -o <folder>/tokprof-share.json
+   On Windows, run .\tokprof.exe with the same arguments.
+   It can take a few minutes on a long history, so allow it that long.
+6. Show me tokprof's output as it is.
+7. Tell me where the file is, and that I should look through it and send it to <recipient> myself.
+
+Do not install tokprof, change any settings or send anything anywhere. Do not read the file
+or my logs into this chat.
+```
+
+The agent downloads nothing but the archive and `SHA256SUMS`, and it sends nothing. The person reads tokprof's output in the chat and sends the file themselves.
+
+To count the calls of an MCP server by name, such as the server of an IDE, add `--mcp-names <server>` to the command in step 5. The server's name then shows in each file's header and in its words to review.
+
+## Collecting and pooling
+
+Put the files in one folder. You can name them as you like: the names show only with `--by-file`.
+
+```sh
+tokprof pool ~/survey                   # the report over every .json file in the folder
+tokprof pool --min-files 3 ~/survey     # the same, with rows that fewer than 3 files have folded into other
+tokprof pool --by-file ~/survey         # a column per file, headed by its name
+tokprof pool --json ~/survey            # the numbers as JSON, to chart them
+```
+
+The pool skips a file that is not a share file, one of a newer format, and a second copy of a file, with a line for each. It reads files of format 1 too: the tables built from the parts that format 1 lacks say how many files they count.
+
+Before you show a pooled report to anyone outside the group, use `--min-files 3`. Then no row describes one or two people. In a small group, a pooled report still shows each person's range, so ask the group first.
+
+## Reading the report
+
+- **The header**: how many files, the days they cover, the survey labels, and the spend in all and per file at the median and quarters.
+- **Where the money went**: spend by model, cost component, content of the context, origin, activity, prompt size, how long the sessions ran, and client. `share` is of the pooled spend. `median file` is the median of each file's own share, which a single big spender cannot move. `files` counts the files with the row.
+- **What could have been saved**: avoidable dollars by cause of cache miss, and what the cheaper cache lifetime would have saved. `files 5%+` counts the files where the row is 5% or more of their spend.
+- **Habits that cost the most**: the spend in prompts of 400k tokens or more, in sessions longer than a day, in single lookups, in thinking, in setup, at the highest effort, and in each tool hint. These rows show where to look, not what could be saved: they overlap.
+- **Tools and commands**: the tools and shell programs with the most rent, and their calls and trips (see the `tools` command in the README).
+- **Versions**: the agent versions in use.

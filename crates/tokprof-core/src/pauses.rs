@@ -77,13 +77,29 @@ pub struct ColdReturn {
     pub starter: Starter,
 }
 
-/// One session: its largest main prompt, what all its requests spent, and its cold returns.
+/// One session: its largest main prompt, what all its requests spent, its cold returns, and the
+/// times of its first and last request, subagents included.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SessionSize {
     pub largest: u64,
     pub usd: f64,
     pub tokens: f64,
     pub cold_returns: u64,
+    pub span: Option<(i64, i64)>,
+}
+
+impl SessionSize {
+    /// The time from the first to the last request, in ms.
+    pub fn span_ms(&self) -> i64 {
+        self.span.map_or(0, |(first, last)| last - first)
+    }
+}
+
+fn join_span(a: Option<(i64, i64)>, b: Option<(i64, i64)>) -> Option<(i64, i64)> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some((x.0.min(y.0), x.1.max(y.1))),
+        (x, y) => x.or(y),
+    }
 }
 
 /// A row of a table of ranges: its name, how many there were, and their sums.
@@ -110,6 +126,8 @@ pub struct AgentPauses {
     pub follows: Vec<u64>,
     /// By the session's short id; a subagent's log adds to its main session's.
     pub sessions: HashMap<String, SessionSize>,
+    /// The cold returns of each client (see `Request::client_name`).
+    pub cold_returns_by_client: BTreeMap<String, u64>,
     /// Whether any request had a price; amounts are tokens otherwise.
     pub priced: bool,
     /// Where the agent's busy time went over the sessions (see agent-time); the caller paints it
@@ -139,6 +157,10 @@ impl AgentPauses {
             e.usd += s.usd;
             e.tokens += s.tokens;
             e.cold_returns += s.cold_returns;
+            e.span = join_span(e.span, s.span);
+        }
+        for (client, n) in o.cold_returns_by_client {
+            *self.cold_returns_by_client.entry(client).or_default() += n;
         }
         self.priced |= o.priced;
         self.busy.merge(o.busy);
@@ -233,7 +255,7 @@ struct Conversation {
 }
 
 /// The latest main-conversation request, until its miss comes or the next request does.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Last {
     ts_ms: i64,
     conversation: usize,
@@ -241,6 +263,7 @@ struct Last {
     usd: f64,
     context: u64,
     trigger: Trigger,
+    client: String,
 }
 
 /// The session being read.
@@ -331,6 +354,7 @@ impl Sink for Pauses {
         let size = agent.sessions.entry(cur.session.clone()).or_default();
         size.usd += usd;
         size.tokens += (r.usage.prompt() + r.usage.output) as f64;
+        size.span = join_span(size.span, Some((r.ts_ms, r.ts_ms)));
         let Some(k) = chain.and_then(|c| cur.conversation_of.get(c).copied().flatten()) else { return };
         if r.advisor || r.chain_kind != ChainKind::Main {
             return;
@@ -363,7 +387,15 @@ impl Sink for Pauses {
             conv.long_ttl = false;
         }
         conv.last_ts = Some(r.ts_ms);
-        cur.last = Some(Last { ts_ms: r.ts_ms, conversation: k, pause_ms: pause, usd, context: r.prev_prompt.unwrap_or(r.usage.prompt()), trigger: r.trigger });
+        cur.last = Some(Last {
+            ts_ms: r.ts_ms,
+            conversation: k,
+            pause_ms: pause,
+            usd,
+            context: r.prev_prompt.unwrap_or(r.usage.prompt()),
+            trigger: r.trigger,
+            client: r.client.to_string(),
+        });
     }
 
     fn miss(&mut self, m: MissEvent) {
@@ -376,6 +408,7 @@ impl Sink for Pauses {
         if let Some(size) = agent.sessions.get_mut(&cur.session) {
             size.cold_returns += 1;
         }
+        *agent.cold_returns_by_client.entry(last.client).or_default() += 1;
         cur.conversations[last.conversation].follow = Some(1);
     }
 

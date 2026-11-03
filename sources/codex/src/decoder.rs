@@ -93,6 +93,10 @@ pub(crate) struct Parser {
     blocks_by_call: HashMap<String, Vec<usize>>,
     /// The calls that did not work, by call id.
     call_ends: HashMap<String, CallEnd>,
+    /// The first `session_meta.cli_version` of the rollout, for every request of it: a later
+    /// `session_meta` of a resumed rollout does not change it, so no miss gets the cause
+    /// `agent updated` from a resume.
+    version: Option<String>,
 }
 
 impl Parser {
@@ -120,6 +124,7 @@ impl Parser {
             call_of_message: HashMap::new(),
             blocks_by_call: HashMap::new(),
             call_ends: HashMap::new(),
+            version: None,
         }
     }
 
@@ -206,6 +211,9 @@ impl Parser {
     fn session_meta(&mut self, payload: &Value) {
         if let Some(id) = str_at(payload, "id") {
             self.session.id = id.to_string();
+        }
+        if self.version.is_none() {
+            self.version = str_at(payload, "cli_version").map(str::to_string);
         }
         if let Some(originator) = str_at(payload, "originator") {
             self.client = Some(Arc::from(originator));
@@ -483,7 +491,10 @@ impl Parser {
             b.class = class_of(b);
         }
         // Codex sends its requests to the OpenAI API; its configured provider is not read yet.
-        requests.iter_mut().for_each(|r| r.api = ApiId::OpenAi);
+        requests.iter_mut().for_each(|r| {
+            r.api = ApiId::OpenAi;
+            r.version = self.version.clone();
+        });
         self.session.chains.push(Chain { name, kind, requests });
         self.session.compactions.sort_by_key(|c| c.ts_ms);
         for (id, end) in &self.call_ends {
@@ -872,6 +883,26 @@ mod tests {
         };
         assert_eq!(clients(serde_json::json!({"id": "t", "cwd": "/w", "originator": "codex_exec"})), ["codex_exec", "codex_exec"]);
         assert_eq!(clients(serde_json::json!({"id": "t", "cwd": "/w"})), ["unknown", "unknown"]);
+    }
+
+    /// The versions of the requests of a rollout with these `session_meta` payloads, one before
+    /// each of its two requests.
+    fn versions(metas: [Value; 2]) -> Vec<Option<String>> {
+        let mut p = parser("t");
+        for (meta, (id, input)) in metas.into_iter().zip([("r1", 100), ("r2", 120)]) {
+            p.line(&serde_json::json!({"type": "session_meta", "payload": meta}).to_string());
+            p.line(&serde_json::json!({"type": "token_usage_record", "payload": {"response_id": id, "usage": {"input_tokens": input, "output_tokens": 1}}}).to_string());
+        }
+        p.into_session().chains[0].requests.iter().map(|r| r.version.clone()).collect()
+    }
+
+    #[test]
+    fn every_request_of_a_rollout_has_its_first_cli_version() {
+        let meta = |v: Option<&str>| serde_json::json!({"id": "t", "cwd": "/w", "cli_version": v});
+        let one = Some("0.166.0-alpha.5.1".to_string());
+        assert_eq!(versions([meta(Some("0.166.0-alpha.5.1")), serde_json::json!({"id": "t", "cwd": "/w"})]), [one.clone(), one.clone()], "a Codex rollout");
+        assert_eq!(versions([meta(Some("0.166.0-alpha.5.1")), meta(Some("0.167.0"))]), [one.clone(), one], "a later session_meta keeps the first version");
+        assert_eq!(versions([serde_json::json!({"id": "t", "cwd": "/w"}), serde_json::json!({"id": "t", "cwd": "/w"})]), [None, None], "a log without a version");
     }
 
     #[test]

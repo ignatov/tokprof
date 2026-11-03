@@ -57,6 +57,20 @@ pub enum BlockKind {
 }
 
 impl BlockKind {
+    /// Every kind, in declaration order, so that `ALL[k as usize] == k`.
+    pub const ALL: [BlockKind; 10] = [
+        BlockKind::Tools,
+        BlockKind::System,
+        BlockKind::Prompt,
+        BlockKind::Reminder,
+        BlockKind::ToolResult,
+        BlockKind::Text,
+        BlockKind::Thinking,
+        BlockKind::ToolUse,
+        BlockKind::Image,
+        BlockKind::Unknown,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             BlockKind::Tools => "tool schemas",

@@ -16,5 +16,12 @@ tokprof's source of Claude Code transcripts.
 - **Handoff note:** user prompts, the `TodoWrite` list, `Edit`, `Write`, `MultiEdit` and `NotebookEdit` file paths, `Read`, and `Bash` commands.
 - **API:** every request goes to the Anthropic API.
 - **Setup hints:** they name `skillListingBudgetFraction` (default 0.01 of the context window) and `skillOverrides` for skill listings, both in the settings schema of 2.1.316; `CLAUDE.md`, `AGENTS.md` and the auto-memory `MEMORY.md` for instructions; `/mcp` for deferred tool lists.
+- **Names a share file keeps** (`PUBLIC_NAMES` in `src/lib.rs`): the names that ship with Claude Code, read from the bundled code of the 2.1.316 binary, plus the two tools 2.1.317 adds (`ReadWidgetContext`, `WrapUp`).
+  - Tools: every built-in tool definition; the server tools sent to the API (`advisor`, `web_search`) and the deferred-tool stub `DeferredToolPlaceholder`; the aliases it accepts (`Task`, `KillShell`, `KillBash` and others); and the retired tools it still recognizes (`BashOutput`, `TaskOutput`, `MultiEdit`, `LS`, `NotebookRead` and others), which transcripts of 2.1.284 and later can carry.
+  - Slash commands: the built-in commands and their aliases, and the bundled skills, which can be typed as commands.
+  - Skills: the bundled skills (registered with source `bundled`), the skills of the built-in plugins, the prompt commands the Skill tool can call (`init`, `security-review`, `commit-push-pr`), the bundled workflow `deep-research`, and the skill aliases such as `review`.
+  - Subagent types: the built-in ones (`baseDir: "built-in"`), such as `general-purpose`, `Explore`, `Plan` and `fork`, and those of the built-in `claude-test` plugin.
+  - MCP tools are named `mcp__<server>__<tool>`; a plugin's server is `plugin_<plugin>_<server>`.
+  - Left off: the built-in MCP servers (`ide`, `claude-in-chrome` and others), since a user can name a server the same way; `SlashCommand` and `output-style-setup`, which 2.1.316 no longer has.
 
 The fields and versions are the ones the session-logs spec names; `tests/fixtures` holds a synthetic transcript with a subagent, a compaction, one hand-off of each kind, a failed, a refused and a denied call, and a request retried after an API error.

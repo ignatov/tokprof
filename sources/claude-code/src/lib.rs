@@ -16,10 +16,91 @@ use anyhow::Result;
 use serde_json::Value;
 use tokprof_core::labels::display_path;
 use tokprof_core::source::{
-    Activity, AgentId, AgentInfo, Capabilities, Claim, Decoder, Detail, Harness, Head, Locator, LogSource, OwnCost, Pickup, Records, SessionRef,
-    Touched,
+    Activity, AgentId, AgentInfo, Capabilities, Claim, Decoder, Detail, Harness, Head, Locator, LogSource, OwnCost, Pickup, PublicNames, Records,
+    SessionRef, Touched,
 };
 use tokprof_logio::{file_times, parse_ts_ms, str_at, walk};
+
+/// The names that ship with Claude Code, which a share file keeps (see README.md): read from the
+/// bundled code of the 2.1.316 binary, with the tools 2.1.317 adds and the older names that
+/// transcripts of 2.1.284 and later still carry.
+const PUBLIC_NAMES: PublicNames = PublicNames {
+    tools: CLAUDE_TOOLS,
+    commands: CLAUDE_COMMANDS,
+    skills: CLAUDE_SKILLS,
+    subagent_types: CLAUDE_SUBAGENT_TYPES,
+    mcp: Some(("mcp__", "__")),
+};
+
+/// Built-in tools; the server tools Claude Code sends to the API (`advisor`, `web_search`) and its
+/// deferred-tool stub; the aliases it still accepts; and the retired tools it still recognizes.
+const CLAUDE_TOOLS: &[&str] = &[
+    "Agent", "AppifactRepl", "Artifact", "ArtifactCheck", "ArtifactComments", "ArtifactData",
+    "AskUserQuestion", "Bash", "ClaudeDesign", "CronCreate", "CronDelete", "CronList", "DesignSync", "Edit",
+    "EndConversation", "EnterPlanMode", "EnterWorktree", "ExitPlanMode", "ExitWorktree", "FetchInboxMessage",
+    "GetTask", "Glob", "Grep", "LSP", "ListAgents", "ListConnectors", "ListMcpResourcesTool", "ListPlugins",
+    "ListSkills", "Monitor", "NotebookEdit", "ObserverReport", "OfferChromeSetup", "Poll", "PowerShell",
+    "Projects", "ProposeGoal", "PublishPlugin", "PushNotification", "Read", "ReadMcpResourceDirTool",
+    "ReadMcpResourceTool", "ReadNotifications", "RefreshMcpTools", "RemoteTrigger", "ReportFindings",
+    "ScheduleWakeup", "SearchMcpRegistry", "SearchPlugins", "SearchSkills", "SendFeedback", "SendFile",
+    "SendMessage", "SendToProject", "SendToProjectContext", "SendUserFile", "SendUserMessage",
+    "ShareOnboardingGuide", "ShowOnboardingRolePicker", "Skill", "StructuredOutput", "SubagentHandback",
+    "SuggestConnectors", "SuggestPluginInstall", "SuggestSkills", "TaskCreate", "TaskGet", "TaskList",
+    "TaskStop", "TaskUpdate", "TestingPermission", "TodoWrite", "ToolSearch", "WaitForMcpServers", "WebFetch",
+    "WebSearch", "Workflow", "Write", "memory_list", "memory_read", "memory_write", "propose_skills",
+    "advisor", "web_search", "DeferredToolPlaceholder", "Task", "KillShell", "KillBash", "Brief", "ListPeers",
+    "RunWorkflow", "ListMcpResources", "ReadMcpResource", "ReadMcpResourceDir", "BashOutput", "BashOutputTool",
+    "AgentOutput", "AgentOutputTool", "TaskOutput", "Frame", "FrameRead", "TeamCreate", "TeamDelete",
+    "SuggestBackgroundPR", "AutofixPr", "WebBrowser", "REPL", "MultiEdit", "LS", "NotebookRead",
+    "ReadWidgetContext", "WrapUp",
+];
+
+/// Built-in slash commands, their aliases, and the bundled skills, which can be typed as commands.
+const CLAUDE_COMMANDS: &[&str] = &[
+    "add-dir", "advisor", "agents", "allowed-tools", "android", "app", "artifact-capabilities",
+    "artifact-design", "artifact-diagramming", "artifacts", "auto-mode-setup", "autocompact", "autofix-pr",
+    "background", "bashes", "batch", "bg", "branch", "break-reminder", "breaks", "brief", "btw", "bug", "cd",
+    "checkpoint", "checkup", "chrome", "claim-credit", "claude-api", "claude-code-docs", "claude-in-chrome",
+    "claude-test", "claude-test-draft", "claude-test-execute", "clear", "cloud-plugins", "code-review",
+    "color", "commit", "commit-push-pr", "compact", "config", "context", "continue", "copy", "cost",
+    "cowork-plugin", "daemon", "dataviz", "debug", "deep-research", "design", "design-consent", "design-login",
+    "design-revoke", "design-sync", "desktop", "diff", "doctor", "downtime", "effort", "exit", "explain-usage",
+    "export", "extra-usage", "fast", "feedback", "fewer-permission-prompts", "focus", "fork", "goal",
+    "heapdump", "help", "hooks", "ide", "import", "init", "insights", "install", "install-github-app",
+    "install-slack-app", "ios", "keybindings", "keybindings-help", "limit-reset", "list-agents", "login",
+    "logout", "loop", "loops", "low-priority", "marketplace", "mcp", "memory", "memory-pause", "memory-types",
+    "mobile", "model", "name", "new", "output-style", "passes", "pause-memory", "peers", "permissions", "plan",
+    "plugin", "plugin-authoring", "plugins", "powerup", "pr", "privacy-settings", "pro-trial-expired",
+    "proactive", "quit", "radio", "rate-limit-options", "rc", "recap", "release-notes", "reload-plugins",
+    "reload-skills", "remote", "remote-control", "remote-env", "rename", "reset", "restart", "resume",
+    "review", "rewind", "routines", "run", "run-skill-generator", "sandbox", "schedule", "scroll-speed",
+    "security-review", "send-to-project", "session", "settings", "setup-bedrock", "setup-claude",
+    "setup-cowork", "setup-vertex", "share", "simplify", "skill-doctor", "skills", "slides", "stats", "status",
+    "statusline", "stickers", "stop", "subtask", "tasks", "team-onboarding", "teleport", "terminal-setup",
+    "theme", "toggle-memory", "tp", "tui", "ultraplan", "ultrareview", "undo", "update", "update-config",
+    "upgrade", "usage", "usage-credits", "verify", "version", "vim", "voice", "web-setup", "wellbeing",
+    "workflow-authoring", "workflows",
+];
+
+/// Skills bundled with Claude Code, those of its built-in plugins, the built-in prompt commands the
+/// Skill tool can call, the bundled workflow, and the skill aliases.
+const CLAUDE_SKILLS: &[&str] = &[
+    "artifact-capabilities", "artifact-design", "artifact-diagramming", "batch", "claude-api",
+    "claude-code-docs", "claude-in-chrome", "code-review", "commit", "cowork-plugin", "dataviz", "debug",
+    "design", "design-sync", "doctor", "explain-usage", "fewer-permission-prompts", "keybindings-help", "loop",
+    "memory-types", "pr", "run", "run-skill-generator", "schedule", "send-to-project", "setup-claude",
+    "simplify", "slides", "update-config", "verify", "workflow-authoring", "plugin-authoring", "claude-test",
+    "claude-test-execute", "claude-test-draft", "init", "security-review", "commit-push-pr", "deep-research",
+    "review", "checkup", "proactive", "routines", "setup-cowork",
+];
+
+/// Built-in subagent types, with those of the built-in claude-test plugin.
+const CLAUDE_SUBAGENT_TYPES: &[&str] = &[
+    "general-purpose", "Explore", "Plan", "statusline-setup", "claude-code-guide", "fork", "web-fetch",
+    "claude", "worker", "workflow-subagent", "comment-thread-analyst", "claude-test:author",
+    "claude-test:conductor", "claude-test:explorer", "claude-test:runner",
+];
+
 
 use decoder::{AgentMeta, Parser};
 
@@ -73,6 +154,7 @@ impl ClaudeCode {
                 subagent_tasks: true,
                 origins: true,
             },
+            public_names: PUBLIC_NAMES,
         })
     }
 
@@ -282,6 +364,16 @@ fn read_metas(dir: &Path) -> HashMap<String, AgentMeta> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_names_that_ship_with_claude_code_are_listed() {
+        let n = &PUBLIC_NAMES;
+        assert!(n.tools.contains(&"Bash") && n.tools.contains(&"Read") && n.tools.contains(&"Task"), "built-in tools and an alias");
+        assert!(n.origin_name("agent", "general-purpose") && n.origin_name("command", "/goal") && n.origin_name("skill", "code-review"));
+        assert!(n.origin_name("command", "/simplify"), "a bundled skill typed as a command");
+        assert!(!n.origin_name("skill", "walrus-review") && !n.origin_name("command", "/walrus-sync") && !n.origin_name("agent", "ocelot"));
+        assert_eq!(n.mcp_server("mcp__plugin_slack_slack__send"), Some("plugin_slack_slack"));
+    }
 
     /// The last activity of a transcript with these lines.
     fn last(name: &str, lines: &[&str]) -> Option<i64> {

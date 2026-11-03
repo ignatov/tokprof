@@ -99,6 +99,8 @@ pub struct AgentInfo {
     pub cost_counter: Option<String>,
     pub harness: Harness,
     pub capabilities: Capabilities,
+    /// The names that ship with the agent, which a share file may keep.
+    pub public_names: PublicNames,
 }
 
 impl AgentInfo {
@@ -114,6 +116,59 @@ impl AgentInfo {
             cost_counter: None,
             harness: Harness::default(),
             capabilities: Capabilities::default(),
+            public_names: PublicNames::default(),
+        }
+    }
+}
+
+/// The names that ship with an agent: its built-in tools, slash commands, bundled skills and
+/// built-in subagent types, which a share file keeps while it cuts every other name to its kind.
+/// A name a user can make, such as their own skill, command, subagent type or MCP server, is
+/// never on these lists, and a name an agent release adds is not on them until a source adds it.
+#[derive(Clone, Debug, Default)]
+pub struct PublicNames {
+    pub tools: &'static [&'static str],
+    /// Slash commands, without the slash.
+    pub commands: &'static [&'static str],
+    pub skills: &'static [&'static str],
+    pub subagent_types: &'static [&'static str],
+    /// How the agent names MCP tools: the prefix before the server and the separator after it,
+    /// such as `mcp__` and `__` in `mcp__docs__search`.
+    pub mcp: Option<(&'static str, &'static str)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_mcp_tool_names_its_server() {
+        let names = PublicNames { commands: &["goal"], subagent_types: &["general-purpose"], skills: &["simplify"], mcp: Some(("mcp__", "__")), ..PublicNames::default() };
+        assert_eq!(names.mcp_server("mcp__docs__search"), Some("docs"));
+        assert_eq!(names.mcp_server("Read"), None);
+        assert_eq!(names.mcp_server("mcp____x"), None, "no server");
+        assert_eq!(PublicNames::default().mcp_server("mcp__docs__search"), None, "an agent that names no MCP tools");
+        assert!(names.origin_name("command", "/goal") && !names.origin_name("command", "goal") && !names.origin_name("command", "/walrus-sync"));
+        assert!(names.origin_name("agent", "general-purpose") && names.origin_name("skill", "simplify") && !names.origin_name("plugin", "simplify"));
+    }
+}
+
+impl PublicNames {
+    /// The server of an MCP tool, or `None` for any other tool.
+    pub fn mcp_server<'a>(&self, tool: &'a str) -> Option<&'a str> {
+        let (prefix, separator) = self.mcp?;
+        let server = tool.strip_prefix(prefix)?.split(separator).next()?;
+        (!server.is_empty()).then_some(server)
+    }
+
+    /// Whether a name of an origin of this kind ships with the agent: `skill`, `agent` or
+    /// `command` (with its slash).
+    pub fn origin_name(&self, kind: &str, name: &str) -> bool {
+        match kind {
+            "skill" => self.skills.contains(&name),
+            "agent" => self.subagent_types.contains(&name),
+            "command" => name.strip_prefix('/').is_some_and(|c| self.commands.contains(&c)),
+            _ => false,
         }
     }
 }

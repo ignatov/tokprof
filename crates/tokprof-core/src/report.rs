@@ -705,6 +705,7 @@ mod tests {
                 composition: true,
                 client: "unknown",
                 effort: None,
+                version: None,
             });
         }
         let tasks = w.tasks();

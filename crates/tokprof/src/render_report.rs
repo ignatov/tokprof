@@ -624,7 +624,8 @@ mod tests {
                 ColdReturn { ts_ms: 0, pause_ms: 570 * minute, usd: 7.0, premium_usd: 6.8, context: 878_000, starter: Starter::Background },
             ],
             follows: vec![20, 2],
-            sessions: [("a".to_string(), SessionSize { largest: 966_000, usd: 412.0, tokens: 1.0, cold_returns: 2 }), ("b".to_string(), SessionSize { largest: 30_000, usd: 8.0, tokens: 1.0, cold_returns: 0 })].into_iter().collect(),
+            cold_returns_by_client: Default::default(),
+            sessions: [("a".to_string(), SessionSize { largest: 966_000, usd: 412.0, tokens: 1.0, cold_returns: 2, span: None }), ("b".to_string(), SessionSize { largest: 30_000, usd: 8.0, tokens: 1.0, cold_returns: 0, span: None })].into_iter().collect(),
             priced: true,
             busy: {
                 let mut b = tokprof_core::busy::Busy::default();
@@ -635,7 +636,7 @@ mod tests {
             },
         };
         p.agents.insert(claude(), claude_pauses);
-        let codex = AgentPauses { lifetimes: [30 * minute].into_iter().collect(), sessions: [("c".to_string(), SessionSize { largest: 50_000, usd: 1.0, tokens: 1.0, cold_returns: 0 })].into_iter().collect(), priced: true, ..AgentPauses::default() };
+        let codex = AgentPauses { lifetimes: [30 * minute].into_iter().collect(), sessions: [("c".to_string(), SessionSize { largest: 50_000, usd: 1.0, tokens: 1.0, cold_returns: 0, span: None })].into_iter().collect(), priced: true, ..AgentPauses::default() };
         p.agents.insert(AgentId::new(AgentInfo { title: "Codex".into(), ..AgentInfo::named("codex") }), codex);
         let out = pauses(&p);
         // Claude Code first, then Codex.

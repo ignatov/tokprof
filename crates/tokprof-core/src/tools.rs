@@ -64,7 +64,7 @@ pub struct ToolRow {
 }
 
 impl ToolRow {
-    fn add(&mut self, o: &ToolRow) {
+    pub fn add(&mut self, o: &ToolRow) {
         if self.class == Class::None {
             self.class = o.class;
         }
@@ -112,6 +112,15 @@ const LONG_SCRIPT_TOKENS: f64 = 400.0;
 const LARGE_READ_TOKENS: f64 = 5_000.0;
 const LONG_OUTPUT_TOKENS: f64 = 2_000.0;
 const LARGE_WRITE_TOKENS: f64 = 2_000.0;
+
+/// Every hint a row can get, in the order of the rules.
+pub const HINTS: [&str; 5] = [
+    "batch independent reads",
+    "save long scripts to a file; edit files with the edit tool",
+    "read a range or search instead of the whole file",
+    "filter the output with head or grep",
+    "edit instead of rewriting the file",
+];
 
 /// The first hint whose rule applies to a row, or `None`.
 pub fn hint(key: &ToolKey, row: &ToolRow) -> Option<&'static str> {
@@ -478,6 +487,7 @@ mod tests {
                 composition: true,
                 client: "cli",
                 effort: None,
+                version: None,
             };
             self.table.request(&r);
             self

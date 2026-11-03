@@ -20,7 +20,7 @@ clap.workspace = true
 notify.workspace = true
 ratatui.workspace = true
 rayon.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tokprof-source-claude-code.workspace = true
-serde_json.workspace = true

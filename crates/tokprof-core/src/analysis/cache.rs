@@ -32,6 +32,23 @@ pub enum Cause {
 }
 
 impl Cause {
+    pub const ALL: [Cause; 14] = [
+        Cause::ModelSwitch,
+        Cause::Compaction,
+        Cause::ToolResultsCleared,
+        Cause::IdleTtl,
+        Cause::ParamsChanged,
+        Cause::AgentUpdated,
+        Cause::ToolsChanged,
+        Cause::SystemChanged,
+        Cause::ImagesRemoved,
+        Cause::ThinkingDropped,
+        Cause::HistoryEdited,
+        Cause::Lookback,
+        Cause::AfterAssistantMessage,
+        Cause::Unknown,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             Cause::ModelSwitch => "model switch",

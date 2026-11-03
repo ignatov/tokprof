@@ -14,5 +14,12 @@ tokprof's source of Codex rollouts.
 - **Handoff note:** user and assistant messages, `update_plan`, `exec_command` and `shell` commands, and `apply_patch` file paths, also inside the JavaScript of the `exec` tool.
 - **API:** every request goes to the OpenAI API; Codex's configured provider is not read yet.
 - **Setup hints:** `AGENTS.md` for instructions. Codex logs no tool schemas other than `additional_tools`, so it gives no hint for them.
+- **Version:** `cli_version` of the first `session_meta`, seen in 0.147–0.166, for every request of the rollout.
+- **Names a share file keeps** (`PUBLIC_NAMES` in `src/lib.rs`): the tools that Codex 0.164.0 and 0.166.0-alpha.5.1 (bundled with the desktop app) give the model.
+  - Top-level tools such as `exec_command`, `write_stdin`, `apply_patch`, `view_image`, `update_plan`, `spawn_agent` and the goal tools; the code-mode tool `exec`.
+  - The `collaboration` and `clock` namespaces with their tools as `exec` code names them, such as `clock__curr_time`; the `functions` prefix of the Responses API; the terminal UI's dynamic worktree tools; and the hosted tools such as `web_search`.
+  - Subagent type: `default`, for a thread spawned without a role.
+  - MCP tools are named `mcp__<server>__<tool>`.
+  - Left off: `js`, `search_file`, `read_file` and `git_status`, which come from MCP servers of the desktop app and of IDEs, not from Codex; `shell`, which these versions do not declare; and the tool families whose namespace is not confirmed (memories, notes, history, message board).
 
 The fields are the ones the session-logs spec names; `tests/fixtures` holds a synthetic rollout with an end of turn, an interrupt, a failed command, a script with a non-zero exit code and an aborted call, and a compressed child thread.

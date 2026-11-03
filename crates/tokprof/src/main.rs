@@ -17,6 +17,7 @@ use tokprof_core::report::{self, Collector, Dim};
 use tokprof_core::pauses::Pauses;
 use tokprof_core::rhythm::{self, Timeline, View};
 use crate::day::{keeps_client, temp_folders};
+use tokprof_core::pool;
 use tokprof_core::share::{self, Share};
 use tokprof_core::{bench, fmt, handoff, xray};
 
@@ -24,6 +25,7 @@ mod clipboard;
 mod day;
 mod paths;
 mod render_bench;
+mod render_pool;
 mod render_report;
 mod render_rhythm;
 mod render_sessions;
@@ -133,11 +135,36 @@ enum Command {
     /// and sessions by their largest context.
     Pauses,
     /// Write one JSON file of aggregates over the selected requests that holds no names, to
-    /// compare or pool with other users. Nothing is sent anywhere.
+    /// compare or pool with other users, and print what it says. Nothing is sent anywhere.
     Share {
         /// Output file; by default share-<date>.json in ~/tokprof (or $TOKPROF_DIR).
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// A label for the survey the file is for, written into its header: 1 to 40 letters,
+        /// digits, '.', '_' or '-'.
+        #[arg(long)]
+        survey: Option<String>,
+        /// MCP servers whose tools and origins the file counts by name, comma separated. Every
+        /// other MCP server counts as `mcp`.
+        #[arg(long, value_delimiter = ',')]
+        mcp_names: Vec<String>,
+    },
+    /// Pool share files of several people into one report: where the money went, what could
+    /// have been saved, the habits that cost the most, tools and commands, and agent versions.
+    Pool {
+        /// Share files, or folders whose .json files are read.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Fold the rows that fewer than this many files have into `other`; 3 or more before the
+        /// report is shown to others.
+        #[arg(long, default_value_t = 1)]
+        min_files: usize,
+        /// Add a column per file, headed by its name.
+        #[arg(long)]
+        by_file: bool,
+        /// Print the report's numbers as JSON instead of the tables.
+        #[arg(long)]
+        json: bool,
     },
     /// One day of your work with the agents: a strip with a lane per session that shows when the
     /// agent worked and when it waited for your answer, then your sittings, what the agents did
@@ -223,6 +250,24 @@ fn main() -> Result<()> {
         };
         print!("{}", render_report::prices(&pricing, at));
         return Ok(());
+    }
+    if let Command::Pool { paths, min_files, by_file, json } = &command {
+        if cli.since.is_some() || cli.until.is_some() || cli.project.is_some() || cli.session.is_some() || cli.client.is_some() {
+            bail!("pool takes no filters: each file was filtered when it was written");
+        }
+        let files = read_share_files(paths, catalog.home())?;
+        let p = pool::build(&files, *min_files);
+        if *json {
+            println!("{}", serde_json::to_string_pretty(&p)?);
+        } else {
+            print!("{}", render_pool::text(&p, *by_file));
+        }
+        return Ok(());
+    }
+    if let Command::Share { survey: Some(label), .. } = &command
+        && !share::valid_label(label)
+    {
+        bail!("--survey takes 1 to 40 letters, digits, '.', '_' or '-'");
     }
     // The reports and the commands that pick or list sessions select by the same filters.
     let select = Query {
@@ -380,7 +425,7 @@ fn main() -> Result<()> {
         print!("{}", render_rhythm::section(&view, window, offset, &returns, &style));
         return Ok(());
     }
-    if let Command::Share { output } = &command {
+    if let Command::Share { output, survey, mcp_names } = &command {
         let started = Instant::now();
         let mut files = catalog.discover(&agents);
         // A session's subagent logs go with it.
@@ -393,7 +438,7 @@ fn main() -> Result<()> {
             &files,
             &select,
             OnUnreadable::Skip,
-            || (Collector::new(None, None), (Pauses::new(filter.clone()), Share::default())),
+            || (Collector::new(None, None), (Pauses::new(filter.clone()), Share::new(filter.clone()))),
             |t, session, _| analysis::analyze(session, &pricing, &filter, t),
             |mut a, b| {
                 a.0.merge(b.0);
@@ -409,17 +454,28 @@ fn main() -> Result<()> {
         if s.span_ms.is_none() {
             bail!("no requests found for these filters; nothing written");
         }
-        let value = share::to_json(&collector, &p, &s, env!("CARGO_PKG_VERSION"), |ms| fmt::local_time(ms, "%Y-%m-%d"));
+        let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+        let header = share::Header { tokprof: env!("CARGO_PKG_VERSION"), platform: &platform, survey: survey.as_deref(), mcp_names };
+        let value = share::to_json(&collector, &p, &s, &header, |ms| fmt::local_time(ms, "%Y-%m-%d"));
+        // Before anything is written, the words that tokprof did not make are searched for this
+        // machine's names.
+        let words = share::words(&value, &share::own_words(&catalog.agents()));
+        let home = catalog.home().to_string_lossy().to_string();
+        let user = catalog.home().file_name().map(|n| n.to_string_lossy().to_string());
+        let host = host_name();
+        let secrets = share::Secrets { home: &home, user: user.as_deref(), host: host.as_deref(), ids: &s.ids, titles: &s.titles };
+        if let Some((what, field)) = share::leak(&words, &secrets) {
+            bail!("the file would hold {what} in {field}; nothing written");
+        }
         let path = output.clone().unwrap_or_else(|| paths::profile_dir().join(format!("share-{}.json", chrono::Local::now().format("%Y-%m-%d"))));
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
         std::fs::write(&path, share::pretty(&value)).with_context(|| format!("writing {}", path.display()))?;
         println!("wrote {}", display_path(&path.to_string_lossy(), None, catalog.home()));
-        println!(
-            "Per agent it holds: spend by model and component, clients, cache writes by lifetime, misses by cause, spend by kind of origin, trigger and activity, setup by source, effort levels, the pause report and session counts."
-        );
-        println!("It holds no project, path, session id, title, task, prompt, tool, skill or server name.");
+        let name = path.file_stem().map_or_else(|| "share".to_string(), |n| n.to_string_lossy().to_string());
+        print!("\n{}", render_pool::text(&pool::build(&[(name, value)], 1), false));
+        println!("\nwords to review: {}", share::review_list(&words).join(", "));
         println!("Nothing was sent anywhere: review the file, then send it yourself.");
         return Ok(());
     }
@@ -489,7 +545,8 @@ fn main() -> Result<()> {
         | Command::Bench { .. }
         | Command::Day { .. }
         | Command::Pauses
-        | Command::Share { .. } => {
+        | Command::Share { .. }
+        | Command::Pool { .. } => {
             unreachable!("handled before reading logs")
         }
         Command::Summary => print!("{}", render_report::summary(&collector, &filter, &paths::user_prices())),
@@ -601,6 +658,60 @@ fn sources(catalog: &Catalog, files: &[SessionRef], secs: f64) -> String {
 }
 
 /// `day` picks its time by its date, so the time filters would contradict it.
+/// The share files among the paths: the files, and the `.json` files of the folders, not of
+/// their subfolders. A file that is not a share file, one of a newer format, and one with the
+/// same content as a file read before are left out, with a line on stderr each.
+fn read_share_files(paths: &[PathBuf], home: &Path) -> Result<Vec<(String, serde_json::Value)>> {
+    let shown = |p: &Path| display_path(&p.to_string_lossy(), None, home);
+    let mut candidates = Vec::new();
+    for path in paths {
+        if path.is_dir() {
+            let mut inside: Vec<PathBuf> = std::fs::read_dir(path)
+                .with_context(|| format!("reading {}", shown(path)))?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "json"))
+                .collect();
+            // By name without `.json`, so `a.json` comes before the copy `a (1).json`.
+            inside.sort_by(|x, y| x.file_stem().cmp(&y.file_stem()).then_with(|| x.cmp(y)));
+            candidates.extend(inside);
+        } else {
+            candidates.push(path.clone());
+        }
+    }
+    let mut seen: std::collections::HashMap<String, PathBuf> = std::collections::HashMap::new();
+    let mut files = Vec::new();
+    for path in candidates {
+        let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", shown(&path)))?;
+        if let Some(first) = seen.get(&text) {
+            eprintln!("skipped {}: the same as {}", shown(&path), shown(first));
+            continue;
+        }
+        match pool::parse(&text) {
+            Ok(v) => {
+                seen.insert(text, path.clone());
+                let name = path.file_stem().map_or_else(|| shown(&path), |n| n.to_string_lossy().to_string());
+                files.push((name, v));
+            }
+            Err(pool::Skip::NotShare) => eprintln!("skipped {}: not a tokprof share file", shown(&path)),
+            Err(pool::Skip::Newer(n)) => eprintln!("skipped {}: format {n} needs a newer tokprof", shown(&path)),
+        }
+    }
+    if files.is_empty() {
+        bail!("no share files in {}", paths.iter().map(|p| shown(p)).collect::<Vec<_>>().join(", "));
+    }
+    Ok(files)
+}
+
+/// This machine's host name, for the leak check of `tokprof share`.
+fn host_name() -> Option<String> {
+    if let Some(name) = std::env::var_os("COMPUTERNAME") {
+        return Some(name.to_string_lossy().to_string());
+    }
+    let out = std::process::Command::new("hostname").output().ok()?;
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !name.is_empty()).then_some(name)
+}
+
 fn day_takes_no_time_filter(cli: &Cli) -> Result<()> {
     if cli.since.is_some() || cli.until.is_some() {
         bail!("day picks its time by DATE; drop --since and --until");

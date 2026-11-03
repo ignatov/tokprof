@@ -203,6 +203,44 @@ const BUILD_PROGRAMS: &[&str] =
 /// Interpreters that run scripts.
 const SCRIPT_PROGRAMS: &[&str] = &["python", "python3", "node", "deno", "ruby", "perl", "bash", "sh", "zsh", "uv"];
 
+/// Common programs that the lists above leave out, which a share file keeps by name.
+const COMMON_PROGRAMS: &[&str] = &[
+    "mkdir", "rm", "cp", "mv", "ln", "touch", "chmod", "curl", "wget", "tar", "unzip", "zip", "xargs", "sleep", "kill", "pkill", "ps",
+    "lsof", "date", "open", "xdg-open", "ssh", "scp", "rsync", "docker", "kubectl", "brew", "pip", "pip3", "npx", "java", "javac",
+    "kotlinc", "rustc", "rustup", "cmake", "clang", "gcc", "ffmpeg", "sqlite3", "psql", "osascript",
+];
+
+/// The words a command can start with that frame or wrap the programs it runs: shell keywords,
+/// `cd`, and the wrappers that the class of a command skips.
+const FRAMES: &[&str] = &["for", "while", "until", "if", "case", "do", "done", "then", "elif", "else", "fi", "!", "cd", "time", "timeout", "env", "nice"];
+
+/// A word without its path and without a `.cmd` or `.exe` suffix.
+fn bare(word: &str) -> &str {
+    let word = word.rsplit('/').next().unwrap_or(word);
+    word.strip_suffix(".exe").or_else(|| word.strip_suffix(".cmd")).unwrap_or(word)
+}
+
+/// Whether a share file keeps a program by name: the programs the rules of this module name,
+/// the common ones, shell keywords and wrappers. A program given with a path or a `.cmd` or
+/// `.exe` suffix counts as the program.
+pub fn known_program(word: &str) -> bool {
+    let word = bare(word);
+    [READ_ONLY_PROGRAMS, BUILD_PROGRAMS, SCRIPT_PROGRAMS, COMMON_PROGRAMS, FRAMES].iter().any(|list| list.contains(&word))
+        || matches!(word, "git" | "gh" | "bun")
+}
+
+/// The program a share file files a shell command head under: its first word without a path
+/// or suffix when [`known_program`] keeps it, `other` otherwise.
+pub fn program_of(head: &str) -> &str {
+    let word = bare(head.split_whitespace().next().unwrap_or(""));
+    if known_program(word) { word } else { "other" }
+}
+
+/// Every program [`known_program`] keeps, for the words a share file may hold.
+pub fn known_programs() -> impl Iterator<Item = &'static str> {
+    [READ_ONLY_PROGRAMS, BUILD_PROGRAMS, SCRIPT_PROGRAMS, COMMON_PROGRAMS, FRAMES, &["git", "gh", "bun"]].into_iter().flatten().copied()
+}
+
 /// What a shell command does: it only reads; it writes a file with a program that reads or
 /// prints; or the class of its first program.
 pub fn command_class(cmd: &str) -> CallClass {
@@ -388,6 +426,30 @@ fn git_reads(args: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_share_file_keeps_common_programs_by_name() {
+        for p in [
+            "mkdir", "rm", "cp", "mv", "ln", "touch", "chmod", "curl", "wget", "tar", "unzip", "zip", "xargs", "sleep", "kill", "pkill", "ps",
+            "lsof", "date", "open", "xdg-open", "ssh", "scp", "rsync", "docker", "kubectl", "brew", "pip", "pip3", "npx", "java", "javac",
+            "kotlinc", "rustc", "rustup", "cmake", "clang", "gcc", "ffmpeg", "sqlite3", "psql", "osascript",
+        ] {
+            assert_eq!(program_of(&format!("{p} -x")), p);
+        }
+    }
+
+    #[test]
+    fn programs_of_the_other_lists_keep_their_names_without_a_path() {
+        let heads = ["sed -n", "python3 -I", "git grep", "/usr/bin/grep -n", "for f", "rg.cmd -n", "timeout 60", "cargo test"];
+        assert_eq!(heads.map(program_of), ["sed", "python3", "git", "grep", "for", "rg", "timeout", "cargo"]);
+    }
+
+    #[test]
+    fn the_users_own_scripts_are_other() {
+        assert_eq!(program_of("./yak-deploy.sh --fast"), "other");
+        assert_eq!(program_of("zebra-build all"), "other");
+        assert_eq!(program_of(""), "other");
+    }
 
     #[test]
     fn read_only_programs() {

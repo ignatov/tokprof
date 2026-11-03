@@ -271,6 +271,7 @@ tokprof misses --top 20     # most expensive cache misses (--expected adds compa
 tokprof whatif              # Claude input cost under 5m vs 1h cache lifetimes
 tokprof pauses              # pauses before typed messages, cold returns by pause, sessions by largest context, busy time, your rhythm
 tokprof share               # one JSON file of these numbers with no names, to compare with other users
+tokprof pool ~/survey       # the share files of several people in one report
 tokprof bench               # cold returns to big sessions: resume vs /compact vs a new session vs heartbeats, with or without a compaction after them
 tokprof prices              # prices in effect and where each came from
 ```
@@ -381,9 +382,11 @@ A session id can be shortened to its start. Codex ids are shown by their first t
 `tokprof share` writes one JSON file of aggregates over the selected requests, with the usual filters, to `~/tokprof/share-<date>.json` or the file `-o` names. It is for comparing or pooling numbers with other users without showing your work, and it sends nothing anywhere.
 
 ```sh
-tokprof --since 30d share                 # ~/tokprof/share-2026-11-03.json
-tokprof --since 30d share -o pilot.json
+tokprof --since 30d share                              # ~/tokprof/share-2026-11-03.json
+tokprof --since 30d share --survey team-2026-11 -o f.json
 ```
+
+After writing, it prints what the file says, as `tokprof pool` would for that one file (see below). Then comes `words to review:`, every word in the file that tokprof did not make: model, client and version names, the survey label, and anything else. Read them before you send the file.
 
 Per agent, the file holds:
 
@@ -391,18 +394,38 @@ Per agent, the file holds:
 |---|---|
 | `sessions`, `main_sessions` | logs with a selected request, subagent logs included, and the main sessions among them |
 | `spend` | per model: requests and the five cost components, in dollars and tokens, as in `Spend by model` |
-| `clients` | per client: requests, cost and avoidable dollars, as in `Spend by client` |
+| `clients` | per client: requests, cost and avoidable dollars as in `Spend by client`, main sessions, cold returns, and the tokens written with each cache lifetime |
 | `cache_writes` | tokens written with the short and the long lifetime, for main conversations and for subagents |
 | `misses` | per cause: misses, re-processed tokens and avoidable dollars, as in `Cache misses by cause` |
-| `origins` | spend by kind of origin only: `prompt`, `skill`, `agent`, `command`, `notification`, `mcp`, `plugin` |
+| `origins` | spend by kind of origin (`prompt`, `skill`, `agent`, `command`, `notification`, `mcp`, `plugin`), with the names that ship with the agent under their kind, such as `general-purpose` under `agent` |
 | `triggers`, `activities` | spend by trigger and by activity |
 | `setup` | setup by source: `tool schemas`, `system prompt`, `instructions`, `hook context`, `deferred tool lists`, `skills`, `other` |
-| `effort` | requests and output tokens per effort level, for main conversations and for subagents |
+| `effort` | requests, output tokens and dollars per effort level, for main conversations and for subagents |
+| `content` | spend by what filled the context: tool results, tool calls, thinking, reminders and the rest |
+| `prompt_sizes` | requests and spend by the size of the prompt, from `under 50k` to `800k+`, for main conversations and for subagents |
+| `session_spans` | main sessions by how long they ran, from `under 1h` to `over 3d`, with spend and cold returns |
+| `tools`, `tool_hints` | calls, sizes, rent and trips per tool as in `tokprof tools`, shell tools per program; and the rows each tool hint applies to |
+| `compactions` | compactions by trigger: `auto`, `manual`, `idle`, `unknown`, `other` |
+| `versions` | requests and spend by agent version |
+| `whatif` | Claude Code: input cost as logged and replayed with the 5-minute and the 1-hour cache, as in `tokprof whatif` |
 | `pauses` | the parts of `tokprof pauses`: typed messages by pause, how many came after each cache lifetime, cold returns by pause, who started them, what followed them, and sessions by largest context |
 
-The file also names its format, the tokprof version and the first and last day of the requests. It holds no project, path, session id, title, task, prompt or tool text, and no skill, MCP server, plugin, command, subagent-type or tool name. Model and client names stay. Dollars have 4 decimals and tokens are whole, so files from several users can be summed.
+The file also names its format (2), the tokprof version, the platform, the first and last day of the requests, and the survey label when `--survey` gives one.
 
-For a pilot, ask each person to run `tokprof --since 30d share`, read the file, and send it. With only a few sessions in the window, the file still describes those sessions, so a longer window shares less about any one piece of work.
+It holds no project, path, session id, title, task, prompt or tool text, and no user or host name. Names stay only when they ship with the agent, as each log source lists them: built-in tools, slash commands, bundled skills and built-in subagent types. Well-known shell programs such as `git` and `sed` stay too. Your own skills, commands, subagent types, MCP servers and scripts count only as `skill`, `command`, `agent`, `mcp` and `other`. `--mcp-names docs,ide` keeps the named MCP servers by name. Before writing, tokprof searches the words to review for the home path, the user and host names, and the ids and titles of the sessions, and writes nothing when it finds one. Dollars have 4 decimals and tokens are whole, so files from several users can be summed.
+
+### Pooling the files
+
+`tokprof pool` reads share files, or folders of them, and prints one report: where the money went, what could have been saved, the habits that cost the most, tools and commands, and agent versions, pooled and for the median file.
+
+```sh
+tokprof pool ~/survey                   # every .json file in the folder
+tokprof pool --min-files 3 ~/survey     # rows that fewer than 3 files have fold into other
+tokprof pool --by-file a.json b.json    # a column per file
+tokprof pool --json ~/survey            # the numbers as JSON
+```
+
+[docs/survey.md](docs/survey.md) says how to run a survey: the prompt a person pastes into their agent, which downloads tokprof and writes the file, and how to collect and pool the files.
 
 ## Your day with the agents
 

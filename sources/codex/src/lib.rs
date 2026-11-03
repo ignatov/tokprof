@@ -17,10 +17,39 @@ use anyhow::Result;
 use serde_json::Value;
 use tokprof_core::labels::display_path;
 use tokprof_core::source::{
-    Activity, AgentId, AgentInfo, Capabilities, Claim, Decoder, Detail, Harness, Head, Locator, LogSource, OwnCost, Pickup, Records, SessionRef,
-    Touched,
+    Activity, AgentId, AgentInfo, Capabilities, Claim, Decoder, Detail, Harness, Head, Locator, LogSource, OwnCost, Pickup, PublicNames, Records,
+    SessionRef, Touched,
 };
 use tokprof_logio::{file_times, str_at, walk};
+
+/// The names that ship with Codex, which a share file keeps (see README.md): the tools that the
+/// 0.164.0 and 0.166.0-alpha binaries give the model. A thread a parent spawned without a role is
+/// `default` (see the decoder).
+const PUBLIC_NAMES: PublicNames = PublicNames {
+    tools: CODEX_TOOLS,
+    commands: &[],
+    skills: &[],
+    subagent_types: &["default"],
+    mcp: Some(("mcp__", "__")),
+};
+
+/// Top-level tools, the code-mode tool `exec`, the `collaboration` and `clock` namespaces with their
+/// tools as `exec` code names them (`clock__curr_time`), the `functions` prefix of the Responses
+/// API, the terminal UI's dynamic tools, and the hosted tools.
+const CODEX_TOOLS: &[&str] = &[
+    "exec_command", "write_stdin", "apply_patch", "update_plan", "view_image", "request_user_input",
+    "request_user_input_async", "request_permissions", "request_plugin_install",
+    "list_available_plugins_to_install", "tool_search", "list_mcp_resources", "list_mcp_resource_templates",
+    "read_mcp_resource", "spawn_agent", "send_input", "wait", "close_agent", "resume_agent",
+    "get_context_remaining", "new_context", "send_message_to_user_async", "create_goal", "update_goal",
+    "get_goal", "multi_env_copy_file", "wait_for_environment", "wait_for_git_enrichment", "test_sync_tool",
+    "exec", "collaboration", "send_message", "followup_task", "interrupt_agent", "list_agents", "wait_agent",
+    "clock", "curr_time", "sleep", "clock__curr_time", "clock__sleep", "collaboration__spawn_agent",
+    "collaboration__send_message", "collaboration__followup_task", "collaboration__interrupt_agent",
+    "collaboration__list_agents", "collaboration__wait_agent", "functions", "create_worktree",
+    "get_worktree_creation_status", "list_worktrees", "web_search", "image_generation", "local_shell",
+];
+
 
 use decoder::Parser;
 
@@ -70,6 +99,7 @@ impl Codex {
                 subagent_tasks: true,
                 origins: true,
             },
+            public_names: PUBLIC_NAMES,
         })
     }
 
@@ -394,6 +424,19 @@ fn read_thread(path: &Path) -> (Option<Thread>, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_names_that_ship_with_codex_are_listed() {
+        let n = &PUBLIC_NAMES;
+        for tool in ["exec_command", "apply_patch", "view_image", "exec", "clock__curr_time", "write_stdin"] {
+            assert!(n.tools.contains(&tool), "{tool}");
+        }
+        for tool in ["js", "search_file", "read_file", "git_status", "shell"] {
+            assert!(!n.tools.contains(&tool), "{tool} is not a Codex tool");
+        }
+        assert_eq!(n.mcp_server("mcp__docs__read_file"), Some("docs"));
+        assert!(n.origin_name("agent", "default") && !n.origin_name("agent", "walrus"));
+    }
 
     #[test]
     fn the_head_names_the_originator() {

@@ -157,6 +157,8 @@ pub struct RequestRecord<'a> {
     pub client: &'a str,
     /// The reasoning effort the request asked for, as the log names it.
     pub effort: Option<&'a str>,
+    /// The version of the agent that wrote the request's log, as the log names it.
+    pub version: Option<&'a str>,
 }
 
 pub trait Sink {
@@ -577,6 +579,7 @@ impl<'a> Walker<'a> {
                 composition: req.prompt.is_some(),
                 client: req.client_name(),
                 effort: req.params.as_ref().and_then(|p| p.effort.as_deref()),
+                version: req.version.as_deref(),
             });
             let premium = self.attribute(req, price, verdict.as_ref());
             self.tool_shares(req, price, sink);
