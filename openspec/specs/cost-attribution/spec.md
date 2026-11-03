@@ -196,7 +196,7 @@ tokprof SHALL attribute requests to a model without a price (see pricing) in tok
 - **THEN** the request is attributed to model `unknown`, which has no price
 
 ### Requirement: Summary report
-`tokprof summary` SHALL print `Spend by model (API-equivalent USD; token counts where no price is known)` and a table, one row per agent and model, most expensive first: `agent`, `model`, `requests`, `prompt known`, five components and `total`. Then come the totals line, the unpriced models (see pricing), the reconciliation line if any, the spend by origin, task, trigger and activity, the setup table (see setup-breakdown), and `Cache misses by cause` (see cache-misses) minus expected rebuilds.
+`tokprof summary` SHALL print `Spend by model (API-equivalent USD; token counts where no price is known)` and a table, one row per agent and model, most expensive first: `agent`, `model`, `requests`, `prompt known`, five components and `total`. Then come the totals line, the unpriced models (see pricing), the reconciliation line if any, the spend by client, origin, task, trigger and activity, the setup table, and `Cache misses by cause` (see cache-misses) minus expected rebuilds.
 
 #### Scenario: A model row
 - **WHEN** the reported window holds 16,281 requests to `claude-opus-5-5`, all with a rebuilt prompt
@@ -208,7 +208,7 @@ tokprof SHALL attribute requests to a model without a price (see pricing) in tok
 
 #### Scenario: Order of the parts
 - **WHEN** the window holds priced requests and cache misses
-- **THEN** the spend by origin and task comes after the totals and reconciliation lines, then the spend by trigger, the spend by activity and the setup table, all before `Cache misses by cause`
+- **THEN** the spend by client comes after the totals and reconciliation lines, then the spend by origin and task, then the spend by trigger, the spend by activity and the setup table, all before `Cache misses by cause`
 
 ### Requirement: Summary totals line
 After the spend table, `tokprof summary` SHALL print `Total priced: <usd>   avoidable on cache misses: <usd> (<share>%)`: the cost summed over every priced model, and the avoidable premium of the misses that the cause table lists, so expected rebuilds are left out of it as they are left out of the table (see cache-misses). The share is the premium's share of the cost, to one decimal.
@@ -218,7 +218,7 @@ After the spend table, `tokprof summary` SHALL print `Total priced: <usd>   avoi
 - **THEN** the line reads `Total priced: $2,628   avoidable on cache misses: $506 (19.3%)`, the same $506 the cause table below it lists
 
 ### Requirement: Reconciliation with the agent's own cost counter
-When a reported session logged Claude Code's own cost counter (`totalCostUSD` in `cost-state` lines), `tokprof summary` SHALL print `Claude Code's own cost counter for <n> sessions: <usd>; tokprof for the same sessions: <usd>`: the sum of the counters of those sessions, each taken as session-logs defines it, and tokprof's priced spend for the same sessions. With `--since` or `--until`, only sessions whose every request falls inside the window are compared.
+When a reported session logged Claude Code's own cost counter (`totalCostUSD` in `cost-state` lines), `tokprof summary` SHALL print `Claude Code's own cost counter for <n> sessions: <usd>; tokprof for the same sessions: <usd>`: the sum of the counters of those sessions, each taken as session-logs defines it, and tokprof's priced spend for the same sessions. With `--since`, `--until` or `--client`, only sessions whose every request the filters keep are compared.
 
 #### Scenario: All history
 - **WHEN** 275 sessions logged a counter, summing to $10,241, and tokprof prices the same sessions at $10,353
@@ -232,6 +232,10 @@ When a reported session logged Claude Code's own cost counter (`totalCostUSD` in
 - **WHEN** `--since 7d` is given, 40 sessions with a counter have all their requests in the last 7 days and 235 more have requests before it
 - **THEN** the line compares those 40 sessions only and reads `Claude Code's own cost counter for 40 sessions inside the window: <usd>; tokprof for the same sessions: <usd>`
 - **AND** a session that only partly falls in the window is left out of both figures
+
+#### Scenario: A client filter
+- **WHEN** `--client sdk-ts` is given and one session with a counter also has requests with the client `cli`
+- **THEN** that session is left out of both figures, as a session that only partly falls in a time window is
 
 #### Scenario: No counter
 - **WHEN** no reported session logged a counter, as with Codex sessions only
@@ -537,3 +541,19 @@ A shell call's class SHALL be `reading` when its command is read-only (see Read-
 #### Scenario: Reading and lookups
 - **WHEN** every lookup of a window read files and none fetched a page
 - **THEN** the `reading` row has the requests and cost of the `lookup` and `lookups` rows of the trigger table together
+
+### Requirement: Spend by client
+`tokprof summary` SHALL print `Spend by client: the program that ran the agent, as its log names it` and a table, one row per agent and client (see session-logs), most expensive first, with columns `agent`, `client`, `sessions`, `requests`, `cost`, `share` and `avoidable`. `sessions` counts the main sessions with a request of that client. `avoidable` is the premium of the misses that `Cache misses by cause` lists (see cache-misses). The rows add up to `Total priced`.
+
+#### Scenario: Two clients
+- **WHEN** the window holds 67,097 Claude Code requests with the client `sdk-ts` that cost $8,534, and 2,292 with the client `cli` that cost $424
+- **THEN** the row `claude  sdk-ts` with `67097` requests and `$8,534` comes before the row `claude  cli` with `2292` requests and `$424`
+
+#### Scenario: A session in two clients
+- **WHEN** one session has requests with the client `cli` and others with `sdk-ts`
+- **THEN** it counts in the `sessions` of both rows
+- **AND** each of its requests counts in the row of its own client
+
+#### Scenario: Requests without a client
+- **WHEN** the logs of some requests name no client
+- **THEN** those requests form a row with the client `unknown`

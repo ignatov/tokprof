@@ -21,7 +21,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Summary report
-`tokprof summary` SHALL print `Spend by model (API-equivalent USD; token counts where no price is known)` and a table, one row per agent and model, most expensive first: `agent`, `model`, `requests`, `prompt known`, five components and `total`. Then come the totals line, the unpriced models (see pricing), the reconciliation line if any, the spend by client, the spend by origin, task, trigger and activity, the setup table (see setup-breakdown), and `Cache misses by cause` (see cache-misses) minus expected rebuilds.
+`tokprof summary` SHALL print `Spend by model (API-equivalent USD; token counts where no price is known)` and a table, one row per agent and model, most expensive first: `agent`, `model`, `requests`, `prompt known`, five components and `total`. Then come the totals line, the unpriced models (see pricing), the reconciliation line if any, the spend by client, origin, task, trigger and activity, the setup table, and `Cache misses by cause` (see cache-misses) minus expected rebuilds.
 
 #### Scenario: A model row
 - **WHEN** the reported window holds 16,281 requests to `claude-opus-5-5`, all with a rebuilt prompt

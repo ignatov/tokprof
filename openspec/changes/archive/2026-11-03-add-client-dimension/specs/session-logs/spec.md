@@ -48,12 +48,16 @@ Each request SHALL carry its client, the program that ran the agent, as the log 
 ## MODIFIED Requirements
 
 ### Requirement: Commands the filters apply to
-`--since`, `--until`, `--project`, `--session` and `--client` SHALL apply to every command but `prices`. The reports `summary`, `misses`, `whatif`, `tools`, `flame` and `bench` count the requests they select. The default command, `scan`, `handoff`, `sessions` and `ui` pick or list only the sessions they select: project and id as for the reports, the client as the Client filter requirement says, a main log last written on or after `--since`, and created before `--until`. An X-ray still covers its session's whole log.
+`--since`, `--until`, `--project`, `--session` and `--client` SHALL apply to every command but `prices`. The reports `summary`, `misses`, `whatif`, `tools`, `flame` and `bench` count the requests they select. The default command, `scan`, `handoff`, `sessions` and `ui` pick or list only the sessions they select: project and id as for the reports, the client as the Client filter requirement says, a main log last written on or after `--since`, and created before `--until`.
 
 #### Scenario: Default command with a session filter
 - **WHEN** `tokprof --session 3f951de0` runs without a command
 - **THEN** it X-rays `3f951de0`, as `tokprof scan 3f951de0` does
 - **AND** `tokprof --project billing` X-rays the latest session of `~/src/billing`
+
+#### Scenario: An X-ray covers the whole log
+- **WHEN** `tokprof --since 7d` X-rays a session whose log began 10 days ago
+- **THEN** the X-ray counts the requests of all 10 days, not only of the last 7
 
 #### Scenario: Session list with a time filter
 - **WHEN** `tokprof --since 7d sessions` runs
