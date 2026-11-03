@@ -595,6 +595,17 @@ The work block SHALL end with `by activity: what the agent was doing before each
 - **WHEN** a session spent $5.42 on requests after reads, $4.71 after edits and $2.14 answering messages
 - **THEN** the activity lines start with `reading`, `editing` and `prompt`, in that order, each with its bar, share and cost
 
+### Requirement: Tools block
+When the session, its subagents included, made tool calls, the X-ray SHALL print a `tools` block: `tools     calls, sizes, rent and trips by tool (see tokprof tools)`, the 8 rows of the tool breakdown (see tool-breakdown) with the most rent, each with its calls, sizes, rent, trips, single share and hint, then `<n> more` and the total line.
+
+#### Scenario: A session that read code one piece at a time
+- **WHEN** the session's top row is `Bash sed -n` with 56 calls, 1.3k-token results, $5.21 of rent and $3.75 of trips, 86% single
+- **THEN** the block's first row shows those numbers and the hint `batch independent reads`
+
+#### Scenario: No tool calls
+- **WHEN** the session made no tool call
+- **THEN** there is no `tools` block
+
 ### Requirement: Setup block
 When the session's setup cost (see setup-breakdown), subagents included, is at least $1 and at least 5% of its spend, or at least 5% of its tokens when it has no price, the X-ray SHALL print a `setup` block. It starts with `setup     what every request carries before the work, subagents included: <cost>, <share>% of the session`, followed by the setup table.
 
