@@ -21,7 +21,7 @@ See proposal.md for why. Most of what the new parts need is already collected:
 ## Decisions
 
 1. **Measures.** Five of the six from the review come from data already collected; one is new and cheap:
-   - `session_usd` and `largest_context`: the pause collector's sessions, so their `n` is `main_sessions`.
+   - `session_usd` and `largest_context`: the pause collector's sessions, less those nobody typed in (decision 7), so their `n` is `main_sessions` less `left_out_sessions`.
    - `cold_return_usd`: the pause collector's cold returns, so its `n` is the sum of `cold_returns_by_pause`.
    - `typed_per_session`: a new counter per session in the pause collector. It counts each main-conversation request that a typed message started, the first one of a conversation too. The pause parts leave the first one out, since it has no pause before it.
    - `turn_ms` and `answer_ms`: a rhythm summary per agent, built over the same timelines.
@@ -39,11 +39,15 @@ See proposal.md for why. Most of what the new parts need is already collected:
 6. **The pool.**
    - `How often it happens` shows the pooled count over the pooled base, the median file's share, the files where it happened at all, and the files where it happened in 25% or more of their days or sessions. 25% is one day a week of a working month. The files are counted with their share of the files with the part, as `3 (75%)`. Its rows are fixed and count files, so `--min-files` leaves them as they are.
    - `How the sessions spread` shows, per agent and measure, the values of all files, the median and quarters of the files' `p50`, and the median of their `p90`. A file without quantiles counts in `<k> of <n>` files but not in the medians. `--min-files n` leaves out a row with quantiles from fewer than n files, so that a median does not show one person's sessions.
-7. **Parse time.** The new work is a counter per request, a push per retried request, a counter per failure window, and one more rhythm summary per agent over timelines already built. Estimate: under 1% of the share's time; on the author's 30 days the runs stayed at about 38 s.
-8. **File size.** About 30 numbers per agent for the distributions and 8 for the prevalence, and 3 in the file's part: about 2–3 KB of pretty JSON.
+7. **Sessions nobody typed in are left out of the session measures.** A typical session should be one a person worked in. The share takes the main sessions whose timelines the rhythm leaves out (`scripted`, or a working folder under a temporary folder; see work-rhythm) and leaves them out of `session_usd`, `typed_per_session`, `largest_context` and the five session counts. Both parts hold `left_out_sessions`, so the pool divides by the sessions someone worked in and says how many it left out. Day counts, cold returns, turns and answers keep every session: days are the person's, and turns and answers already come from the rhythm. The ranges of the pause and span parts still count every session, so a session count is at most its ranges, not equal.
+   - On the author's logs this leaves out 129 of 330 Claude Code and 126 of 172 Codex sessions. The Claude Code median session goes from $0.50 to $9.43 and its median typed messages from 1 to 3.
+   - Alternative: drop sessions with no typed message. Rejected: the rhythm's rule already exists, and its counts must agree with `rhythm.sessions` (247 = 201 + 46).
+8. **Parse time.** The new work is a counter per request, a push per retried request, a counter per failure window, and one more rhythm summary per agent over timelines already built. Estimate: under 1% of the share's time; on the author's 30 days the runs stayed at about 38 s.
+9. **File size.** About 30 numbers per agent for the distributions and 8 for the prevalence, and 3 in the file's part: about 2–3 KB of pretty JSON.
 
 ## Risks / Trade-offs
 
-- [Scripted sessions] A program's session counts as a main session, as in the pause parts, so on the author's logs half of the sessions cost a cent or less and hold one typed message. The rhythm leaves such sessions out, so `turn_ms` and `answer_ms` count fewer sessions than `session_usd`. → The spread table names the number of values per row, and the pool compares like with like across files.
+- [Scripted sessions] Before decision 7, half of the author's sessions cost a cent or less and held one typed message, and the medians described scripted runs, not work. → They are left out of the session measures, and the report says how many.
+- [A session the person worked in, run from a temporary folder] It is left out too, as the rhythm leaves it out. → The same rule as the rhythm's, so the parts agree.
 - [Codex] Codex logs no questions and few hand-offs, so its `sessions_with_question` is 0. → Counts stay per agent in the file, so a pool can be cut by agent later.
 - [Quantiles are real values] From 5 values on, `p90` is one session's value when n is small. → 5 is the floor the review asked for; `--min-files` protects pooled rows.

@@ -395,6 +395,8 @@ pub struct Pool {
     pub spread: Vec<SpreadRow>,
     /// The files with the distribution parts.
     pub spread_files: usize,
+    /// The main sessions that the session rows of both sections leave out, over those files.
+    pub left_out_sessions: f64,
 }
 
 impl Pool {
@@ -968,6 +970,7 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
         prevalence_files: files.iter().filter(|f| f.get("prevalence").is_some_and(Value::is_object)).count(),
         spread: spread(&files, min_files),
         spread_files: files.iter().filter(|f| part(f, "distributions", |_, _, _| {}).is_some()).count(),
+        left_out_sessions: files.iter().filter_map(|f| summed(f, &format!("/prevalence/{}", crate::share::LEFT_OUT))).sum(),
         effort_by_client: effort_rows,
         effort_more,
         coverage: coverage(&files),
@@ -1352,15 +1355,15 @@ fn days_of(file: &Value, key: &str) -> Option<(f64, f64)> {
     Some((count, file.pointer("/activity/active_days")?.as_f64()?))
 }
 
-/// A file's count of main sessions and its main sessions, over the agents with the prevalence
-/// part; `None` when none has it.
+/// A file's count of main sessions and its main sessions that someone worked in, over the agents
+/// with the prevalence part; `None` when none has it.
 fn sessions_of(file: &Value, key: &str) -> Option<(f64, f64)> {
     let mut found = None;
     for (_, a) in agents(file) {
         let Some(n) = a.get("prevalence").and_then(|p| p.get(key)).and_then(Value::as_f64) else { continue };
         let e = found.get_or_insert((0.0, 0.0));
         e.0 += n;
-        e.1 += a["main_sessions"].as_f64().unwrap_or(0.0);
+        e.1 += a["main_sessions"].as_f64().unwrap_or(0.0) - a["prevalence"][crate::share::LEFT_OUT].as_f64().unwrap_or(0.0);
     }
     found
 }

@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: How often it happens
-After `Problems`, the report SHALL print `How often it happens`, from the prevalence parts (see share-export, Prevalence parts), with one row per count of the scenario below. The day rows come from the file's own prevalence part; the session rows from the agents' parts. The columns are `count`, `of` (the active days or main sessions of the same files) and `share`.
+After `Problems`, the report SHALL print `How often it happens`, from the prevalence parts (see share-export, Prevalence parts), with one row per count of the scenario below. The day rows come from the file's own prevalence part; the session rows from the agents' parts. The columns are `count`, `of` (the active days, or the main sessions someone worked in, of the same files) and `share`.
 
 #### Scenario: The rows
 - **WHEN** the report is printed
@@ -12,6 +12,13 @@ After `Problems`, the report SHALL print `How often it happens`, from the preval
 #### Scenario: One file
 - **WHEN** a file had a cold return on 28 of its 30 active days
 - **THEN** the row `days with a cold return` shows `28`, `30 days` and `93.3%`
+
+### Requirement: Sessions the rows leave out
+Under the tables of `How often it happens` and `How the sessions spread`, the report SHALL print `the session rows leave out <n> sessions that nobody typed in: a program ran them, or they ran in a temporary folder`, with the `left_out_sessions` of the files summed (see share-export, Sessions nobody typed in). With none left out, there is no such line.
+
+#### Scenario: Scripted runs
+- **WHEN** a file left out 129 Claude Code and 126 Codex sessions
+- **THEN** both tables end with `the session rows leave out 255 sessions that nobody typed in: a program ran them, or they ran in a temporary folder`
 
 ### Requirement: Files in How often it happens
 For a pool, the counts of `How often it happens` SHALL be pooled, and the columns `median file` (of each file's share), `files` (the files where the count is above zero) and `files 25%+` (the files where it is 25% or more of their days or sessions) follow. Each count of files comes with its share of the files that have the part. `--min-files` leaves these rows as they are, since they count files.

@@ -3,15 +3,22 @@
 ## ADDED Requirements
 
 ### Requirement: Distribution parts
-Each agent's object SHALL hold `distributions`, with one entry per measure of its main sessions: `session_usd`, the dollars of each main session with its subagents, as the pause parts count a session's spend; `typed_per_session`, its typed messages, the first one of a conversation included; and `largest_context`, its largest main prompt, in tokens.
+Each agent's object SHALL hold `distributions`, with one entry per measure of the main sessions someone worked in: `session_usd`, the dollars of each with its subagents, as the pause parts count a session's spend; `typed_per_session`, its typed messages, the first one of a conversation included; and `largest_context`, its largest main prompt, in tokens.
 
 #### Scenario: The values of each measure
-- **WHEN** an agent has 328 main sessions
-- **THEN** `session_usd`, `typed_per_session` and `largest_context` have `n` 328
+- **WHEN** an agent has 330 main sessions, 129 of which the rhythm leaves out
+- **THEN** `session_usd`, `typed_per_session` and `largest_context` have `n` 201
 
 #### Scenario: The first message of a session
 - **WHEN** five main sessions have 1, 2, 3, 4 and 5 typed messages
 - **THEN** `typed_per_session` is `{"n": 5, "p25": 2, "p50": 3, "p75": 4, "p90": 5}`, while the pause parts count 10 typed messages, since they leave out each session's first
+
+### Requirement: Sessions nobody typed in
+The session measures of `distributions` and the session counts of `prevalence` SHALL leave out the main sessions that the rhythm leaves out: those a program ran and those in a temporary folder (see work-rhythm). Both parts hold `left_out_sessions`, how many main sessions they left out. Day counts, cold returns, turns and answers are not session measures and keep every session. Without the rhythm parts no session is left out.
+
+#### Scenario: A scripted run
+- **WHEN** a program ran 129 of an agent's 330 main sessions
+- **THEN** `distributions.left_out_sessions` and `prevalence.left_out_sessions` are 129, and the session counts are out of 201 sessions
 
 ### Requirement: Distributions of returns, turns and answers
 `distributions` SHALL also hold `cold_return_usd`, the dollars of the first request of each cold return (see pause-report). When the file has the rhythm parts, it holds `turn_ms`, each turn the person started, and `answer_ms`, each answer to an end of turn, as the rhythm parts count them, with the days of all agents together.
@@ -48,12 +55,13 @@ Each agent's object SHALL hold `prevalence`, with counts of the agent's active d
 - **THEN** `days_with_cold_return` is 2
 
 ### Requirement: Prevalence of main sessions
-`prevalence` SHALL also count the agent's main sessions: `sessions_with_cold_return`, with a cold return; `sessions_with_failure_window`, in which a failure window opened, its subagents included (see tool-breakdown, What came after a failure); `sessions_over_400k`, with a largest main prompt of 400,000 tokens or more; `sessions_over_1d`, that ran 24 hours or more from their first to their last selected request; and `sessions_with_question`, in which the agent asked a question inside the window.
+`prevalence` SHALL also count the main sessions someone worked in: `sessions_with_cold_return`, with a cold return; `sessions_with_failure_window`, with a failure window, subagents included (see tool-breakdown); `sessions_over_400k`, with a largest main prompt of 400,000 tokens or more; `sessions_over_1d`, that ran 24 hours or more from first to last selected request; and `sessions_with_question`, where the agent asked inside the window.
 
 #### Scenario: Sessions agree with the other parts
 - **WHEN** an agent's part is written
-- **THEN** `sessions_with_cold_return` is at most `main_sessions` and the cold returns of `cold_returns_by_pause`
-- **AND** `sessions_over_400k` equals the sessions of `400–800k` and `800k+` in `sessions_by_largest_context`, and `sessions_over_1d` those of `1–3d` and `over 3d` in `session_spans`
+- **THEN** `sessions_with_cold_return` is at most `main_sessions` less `left_out_sessions`, and at most the cold returns of `cold_returns_by_pause`
+- **AND** `sessions_over_400k` is at most the sessions of `400–800k` and `800k+` in `sessions_by_largest_context`, and `sessions_over_1d` at most those of `1–3d` and `over 3d` in `session_spans`: those ranges count the sessions left out too
+- **AND** with no session left out, they are equal
 
 #### Scenario: Two questions in one session
 - **WHEN** the agent asked two questions in one main session and none in two others

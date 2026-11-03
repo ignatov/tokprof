@@ -495,11 +495,13 @@ fn main() -> Result<()> {
         let now = filter.until_ms.unwrap_or_else(now_ms);
         let window = (filter.since_ms.unwrap_or(i64::MIN), filter.until_ms.unwrap_or(i64::MAX));
         let agent_rhythm = share::agent_rhythms(&timelines, now, offset, window);
+        let left_out = share::left_out_sessions(&timelines);
         let (all, client_rhythm) = share::rhythms(timelines, now, offset, window);
         let extra = share::Extra {
             rhythm: Some(all),
             client_rhythm,
             agent_rhythm,
+            left_out,
             bench: Some(bench::replay(found, &pricing, bench::DEFAULT_REQUESTS, bench::DEFAULT_MIN_CONTEXT, bench::DEFAULT_KEEP_WARM_MS)),
         };
         let value = share::to_json_with(&collector, &p, &s, &header, &extra, |ms| fmt::local_time(ms, "%Y-%m-%d"));

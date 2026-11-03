@@ -198,7 +198,11 @@ const FIELDS: &[&str] = &[
     "p75",
     "p90",
     "prevalence",
+    "left_out_sessions",
 ];
+
+/// The key of the main sessions that the session measures and counts leave out.
+pub const LEFT_OUT: &str = "left_out_sessions";
 
 /// The fewest values a distribution gives quantiles for; with fewer it gives only their number,
 /// so that no single session's value can be read from it.
@@ -733,7 +737,19 @@ pub struct Extra {
     pub client_rhythm: BTreeMap<(AgentId, String), Summary>,
     /// The rhythm of each agent's main sessions, for the turns and answers of its distributions.
     pub agent_rhythm: BTreeMap<AgentId, Summary>,
+    /// The main sessions the rhythm leaves out, by agent and short id: a program ran them, or
+    /// they ran in a temporary folder. The session measures and counts leave them out too.
+    pub left_out: BTreeMap<AgentId, HashSet<String>>,
     pub bench: Option<Bench>,
+}
+
+/// The main sessions of these timelines that the rhythm leaves out, by agent and short id.
+pub fn left_out_sessions(timelines: &[(String, Timeline)]) -> BTreeMap<AgentId, HashSet<String>> {
+    let mut out: BTreeMap<AgentId, HashSet<String>> = BTreeMap::new();
+    for (_, t) in timelines.iter().filter(|(_, t)| t.left_out) {
+        out.entry(t.agent.clone()).or_default().insert(crate::model::short_id(&t.agent, &t.id).to_string());
+    }
+    out
 }
 
 /// The rhythm of these main sessions inside `window`, as `tokprof pauses` reads them: of all of
@@ -778,9 +794,10 @@ fn distribution<T: Copy + PartialOrd>(mut values: Vec<T>, value: impl Fn(T) -> V
 }
 
 /// An agent's distributions: per main session, per cold return, per turn and per answer.
-fn distribution_part(p: &AgentPauses, rhythm: Option<&Summary>) -> Value {
-    let sessions: Vec<&crate::pauses::SessionSize> = p.sessions.values().collect();
+fn distribution_part(p: &AgentPauses, rhythm: Option<&Summary>, left: &HashSet<String>) -> Value {
+    let sessions = worked_in(p, left);
     let mut part = Map::new();
+    part.insert(LEFT_OUT.into(), json!(p.sessions.len() - sessions.len()));
     part.insert(DISTRIBUTIONS[0].into(), distribution(sessions.iter().map(|s| s.usd).collect(), dollars));
     part.insert(DISTRIBUTIONS[1].into(), distribution(p.returns.iter().map(|r| r.usd).collect(), dollars));
     part.insert(DISTRIBUTIONS[2].into(), distribution(sessions.iter().map(|s| s.typed).collect(), |n| json!(n)));
@@ -790,6 +807,11 @@ fn distribution_part(p: &AgentPauses, rhythm: Option<&Summary>) -> Value {
     }
     part.insert(DISTRIBUTIONS[5].into(), distribution(sessions.iter().map(|s| s.largest).collect(), |n| json!(n)));
     Value::Object(part)
+}
+
+/// The main sessions of the pause parts that someone worked in: those not in `left`.
+fn worked_in<'a>(p: &'a AgentPauses, left: &HashSet<String>) -> Vec<&'a crate::pauses::SessionSize> {
+    p.sessions.iter().filter(|(id, _)| !left.contains(*id)).map(|(_, s)| s).collect()
 }
 
 /// The days of an agent's prevalence counts, each among its active days: with a cold return,
@@ -806,17 +828,19 @@ fn prevalence_days(p: Option<&AgentPauses>, a: &AgentShare, active: &BTreeSet<St
 /// An agent's prevalence part: its days from [`prevalence_days`], and its main sessions with a
 /// cold return, a failure window, a context of [`LARGE_CONTEXT`] or more, a span of
 /// [`LONG_SPAN_MS`] or more, and a question.
-fn prevalence_part(p: Option<&AgentPauses>, a: &AgentShare, days: &[BTreeSet<String>; 3]) -> Value {
-    let sessions = |f: &dyn Fn(&crate::pauses::SessionSize) -> bool| p.map_or(0, |p| p.sessions.values().filter(|s| f(s)).count());
+fn prevalence_part(p: Option<&AgentPauses>, a: &AgentShare, days: &[BTreeSet<String>; 3], left: &HashSet<String>) -> Value {
+    let kept = p.map(|p| worked_in(p, left)).unwrap_or_default();
+    let sessions = |f: &dyn Fn(&crate::pauses::SessionSize) -> bool| kept.iter().filter(|s| f(s)).count();
     let counts = [
         sessions(&|s| s.cold_returns > 0),
-        a.failure_sessions.len(),
+        a.failure_sessions.difference(left).count(),
         sessions(&|s| s.largest >= LARGE_CONTEXT),
         sessions(&|s| s.span_ms() >= LONG_SPAN_MS),
-        a.question_sessions.len(),
+        a.question_sessions.difference(left).count(),
     ];
     let mut part: Map<String, Value> = PREVALENCE_DAYS.iter().zip(days).map(|(k, d)| (k.to_string(), json!(d.len()))).collect();
     part.extend(PREVALENCE_SESSIONS.iter().zip(counts).map(|(k, n)| (k.to_string(), json!(n))));
+    part.insert(LEFT_OUT.into(), json!(a.main_sessions.iter().filter(|id| left.contains(*id)).count()));
     Value::Object(part)
 }
 
@@ -1181,16 +1205,18 @@ pub fn to_json_with(c: &Collector, p: &Pauses, s: &Share, h: &Header, x: &Extra,
             "outcomes": outcome_part(a.outcomes),
         });
         let Value::Object(e) = &mut entry else { unreachable!("built as an object") };
+        let no_one = HashSet::new();
+        let left = x.left_out.get(agent).unwrap_or(&no_one);
         let busy_ms = pauses.map_or(0, |p| p.busy.total_ms());
         e.insert("activity".into(), json!({"active_days": days.len(), "active_hours": a.hours.len(), "busy_ms": busy_ms}));
         if let Some(pauses) = pauses {
             e.insert("pauses".into(), pause_parts(pauses));
             e.insert("session_spans".into(), span_parts(pauses));
             e.insert("time".into(), time_part(&pauses.busy));
-            e.insert("distributions".into(), distribution_part(pauses, x.agent_rhythm.get(agent)));
+            e.insert("distributions".into(), distribution_part(pauses, x.agent_rhythm.get(agent), left));
         }
         let prevalent = prevalence_days(pauses, a, &days, &day);
-        e.insert("prevalence".into(), prevalence_part(pauses, a, &prevalent));
+        e.insert("prevalence".into(), prevalence_part(pauses, a, &prevalent, left));
         for (all, mine) in all_days.iter_mut().zip(prevalent) {
             all.extend(mine);
         }
@@ -2239,6 +2265,7 @@ mod tests {
                 rhythm: Some(summary),
                 client_rhythm: clients,
                 agent_rhythm: BTreeMap::new(),
+                left_out: BTreeMap::new(),
                 bench: Some(bench(vec![ret([10.0, 8.0, 3.0, 4.0, 5.0], true)])),
             };
             let own = own_words(&agents());
@@ -2470,6 +2497,28 @@ mod tests {
         }
 
         #[test]
+        fn sessions_nobody_typed_in_are_left_out_of_the_session_measures() {
+            let (c, p, sh) = collect(&three());
+            let left = BTreeMap::from([(crate::testing::claude(), HashSet::from(["big".to_string()]))]);
+            let x = Extra { left_out: left, ..Extra::default() };
+            let v = to_json_with(&c, &p, &sh, &HEADER, &x, day_at(0));
+            let a = &v["agents"]["claude"];
+            let (d, pr) = (&a["distributions"], &a["prevalence"]);
+            assert_eq!((d["left_out_sessions"].as_u64(), pr["left_out_sessions"].as_u64()), (Some(1), Some(1)));
+            for key in ["session_usd", "typed_per_session", "largest_context"] {
+                assert_eq!(d[key]["n"], 2, "{key}: the main sessions less the one left out");
+            }
+            // The session counts leave it out; the ranges of the pause parts still count it.
+            assert_eq!((pr["sessions_over_400k"].as_u64(), a["pauses"]["sessions_by_largest_context"]["400–800k"]["sessions"].as_u64()), (Some(0), Some(1)));
+            assert_eq!((pr["sessions_with_cold_return"].as_u64(), pr["sessions_with_question"].as_u64()), (Some(1), Some(0)));
+            // Days and returns are not session measures: they stay.
+            assert_eq!(
+                (pr["days_with_cold_return"].as_u64(), pr["days_with_interrupt"].as_u64(), d["cold_return_usd"]["n"].as_u64()),
+                (Some(2), Some(1), Some(2))
+            );
+        }
+
+        #[test]
         fn a_day_of_two_agents_counts_once_in_the_file() {
             let codex = |min| Request { api: crate::api::ApiId::OpenAi, model: "gpt-6-astra".into(), ..request(min, None, small()) };
             let mut a = session(crate::testing::claude(), "a", vec![("main", ChainKind::Main, vec![request(0, None, small())])]);
@@ -2564,7 +2613,7 @@ mod tests {
             assert_eq!((turns, answers), (all.turns.len(), all.answers.len()));
             assert_eq!(by_agent[&crate::testing::claude()].turns.len(), 6);
             let claude = &by_agent[&crate::testing::claude()];
-            let part = distribution_part(&AgentPauses::default(), Some(claude));
+            let part = distribution_part(&AgentPauses::default(), Some(claude), &HashSet::new());
             assert_eq!(part["turn_ms"]["n"], 6);
             assert_eq!(part["turn_ms"]["p50"], 120_000, "{part}");
             assert_eq!(part["answer_ms"]["n"], claude.answers.len());

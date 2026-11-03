@@ -520,6 +520,16 @@ fn prevalence_table(p: &Pool, rows: &[PrevalenceRow], by_file: bool) -> String {
     table(&out, 1)
 }
 
+/// The line under the tables of sessions: the main sessions their rows leave out, as the rhythm
+/// leaves them out. Empty when there are none.
+fn left_out_line(p: &Pool) -> String {
+    let n = p.left_out_sessions.round() as u64;
+    if n == 0 {
+        return String::new();
+    }
+    format!("the session rows leave out {} that nobody typed in: a program ran them, or they ran in a temporary folder\n", count(n, "session", "sessions"))
+}
+
 /// A value of `How the sessions spread`, in its row's unit.
 fn spread_cell(unit: SpreadUnit, x: f64) -> String {
     match unit {
@@ -659,11 +669,13 @@ pub fn text(p: &Pool, by_file: bool) -> String {
         section_head(&mut out, "How often it happens", &coverage(p.prevalence_files, n), one);
         out.push('\n');
         out.push_str(&prevalence_table(p, &p.prevalence, by_file));
+        out.push_str(&left_out_line(p));
     }
     if !p.spread.is_empty() {
         section_head(&mut out, "How the sessions spread", &coverage(p.spread_files, n), one);
         out.push('\n');
         out.push_str(&spread_table(p, &p.spread, by_file));
+        out.push_str(&left_out_line(p));
     }
     if let Some(t) = p.table("habits").filter(present) {
         section_head(&mut out, "Habits that cost the most", "", one);
@@ -1405,6 +1417,20 @@ mod tests {
         assert!(t.contains("; files: where it happened at all; files 25%+: in a quarter of their days or sessions or more\n"), "{t}");
         let line = t.lines().find(|l| l.starts_with("days with a cold return")).unwrap();
         assert!(line.split_whitespace().collect::<Vec<_>>().ends_with(&["51", "120", "days", "42.5%", "50.0%", "3", "(75%)", "2", "(50%)"]), "{line}");
+    }
+
+    #[test]
+    fn the_session_rows_leave_out_the_sessions_nobody_typed_in() {
+        let mut f = rich_file();
+        f["agents"]["claude"]["prevalence"]["left_out_sessions"] = json!(60);
+        f["agents"]["claude"]["main_sessions"] = json!(160);
+        let p = pool_of(vec![f]);
+        let r = p.prevalence.iter().find(|r| r.key == "sessions_with_cold_return").unwrap();
+        assert_eq!((r.count, r.base), (20.0, 100.0), "the base is the sessions someone worked in");
+        let t = text(&p, false);
+        let line = "the session rows leave out 60 sessions that nobody typed in: a program ran them, or they ran in a temporary folder\n";
+        assert_eq!(t.matches(line).count(), 2, "{t}");
+        assert!(!text(&pool_of(vec![rich_file()]), false).contains("leave out"), "none left out, no line");
     }
 
     #[test]

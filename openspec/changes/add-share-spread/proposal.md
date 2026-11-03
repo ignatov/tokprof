@@ -6,6 +6,7 @@ A share file holds sums over 30 days: one number per person for each pain. A poo
 
 - **New parts in the share file** (additive, format stays 2):
   - `distributions`, per agent: for six measures, how many values there are and, from 5 values on, their quarters and 90th percentile (`n`, `p25`, `p50`, `p75`, `p90`). The measures: the cost of a main session with its subagents, the cost of the first request after a cold return, the typed messages per main session, the length of a turn the person started, the person's answer to an end of turn, and the largest context of a main session. With fewer than 5 values only `n` goes in, so no single session's value can be read.
+  - The session measures and the session counts leave out the main sessions the rhythm leaves out (scripted runs and sessions in temporary folders), and both parts say how many in `left_out_sessions`.
   - `prevalence`, per agent: the active days with a cold return, with a request that waited for retries, and with an interrupt; and the main sessions with a cold return, with a failure window, with a context of 400k tokens or more, longer than a day, and with a question from the agent. The file also holds the three day counts for all agents together, a day counted once.
 - **The report** (`tokprof share` and `tokprof pool`) gets two sections after `Problems`:
   - `How often it happens`: per count, the days or sessions, their share, and for a pool the median file's share, the files where it happened at all and the files where it happened in a quarter of their days or sessions or more.
