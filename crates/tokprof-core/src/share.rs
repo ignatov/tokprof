@@ -18,7 +18,7 @@ use serde_json::{Map, Value, json};
 
 use crate::analysis::cache::Cause;
 use crate::analysis::{Component, Fact, Filter, MissEvent, RequestRecord, Sink};
-use crate::model::{BlockKind, ChainKind, Class, Session, ToolClass};
+use crate::model::{BlockKind, ChainKind, Class, HandoffKind, Session, ToolClass, WakeSource};
 use crate::pauses::{AgentPauses, PAUSE_RANGES, Pauses, RETURN_RANGES, SIZE_RANGES, Starter};
 use crate::profile::Values;
 use crate::report::{Collector, Spend, WhatIf, Work};
@@ -52,6 +52,14 @@ pub const COMPACTION_TRIGGERS: [&str; 5] = ["auto", "manual", "idle", "unknown",
 /// The names of who started a cold return, in `Starter::ALL` order.
 const STARTERS: [&str; 4] = ["typed messages", "background tasks", "tool results", "other"];
 
+/// The hand-offs of a main conversation the file counts, as session-logs names them.
+pub const HANDOFF_KINDS: [&str; 5] = ["turn_ends", "interrupts", "typed_while_working", "questions", "answers"];
+
+/// What a wake reported, as session-logs names it.
+pub const WAKE_SOURCES: [&str; 3] = ["subagent", "command", "other"];
+
+const HOUR_MS: i64 = 3_600_000;
+
 /// The kinds of origin, as the origin of a request is written before its `:`.
 const ORIGIN_KINDS: [&str; 7] = ["prompt", "skill", "agent", "command", "notification", "mcp", "plugin"];
 
@@ -64,6 +72,8 @@ const FIELDS: &[&str] = &[
     "typed_messages", "typed_by_pause", "messages", "median_context", "typed_after_lifetime", "cold_returns_by_pause", "returns",
     "cold_returns_started_by", "after_cold_return", "median", "quarter_1", "quarter_3", "ended_within_3", "sessions_by_largest_context",
     "calls", "single", "results", "result_tokens", "inputs", "input_tokens", "rent", "trips", "programs", "rows", "actual_usd",
+    "activity", "active_days", "active_hours", "busy_ms", "failures", "failed", "refused", "denied", "after", "time", "kinds", "ms",
+    "after_turns_ms", "slow", "slow_main", "longest_ms", "retried", "handoffs", "wakes", "prompts", "held", "all",
 ];
 
 /// What the file adds to the reports for one agent.
@@ -93,8 +103,20 @@ pub struct AgentShare {
     pub client_writes: BTreeMap<String, [u64; 2]>,
     /// Compactions by trigger (see [`COMPACTION_TRIGGERS`]).
     pub compactions: BTreeMap<&'static str, u64>,
-    /// The tool table of this agent's requests.
-    pub tools: ToolTable,
+    /// The clock hours with a selected main-conversation request, as whole hours of UTC since the
+    /// epoch: of the agent, and of each client.
+    pub hours: HashSet<i64>,
+    pub client_hours: BTreeMap<String, HashSet<i64>>,
+    /// The hand-offs of the main conversations inside the window, by kind (see
+    /// [`HANDOFF_KINDS`]), and the wakes by source (see [`WAKE_SOURCES`]).
+    pub handoffs: BTreeMap<&'static str, u64>,
+    pub wakes: BTreeMap<&'static str, u64>,
+    /// The selected requests whose prompts the log holds, then all of them.
+    pub prompts: [Spend; 2],
+    /// Per version, the requests whose prompts the log holds.
+    pub versions_held: BTreeMap<String, u64>,
+    /// Per client, requests and dollars by effort level.
+    pub client_effort: BTreeMap<String, BTreeMap<String, (u64, f64)>>,
     /// The replay of this agent's requests under two cache lifetimes, and those lifetimes in ms.
     pub whatif: WhatIf,
     pub whatif_lifetimes: Option<(i64, i64)>,
@@ -136,7 +158,30 @@ impl AgentShare {
         for (t, n) in o.compactions {
             *self.compactions.entry(t).or_default() += n;
         }
-        self.tools.merge(o.tools);
+        self.hours.extend(o.hours);
+        for (client, hours) in o.client_hours {
+            self.client_hours.entry(client).or_default().extend(hours);
+        }
+        for (k, n) in o.handoffs {
+            *self.handoffs.entry(k).or_default() += n;
+        }
+        for (k, n) in o.wakes {
+            *self.wakes.entry(k).or_default() += n;
+        }
+        for (mine, theirs) in self.prompts.iter_mut().zip(o.prompts) {
+            mine.add(theirs);
+        }
+        for (v, n) in o.versions_held {
+            *self.versions_held.entry(v).or_default() += n;
+        }
+        for (client, levels) in o.client_effort {
+            let mine = self.client_effort.entry(client).or_default();
+            for (level, (requests, usd)) in levels {
+                let e = mine.entry(level).or_default();
+                e.0 += requests;
+                e.1 += usd;
+            }
+        }
         self.whatif.merge(o.whatif);
         self.whatif_lifetimes = self.whatif_lifetimes.or(o.whatif_lifetimes);
     }
@@ -150,6 +195,9 @@ struct Current {
     session: String,
     counted: bool,
     compactions: Vec<&'static str>,
+    /// Hand-off kinds and wake sources inside the window, one entry each.
+    handoffs: Vec<&'static str>,
+    wakes: Vec<&'static str>,
     ids: Vec<String>,
     title: Option<String>,
 }
@@ -164,6 +212,10 @@ pub struct Share {
     pub ids: BTreeSet<String>,
     /// Their titles, for the leak check.
     pub titles: BTreeSet<String>,
+    /// The tool table of each agent's requests, which gets every call of the sink so that its
+    /// failure windows open and close as in `tokprof tools`. An agent without a selected request
+    /// has a table but no object in the file.
+    pub tables: BTreeMap<AgentId, ToolTable>,
     filter: Filter,
     current: Option<Current>,
 }
@@ -184,6 +236,9 @@ impl Share {
         };
         self.ids.extend(o.ids);
         self.titles.extend(o.titles);
+        for (agent, t) in o.tables {
+            self.tables.entry(agent).or_default().merge(t);
+        }
     }
 
     /// The agent of the log being read, and its share.
@@ -194,6 +249,31 @@ impl Share {
         }
         self.agents.get_mut(agent)
     }
+
+    /// The tool table of the log being read.
+    fn current_table(&mut self) -> Option<&mut ToolTable> {
+        let agent = &self.current.as_ref()?.agent;
+        if !self.tables.contains_key(agent) {
+            self.tables.insert(agent.clone(), ToolTable::default());
+        }
+        self.tables.get_mut(agent)
+    }
+}
+
+/// The name the file gives a hand-off kind, or `None` for one it does not count.
+fn handoff_name(kind: HandoffKind) -> Option<(&'static str, bool)> {
+    Some(match kind {
+        HandoffKind::TurnEnd => (HANDOFF_KINDS[0], false),
+        HandoffKind::Interrupt => (HANDOFF_KINDS[1], false),
+        HandoffKind::TypedWhileWorking => (HANDOFF_KINDS[2], false),
+        HandoffKind::Question => (HANDOFF_KINDS[3], false),
+        HandoffKind::Answer => (HANDOFF_KINDS[4], false),
+        HandoffKind::Wake(WakeSource::Subagent) => (WAKE_SOURCES[0], true),
+        HandoffKind::Wake(WakeSource::Command) => (WAKE_SOURCES[1], true),
+        HandoffKind::Wake(_) => (WAKE_SOURCES[2], true),
+        #[allow(unreachable_patterns)]
+        _ => return None,
+    })
 }
 
 /// The index of the range a value falls in: the last whose lower bound it reaches.
@@ -237,17 +317,35 @@ impl Sink for Share {
         } else {
             Vec::new()
         };
+        let (mut handoffs, mut wakes) = (Vec::new(), Vec::new());
+        if main {
+            for h in s.handoffs.iter().filter(|h| self.filter.accepts(h.ts_ms)) {
+                match handoff_name(h.kind) {
+                    Some((name, true)) => wakes.push(name),
+                    Some((name, false)) => handoffs.push(name),
+                    None => {}
+                }
+            }
+        }
         self.current = Some(Current {
             agent: s.agent.clone(),
             session: s.short_id().to_string(),
             counted: false,
             compactions,
+            handoffs,
+            wakes,
             ids: vec![s.id.clone(), s.short_id().to_string()],
             title: s.title.clone(),
         });
+        if let Some(t) = self.current_table() {
+            t.session(s);
+        }
     }
 
     fn request(&mut self, r: &RequestRecord) {
+        if let Some(t) = self.current_table() {
+            t.request(r);
+        }
         let Share { agents, span_ms, current, ids, titles, .. } = self;
         let Some(cur) = current else { return };
         let a = agents.entry(cur.agent.clone()).or_default();
@@ -257,6 +355,12 @@ impl Sink for Share {
             a.main_sessions.insert(cur.session.clone());
             for t in cur.compactions.drain(..) {
                 *a.compactions.entry(t).or_default() += 1;
+            }
+            for h in cur.handoffs.drain(..) {
+                *a.handoffs.entry(h).or_default() += 1;
+            }
+            for w in cur.wakes.drain(..) {
+                *a.wakes.entry(w).or_default() += 1;
             }
             ids.extend(cur.ids.drain(..));
             titles.extend(cur.title.take());
@@ -273,6 +377,23 @@ impl Sink for Share {
         e.2 += usd;
         a.prompt_sizes[k][range_of(&PROMPT_RANGES, r.usage.prompt())].add(spend);
         a.versions.entry(version_key(r.version).to_string()).or_default().add(spend);
+        a.prompts[1].add(spend);
+        if r.composition {
+            a.prompts[0].add(spend);
+            *a.versions_held.entry(version_key(r.version).to_string()).or_default() += 1;
+        }
+        if r.chain_kind == ChainKind::Main {
+            let hour = r.ts_ms.div_euclid(HOUR_MS);
+            a.hours.insert(hour);
+            if let Some(hours) = a.client_hours.get_mut(r.client) {
+                hours.insert(hour);
+            } else {
+                a.client_hours.insert(r.client.to_string(), HashSet::from([hour]));
+            }
+        }
+        let ce = a.client_effort.entry(r.client.to_string()).or_default().entry(effort_key(r.effort).to_string()).or_default();
+        ce.0 += 1;
+        ce.1 += usd;
         let w = a.client_writes.entry(r.client.to_string()).or_default();
         w[0] += r.usage.write_short;
         w[1] += r.usage.write_long;
@@ -287,20 +408,23 @@ impl Sink for Share {
     fn miss(&mut self, _: MissEvent) {}
 
     fn fact(&mut self, f: &Fact) {
-        let Some(a) = self.current_share() else { return };
-        a.content[f.kind as usize].add(Values { tokens: f.tokens, usd: f.usd.unwrap_or(0.0), avoidable: f.avoidable_usd });
-        a.tools.fact(f);
+        if let Some(a) = self.current_share() {
+            a.content[f.kind as usize].add(Values { tokens: f.tokens, usd: f.usd.unwrap_or(0.0), avoidable: f.avoidable_usd });
+        }
+        if let Some(t) = self.current_table() {
+            t.fact(f);
+        }
     }
 
     fn block_entered(&mut self, b: &BlockEntry) {
-        if let Some(a) = self.current_share() {
-            a.tools.block_entered(b);
+        if let Some(t) = self.current_table() {
+            t.block_entered(b);
         }
     }
 
     fn tool_share(&mut self, t: &ToolShare) {
-        if let Some(a) = self.current_share() {
-            a.tools.tool_share(t);
+        if let Some(table) = self.current_table() {
+            table.tool_share(t);
         }
     }
 }
@@ -355,6 +479,20 @@ fn pause_parts(p: &AgentPauses) -> Value {
     })
 }
 
+/// The busy time by kind, with the part after ends of turn, and the requests: slow, longest and
+/// retried. The retries' errors and the longest waits, which carry times, stay out.
+fn time_part(b: &crate::busy::Busy) -> Value {
+    let kinds: Map<String, Value> = b.kinds.iter().filter(|(_, v)| v.0 > 0).map(|(k, (ms, after))| (k.to_string(), json!({"ms": ms, "after_turns_ms": after}))).collect();
+    json!({
+        "kinds": kinds,
+        "requests": b.requests,
+        "slow": b.slow,
+        "slow_main": b.slow_main,
+        "longest_ms": b.longest.map(|(ms, _)| ms),
+        "retried": b.retried,
+    })
+}
+
 /// The main sessions by how long they ran, with their spend and cold returns.
 fn span_parts(p: &AgentPauses) -> Value {
     let mut rows = [(0u64, Values::default(), 0u64); 5];
@@ -384,6 +522,9 @@ fn tool_row(r: &ToolRow) -> Map<String, Value> {
     m.insert("input_tokens".into(), whole(r.input_tokens));
     m.insert("rent".into(), amount(&r.rent));
     m.insert("trips".into(), amount(&r.trips));
+    // The count and the window's spend; the error text of a failure stays out.
+    m.insert("failed".into(), json!(r.failed));
+    m.insert("after".into(), amount(&r.after));
     m
 }
 
@@ -514,6 +655,14 @@ pub fn to_json(c: &Collector, p: &Pauses, s: &Share, h: &Header, day: impl Fn(i6
             .map(|((_, client), r)| {
                 let cold = pauses.and_then(|p| p.cold_returns_by_client.get(client)).copied().unwrap_or(0);
                 let w = a.client_writes.get(client).copied().unwrap_or_default();
+                let hours = a.client_hours.get(client).map_or(0, HashSet::len);
+                let effort: Map<String, Value> = a
+                    .client_effort
+                    .get(client)
+                    .into_iter()
+                    .flatten()
+                    .map(|(level, (requests, usd))| (level.clone(), json!({"requests": requests, "usd": dollars(*usd)})))
+                    .collect();
                 (
                     client.clone(),
                     json!({
@@ -523,6 +672,8 @@ pub fn to_json(c: &Collector, p: &Pauses, s: &Share, h: &Header, day: impl Fn(i6
                         "main_sessions": r.sessions.len(),
                         "cold_returns": cold,
                         "cache_writes": writes(w),
+                        "active_hours": hours,
+                        "effort": effort,
                     }),
                 )
             })
@@ -557,8 +708,18 @@ pub fn to_json(c: &Collector, p: &Pauses, s: &Share, h: &Header, day: impl Fn(i6
             PROMPT_RANGES.iter().zip(rows).filter(|(_, s)| s.requests > 0).map(|((name, _), s)| (name.to_string(), spend(s))).collect()
         };
         let compactions: Map<String, Value> = a.compactions.iter().map(|(t, n)| (t.to_string(), json!(n))).collect();
-        let versions: Map<String, Value> = a.versions.iter().map(|(v, s)| (v.clone(), json!({"requests": s.requests, "usd": dollars(s.usd)}))).collect();
-        let (tools, tool_hints) = tool_parts(&a.tools, names, h.mcp_names);
+        let versions: Map<String, Value> = a
+            .versions
+            .iter()
+            .map(|(v, s)| (v.clone(), json!({"requests": s.requests, "usd": dollars(s.usd), "held": a.versions_held.get(v).copied().unwrap_or(0)})))
+            .collect();
+        let empty = ToolTable::default();
+        let table = s.tables.get(agent).unwrap_or(&empty);
+        let (tools, tool_hints) = tool_parts(table, names, h.mcp_names);
+        let failures = json!({"failed": table.failed, "refused": table.refused, "denied": table.denied, "after": amount(&table.after)});
+        let handoffs: Map<String, Value> = HANDOFF_KINDS.iter().map(|k| (k.to_string(), json!(a.handoffs.get(k).copied().unwrap_or(0)))).collect();
+        let wakes: Map<String, Value> = WAKE_SOURCES.iter().map(|k| (k.to_string(), json!(a.wakes.get(k).copied().unwrap_or(0)))).collect();
+        let days: BTreeSet<String> = a.hours.iter().map(|h| day(h * HOUR_MS)).collect();
         let mut entry = json!({
             "sessions": a.logs,
             "main_sessions": a.main_sessions.len(),
@@ -577,11 +738,18 @@ pub fn to_json(c: &Collector, p: &Pauses, s: &Share, h: &Header, day: impl Fn(i6
             "tool_hints": tool_hints,
             "compactions": compactions,
             "versions": versions,
+            "failures": failures,
+            "handoffs": {"turn_ends": handoffs["turn_ends"], "interrupts": handoffs["interrupts"], "typed_while_working": handoffs["typed_while_working"],
+                "questions": handoffs["questions"], "answers": handoffs["answers"], "wakes": wakes},
+            "prompts": {"held": spend(&a.prompts[0]), "all": spend(&a.prompts[1])},
         });
         let Value::Object(e) = &mut entry else { unreachable!("built as an object") };
+        let busy_ms = pauses.map_or(0, |p| p.busy.total_ms());
+        e.insert("activity".into(), json!({"active_days": days.len(), "active_hours": a.hours.len(), "busy_ms": busy_ms}));
         if let Some(pauses) = pauses {
             e.insert("pauses".into(), pause_parts(pauses));
             e.insert("session_spans".into(), span_parts(pauses));
+            e.insert("time".into(), time_part(&pauses.busy));
         }
         if let (Some((short, long)), true) = (a.whatif_lifetimes, a.whatif.requests.iter().any(|n| *n > 0)) {
             let w = &a.whatif;
@@ -602,6 +770,11 @@ pub fn to_json(c: &Collector, p: &Pauses, s: &Share, h: &Header, day: impl Fn(i6
     file.insert("tokprof".into(), json!(h.tokprof));
     file.insert("platform".into(), json!(h.platform));
     file.insert("window".into(), s.span_ms.map_or(Value::Null, |(first, last)| json!({"first": day(first), "last": day(last)})));
+    // Every agent's hours together, an hour or a day counted once.
+    let hours: HashSet<i64> = s.agents.values().flat_map(|a| a.hours.iter().copied()).collect();
+    let days: BTreeSet<String> = hours.iter().map(|h| day(h * HOUR_MS)).collect();
+    let busy_ms: i64 = s.agents.keys().filter_map(|agent| p.agents.get(agent)).map(|a| a.busy.total_ms()).sum();
+    file.insert("activity".into(), json!({"active_days": days.len(), "active_hours": hours.len(), "busy_ms": busy_ms}));
     if let Some(label) = h.survey {
         file.insert("survey".into(), json!(label));
     }
@@ -657,6 +830,9 @@ pub fn own_words(agents: &[AgentId]) -> HashSet<String> {
         .chain(EFFORT_LEVELS)
         .chain(STARTERS)
         .chain(ORIGIN_KINDS)
+        .chain(HANDOFF_KINDS)
+        .chain(WAKE_SOURCES)
+        .chain([crate::busy::MODEL, crate::busy::API_RETRIES, crate::busy::SUBAGENTS, crate::busy::COMPACTION, crate::busy::BACKGROUND, crate::busy::NOTHING])
         .chain(["other", "unknown"])
         .chain(known_programs());
     own.extend(fixed.map(str::to_string));
@@ -698,8 +874,9 @@ pub fn words(v: &Value, own: &HashSet<String>) -> Vec<Word> {
                     walk_agent(a, &path, own, &mut out);
                 }
             }
-            // The tokprof version, the platform and the window's days are tokprof's own.
-            ("format" | "tokprof" | "platform" | "window", _) => {}
+            // The tokprof version, the platform, the window's days and the activity counts are
+            // tokprof's own.
+            ("format" | "tokprof" | "platform" | "window" | "activity", _) => {}
             (other, value) => {
                 out.push(Word { kind: WordKind::Other, text: other.to_string(), field: String::new() });
                 walk(value, other, own, &mut out);
@@ -848,7 +1025,9 @@ pub fn leak(words: &[Word], s: &Secrets) -> Option<(&'static str, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::Sink;
     use crate::model::{Block, Chain, Compaction, CompactionTrigger, Origin, Params, PromptDelta, Request, Usage};
+    use crate::tools::ToolShare;
     use crate::pricing::Pricing;
 
     fn request(min: i64, chain_effort: Option<&str>, usage: Usage) -> Request {
@@ -1259,6 +1438,198 @@ mod tests {
         let v = file(&[session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, one())])]);
         let w = words(&v, &own_words(&agents()));
         assert_eq!(leak(&w, &secrets), None, "{w:?}");
+    }
+
+    /// The three collectors of one scan with this filter, over the given sessions.
+    fn collect_with(filter: Filter, sessions: &[Session]) -> (Collector, Pauses, Share) {
+        let pricing = Pricing::defaults();
+        let mut sink = (Collector::new(None, None), (Pauses::new(filter.clone()), Share::new(filter.clone())));
+        for s in sessions {
+            crate::analysis::analyze(s, &pricing, &filter, &mut sink);
+        }
+        let (c, (mut p, s)) = sink;
+        p.finish();
+        (c, p, s)
+    }
+
+    /// A request record of a main chain, as the analysis hands it to the sinks.
+    fn record(agent: &AgentId, index: i64, price: Option<crate::pricing::Price>) -> crate::analysis::RequestRecord<'_> {
+        crate::analysis::RequestRecord {
+            agent,
+            ts_ms: 1_793_620_800_000 + index * 60_000,
+            chain: "main",
+            chain_index: 0,
+            api: crate::api::ApiId::Anthropic,
+            chain_kind: ChainKind::Main,
+            advisor: false,
+            origin: "prompt",
+            trigger: crate::trigger::Trigger::Run,
+            activity: "building and testing",
+            task: "",
+            model: "claude-opus-5-5",
+            price,
+            usage: Usage { cache_read: 100_000, output: 100, ..Usage::default() },
+            gap_s: Some(60.0),
+            prev_prompt: Some(100_000),
+            composition: true,
+            client: "sdk-ts",
+            effort: None,
+            version: None,
+        }
+    }
+
+    #[test]
+    fn failures_are_the_tools_commands_and_hold_no_error_text() {
+        let agent = crate::testing::claude();
+        let s = session(agent.clone(), "s", vec![("main", ChainKind::Main, vec![])]);
+        let price = Pricing::defaults().get("claude-opus-5-5", 100_000, 1_793_620_800_000);
+        let mut sink = (Collector::new(None, None), (Pauses::new(Filter::default()), Share::new(Filter::default())));
+        let call = |outcome, error| ToolShare {
+            tool: Some("Bash"),
+            target: Some("cargo test"),
+            class: Class::Tool(ToolClass::Execute),
+            tokens: 10.0,
+            usd: 0.01,
+            call: Some(true),
+            outcome,
+            error,
+        };
+        let edit = |outcome| ToolShare { tool: Some("Edit"), target: None, class: Class::Tool(ToolClass::Edit), ..call(outcome, None) };
+        sink.session(&s);
+        sink.request(&record(&agent, 0, price));
+        sink.tool_share(&call(crate::model::Outcome::Failed, Some("cannot open ~/src/zebra-billing/a.rs")));
+        sink.request(&record(&agent, 1, price));
+        sink.request(&record(&agent, 2, price));
+        sink.tool_share(&call(crate::model::Outcome::Worked, None));
+        sink.tool_share(&edit(crate::model::Outcome::Refused));
+        sink.tool_share(&edit(crate::model::Outcome::Denied));
+        sink.request(&record(&agent, 3, price));
+        let (c, (p, sh)) = sink;
+        let v = to_json(&c, &p, &sh, &HEADER, |_| "2026-11-02".into());
+        let f = &v["agents"]["claude"]["failures"];
+        assert_eq!((c.tools.failed, c.tools.refused, c.tools.denied), (1, 1, 1));
+        assert!(c.tools.after.usd > 0.0, "the window holds the requests after the failure");
+        assert_eq!(f["failed"], c.tools.failed);
+        assert_eq!(f["refused"], c.tools.refused);
+        assert_eq!(f["denied"], c.tools.denied);
+        assert_eq!(f["after"]["usd"], dollars(c.tools.after.usd));
+        let bash = &v["agents"]["claude"]["tools"]["Bash"];
+        assert_eq!((bash["failed"].as_u64(), &bash["programs"]["cargo"]["failed"]), (Some(1), &json!(1)));
+        assert_eq!(bash["after"]["usd"], dollars(c.tools.after.usd));
+        assert!(!v.to_string().contains("zebra"), "{v}");
+    }
+
+    /// The local day of a moment `offset_h` hours east of UTC.
+    fn day_at(offset_h: i64) -> impl Fn(i64) -> String {
+        move |ms| chrono::DateTime::from_timestamp_millis(ms + offset_h * 3_600_000).unwrap().format("%Y-%m-%d").to_string()
+    }
+
+    #[test]
+    fn active_hours_are_hours_of_main_requests_and_days_are_local() {
+        // 2026-11-02 at 10:05, 10:50 and 11:10 UTC; and a subagent alone at 15:00.
+        let at = |h: i64, m: i64| (h - 12) * 60 + m;
+        let one = |min| request(min, None, Usage { cache_read: 1_000, output: 1, ..Usage::default() });
+        let main = vec![one(at(10, 5)), one(at(10, 50)), one(at(11, 10))];
+        let sub = vec![one(at(15, 0))];
+        let s = session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, main), ("subagent", ChainKind::Subagent, sub)]);
+        let (c, p, sh) = collect(std::slice::from_ref(&s));
+        let v = to_json(&c, &p, &sh, &HEADER, day_at(0));
+        assert_eq!(v["agents"]["claude"]["activity"]["active_hours"], 2, "a subagent alone is no active hour");
+        assert_eq!(v["agents"]["claude"]["activity"]["active_days"], 1);
+        assert_eq!(v["agents"]["claude"]["clients"]["unknown"]["active_hours"], 2);
+        // A request at 23:30 UTC falls on the next day two hours east.
+        let late = session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, vec![one(at(10, 0)), one(at(23, 30))])]);
+        let (c, p, sh) = collect(&[late]);
+        assert_eq!(to_json(&c, &p, &sh, &HEADER, day_at(0))["agents"]["claude"]["activity"]["active_days"], 1);
+        assert_eq!(to_json(&c, &p, &sh, &HEADER, day_at(2))["agents"]["claude"]["activity"]["active_days"], 2);
+    }
+
+    #[test]
+    fn the_file_counts_an_hour_of_two_agents_once() {
+        let one = |min| request(min, None, Usage { cache_read: 1_000, output: 1, ..Usage::default() });
+        let codex = |min| Request { api: crate::api::ApiId::OpenAi, model: "gpt-6-astra".into(), ..one(min) };
+        let v = file(&[
+            session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, vec![one(0)])]),
+            session(crate::testing::codex(), "c", vec![("main", ChainKind::Main, vec![codex(10)])]),
+        ]);
+        assert_eq!(v["agents"]["claude"]["activity"]["active_hours"], 1);
+        assert_eq!(v["agents"]["codex"]["activity"]["active_hours"], 1);
+        assert_eq!(v["activity"]["active_hours"], 1);
+        assert_eq!(v["activity"]["active_days"], 1);
+    }
+
+    #[test]
+    fn hand_offs_of_main_logs_count_inside_the_window() {
+        let one = |min| request(min, None, Usage { cache_read: 1_000, output: 1, ..Usage::default() });
+        let mut s = session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, vec![one(0), one(100)])]);
+        let at = |min: i64| 1_793_620_800_000 + min * 60_000;
+        let mut push = |kind, n: i64, from: i64| (0..n).for_each(|i| s.push_handoff(at(from + i), kind));
+        push(HandoffKind::TurnEnd, 10, 1);
+        push(HandoffKind::Interrupt, 2, 20);
+        push(HandoffKind::Question, 3, 30);
+        push(HandoffKind::Answer, 3, 40);
+        push(HandoffKind::Wake(WakeSource::Command), 4, 50);
+        // An end of turn the day before the window.
+        s.push_handoff(at(-24 * 60), HandoffKind::TurnEnd);
+        let filter = Filter { since_ms: Some(at(-60)), ..Filter::default() };
+        let (c, p, sh) = collect_with(filter, &[s]);
+        let h = &to_json(&c, &p, &sh, &HEADER, day_at(0))["agents"]["claude"]["handoffs"];
+        assert_eq!((h["turn_ends"].as_u64(), h["interrupts"].as_u64(), h["questions"].as_u64(), h["answers"].as_u64()), (Some(10), Some(2), Some(3), Some(3)));
+        assert_eq!(h["wakes"], json!({"subagent": 0, "command": 4, "other": 0}));
+        assert_eq!(h["typed_while_working"], 0);
+    }
+
+    #[test]
+    fn prompt_coverage_counts_the_requests_whose_prompts_the_log_holds() {
+        let held = |min, version: &str| Request {
+            version: Some(version.into()),
+            prompt: Some(PromptDelta { shape: None, keep: 0, tail: vec![] }),
+            ..request(min, None, Usage { cache_read: 1_000, output: 1, ..Usage::default() })
+        };
+        let unheld = |min, version: &str| Request { version: Some(version.into()), ..request(min, None, Usage { cache_read: 1_000, output: 1, ..Usage::default() }) };
+        let s = session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, vec![unheld(0, "2.1.296"), unheld(1, "2.1.296"), held(2, "2.1.316")])]);
+        let v = file(&[s]);
+        let a = &v["agents"]["claude"];
+        assert_eq!((a["prompts"]["held"]["requests"].as_u64(), a["prompts"]["all"]["requests"].as_u64()), (Some(1), Some(3)));
+        assert_eq!(a["versions"]["2.1.296"]["held"], 0);
+        assert_eq!(a["versions"]["2.1.316"]["held"], 1);
+    }
+
+    #[test]
+    fn each_client_has_its_effort() {
+        let at = |min, effort: &str, client: &str| Request { client: Some(client.into()), ..request(min, Some(effort), Usage { cache_read: 100_000, output: 100, ..Usage::default() }) };
+        let mut requests: Vec<Request> = (0..9).map(|i| at(i, "max", "sdk-ts")).collect();
+        requests.push(at(9, "medium", "sdk-ts"));
+        let v = file(&[session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, requests)])]);
+        let e = &v["agents"]["claude"]["clients"]["sdk-ts"]["effort"];
+        assert_eq!((e["max"]["requests"].as_u64(), e["medium"]["requests"].as_u64()), (Some(9), Some(1)));
+        assert!(e["max"]["usd"].as_f64().unwrap() > e["medium"]["usd"].as_f64().unwrap());
+    }
+
+    #[test]
+    fn the_time_part_holds_no_retry_error_and_the_new_parts_nothing_to_review() {
+        let agent = crate::testing::claude();
+        let retried = Request {
+            retries: 2,
+            retry_error: Some("502 Bad Gateway from walrus.internal".into()),
+            first_sent_ms: Some(1_793_620_800_000),
+            sent_ms: Some(1_793_620_830_000),
+            ended_ms: Some(1_793_620_900_000),
+            trigger: Some(crate::trigger::Trigger::Prompt),
+            ..request(0, None, Usage { cache_read: 1_000, output: 10, ..Usage::default() })
+        };
+        let mut s = session(agent.clone(), "s", vec![("main", ChainKind::Main, vec![retried])]);
+        s.push_handoff(1_793_620_900_000, HandoffKind::TurnEnd);
+        let (c, mut p, sh) = collect(std::slice::from_ref(&s));
+        p.agents.get_mut(&agent).unwrap().busy = crate::busy::Parts::of_main_in(&s, None).finish();
+        let v = to_json(&c, &p, &sh, &HEADER, day_at(0));
+        let t = &v["agents"]["claude"]["time"];
+        assert_eq!((t["retried"].as_u64(), t["requests"].as_u64()), (Some(1), Some(1)));
+        assert_eq!(t["kinds"]["API retries"]["ms"], 30_000);
+        assert!(!v.to_string().contains("walrus"), "{v}");
+        // Every key of the new parts is tokprof's own.
+        let w = words(&v, &own_words(&agents()));
+        assert!(w.iter().all(|w| w.kind != WordKind::Other), "{w:?}");
     }
 
     #[test]

@@ -92,12 +92,25 @@ pub struct Parts {
     counts: Busy,
     /// The main log of the session is among the parts.
     pub has_main: bool,
+    /// The window of a report, `[since, until)` in epoch ms: only the requests sent inside it
+    /// count, and only the busy time inside it is painted. `None` for a whole session.
+    window: Option<(i64, i64)>,
+}
+
+/// Whether a moment falls in a window, or there is none.
+fn inside(window: Option<(i64, i64)>, ts_ms: i64) -> bool {
+    window.is_none_or(|(since, until)| since <= ts_ms && ts_ms < until)
 }
 
 impl Parts {
     /// The parts of a main log: its turns, its requests, and the subagent chains it holds.
     pub fn of_main(main: &Session) -> Parts {
-        let mut parts = Parts { has_main: true, ..Parts::default() };
+        Parts::of_main_in(main, None)
+    }
+
+    /// The parts of a main log inside a report's window (see `window`).
+    pub fn of_main_in(main: &Session, window: Option<(i64, i64)>) -> Parts {
+        let mut parts = Parts { has_main: true, window, ..Parts::default() };
         let lane = Lane::of(&Timeline::of(main, &[]));
         let paint = &mut parts.paint;
         for t in &lane.turns {
@@ -115,14 +128,19 @@ impl Parts {
                 paint.push((before.end, turn.start, Layer::Kind(Kind::Background)));
             }
         }
-        parts.counts.paint_requests(main, &mut parts.paint);
+        parts.counts.paint_requests(main, &mut parts.paint, window);
         parts.add_chains(main, true);
         parts
     }
 
     /// The parts of a subagent's log: when it worked, and its requests.
     pub fn of_subagent(sub: &Session) -> Parts {
-        let mut parts = Parts::default();
+        Parts::of_subagent_in(sub, None)
+    }
+
+    /// The parts of a subagent's log inside a report's window (see `window`).
+    pub fn of_subagent_in(sub: &Session, window: Option<(i64, i64)>) -> Parts {
+        let mut parts = Parts { window, ..Parts::default() };
         parts.add_chains(sub, false);
         parts
     }
@@ -150,8 +168,8 @@ impl Parts {
                     self.paint.push((a, b, Layer::Kind(Kind::Subagents)));
                 }
             }
-            let c = &mut self.counts;
-            for r in chain.requests.iter().filter(|r| !r.advisor && (r.usage.prompt() > 0 || r.usage.output > 0)) {
+            let (c, window) = (&mut self.counts, self.window);
+            for r in chain.requests.iter().filter(|r| !r.advisor && (r.usage.prompt() > 0 || r.usage.output > 0) && inside(window, r.ts_ms)) {
                 c.requests += 1;
                 let Some(run) = r.run_ms() else { continue };
                 if run >= SLOW_MS {
@@ -170,12 +188,17 @@ impl Parts {
         self.paint.extend(o.paint);
         self.counts.merge(o.counts);
         self.has_main |= o.has_main;
+        self.window = self.window.or(o.window);
     }
 
-    /// Paints the parts into the session's busy time.
+    /// Paints the parts into the session's busy time, cut at the edges of the window.
     pub fn finish(self) -> Busy {
         let mut busy = self.counts;
-        busy.sweep(self.paint);
+        let paint = match self.window {
+            Some((since, until)) => self.paint.into_iter().map(|(a, b, layer)| (a.max(since), b.min(until), layer)).collect(),
+            None => self.paint,
+        };
+        busy.sweep(paint);
         busy
     }
 }
@@ -192,7 +215,7 @@ impl Busy {
 
     /// The main conversations' requests: their own time, their retries, and what the agent
     /// waited on between a response and the next request.
-    fn paint_requests(&mut self, main: &Session, paint: &mut Vec<(i64, i64, Layer)>) {
+    fn paint_requests(&mut self, main: &Session, paint: &mut Vec<(i64, i64, Layer)>, window: Option<(i64, i64)>) {
         let mut marks: Vec<i64> = main.handoffs.iter().map(|h| h.ts_ms).collect();
         for (_, requests) in main.main_conversations() {
             marks.extend(requests.iter().filter_map(|r| r.first_sent_ms.or(r.sent_ms)));
@@ -204,10 +227,11 @@ impl Busy {
             for (i, r) in timed.iter().enumerate() {
                 let (first, sent) = (r.first_sent_ms.unwrap_or(r.sent_ms.unwrap_or_default()), r.sent_ms.unwrap_or_default());
                 let answered = r.usage.prompt() > 0 || r.usage.output > 0;
-                if answered {
+                let counted = inside(window, r.ts_ms);
+                if answered && counted {
                     self.main_requests += 1;
                 }
-                if r.retries > 0 || (!answered && r.retry_error.is_some()) {
+                if counted && (r.retries > 0 || (!answered && r.retry_error.is_some())) {
                     self.retried += 1;
                     if let Some(e) = &r.retry_error {
                         *self.retry_errors.entry(e.to_string()).or_default() += 1;
@@ -468,6 +492,18 @@ mod tests {
         let s = session(&[t(10, 0), t(11, 0)], &[(t(10, 4), TurnEnd)], vec![req(t(10, 0), t(10, 4)), req(t(11, 0), t(11, 1))]);
         let b = Busy::of(&s, &[subagent(t(10, 2), t(10, 30))]);
         assert_eq!(time(&b, SUBAGENTS), (26 * MIN, 26 * MIN), "busy until 10:30, not until 11:00");
+    }
+
+    #[test]
+    fn a_session_that_began_before_the_window() {
+        // Busy from 08:00 to 09:00 and from 11:00 to 11:30, each with one slow request; the
+        // window starts at 10:00.
+        let s = session(&[t(8, 0), t(11, 0)], &[(t(9, 0), TurnEnd), (t(11, 30), TurnEnd)], vec![req(t(8, 0), t(9, 0)), req(t(11, 0), t(11, 30))]);
+        let b = Parts::of_main_in(&s, Some((t(10, 0), i64::MAX))).finish();
+        assert_eq!(b.total_ms(), 30 * MIN, "only the half hour inside the window");
+        assert_eq!((b.requests, b.slow, b.main_requests), (1, 1, 1), "only the request sent inside the window");
+        let whole = Busy::of(&s, &[]);
+        assert_eq!((whole.total_ms(), whole.requests, whole.slow), (90 * MIN, 2, 2), "without a window, the whole session");
     }
 
     #[test]

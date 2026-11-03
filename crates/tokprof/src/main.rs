@@ -379,6 +379,7 @@ fn main() -> Result<()> {
         // Busy time needs every log of a session, which the scan reads one by one: each log gives
         // its parts, keyed by agent and session id, and the parts of a session are painted at the end.
         type Busy = std::collections::BTreeMap<(AgentId, String), tokprof_core::busy::Parts>;
+        let busy_window = window_of(&filter);
         let ((mut p, timelines, busy), stats) = scan(
             &catalog,
             &files,
@@ -392,9 +393,9 @@ fn main() -> Result<()> {
                     timelines.push(Timeline::of(session, &temp));
                 }
                 let parts = if f.subagent {
-                    Some(tokprof_core::busy::Parts::of_subagent(session))
+                    Some(tokprof_core::busy::Parts::of_subagent_in(session, busy_window))
                 } else {
-                    kept.then(|| tokprof_core::busy::Parts::of_main(session))
+                    kept.then(|| tokprof_core::busy::Parts::of_main_in(session, busy_window))
                 };
                 if let Some(parts) = parts {
                     busy.entry((session.agent.clone(), session.id.clone())).or_default().add(parts);
@@ -433,22 +434,44 @@ fn main() -> Result<()> {
         if files.is_empty() {
             bail!("no session logs found for {}", cli.agent.join(", "));
         }
-        let (sink, stats) = scan(
+        // The busy time of each session is painted from all its logs at the end, as for
+        // `tokprof pauses`, inside the same window.
+        type Busy = std::collections::BTreeMap<(AgentId, String), tokprof_core::busy::Parts>;
+        let busy_window = window_of(&filter);
+        let ((sink, busy), stats) = scan(
             &catalog,
             &files,
             &select,
             OnUnreadable::Skip,
-            || (Collector::new(None, None), (Pauses::new(filter.clone()), Share::new(filter.clone()))),
-            |t, session, _| analysis::analyze(session, &pricing, &filter, t),
+            || ((Collector::new(None, None), (Pauses::new(filter.clone()), Share::new(filter.clone()))), Busy::new()),
+            |(t, busy): &mut (_, Busy), session, f| {
+                analysis::analyze(session, &pricing, &filter, t);
+                let parts = if f.subagent {
+                    Some(tokprof_core::busy::Parts::of_subagent_in(session, busy_window))
+                } else {
+                    keeps_client(session, &filter).then(|| tokprof_core::busy::Parts::of_main_in(session, busy_window))
+                };
+                if let Some(parts) = parts {
+                    busy.entry((session.agent.clone(), session.id.clone())).or_default().add(parts);
+                }
+            },
             |mut a, b| {
-                a.0.merge(b.0);
-                a.1.0.merge(b.1.0);
-                a.1.1.merge(b.1.1);
+                a.0.0.merge(b.0.0);
+                a.0.1.0.merge(b.0.1.0);
+                a.0.1.1.merge(b.0.1.1);
+                for (k, parts) in b.1 {
+                    a.1.entry(k).or_default().add(parts);
+                }
                 a
             },
         )?;
         let (collector, (mut p, s)) = sink;
         p.finish();
+        for ((agent, _), parts) in busy {
+            if let (true, Some(a)) = (parts.has_main, p.agents.get_mut(&agent)) {
+                a.busy.merge(parts.finish());
+            }
+        }
         eprintln!("{}", sources(&catalog, &files, started.elapsed().as_secs_f64()));
         warn(&stats.unreadable);
         if s.span_ms.is_none() {
@@ -700,6 +723,11 @@ fn read_share_files(paths: &[PathBuf], home: &Path) -> Result<Vec<(String, serde
         bail!("no share files in {}", paths.iter().map(|p| shown(p)).collect::<Vec<_>>().join(", "));
     }
     Ok(files)
+}
+
+/// The window of the global filters, for the busy time of a report; `None` without one.
+fn window_of(filter: &analysis::Filter) -> Option<(i64, i64)> {
+    (filter.since_ms.is_some() || filter.until_ms.is_some()).then(|| (filter.since_ms.unwrap_or(i64::MIN), filter.until_ms.unwrap_or(i64::MAX)))
 }
 
 /// This machine's host name, for the leak check of `tokprof share`.

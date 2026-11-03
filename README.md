@@ -315,7 +315,7 @@ After a cold return: a median of 21 requests until the next cold pause or compac
 
 A cold return is a request of a main conversation that missed the cache after a pause longer than its lifetime (`idle > TTL`). `first request` is what that request cost, and `avoidable` the part a warm cache would have saved. The report then ranges the sessions by the largest prompt of their main conversations, with their spend and cold returns. Here 22 sessions that reached 800k+ tokens made 59.7% of the spend.
 
-Each agent's part ends with where its busy time went, as the X-ray's `waits` block counts it, over the selected sessions and their subagents. `after turns` is the part after an end of turn, while the agent's own subagents or background commands still ran. 30 days of Claude Code:
+Each agent's part ends with where its busy time went, as the X-ray's `waits` block counts it, over the selected sessions and their subagents. With `--since` or `--until`, only the busy time inside the window counts, and only the requests sent inside it, so a thread that ran for months adds only its days in the window. `after turns` is the part after an end of turn, while the agent's own subagents or background commands still ran. 30 days of Claude Code:
 
 ```
 kind                        time  share  after turns
@@ -394,7 +394,7 @@ Per agent, the file holds:
 |---|---|
 | `sessions`, `main_sessions` | logs with a selected request, subagent logs included, and the main sessions among them |
 | `spend` | per model: requests and the five cost components, in dollars and tokens, as in `Spend by model` |
-| `clients` | per client: requests, cost and avoidable dollars as in `Spend by client`, main sessions, cold returns, and the tokens written with each cache lifetime |
+| `clients` | per client: requests, cost and avoidable dollars as in `Spend by client`, main sessions, cold returns, the tokens written with each cache lifetime, active hours, and requests and dollars by effort level |
 | `cache_writes` | tokens written with the short and the long lifetime, for main conversations and for subagents |
 | `misses` | per cause: misses, re-processed tokens and avoidable dollars, as in `Cache misses by cause` |
 | `origins` | spend by kind of origin (`prompt`, `skill`, `agent`, `command`, `notification`, `mcp`, `plugin`), with the names that ship with the agent under their kind, such as `general-purpose` under `agent` |
@@ -404,11 +404,16 @@ Per agent, the file holds:
 | `content` | spend by what filled the context: tool results, tool calls, thinking, reminders and the rest |
 | `prompt_sizes` | requests and spend by the size of the prompt, from `under 50k` to `800k+`, for main conversations and for subagents |
 | `session_spans` | main sessions by how long they ran, from `under 1h` to `over 3d`, with spend and cold returns |
-| `tools`, `tool_hints` | calls, sizes, rent and trips per tool as in `tokprof tools`, shell tools per program; and the rows each tool hint applies to |
+| `tools`, `tool_hints` | calls, sizes, rent and trips per tool as in `tokprof tools`, shell tools per program, with each row's failed calls and the spend after them; and the rows each tool hint applies to |
 | `compactions` | compactions by trigger: `auto`, `manual`, `idle`, `unknown`, `other` |
-| `versions` | requests and spend by agent version |
+| `versions` | requests and spend by agent version, and `held`, the requests whose prompts the logs hold |
 | `whatif` | Claude Code: input cost as logged and replayed with the 5-minute and the 1-hour cache, as in `tokprof whatif` |
 | `pauses` | the parts of `tokprof pauses`: typed messages by pause, how many came after each cache lifetime, cold returns by pause, who started them, what followed them, and sessions by largest context |
+| `activity` | active days and active hours, the clock hours (UTC) with a main-conversation request, and the busy time; the file also has one for all its agents together, an hour counted once |
+| `failures` | the calls that failed, that you refused and that permission rules denied, and the spend after the failures until the tool worked again, as the failures line of `tokprof tools` |
+| `time` | the busy time inside the window by what the agent waited on, as `tokprof pauses` counts it, with the requests, the slow ones, the longest and the retried ones; no error text |
+| `handoffs` | in the main conversations: ends of turn, interrupts, messages typed while the agent worked, questions, answers, and wakes by source |
+| `prompts` | the requests and dollars whose prompts the logs hold, and all of them: what is not held shows as `unknown` content |
 
 The file also names its format (2), the tokprof version, the platform, the first and last day of the requests, and the survey label when `--survey` gives one.
 
@@ -416,7 +421,17 @@ It holds no project, path, session id, title, task, prompt or tool text, and no 
 
 ### Pooling the files
 
-`tokprof pool` reads share files, or folders of them, and prints one report: where the money went, what could have been saved, the habits that cost the most, tools and commands, and agent versions, pooled and for the median file.
+`tokprof pool` reads share files, or folders of them, and prints one report, pooled and for the median file:
+- the header, with the activity: active days and hours, busy hours, and dollars per active hour;
+- where the money went, with the share of spend whose prompts the logs hold under the content table;
+- what could have been saved, per active hour too, and the cold returns of each client per active hour;
+- problems: failed, refused and denied calls, the spend after failures, the waits for retries, and slow requests, per active hour;
+- the habits that cost the most;
+- where the agent's time went, by what it waited on;
+- working with the agent: the hand-offs per 100 typed messages;
+- tools and commands, with their failed calls;
+- the highest effort by client;
+- agent versions.
 
 ```sh
 tokprof pool ~/survey                   # every .json file in the folder

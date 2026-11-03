@@ -164,3 +164,67 @@ fn the_pool_takes_no_filters_and_needs_a_share_file() {
     assert!(String::from_utf8_lossy(&filtered.stderr).contains("pool takes no filters: each file was filtered when it was written"));
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+/// tokprof over the log sources' fixture logs, with a home of its own and UTC.
+fn tokprof_fixtures(home: &Path, args: &[&str]) -> Output {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    Command::new(env!("CARGO_BIN_EXE_tokprof"))
+        .args(args)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("TOKPROF_DIR", home.join("tokprof"))
+        .env("TZ", "UTC")
+        .env("CLAUDE_CONFIG_DIR", root.join("sources/claude-code/tests/fixtures"))
+        .env("CODEX_HOME", root.join("sources/codex/tests/fixtures"))
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn the_busy_time_in_the_file_is_the_pause_reports() {
+    let home = std::env::temp_dir().join(format!("tokprof-share-busy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let file = home.join("f.json");
+    assert!(tokprof_fixtures(&home, &["share", "-o", file.to_str().unwrap()]).status.success());
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let pauses = String::from_utf8_lossy(&tokprof_fixtures(&home, &["pauses"]).stdout).to_string();
+    // The sections of the report come in agent order, Claude Code first, as the file's agents do.
+    let sections: Vec<&str> = pauses.split("Where the agent's busy time went").skip(1).collect();
+    let agents = v["agents"].as_object().unwrap();
+    assert_eq!(sections.len(), agents.len(), "{pauses}");
+    for ((name, a), section) in agents.iter().zip(&sections) {
+        let t = &a["time"];
+        assert!(t["kinds"].as_object().is_some_and(|k| !k.is_empty()), "{name}: {t}");
+        for (kind, k) in t["kinds"].as_object().unwrap() {
+            let ms = k["ms"].as_i64().unwrap();
+            let shown = if ms >= 3_600_000 { format!("{:.1}h", ms as f64 / 3_600_000.0) } else { tokprof_core::rhythm::duration(ms) };
+            assert!(section.lines().any(|l| l.starts_with(kind.as_str()) && l.contains(&shown)), "{name} {kind} {shown}: {section}");
+        }
+        let slow = format!("{} of {} requests took a minute or more", t["slow"], t["requests"]);
+        assert!(section.contains(&slow), "{name}: {slow} in {section}");
+    }
+    assert!(agents["claude"]["time"]["retried"].as_u64().unwrap() > 0, "the fixture has a retried request");
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+#[test]
+fn the_pool_gives_the_new_tables_as_json_and_by_file() {
+    let home = std::env::temp_dir().join(format!("tokprof-share-json-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let (a, b) = (home.join("a.json"), home.join("b.json"));
+    assert!(tokprof_fixtures(&home, &["share", "--survey", "one", "-o", a.to_str().unwrap()]).status.success());
+    assert!(tokprof_fixtures(&home, &["share", "--survey", "two", "-o", b.to_str().unwrap()]).status.success());
+    let out = tokprof_fixtures(&home, &["pool", "--json", a.to_str().unwrap(), b.to_str().unwrap()]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v["activity"]["active_hours"].is_f64(), "{}", v["activity"]);
+    let problems = v["problems"].as_array().unwrap();
+    assert!(problems.iter().any(|r| r["name"] == "failed tool calls" && r["value"].is_f64()), "{problems:?}");
+    assert!(v["time"].as_array().is_some_and(|t| t.iter().all(|r| r["ms"].is_f64())));
+    assert!(v["working"].as_array().is_some_and(|w| !w.is_empty()));
+    let text = String::from_utf8_lossy(&tokprof_fixtures(&home, &["pool", "--by-file", a.to_str().unwrap(), b.to_str().unwrap()]).stdout).to_string();
+    let head = text.lines().find(|l| l.starts_with("measure")).unwrap_or_else(|| panic!("{text}"));
+    assert!(head.trim_end().ends_with("a  b") || head.split_whitespace().rev().take(2).collect::<Vec<_>>() == ["b", "a"], "{head}");
+    std::fs::remove_dir_all(&home).unwrap();
+}

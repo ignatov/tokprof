@@ -56,6 +56,10 @@ pub struct FileInfo {
     pub first_day: Option<String>,
     pub last_day: Option<String>,
     pub agents: Vec<String>,
+    /// The file's activity, every agent together (see share-export), when the file has it.
+    pub active_days: Option<f64>,
+    pub active_hours: Option<f64>,
+    pub busy_ms: Option<f64>,
 }
 
 /// The section a table belongs to.
@@ -99,6 +103,10 @@ pub struct Row {
     pub trips_usd: f64,
     /// Requests, for the version table.
     pub requests: u64,
+    /// Failed calls, for the tool table.
+    pub failed: u64,
+    /// The row's dollars per active hour, for the savings.
+    pub per_hour: Option<f64>,
 }
 
 /// A table of the report.
@@ -113,6 +121,86 @@ pub struct Table {
     pub more: Option<(usize, f64)>,
 }
 
+/// What a rate row counts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unit {
+    #[default]
+    Count,
+    Usd,
+    Ms,
+}
+
+/// A row of a table of counts with a rate: per active hour, or per 100 typed messages.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct RateRow {
+    pub agent: Option<String>,
+    pub name: String,
+    pub unit: Unit,
+    /// The pooled value.
+    pub value: f64,
+    /// What the value is a part of, such as all requests for the slow ones.
+    pub of: Option<f64>,
+    /// The pooled value over the pooled base, and the median of each file's own rate. `None` for a
+    /// row without a rate, such as the longest request.
+    pub rate: Option<f64>,
+    pub median_rate: Option<f64>,
+    /// The files where the value is above zero, and those that have the row's parts.
+    pub files: usize,
+    pub files_with_part: usize,
+    /// Each file's own rate; `None` for a file without the parts.
+    pub by_file: Vec<Option<f64>>,
+    /// For the cold returns by client: the active hours, and the avoidable dollars per hour.
+    pub hours: Option<f64>,
+    pub second_rate: Option<f64>,
+}
+
+/// A row of the busy time by kind.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct TimeRow {
+    pub name: String,
+    pub ms: f64,
+    pub after_turns_ms: f64,
+    pub share: f64,
+    pub median_file: f64,
+    pub files: usize,
+    pub by_file: Vec<Option<f64>>,
+}
+
+/// A row of the highest effort by client.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct EffortRow {
+    pub agent: String,
+    pub client: String,
+    /// The share of the client's spend, and of its requests, at `max` or `xhigh`.
+    pub spend_share: f64,
+    pub request_share: f64,
+    pub median_file: f64,
+    pub files: usize,
+    pub by_file: Vec<Option<f64>>,
+}
+
+/// What the activity line says.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Activity {
+    pub files: usize,
+    pub active_days: f64,
+    pub active_hours: f64,
+    pub busy_ms: f64,
+    pub usd_per_hour: f64,
+    pub median_days: f64,
+    pub median_hours: f64,
+    pub median_usd_per_hour: f64,
+}
+
+/// The share of spend whose prompts the logs hold.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Coverage {
+    pub share: f64,
+    pub files: usize,
+    pub files_below_90: usize,
+}
+
 /// The pooled report.
 #[derive(Clone, Debug, Serialize)]
 pub struct Pool {
@@ -123,6 +211,14 @@ pub struct Pool {
     pub quarter_1_usd: f64,
     pub quarter_3_usd: f64,
     pub tables: Vec<Table>,
+    pub activity: Option<Activity>,
+    pub cold_by_client: Vec<RateRow>,
+    pub problems: Vec<RateRow>,
+    pub time: Vec<TimeRow>,
+    pub time_files: usize,
+    pub working: Vec<RateRow>,
+    pub effort_by_client: Vec<EffortRow>,
+    pub coverage: Option<Coverage>,
 }
 
 impl Pool {
@@ -161,6 +257,7 @@ struct Item {
     calls: u64,
     trips_usd: f64,
     requests: u64,
+    failed: u64,
 }
 
 impl Item {
@@ -223,6 +320,7 @@ fn pooled(items: &[Option<Vec<Item>>], spends: &[f64]) -> (Vec<Row>, usize) {
             slot.calls += it.calls;
             slot.trips_usd += it.trips_usd;
             slot.requests += it.requests;
+            slot.failed += it.failed;
         }
     }
     let rows = keys
@@ -252,6 +350,8 @@ fn pooled(items: &[Option<Vec<Item>>], spends: &[f64]) -> (Vec<Row>, usize) {
                 calls: per_file.iter().flatten().map(|v| v.calls).sum(),
                 trips_usd: per_file.iter().flatten().map(|v| v.trips_usd).sum(),
                 requests: per_file.iter().flatten().map(|v| v.requests).sum(),
+                failed: per_file.iter().flatten().map(|v| v.failed).sum(),
+                per_hour: None,
             }
         })
         .collect();
@@ -434,8 +534,11 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
             first_day: v.pointer("/window/first").and_then(Value::as_str).map(str::to_string),
             last_day: v.pointer("/window/last").and_then(Value::as_str).map(str::to_string),
             agents: agents(v).map(|(a, _)| a.clone()).collect(),
+            active_days: v.pointer("/activity/active_days").and_then(Value::as_f64),
+            active_hours: v.pointer("/activity/active_hours").and_then(Value::as_f64),
+            busy_ms: v.pointer("/activity/busy_ms").and_then(Value::as_f64),
         })
-        .collect();
+        .collect::<Vec<FileInfo>>();
     let mut sorted = spends.clone();
     sorted.sort_by(f64::total_cmp);
     let each = |key: &str, f: &dyn Fn(&str, &Value, &mut Vec<Item>)| -> Vec<Option<Vec<Item>>> { files.iter().map(|file| part(file, key, f)).collect() };
@@ -589,6 +692,7 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
             for (tool, t) in entries(p) {
                 let row = |name: String, v: &Value| Item {
                     calls: v.get("calls").and_then(Value::as_u64).unwrap_or(0),
+                    failed: v.get("failed").and_then(Value::as_u64).unwrap_or(0),
                     trips_usd: usd_at(v, &["trips", "usd"]),
                     ..Item::named(name, usd_at(v, &["rent", "usd"]))
                 };
@@ -619,7 +723,30 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
         min_files,
     ));
 
+    let hours: Vec<Option<f64>> = infos.iter().map(|f| f.active_hours.filter(|h| *h > 0.0)).collect();
+    // Savings per active hour: the dollars of the files with both parts over their hours.
+    if let Some(saved) = tables.iter_mut().find(|t| t.key == "saved") {
+        for r in &mut saved.rows {
+            let (mut usd, mut h) = (0.0, 0.0);
+            for ((share, spend), hours) in r.by_file.iter().zip(&spends).zip(&hours) {
+                if let (Some(share), Some(hours)) = (share, hours) {
+                    usd += share * spend;
+                    h += hours;
+                }
+            }
+            r.per_hour = (h > 0.0).then(|| usd / h);
+        }
+    }
+    let activity = activity_of(&infos, &spends);
     Pool {
+        cold_by_client: cold_by_client(&files, min_files),
+        problems: problems(&files, &hours),
+        time: time_rows(&files),
+        time_files: files.iter().filter(|f| part(f, "time", |_, _, _| {}).is_some()).count(),
+        working: working(&files),
+        effort_by_client: effort_by_client(&files, min_files),
+        coverage: coverage(&files),
+        activity,
         files: infos,
         spend_usd: spends.iter().sum(),
         median_usd: at_quarter(&sorted, 2),
@@ -627,6 +754,296 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
         quarter_3_usd: at_quarter(&sorted, 3),
         tables,
     }
+}
+
+/// The median of the values that are there.
+fn median_of(values: impl Iterator<Item = f64>) -> f64 {
+    let mut v: Vec<f64> = values.collect();
+    v.sort_by(f64::total_cmp);
+    at_quarter(&v, 2)
+}
+
+/// The activity line: the files with the part, pooled and at the median.
+fn activity_of(infos: &[FileInfo], spends: &[f64]) -> Option<Activity> {
+    let with: Vec<(&FileInfo, f64)> = infos.iter().zip(spends).filter(|(f, _)| f.active_hours.is_some()).map(|(f, s)| (f, *s)).collect();
+    if with.is_empty() {
+        return None;
+    }
+    let hours: f64 = with.iter().map(|(f, _)| f.active_hours.unwrap_or(0.0)).sum();
+    let usd: f64 = with.iter().map(|(_, s)| s).sum();
+    Some(Activity {
+        files: with.len(),
+        active_days: with.iter().map(|(f, _)| f.active_days.unwrap_or(0.0)).sum(),
+        active_hours: hours,
+        busy_ms: with.iter().map(|(f, _)| f.busy_ms.unwrap_or(0.0)).sum(),
+        usd_per_hour: usd / hours.max(1e-9),
+        median_days: median_of(with.iter().map(|(f, _)| f.active_days.unwrap_or(0.0))),
+        median_hours: median_of(with.iter().map(|(f, _)| f.active_hours.unwrap_or(0.0))),
+        median_usd_per_hour: median_of(with.iter().map(|(f, s)| s / f.active_hours.unwrap_or(0.0).max(1e-9))),
+    })
+}
+
+/// A rate row over the files: each file's value (`None` without the parts) and its base, such as
+/// its active hours; the pooled rate counts only the files with both.
+fn rate_row(name: &str, unit: Unit, values: &[Option<f64>], bases: &[Option<f64>], per: f64) -> RateRow {
+    let (mut value, mut base, mut with_part) = (0.0, 0.0, 0);
+    let mut by_file = Vec::new();
+    for (v, b) in values.iter().zip(bases) {
+        match (v, b) {
+            (Some(v), Some(b)) if *b > 0.0 => {
+                value += v;
+                base += b;
+                with_part += 1;
+                by_file.push(Some(v / b * per));
+            }
+            (Some(v), _) => {
+                value += v;
+                with_part += 1;
+                by_file.push(None);
+            }
+            _ => by_file.push(None),
+        }
+    }
+    RateRow {
+        name: name.to_string(),
+        unit,
+        value,
+        rate: (base > 0.0).then(|| value / base * per),
+        median_rate: (base > 0.0).then(|| median_of(by_file.iter().flatten().copied())),
+        files: values.iter().flatten().filter(|v| **v > 0.0).count(),
+        files_with_part: with_part,
+        by_file,
+        ..RateRow::default()
+    }
+}
+
+/// A number of the agent objects of a file, summed, or `None` when no agent has it.
+fn summed(file: &Value, pointer: &str) -> Option<f64> {
+    let mut found = false;
+    let mut sum = 0.0;
+    for (_, a) in agents(file) {
+        if let Some(x) = a.pointer(pointer).and_then(Value::as_f64) {
+            found = true;
+            sum += x;
+        }
+    }
+    found.then_some(sum)
+}
+
+/// The failures, retries and slow requests of the files, per active hour.
+fn problems(files: &[Value], hours: &[Option<f64>]) -> Vec<RateRow> {
+    let each = |pointer: &str| -> Vec<Option<f64>> { files.iter().map(|f| summed(f, pointer)).collect() };
+    let rows: [(&str, Unit, &str); 6] = [
+        ("failed tool calls", Unit::Count, "/failures/failed"),
+        ("spend after failures", Unit::Usd, "/failures/after/usd"),
+        ("calls the user refused", Unit::Count, "/failures/refused"),
+        ("calls a rule denied", Unit::Count, "/failures/denied"),
+        ("requests that waited for retries", Unit::Count, "/time/retried"),
+        ("time waiting for retries", Unit::Ms, "/time/kinds/API retries/ms"),
+    ];
+    let mut out: Vec<RateRow> = rows
+        .iter()
+        .filter_map(|(name, unit, pointer)| {
+            // A file with the time part and no retries has none: zero, not missing.
+            let values: Vec<Option<f64>> = if pointer.starts_with("/time/") {
+                files.iter().map(|f| part(f, "time", |_, _, _| {}).map(|_| summed(f, pointer).unwrap_or(0.0))).collect()
+            } else {
+                each(pointer)
+            };
+            values.iter().any(Option::is_some).then(|| rate_row(name, *unit, &values, hours, 1.0))
+        })
+        .collect();
+    let slow = each("/time/slow");
+    if slow.iter().any(Option::is_some) {
+        let mut row = rate_row("requests of a minute or more", Unit::Count, &slow, hours, 1.0);
+        row.of = Some(each("/time/requests").iter().flatten().sum());
+        out.push(row);
+    }
+    let longest: Vec<Option<f64>> = files
+        .iter()
+        .map(|f| {
+            let mut best: Option<f64> = None;
+            for (_, a) in agents(f) {
+                if let Some(ms) = a.pointer("/time/longest_ms").and_then(Value::as_f64) {
+                    best = Some(best.map_or(ms, |b: f64| b.max(ms)));
+                }
+            }
+            best
+        })
+        .collect();
+    if longest.iter().any(Option::is_some) {
+        out.push(RateRow {
+            name: "longest request".into(),
+            unit: Unit::Ms,
+            value: longest.iter().flatten().copied().fold(0.0, f64::max),
+            files: longest.iter().flatten().filter(|v| **v > 0.0).count(),
+            files_with_part: longest.iter().flatten().count(),
+            by_file: longest.clone(),
+            ..RateRow::default()
+        });
+    }
+    out
+}
+
+/// The busy time by kind: pooled, and each file's share of its own busy time.
+fn time_rows(files: &[Value]) -> Vec<TimeRow> {
+    let per_file: Vec<Option<BTreeMap<String, (f64, f64)>>> = files
+        .iter()
+        .map(|f| {
+            part(f, "time", |_, t, out| {
+                for (kind, k) in entries(&t["kinds"]) {
+                    out.push(Item { trips_usd: k["after_turns_ms"].as_f64().unwrap_or(0.0), ..Item::named(kind.clone(), k["ms"].as_f64().unwrap_or(0.0)) });
+                }
+            })
+            .map(|items| {
+                let mut m: BTreeMap<String, (f64, f64)> = BTreeMap::new();
+                for i in items {
+                    let e = m.entry(i.name).or_default();
+                    e.0 += i.usd;
+                    e.1 += i.trips_usd;
+                }
+                m
+            })
+        })
+        .collect();
+    let total: f64 = per_file.iter().flatten().flat_map(|m| m.values()).map(|v| v.0).sum();
+    let kinds: BTreeSet<String> = per_file.iter().flatten().flat_map(|m| m.keys().cloned()).collect();
+    let mut rows: Vec<TimeRow> = kinds
+        .into_iter()
+        .map(|kind| {
+            let by_file: Vec<Option<f64>> = per_file
+                .iter()
+                .map(|m| m.as_ref().map(|m| m.get(&kind).map_or(0.0, |v| v.0) / m.values().map(|v| v.0).sum::<f64>().max(1e-9)))
+                .collect();
+            let ms: f64 = per_file.iter().flatten().filter_map(|m| m.get(&kind)).map(|v| v.0).sum();
+            TimeRow {
+                after_turns_ms: per_file.iter().flatten().filter_map(|m| m.get(&kind)).map(|v| v.1).sum(),
+                share: ms / total.max(1e-9),
+                median_file: median_of(by_file.iter().flatten().copied()),
+                files: per_file.iter().flatten().filter(|m| m.get(&kind).is_some_and(|v| v.0 > 0.0)).count(),
+                name: kind,
+                ms,
+                by_file,
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| b.ms.total_cmp(&a.ms).then_with(|| a.name.cmp(&b.name)));
+    rows
+}
+
+/// The hand-offs per 100 typed messages.
+fn working(files: &[Value]) -> Vec<RateRow> {
+    let typed: Vec<Option<f64>> = files.iter().map(|f| summed(f, "/pauses/typed_messages")).collect();
+    if !files.iter().any(|f| part(f, "handoffs", |_, _, _| {}).is_some()) {
+        return Vec::new();
+    }
+    let handoff = |pointer: &str| -> Vec<Option<f64>> { files.iter().map(|f| part(f, "handoffs", |_, _, _| {}).map(|_| summed(f, pointer).unwrap_or(0.0))).collect() };
+    let mut rows = vec![RateRow { name: "typed messages".into(), value: typed.iter().flatten().sum(), files: typed.iter().flatten().filter(|v| **v > 0.0).count(), files_with_part: typed.iter().flatten().count(), by_file: vec![None; files.len()], ..RateRow::default() }];
+    for (name, pointer) in [
+        ("ends of turn", "/handoffs/turn_ends"),
+        ("interrupts", "/handoffs/interrupts"),
+        ("typed while the agent worked", "/handoffs/typed_while_working"),
+        ("questions", "/handoffs/questions"),
+        ("answers", "/handoffs/answers"),
+        ("wakes: subagent", "/handoffs/wakes/subagent"),
+        ("wakes: command", "/handoffs/wakes/command"),
+        ("wakes: other", "/handoffs/wakes/other"),
+    ] {
+        rows.push(rate_row(name, Unit::Count, &handoff(pointer), &typed, 100.0));
+    }
+    rows
+}
+
+/// The cold returns of each client per active hour, from the client parts.
+fn cold_by_client(files: &[Value], min_files: usize) -> Vec<RateRow> {
+    let mut by: BTreeMap<(String, String), (f64, f64, f64, usize)> = BTreeMap::new();
+    for f in files {
+        for (agent, a) in agents(f) {
+            for (client, c) in entries(&a["clients"]) {
+                let Some(hours) = c.get("active_hours").and_then(Value::as_f64) else { continue };
+                let e = by.entry((agent.clone(), client.clone())).or_default();
+                e.0 += hours;
+                e.1 += c["cold_returns"].as_f64().unwrap_or(0.0);
+                e.2 += c["avoidable_usd"].as_f64().unwrap_or(0.0);
+                e.3 += 1;
+            }
+        }
+    }
+    let mut rows: Vec<RateRow> = by
+        .into_iter()
+        .filter(|(_, v)| v.0 > 0.0 && v.3 >= min_files.max(1))
+        .map(|((agent, client), (hours, cold, avoidable, n))| RateRow {
+            agent: Some(agent),
+            name: client,
+            value: cold,
+            hours: Some(hours),
+            rate: Some(cold / hours),
+            second_rate: Some(avoidable / hours),
+            files: n,
+            files_with_part: n,
+            ..RateRow::default()
+        })
+        .collect();
+    rows.sort_by(|a, b| b.hours.unwrap_or(0.0).total_cmp(&a.hours.unwrap_or(0.0)));
+    rows.truncate(TOP_ROWS);
+    rows
+}
+
+/// A client's dollars at the highest effort and in all, then its requests the same way.
+type EffortSums = (f64, f64, f64, f64);
+
+/// The share of each client's spend and requests at `max` or `xhigh`.
+fn effort_by_client(files: &[Value], min_files: usize) -> Vec<EffortRow> {
+    let mut by: BTreeMap<(String, String), Vec<Option<EffortSums>>> = BTreeMap::new();
+    for (i, f) in files.iter().enumerate() {
+        for (agent, a) in agents(f) {
+            for (client, c) in entries(&a["clients"]) {
+                let Some(levels) = c.get("effort").and_then(Value::as_object) else { continue };
+                let (mut high_usd, mut usd, mut high_req, mut req) = (0.0, 0.0, 0.0, 0.0);
+                for (level, l) in levels {
+                    let (u, r) = (l["usd"].as_f64().unwrap_or(0.0), l["requests"].as_f64().unwrap_or(0.0));
+                    usd += u;
+                    req += r;
+                    if level == "max" || level == "xhigh" {
+                        high_usd += u;
+                        high_req += r;
+                    }
+                }
+                let e = by.entry((agent.clone(), client.clone())).or_insert_with(|| vec![None; files.len()]);
+                e[i] = Some((high_usd, usd, high_req, req));
+            }
+        }
+    }
+    let mut rows: Vec<EffortRow> = by
+        .into_iter()
+        .filter(|(_, v)| v.iter().flatten().count() >= min_files.max(1))
+        .map(|((agent, client), per)| {
+            let sum = |k: usize| per.iter().flatten().map(|t| [t.0, t.1, t.2, t.3][k]).sum::<f64>();
+            let by_file: Vec<Option<f64>> = per.iter().map(|t| t.map(|t| t.0 / t.1.max(1e-9))).collect();
+            EffortRow {
+                agent,
+                client,
+                spend_share: sum(0) / sum(1).max(1e-9),
+                request_share: sum(2) / sum(3).max(1e-9),
+                median_file: median_of(by_file.iter().flatten().copied()),
+                files: per.iter().flatten().count(),
+                by_file,
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| b.spend_share.total_cmp(&a.spend_share).then_with(|| a.client.cmp(&b.client)));
+    rows.truncate(TOP_ROWS);
+    rows
+}
+
+/// The share of spend whose prompts the logs hold, over the files with the part.
+fn coverage(files: &[Value]) -> Option<Coverage> {
+    let per: Vec<(f64, f64)> = files.iter().filter_map(|f| Some((summed(f, "/prompts/held/usd")?, summed(f, "/prompts/all/usd")?))).collect();
+    if per.is_empty() {
+        return None;
+    }
+    let (held, all) = per.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
+    Some(Coverage { share: held / all.max(1e-9), files: per.len(), files_below_90: per.iter().filter(|p| p.0 / p.1.max(1e-9) < 0.9).count() })
 }
 
 #[cfg(test)]

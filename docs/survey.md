@@ -8,10 +8,15 @@ This page is for someone who wants to know where a group's coding-agent money go
 - spend by model and cost component;
 - spend by what fills the context, by kind of origin, by activity, by prompt size, by how long the sessions ran, and by client;
 - cache misses by cause, cold returns, cache lifetimes, and what the other lifetime would have cost;
-- tools and shell programs, with the tool hints;
-- effort levels, compactions and agent versions.
+- tools and shell programs, with the tool hints and their failed calls;
+- effort levels, compactions and agent versions;
+- active days and active hours, the clock hours with a main-conversation request, and the busy time;
+- failed, refused and denied calls, and the spend after the failures until the tool worked again;
+- where the agent's time went: the model, retries after API errors, subagents, background commands, and the commands it waited on; the slow requests;
+- the hand-offs: ends of turn, interrupts, questions, answers, messages typed while the agent worked, and wakes;
+- the share of spend whose prompts the logs hold.
 
-The file holds no project or file path, no session id or title, no prompt or tool text, and no user or host name. It keeps only these names:
+The file holds no project or file path, no session id or title, no prompt or tool text, no error text, and no user or host name. It keeps only these names:
 - names that ship with the agent: built-in tools such as `Bash`, slash commands such as `/goal`, skills bundled with the agent, and built-in subagent types such as `general-purpose`;
 - well-known programs such as `git` and `sed`;
 - model, client and version names.
@@ -78,9 +83,13 @@ Before you show a pooled report to anyone outside the group, use `--min-files 3`
 
 ## Reading the report
 
-- **The header**: how many files, the days they cover, the survey labels, and the spend in all and per file at the median and quarters.
-- **Where the money went**: spend by model, cost component, content of the context, origin, activity, prompt size, how long the sessions ran, and client. `share` is of the pooled spend. `median file` is the median of each file's own share, which a single big spender cannot move. `files` counts the files with the row.
-- **What could have been saved**: avoidable dollars by cause of cache miss, and what the cheaper cache lifetime would have saved. `files 5%+` counts the files where the row is 5% or more of their spend.
+- **The header**: how many files, the days they cover, the survey labels, the spend in all and per file at the median and quarters, and the activity: active hours, and the dollars per active hour, pooled and at the median file.
+- **Where the money went**: spend by model, cost component, content of the context, origin, activity, prompt size, how long the sessions ran, and client. `share` is of the pooled spend. `median file` is the median of each file's own share, which a single big spender cannot move. `files` counts the files with the row. Under the content table, a line says what share of the spend the logs hold the prompts of; the rest is `unknown`, as for Claude Code before 2.1.300.
+- **What could have been saved**: avoidable dollars by cause of cache miss, and what the cheaper cache lifetime would have saved, in all and per active hour. `files 5%+` counts the files where the row is 5% or more of their spend. `Cold returns by client` gives each client's active hours, cold returns and avoidable dollars per active hour: the number to compare before and after a change in a client.
+- **Problems**: failed, refused and denied calls, the spend after failures, the requests that waited for retries and how long, and the requests of a minute or more, pooled and per active hour, with the median file's rate.
 - **Habits that cost the most**: the spend in prompts of 400k tokens or more, in sessions longer than a day, in single lookups, in thinking, in setup, at the highest effort, and in each tool hint. These rows show where to look, not what could be saved: they overlap.
-- **Tools and commands**: the tools and shell programs with the most rent, and their calls and trips (see the `tools` command in the README).
+- **Where the agent's time went**: the busy time by what the agent waited on, with the part after the end of a turn, while its own subagents or background commands still ran.
+- **Working with the agent**: the hand-offs per 100 typed messages: how often people stop the agent, how often it asks, and how often background work wakes it.
+- **Tools and commands**: the tools and shell programs with the most rent, and their calls, failed calls and trips (see the `tools` command in the README).
+- **Highest effort by client**: the share of each client's spend and requests at `max` or `xhigh`.
 - **Versions**: the agent versions in use.
