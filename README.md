@@ -100,7 +100,7 @@ On another machine, put its target in place of `aarch64-apple-darwin`:
 | Linux on x86-64 | `x86_64-unknown-linux-gnu` |
 | Linux on ARM64 | `aarch64-unknown-linux-gnu` |
 
-The Linux binaries need glibc 2.35 or later: Ubuntu 22.04, Debian 12 or newer. There is no Windows build yet. The binaries are not notarized, so macOS refuses to run one that a browser downloaded and marked as quarantined. `curl` sets no such mark; `xattr -d com.apple.quarantine ~/.local/bin/tokprof` lifts it. `SHA256SUMS` in each release holds the checksums of the archives.
+The Linux binaries need glibc 2.35 or later: Ubuntu 22.04, Debian 12 or newer. There is no Windows build yet. The binaries are not notarized, so macOS refuses to run one that a browser downloaded and marked as quarantined. `curl` sets no such mark; `xattr -d com.apple.quarantine ~/.local/bin/tokprof` lifts it. `SHA256SUMS` in each release holds the checksums of the archives. Each archive also has a build provenance attestation: `gh attestation verify tokprof-<target>.tar.gz -R ignatov/tokprof` checks that the release workflow of this repository built it from the tagged commit.
 
 To build from source, tokprof needs a recent stable Rust; its dependencies need 1.89 or later.
 
