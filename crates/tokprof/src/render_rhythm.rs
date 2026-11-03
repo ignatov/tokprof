@@ -6,17 +6,19 @@ use tokprof_core::fmt::{self, local_time, table, usd};
 use tokprof_core::pauses::ColdReturn;
 use tokprof_core::rhythm::{self, Offset, View};
 
-/// The day view of `[from, to)`, with the cold returns of its requests.
-pub fn day(view: &View, (from, to): (i64, i64), offset: Offset, returns: &[ColdReturn], priced: bool) -> String {
+/// The day view of a date that runs `[from, to)`, with the cold returns of its requests and a
+/// strip at most `columns` wide. The current day ends at `i64::MAX`.
+pub fn day(view: &View, date: i64, (from, to): (i64, i64), offset: Offset, returns: &[ColdReturn], priced: bool, columns: i64) -> String {
     let mut out = String::from("tokprof · day\n");
-    let _ = writeln!(out, "day       {} → {}", local_time(from, "%a %Y-%m-%d %H:%M"), local_time(to, "%a %Y-%m-%d %H:%M"));
-    let _ = writeln!(out, "{}", view.start.line());
+    let end = if to == i64::MAX { "now".to_string() } else { local_time(to, "%a %Y-%m-%d %H:%M") };
+    let _ = writeln!(out, "day       {} → {end}", local_time(from, "%a %Y-%m-%d %H:%M"));
+    let _ = writeln!(out, "{}", view.days.line(date, offset));
     if let Some(line) = rhythm::left_out_line(view.left_out((from, to))) {
         let _ = writeln!(out, "{line}");
     }
-    let summary = view.summary((from, to), offset);
-    let Some(strip) = view.strip(&summary, (from, to), offset) else {
-        let _ = writeln!(out, "\nNo messages on {}.", local_time(from, "%Y-%m-%d"));
+    let summary = view.summary((from, to));
+    let Some(strip) = view.strip(&summary, (from, to), columns, offset) else {
+        let _ = writeln!(out, "\nNo messages on {}.", local_time(rhythm::midnight(date, offset) + 12 * 3_600_000, "%Y-%m-%d"));
         return out;
     };
     out.push('\n');
@@ -49,12 +51,12 @@ pub fn cache_line(returns: &[ColdReturn], priced: bool) -> String {
 /// The rhythm section of the pause report, over `window`.
 pub fn section(view: &View, window: (i64, i64), offset: Offset) -> String {
     let mut out = String::from("\nYour rhythm: when you sat at the agents and what they did meanwhile\n\n");
-    let summary = view.summary(window, offset);
+    let summary = view.summary(window);
     if summary.sittings.is_empty() {
         out.push_str("No messages in this time.\n");
         return out;
     }
-    let _ = writeln!(out, "{}", view.start.line());
+    let _ = writeln!(out, "{}", view.days.nights_line(window, offset));
     if let Some(line) = rhythm::left_out_line(view.left_out(window)) {
         let _ = writeln!(out, "{line}");
     }
@@ -63,7 +65,8 @@ pub fn section(view: &View, window: (i64, i64), offset: Offset) -> String {
         let _ = writeln!(out, "{line}");
     }
     out.push('\n');
-    out.push_str(&table(&summary.hours(view.start, offset), 1));
+    let first = view.days.median_start(window, offset).map_or(0, |m| m.div_euclid(60).rem_euclid(24) as usize);
+    out.push_str(&table(&summary.hours(first, offset), 1));
     out
 }
 
@@ -88,10 +91,12 @@ mod tests {
     #[test]
     fn a_day_with_no_message() {
         let view = View::new(Vec::new(), 0, &|_| 0);
-        let text = day(&view, (1_793_574_000_000, 1_793_660_400_000), &|_| 0, &[], true);
+        // 2026-11-02 in UTC.
+        let date = 1_793_577_600_000 / 86_400_000;
+        let text = day(&view, date, view.days.bounds(date, &|_| 0), &|_| 0, &[], true, 72);
         assert!(text.starts_with("tokprof · day\nday       "), "{text}");
-        assert!(text.contains("\nnight     messages on fewer than 7 of the last 30 days; days start at midnight\n"), "{text}");
-        assert!(text.ends_with(&format!("\nNo messages on {}.\n", local_time(1_793_574_000_000, "%Y-%m-%d"))), "{text}");
+        assert!(text.contains("\nnight     no pause before the day; it starts at midnight\n"), "{text}");
+        assert!(text.ends_with("\nNo messages on 2026-11-02.\n"), "{text}");
     }
 
     #[test]

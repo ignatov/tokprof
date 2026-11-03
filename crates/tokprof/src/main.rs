@@ -16,10 +16,12 @@ use tokprof_core::profile::Measure;
 use tokprof_core::report::{self, Collector, Dim};
 use tokprof_core::pauses::Pauses;
 use tokprof_core::rhythm::{self, Timeline, View};
+use crate::day::{keeps_client, temp_folders};
 use tokprof_core::share::{self, Share};
 use tokprof_core::{bench, fmt, handoff, xray};
 
 mod clipboard;
+mod day;
 mod paths;
 mod render_bench;
 mod render_report;
@@ -279,61 +281,13 @@ fn main() -> Result<()> {
     }
     if let Command::Day { date } = &command {
         day_takes_no_time_filter(&cli)?;
-        let started = Instant::now();
-        let now = now_ms();
-        let date_ms = date.as_deref().map(parse_date).transpose()?;
-        // The start of the day needs the 30 days before the day; it is found before the day is
-        // picked, so today's view reads one day more.
-        let base = date_ms.unwrap_or(now);
-        let files: Vec<SessionRef> = catalog
-            .discover(&agents)
-            .into_iter()
-            .filter(|f| !f.subagent && select.holds(f) && f.modified_ms() >= base - 31 * DAY_MS)
-            .collect();
-        if files.is_empty() {
-            bail!("{}", none_found());
+        let date = date.as_deref().map(|d| parse_date(d).map(|ms| rhythm::date_of(ms + 12 * 3_600_000, &rhythm::local_offset))).transpose()?;
+        let day = day::build(&catalog, &select, &pricing, date, now_ms(), rhythm::STRIP_COLUMNS)?;
+        eprintln!("{}", day.read);
+        for line in &day.warnings {
+            eprintln!("{line}");
         }
-        // Cold returns of the two days around the one shown; the day's own are picked after.
-        let around = analysis::Filter { since_ms: Some(base - 2 * DAY_MS), until_ms: Some(base + 2 * DAY_MS), client: cli.client.clone() };
-        let temp = temp_folders();
-        let ((timelines, mut cold), stats) = scan(
-            &catalog,
-            &files,
-            &select,
-            OnUnreadable::Skip,
-            || (Vec::new(), Pauses::new(around.clone())),
-            |(timelines, cold): &mut (Vec<Timeline>, Pauses), s, _| {
-                if !keeps_client(s, &filter) {
-                    return;
-                }
-                timelines.push(Timeline::of(s, &temp));
-                if s.chains.iter().flat_map(|c| &c.requests).any(|r| around.keeps(r)) {
-                    analysis::analyze(s, &pricing, &around, cold);
-                }
-            },
-            |mut a, b| {
-                a.0.extend(b.0);
-                a.1.merge(b.1);
-                a
-            },
-        )?;
-        cold.finish();
-        eprintln!("{}", sources(&catalog, &files, started.elapsed().as_secs_f64()));
-        warn(&stats.unreadable);
-        let offset = &rhythm::local_offset;
-        let mut view = View::new(timelines, now, offset);
-        let bounds = match date_ms {
-            None => view.start.bounds(view.start.day_of(now, offset), offset),
-            Some(d) => {
-                // The day that begins on DATE, with the day found from the 30 days before its end.
-                let pick = |start: rhythm::DayStart| start.bounds(start.day_of(d + (start.minutes() + 1) * 60_000, offset), offset);
-                view.start = view.day_start(pick(view.start).1, offset);
-                pick(view.start)
-            }
-        };
-        let returns: Vec<_> = cold.agents.values().flat_map(|a| a.returns.iter().copied()).filter(|r| r.ts_ms >= bounds.0 && r.ts_ms < bounds.1).collect();
-        let priced = cold.agents.values().any(|a| a.priced);
-        print!("{}", render_rhythm::day(&view, bounds, offset, &returns, priced));
+        print!("{}", day.text);
         return Ok(());
     }
     if let Command::Bench { requests, min_context, keep_warm, svg } = &command {
@@ -616,33 +570,12 @@ fn sources(catalog: &Catalog, files: &[SessionRef], secs: f64) -> String {
     format!("read {} in {secs:.1}s", parts.join(", "))
 }
 
-const DAY_MS: i64 = 86_400_000;
-
 /// `day` picks its time by its date, so the time filters would contradict it.
 fn day_takes_no_time_filter(cli: &Cli) -> Result<()> {
     if cli.since.is_some() || cli.until.is_some() {
         bail!("day picks its time by DATE; drop --since and --until");
     }
     Ok(())
-}
-
-/// Whether a session has a request of the client the filter asks for; any session without one.
-fn keeps_client(s: &tokprof_core::Session, filter: &analysis::Filter) -> bool {
-    filter.client.is_none() || s.chains.iter().flat_map(|c| &c.requests).any(|r| filter.keeps_client(r.client_name()))
-}
-
-/// The temporary folders, whose sessions the rhythm leaves out: the system's, as it is written
-/// and as it resolves, and on Unix `/tmp` in both forms.
-fn temp_folders() -> Vec<String> {
-    let dir = std::env::temp_dir();
-    let mut out = vec![dir.to_string_lossy().to_string()];
-    if let Ok(real) = dir.canonicalize() {
-        out.push(real.to_string_lossy().to_string());
-    }
-    if cfg!(unix) {
-        out.extend(["/tmp".to_string(), "/private/tmp".to_string()]);
-    }
-    out
 }
 
 /// The clock: the library reads none, so the X-ray and the list get the time from here.

@@ -366,7 +366,7 @@ pub fn xray(catalog: &Catalog, file: &SessionRef, pricing: &Pricing, now_ms: i64
         setup,
         misses: totals.misses,
         work: totals.work,
-        rhythm: crate::rhythm::SessionRhythm::of(main, &crate::rhythm::local_offset),
+        rhythm: crate::rhythm::SessionRhythm::of(main, now_ms, &crate::rhythm::local_offset),
     })
 }
 

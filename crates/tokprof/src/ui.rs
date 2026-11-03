@@ -28,6 +28,7 @@ use tokprof_core::labels::display_path;
 use tokprof_core::source::SessionRef;
 use tokprof_core::pricing::Pricing;
 use tokprof_core::fmt::usd;
+use tokprof_core::rhythm;
 use tokprof_core::xray::{self, SessionRow};
 
 use crate::watch::{self, Change};
@@ -67,7 +68,24 @@ enum Note {
     Report(usize, u32, String, Duration),
     Change(Change),
     Status(String),
+    /// A day view: the day asked for (`None` for the day of the latest action), the date it shows,
+    /// the count of log changes and the pane width it was computed for, its text, and how long it
+    /// took.
+    Day(Option<i64>, i64, u32, u16, String, Duration),
 }
+
+/// A day the browser computed.
+struct DayText {
+    /// The local date it shows.
+    date: i64,
+    text: Text<'static>,
+    /// The count of log changes it was computed after, and the pane width it was laid out for.
+    changes: u32,
+    width: u16,
+}
+
+/// What the day worker is asked: the day, the count of log changes, the pane width.
+type DayJob = (Option<i64>, u32, u16);
 
 /// A listed session and what is known about it.
 struct Entry {
@@ -123,6 +141,19 @@ struct App {
     status: String,
     xray_tx: Sender<(usize, u32, SessionRef)>,
     notes_tx: Sender<Note>,
+    /// The day shown in the right pane instead of the X-ray: `Some(None)` is the day of the
+    /// latest action, `Some(Some(date))` another day.
+    day: Option<Option<i64>>,
+    /// The days computed, by the day asked for.
+    days: HashMap<Option<i64>, DayText>,
+    /// Counts the changes of the log directories, after which the current day is computed again.
+    changes: u32,
+    day_pending: Option<DayJob>,
+    /// When the current day may be computed again, as for X-rays.
+    day_after: Instant,
+    day_tx: Sender<DayJob>,
+    /// The width of the right pane when it was last drawn.
+    pane_width: u16,
 }
 
 /// The colors of the agent column, by the agent's place in the registry.
@@ -153,6 +184,35 @@ pub fn run(catalog: Arc<Catalog>, pricing: Pricing, dump: Option<(u16, u16)>, se
     }
     let pricing = Arc::new(pricing);
 
+    // Days, one at a time, as X-rays are.
+    let (day_tx, day_rx) = mpsc::channel::<DayJob>();
+    {
+        let (catalog, pricing, tx, select) = (catalog.clone(), pricing.clone(), notes_tx.clone(), select.clone());
+        std::thread::spawn(move || {
+            // A pool of its own, so that a day does not wait behind the costing of every session.
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().ok();
+            while let Ok(mut job) = day_rx.recv() {
+                while let Ok(newer) = day_rx.try_recv() {
+                    job = newer;
+                }
+                let (key, changes, width) = job;
+                let started = Instant::now();
+                let build = || crate::day::build(&catalog, &select, &pricing, key, now_ms(), strip_columns(width));
+                let built = match &pool {
+                    Some(pool) => pool.install(build),
+                    None => build(),
+                };
+                let (date, text) = match built {
+                    Ok(day) => (day.date, day.text),
+                    Err(e) => (key.unwrap_or_else(|| rhythm::date_of(now_ms(), &rhythm::local_offset)), format!("error: {e:#}")),
+                };
+                if tx.send(Note::Day(key, date, changes, width, text, started.elapsed())).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
     // X-rays, one at a time; a newer request replaces the ones still waiting.
     let (xray_tx, xray_rx) = mpsc::channel::<(usize, u32, SessionRef)>();
     {
@@ -172,7 +232,7 @@ pub fn run(catalog: Arc<Catalog>, pricing: Pricing, dump: Option<(u16, u16)>, se
         });
     }
 
-    let mut app = App::new(catalog, rows, pricing, xray_tx, notes_tx);
+    let mut app = App::new(catalog, rows, pricing, xray_tx, notes_tx, day_tx);
     if let Err(e) = following {
         app.status = format!("not following the logs: {e:#}");
     }
@@ -193,6 +253,7 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App, notes: &Re
         app.absorb(notes);
         app.request_glances();
         app.request_report();
+        app.request_day();
         terminal.draw(|f| draw(f, app))?;
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
@@ -223,7 +284,7 @@ fn dump_frame(app: &mut App, notes: &Receiver<Note>, width: u16, height: u16) ->
 }
 
 impl App {
-    fn new(catalog: Arc<Catalog>, rows: Vec<SessionRow>, pricing: Arc<Pricing>, xray_tx: Sender<(usize, u32, SessionRef)>, notes_tx: Sender<Note>) -> App {
+    fn new(catalog: Arc<Catalog>, rows: Vec<SessionRow>, pricing: Arc<Pricing>, xray_tx: Sender<(usize, u32, SessionRef)>, notes_tx: Sender<Note>, day_tx: Sender<DayJob>) -> App {
         let by_path = rows.iter().enumerate().map(|(i, r)| (r.file.path().to_path_buf(), i)).collect();
         let mut app = App {
             catalog,
@@ -242,6 +303,13 @@ impl App {
             status: String::new(),
             xray_tx,
             notes_tx,
+            day: None,
+            days: HashMap::new(),
+            changes: 0,
+            day_pending: None,
+            day_after: Instant::now(),
+            day_tx,
+            pane_width: 0,
         };
         app.refilter();
         app
@@ -270,8 +338,18 @@ impl App {
                     e.reported = version;
                     self.report_after = Instant::now() + took;
                 }
-                Note::Change(change) => listed |= self.apply(change),
+                Note::Change(change) => {
+                    self.changes += 1;
+                    listed |= self.apply(change);
+                }
                 Note::Status(s) => self.status = s,
+                Note::Day(key, date, changes, width, text, took) => {
+                    self.days.insert(key, DayText { date, text: Text::raw(text), changes, width });
+                    if self.day_pending == Some((key, changes, width)) {
+                        self.day_pending = None;
+                    }
+                    self.day_after = Instant::now() + took;
+                }
             }
         }
         if listed {
@@ -409,6 +487,38 @@ impl App {
         let _ = self.xray_tx.send((i, e.version, e.row.file.clone()));
     }
 
+    /// Asks for the shown day when it has no view for the pane's width yet, or when it is the
+    /// current day and a log changed since, once a pause as long as its last computation passed.
+    fn request_day(&mut self) {
+        let Some(key) = self.day else { return };
+        let width = self.pane_width;
+        if width == 0 || self.day_pending == Some((key, self.changes, width)) {
+            return;
+        }
+        if let Some(d) = self.days.get(&key)
+            && d.width == width
+            && (key.is_some() || d.changes == self.changes || Instant::now() < self.day_after)
+        {
+            return;
+        }
+        self.day_pending = Some((key, self.changes, width));
+        let _ = self.day_tx.send((key, self.changes, width));
+    }
+
+    /// Steps the shown day by `delta` days, never past the day of the latest action.
+    fn step_day(&mut self, delta: i64) {
+        let Some(key) = self.day else { return };
+        let latest = self.days.get(&None).map(|d| d.date);
+        let Some(current) = key.or(latest) else { return };
+        let next = current + delta;
+        self.day = Some(match latest {
+            Some(l) if next >= l => None,
+            None if delta > 0 => key,
+            _ => Some(next),
+        });
+        self.scroll = 0;
+    }
+
     /// Whether entry `i` is listed: its main log is there and it matches the filter.
     fn shows(&self, i: usize) -> bool {
         let (e, r) = (&self.entries[i], &self.entries[i].row);
@@ -508,6 +618,12 @@ impl App {
             KeyCode::Char('f') => self.export("jfr", false),
             KeyCode::Char('o') => self.export("html", true),
             KeyCode::Char('c') => self.handoff(),
+            KeyCode::Char('d') => {
+                self.day = if self.day.is_some() { None } else { Some(None) };
+                self.scroll = 0;
+            }
+            KeyCode::Char('[') => self.step_day(-1),
+            KeyCode::Char(']') => self.step_day(1),
             _ => {}
         }
         true
@@ -527,7 +643,10 @@ impl App {
     /// How far the full-screen X-ray scrolls: until its last line is at the bottom of the pane,
     /// which loses a footer line and two border lines from the terminal's height.
     fn max_scroll(&self, height: u16) -> u16 {
-        let lines = self.selected().and_then(|i| self.entries[i].report.as_ref()).map_or(0, |t| t.lines.len());
+        let lines = match self.day {
+            Some(key) => self.days.get(&key).map_or(0, |d| d.text.lines.len()),
+            None => self.selected().and_then(|i| self.entries[i].report.as_ref()).map_or(0, |t| t.lines.len()),
+        };
         lines.saturating_sub(height.saturating_sub(3) as usize).min(u16::MAX as usize) as u16
     }
 
@@ -564,8 +683,30 @@ fn draw(frame: &mut Frame, app: &mut App) {
         draw_list(frame, app, left);
         right
     };
-    draw_report(frame, app, report);
+    app.pane_width = report.width;
+    if app.day.is_some() {
+        draw_day(frame, app, report);
+    } else {
+        draw_report(frame, app, report);
+    }
     draw_footer(frame, app, footer);
+}
+
+/// The columns a day strip may take in a pane this wide: less the borders and the lane labels.
+fn strip_columns(width: u16) -> i64 {
+    (width as i64 - 23).clamp(12, rhythm::STRIP_COLUMNS)
+}
+
+fn draw_day(frame: &mut Frame, app: &App, area: Rect) {
+    let key = app.day.flatten();
+    let shown = app.day.and_then(|k| app.days.get(&k));
+    let offset = &rhythm::local_offset;
+    let date = shown.map(|d| d.date).or(key).unwrap_or_else(|| rhythm::date_of(now_ms(), offset));
+    let noon = rhythm::midnight(date, offset) + 12 * 3_600_000;
+    let updating = if shown.is_some() && app.day_pending.is_some_and(|p| Some(p.0) == app.day) { " · updating…" } else { "" };
+    let title = format!(" day · {}{updating} ", tokprof_core::fmt::local_time(noon, "%a %Y-%m-%d"));
+    let text = shown.map(|d| d.text.clone()).unwrap_or_else(|| Text::raw(format!("computing the day of {}…", tokprof_core::fmt::local_time(noon, "%Y-%m-%d"))).dim());
+    frame.render_widget(Paragraph::new(text).block(Block::bordered().title(title)).scroll((app.scroll, 0)), area);
 }
 
 fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -639,7 +780,8 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             " ↑↓ move · ⏎ zoom · / filter · s sort: time, cost, next · r re-sort · f JFR for IntelliJ · o HTML · c handoff · q quit"
         };
-        let mut spans = vec![Span::raw(keys).dim()];
+        let days = if app.day.is_some() { " · d day · [ ] days" } else { " · d day" };
+        let mut spans = vec![Span::raw(format!("{keys}{days}")).dim()];
         if !app.filter.is_empty() {
             spans.push(Span::raw(format!("   filter: {}", app.filter)));
         }
@@ -706,7 +848,8 @@ mod tests {
     fn app_of(rows: Vec<SessionRow>) -> App {
         let (xray_tx, _) = mpsc::channel();
         let (notes_tx, _) = mpsc::channel();
-        App::new(Arc::new(Catalog::new(Vec::new(), PathBuf::new())), rows, Arc::new(Pricing::defaults()), xray_tx, notes_tx)
+        let (day_tx, _) = mpsc::channel();
+        App::new(Arc::new(Catalog::new(Vec::new(), PathBuf::new())), rows, Arc::new(Pricing::defaults()), xray_tx, notes_tx, day_tx)
     }
 
     fn app(projects: &[&str]) -> App {
@@ -898,5 +1041,116 @@ mod tests {
         assert_eq!(a.scroll, 13, "scrolling stops at the last page");
         assert!(press(&mut a, KeyCode::Esc) && !a.zoom);
         assert!(!press(&mut a, KeyCode::Char('q')));
+    }
+
+    /// The day view the worker would send for `key`, showing `date`.
+    fn day_note(app: &mut App, key: Option<i64>, date: i64, changes: u32, text: &str) {
+        let (tx, rx) = mpsc::channel();
+        tx.send(Note::Day(key, date, changes, app.pane_width, text.to_string(), Duration::ZERO)).unwrap();
+        app.absorb(&rx);
+    }
+
+    /// The right pane's title and first line, drawn 160 columns wide.
+    fn pane(app: &mut App) -> (String, String) {
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 20)).unwrap();
+        t.draw(|f| draw(f, app)).unwrap();
+        let b = t.backend().buffer();
+        let from = if app.zoom { 0 } else { LIST_WIDTH };
+        let line = |y| (from..160).map(|x| b[(x, y)].symbol()).collect::<String>();
+        (line(0), line(1))
+    }
+
+    fn today() -> i64 {
+        rhythm::date_of(now_ms(), &rhythm::local_offset)
+    }
+
+    fn label(date: i64, format: &str) -> String {
+        tokprof_core::fmt::local_time(rhythm::midnight(date, &rhythm::local_offset) + 12 * 3_600_000, format)
+    }
+
+    #[test]
+    fn d_shows_the_day_and_d_again_the_xray() {
+        let mut a = app(&["~/src/a"]);
+        press(&mut a, KeyCode::Char('d'));
+        let (title, body) = pane(&mut a);
+        assert!(title.contains(&format!(" day · {} ", label(today(), "%a %Y-%m-%d"))), "{title}");
+        assert!(body.contains(&format!("computing the day of {}…", label(today(), "%Y-%m-%d"))), "{body}");
+        a.request_day();
+        assert_eq!(a.day_pending, Some((None, 0, 160 - LIST_WIDTH)), "the day is asked for at the pane's width");
+        day_note(&mut a, None, today() - 1, 0, "tokprof · day\nday       …");
+        let (title, body) = pane(&mut a);
+        assert!(title.contains(&format!(" day · {} ", label(today() - 1, "%a %Y-%m-%d"))), "the latest action's day: {title}");
+        assert!(body.contains("tokprof · day"), "{body}");
+        press(&mut a, KeyCode::Char('d'));
+        assert!(a.day.is_none());
+        assert!(!pane(&mut a).0.contains(" day · "));
+    }
+
+    #[test]
+    fn brackets_step_through_days_but_not_past_the_latest() {
+        let mut a = app(&["~/src/a"]);
+        press(&mut a, KeyCode::Char('['));
+        assert_eq!(a.day, None, "the brackets need the day view");
+        press(&mut a, KeyCode::Char('d'));
+        press(&mut a, KeyCode::Char('['));
+        assert_eq!(a.day, Some(None), "the latest day is not known before it is computed");
+        pane(&mut a);
+        day_note(&mut a, None, 100, 0, "latest");
+        press(&mut a, KeyCode::Char('['));
+        press(&mut a, KeyCode::Char('['));
+        press(&mut a, KeyCode::Char(']'));
+        assert_eq!(a.day, Some(Some(99)));
+        press(&mut a, KeyCode::Char(']'));
+        assert_eq!(a.day, Some(None), "back on the latest day");
+        press(&mut a, KeyCode::Char(']'));
+        assert_eq!(a.day, Some(None), "] on the latest day does nothing");
+    }
+
+    #[test]
+    fn the_day_goes_full_screen_and_the_footer_names_its_keys() {
+        let mut a = app(&["~/src/a"]);
+        assert!(title_and_footer(&mut a).1.contains(" · q quit · d day"), "the list's footer");
+        press(&mut a, KeyCode::Char('d'));
+        pane(&mut a);
+        day_note(&mut a, None, 100, 0, &vec!["line"; 40].join("\n"));
+        let footer = title_and_footer(&mut a).1;
+        assert!(footer.contains(" · d day · [ ] days"), "{footer}");
+        press(&mut a, KeyCode::Enter);
+        assert!(a.zoom);
+        let (title, _) = pane(&mut a);
+        assert!(title.starts_with("┌ day · "), "full screen: {title}");
+        press(&mut a, KeyCode::Down);
+        assert_eq!(a.scroll, 1, "the full-screen day scrolls");
+        press(&mut a, KeyCode::Char('['));
+        assert_eq!((a.day, a.zoom, a.scroll), (Some(Some(99)), true, 0), "[ works full screen");
+    }
+
+    #[test]
+    fn the_current_day_follows_the_logs_and_a_past_day_stays() {
+        let mut a = app(&["~/src/a"]);
+        press(&mut a, KeyCode::Char('d'));
+        pane(&mut a);
+        day_note(&mut a, None, 100, 0, "latest");
+        a.request_day();
+        assert_eq!(a.day_pending, None, "fresh: nothing to ask");
+        take(&mut a, Change::Session(Box::new(row(0, "~/src/a", 5))));
+        a.request_day();
+        assert_eq!(a.day_pending, Some((None, 1, 160 - LIST_WIDTH)), "a log changed: computed again");
+        assert!(pane(&mut a).0.contains(" · updating…"), "the old view shows until the new one is ready");
+        day_note(&mut a, None, 100, 1, "latest again");
+        assert!(!pane(&mut a).0.contains("updating"));
+        // A past day, once computed, shows at once though logs changed since.
+        press(&mut a, KeyCode::Char('['));
+        pane(&mut a);
+        day_note(&mut a, Some(99), 99, 1, "the day before");
+        take(&mut a, Change::Session(Box::new(row(0, "~/src/a", 6))));
+        press(&mut a, KeyCode::Char(']'));
+        press(&mut a, KeyCode::Char('['));
+        a.request_day();
+        assert_eq!(a.day_pending, None, "the past day is not asked for again");
+        assert!(pane(&mut a).1.contains("the day before"), "and shows at once");
+        press(&mut a, KeyCode::Char(']'));
+        a.request_day();
+        assert_eq!(a.day_pending, Some((None, 2, 160 - LIST_WIDTH)), "the current day is, since logs changed");
     }
 }

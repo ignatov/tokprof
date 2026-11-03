@@ -197,6 +197,8 @@ The list's last column is the cost of one more request and its share of the sess
 | `f` | Write the session's JFR for IntelliJ Profiler to `~/tokprof/<id>.jfr`, or into `$TOKPROF_DIR` if set |
 | `o` | Write the session's HTML flame graph to `~/tokprof/<id>.html`, or into `$TOKPROF_DIR`, and open it in the browser |
 | `c` | Copy the `tokprof handoff` line for the session, to continue it in a new session |
+| `d` | Show the day of your latest message in the right pane instead of the X-ray, as `tokprof day` prints it; `d` again shows the X-ray |
+| `[` `]` | With the day shown, step to the day before or after, never past the latest |
 | `q`, Ctrl+C, or `esc` in the list | Quit |
 
 The X-ray shows:
@@ -342,13 +344,13 @@ For a pilot, ask each person to run `tokprof --since 30d share`, read the file, 
 
 ## Your day with the agents
 
-`tokprof day` shows one day of your work with the agents: when you sat at them, how long they worked, and what they did after you left. `tokprof day 2026-11-02` shows the day that begins on that date.
+`tokprof day` shows one day of your work with the agents: when you sat at them, how long they worked, and what they did after you left. It shows the day of your latest message; `tokprof day 2026-11-02` shows that date's day.
 
 ```
 $ tokprof day 2026-11-02
 tokprof · day
-day       Mon 2026-11-02 05:00 → Tue 2026-11-03 05:00
-night     02:00–08:00 in the last 30 days, with no message then; days start at 05:00
+day       Mon 2026-11-02 04:21 → Tue 2026-11-03 04:24
+night     before the day 00:22–08:20 (8.0h), after it 22:45–10:03 (11.3h); a day runs from the middle of one night to the middle of the next
 left out  11 sessions that nobody typed in: a program ran them, or they ran in a temporary folder
 
                      08  09  10  11  12  13  14  15  16  17  18  19  20  21  22
@@ -360,19 +362,19 @@ d4e5f6 Setup view                                               *==*=*=***=
 e7a8b9 Cost counter                     *=*=*=-------**
 f0c1d2 Session list                                  ***==*
 0a1b2c Tool table        **
-1c2d3e Bench edges    **
-3 more sessions
+1c2d3e Codex project                                                          !
+4 more sessions
 = agent working   - waiting for your answer   * your message   ? its question   ! you stopped it   # you were there
 
-sittings  16, 3.9h at the keyboard, 58 messages to 11 sessions; median sitting 11m, median break 28m
+sittings  16, 4.1h at the keyboard, 59 messages to 12 sessions; median sitting 11m, median break 28m
 left      the agents stood still a median 19m after you left, and worked through 68% of a median break
-present   an agent ended a turn every 6.3m while you were there; it started 3% of its turns itself
-answers   the agent's turn took a median 6.9m; you answered in a median 3.2m
-stops     1 interrupt, 0 messages typed while the agent worked, 3 questions from the agent answered in a median 2.7m
+present   an agent ended a turn every 6.6m while you were there; it started 3% of its turns itself
+answers   the agent's turn took a median 6.4m; you answered in a median 3.2m
+stops     2 interrupts, 0 messages typed while the agent worked, 3 questions from the agent answered in a median 2.7m
 cache     5 cold returns, $15.48 in their first requests, $14.91 of it avoidable
 ```
 
-- The strip has a lane per session with your messages that day, most messages first, and folds the rest into one line. `=` is the agent at work, `-` a finished turn that waits for your answer, `*` your message, `?` the agent's question, `!` your interrupt. The `you` lane marks your sittings. A column is 10, 15 or 20 minutes, whichever fits the day into 72 columns.
+- The strip has a lane per session with your messages that day, most messages first, and folds the rest into one line. `=` is the agent at work, `-` a finished turn that waits for your answer, `*` your message, `?` the agent's question, `!` your interrupt. The `you` lane marks your sittings. A column is 10, 15 or 20 minutes, whichever fits the day into 72 columns; in `tokprof ui` the strip fits its pane, with 30- or 60-minute columns when the pane is narrow.
 - A sitting is a run of your messages, answers and interrupts, across all sessions, each less than 15 minutes after the one before. A break is the time between two sittings of one day.
 - `left` says how soon after you left all agents stood still, and how much of a break at least one of them worked. A short time there means each message left the agents little work for the break.
 - `present` says how often an agent ended a turn while you sat there, and how many turns the agent started itself, after a background task or a message from another session.
@@ -380,7 +382,9 @@ cache     5 cold returns, $15.48 in their first requests, $14.91 of it avoidable
 - `stops` counts your interrupts, the messages you typed while the agent worked, and the agent's questions with how long you took to answer them.
 - `cache` gives the day's cold returns, as `tokprof pauses` counts them.
 
-The day starts in the middle of your night, and tokprof finds the night in the logs. For each half hour it counts the days of the last 30 on which you typed then. The night is the longest run of half hours with the lowest count; the `night` line says what it is and where the day starts. With messages on fewer than 7 days, the day starts at midnight.
+A day runs from the middle of one night to the middle of the next, so a sitting after midnight stays in its evening. The night before a day is the longest pause in your messages, answers and interrupts, across sessions, whose middle falls between 18:00 the day before and 12:00 the day. A long break in the afternoon has its middle outside that window, so it is no night. Until noon, only a pause of 4 hours counts, so at 02:00 you are still in the evening's day. The `night` line names the pause before the day and the one after it; over 30 days of the author's logs the days started at a median 05:14. A day with no pause around it starts at midnight.
+
+`tokprof day` reads only the main logs active around its day: from 18:00 the day before to 12:00 the day after, by the last line in the log that has a time. A log's last write is no guide: when the IDE resumes a session, Claude Code appends lines without a time to its log. On the morning of 2026-11-03 that was 53 logs of 0.2 GB, read in 0.4 seconds.
 
 A session's work is its turns. A turn starts at your message, or at a background task that wakes the agent, and ends where the agent ends it or you stop it. Stretches of 15 minutes or more with no request inside a turn, and the time the agent waits for the answer to its question, are not work. Sessions that a program ran, such as `claude -p` and `codex exec`, and sessions in the temporary folder, such as an IDE's commit-message runs, are left out and counted on the `left out` line.
 
@@ -389,14 +393,14 @@ A session's work is its turns. A turn starts at your message, or at a background
 ```
 Your rhythm: when you sat at the agents and what they did meanwhile
 
-night     02:00–08:00 in the last 30 days, with no message then; days start at 05:00
+nights    a day runs from the middle of one night to the middle of the next; days started at a median 05:14
 left out  127 sessions that nobody typed in: a program ran them, or they ran in a temporary folder
 
-sittings  312, 3.2d at the keyboard, 1330 messages to 187 sessions; median sitting 6.6m, median break 34m
-left      the agents stood still a median 6.5m after you left, and worked through 22% of a median break
+sittings  313, 3.2d at the keyboard, 1337 messages to 188 sessions; median sitting 6.6m, median break 34m
+left      the agents stood still a median 6.4m after you left, and worked through 22% of a median break
 present   an agent ended a turn every 4.2m while you were there; it started 32% of its turns itself
-answers   the agent's turn took a median 3.2m; you answered in a median 2.9m
-stops     40 interrupts, 35 messages typed while the agent worked, 74 questions from the agent answered in a median 2.4m
+answers   the agent's turn took a median 3.3m; you answered in a median 2.9m
+stops     40 interrupts, 35 messages typed while the agent worked, 75 questions from the agent answered in a median 2.4m
 
 hour  messages  turn ends  median answer
 10          63         84           2.7m

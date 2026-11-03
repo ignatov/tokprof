@@ -4,7 +4,7 @@
 //!
 //! Local time comes in as an offset function, so that the rules read no time zone themselves.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use crate::fmt;
 use crate::model::{HandoffKind, Session};
@@ -13,19 +13,19 @@ use crate::source::AgentId;
 const MINUTE: i64 = 60_000;
 const HOUR: i64 = 60 * MINUTE;
 const DAY: i64 = 24 * HOUR;
-const SLOT: i64 = 30 * MINUTE;
-const SLOTS: usize = 48;
 
 /// Actions less than this apart are one sitting; a turn with no event for this long is silent.
 pub const GAP_MS: i64 = 15 * MINUTE;
-/// The start of the day is found from the actions of this many days before the end of what is
-/// shown.
-pub const NIGHT_DAYS: i64 = 30;
-/// With actions on fewer days than this, the day starts at midnight.
-pub const MIN_DAYS: usize = 7;
+/// A day's night is a pause whose middle falls from this long before its midnight to this long
+/// after it: from 18:00 the day before to 12:00 the day.
+const NIGHT_FROM: i64 = 6 * HOUR;
+const NIGHT_TO: i64 = 12 * HOUR;
+/// While a day's window is still open, only a pause this long counts as its night.
+pub const OPEN_NIGHT_MS: i64 = 4 * HOUR;
 /// A sitting lasts at least this long.
 const MIN_SITTING_MS: i64 = MINUTE;
-/// The widest the day strip gets, in columns, and the column widths it picks from, in minutes.
+/// The widest the day strip gets in a terminal, in columns, and the column widths it picks
+/// from, in minutes.
 pub const STRIP_COLUMNS: i64 = 72;
 const COLUMN_MINUTES: [i64; 5] = [10, 15, 20, 30, 60];
 /// Lanes the strip draws before it folds the rest into one line.
@@ -35,12 +35,21 @@ const LABEL_WIDTH: usize = 20;
 /// The offset of local time from UTC at an instant, both in ms.
 pub type Offset<'a> = &'a dyn Fn(i64) -> i64;
 
-/// The offset of the machine's time zone at an instant, in ms.
+/// The offset of the machine's time zone at an instant, in ms. Offsets change on the hour, so
+/// each thread asks the time zone once per hour of UTC: the rules ask it for every pause.
 pub fn local_offset(ts_ms: i64) -> i64 {
     use chrono::Offset as _;
-    chrono::DateTime::from_timestamp_millis(ts_ms)
-        .map(|t| t.with_timezone(&chrono::Local).offset().fix().local_minus_utc() as i64 * 1000)
-        .unwrap_or(0)
+    thread_local! {
+        static BY_HOUR: std::cell::RefCell<std::collections::HashMap<i64, i64>> = Default::default();
+    }
+    let hour = ts_ms.div_euclid(HOUR);
+    BY_HOUR.with(|cache| {
+        *cache.borrow_mut().entry(hour).or_insert_with(|| {
+            chrono::DateTime::from_timestamp_millis(hour * HOUR)
+                .map(|t| t.with_timezone(&chrono::Local).offset().fix().local_minus_utc() as i64 * 1000)
+                .unwrap_or(0)
+        })
+    })
 }
 
 /// What happened at one instant of a timeline.
@@ -275,88 +284,143 @@ impl Lane {
     }
 }
 
-/// Where days start.
+/// Where one day starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DayStart {
-    /// In the middle of the night: `len` half hours from half hour `from` of the day, in which
-    /// the user acted on `days` days.
-    Night { from: usize, len: usize, days: usize },
-    /// At midnight: the user acted on only this many days.
-    Midnight { days: usize },
+pub struct DayStart {
+    /// The local date, as days since 1970-01-01.
+    pub date: i64,
+    /// When the day starts, in epoch ms.
+    pub at: i64,
+    /// The pause the day starts in the middle of, from the user's last action before it to the
+    /// first after it; `None` for a day that starts at midnight.
+    pub night: Option<(i64, i64)>,
 }
 
-impl DayStart {
-    /// Minutes after local midnight.
-    pub fn minutes(self) -> i64 {
-        match self {
-            DayStart::Night { from, len, .. } => ((from + len / 2) % SLOTS) as i64 * 30,
-            DayStart::Midnight { .. } => 0,
-        }
-    }
-
-    /// The `night` line.
-    pub fn line(self) -> String {
-        match self {
-            DayStart::Night { from, len, days } => {
-                let at = |slot: usize| {
-                    let m = (slot % SLOTS) as i64 * 30;
-                    format!("{:02}:{:02}", m / 60, m % 60)
-                };
-                let then = match days {
-                    0 => "with no message then".to_string(),
-                    1 => "with messages then on 1 day".to_string(),
-                    n => format!("with messages then on {n} days"),
-                };
-                format!("night     {}–{} in the last {NIGHT_DAYS} days, {then}; days start at {}", at(from), at(from + len), at(from + len / 2))
-            }
-            DayStart::Midnight { .. } => format!("night     messages on fewer than {MIN_DAYS} of the last {NIGHT_DAYS} days; days start at midnight"),
-        }
-    }
-
-    /// The day an instant falls in, as a count of days since 1970-01-01 in local time.
-    pub fn day_of(self, ts: i64, offset: Offset) -> i64 {
-        (ts + offset(ts) - self.minutes() * MINUTE).div_euclid(DAY)
-    }
-
-    /// When a day starts and ends, in epoch ms.
-    pub fn bounds(self, day: i64, offset: Offset) -> (i64, i64) {
-        let utc = |local: i64| local - offset(local - offset(local));
-        let start = |d: i64| utc(d * DAY + self.minutes() * MINUTE);
-        (start(day), start(day + 1))
-    }
+/// Where each day starts: in the middle of the night before it, the longest pause between the
+/// user's actions whose middle falls from 18:00 the day before to 12:00 the day.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Days {
+    /// In time order. No day starts after the latest action, so the last one runs until now.
+    pub starts: Vec<DayStart>,
 }
 
-/// Where the day starts, from the user's actions in the `NIGHT_DAYS` days before `end_ms`.
-pub fn day_start(actions: impl Iterator<Item = i64>, end_ms: i64, offset: Offset) -> DayStart {
-    let since = end_ms - NIGHT_DAYS * DAY;
-    let mut slots: Vec<BTreeSet<i64>> = vec![BTreeSet::new(); SLOTS];
-    let mut days = BTreeSet::new();
-    for ts in actions.filter(|t| (since..end_ms).contains(t)) {
-        let local = ts + offset(ts);
-        let date = local.div_euclid(DAY);
-        slots[(local.rem_euclid(DAY) / SLOT) as usize].insert(date);
-        days.insert(date);
-    }
-    let counts: Vec<usize> = slots.iter().map(BTreeSet::len).collect();
-    let low = counts.iter().copied().min().unwrap_or(0);
-    let Some(first_high) = counts.iter().position(|&c| c > low).filter(|_| days.len() >= MIN_DAYS) else {
-        return DayStart::Midnight { days: days.len() };
-    };
-    // Runs are read from just after a busier half hour, so that none is split at midnight.
-    let (mut best, mut run) = ((0, 0), None::<(usize, usize)>);
-    for k in 1..=SLOTS {
-        let i = (first_high + k) % SLOTS;
-        if counts[i] == low {
-            let r = run.get_or_insert((i, 0));
-            r.1 += 1;
-            if r.1 > best.1 {
-                best = *r;
+/// Local midnight of a date, in epoch ms.
+pub fn midnight(date: i64, offset: Offset) -> i64 {
+    let local = date * DAY;
+    local - offset(local - offset(local))
+}
+
+/// The local date of an instant, as days since 1970-01-01.
+pub fn date_of(ts: i64, offset: Offset) -> i64 {
+    (ts + offset(ts)).div_euclid(DAY)
+}
+
+impl Days {
+    /// The days of these actions, as of `now_ms`.
+    pub fn of(actions: impl Iterator<Item = i64>, now_ms: i64, offset: Offset) -> Days {
+        let mut acts: Vec<i64> = actions.collect();
+        acts.sort_unstable();
+        acts.dedup();
+        let (Some(&first), Some(&latest)) = (acts.first(), acts.last()) else { return Days::default() };
+        // A date's window ends at noon; until then only a long pause can be its night.
+        let open = |date: i64| now_ms < midnight(date, offset) + NIGHT_TO;
+        let mut best: BTreeMap<i64, (i64, i64)> = BTreeMap::new();
+        for pair in acts.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let middle = a + (b - a) / 2;
+            let local = middle + offset(middle);
+            if (NIGHT_TO..DAY - NIGHT_FROM).contains(&local.rem_euclid(DAY)) {
+                continue;
             }
-        } else {
-            run = None;
+            let date = (local + NIGHT_FROM).div_euclid(DAY);
+            if open(date) && b - a < OPEN_NIGHT_MS {
+                continue;
+            }
+            let e = best.entry(date).or_insert((a, b));
+            if b - a > e.1 - e.0 {
+                *e = (a, b);
+            }
+        }
+        let mut starts = Vec::new();
+        for date in date_of(first, offset)..=date_of(latest, offset) + 1 {
+            let start = match best.get(&date) {
+                Some(&(a, b)) => DayStart { date, at: a + (b - a) / 2, night: Some((a, b)) },
+                None if open(date) => continue,
+                None => DayStart { date, at: midnight(date, offset), night: None },
+            };
+            if start.at <= latest {
+                starts.push(start);
+            }
+        }
+        Days { starts }
+    }
+
+    /// The date of the day an instant falls in; `None` before the first day.
+    pub fn day_of(&self, ts: i64) -> Option<i64> {
+        let i = self.starts.partition_point(|s| s.at <= ts);
+        (i > 0).then(|| self.starts[i - 1].date)
+    }
+
+    /// The date of the day of the latest action.
+    pub fn latest(&self) -> Option<i64> {
+        self.starts.last().map(|s| s.date)
+    }
+
+    /// When the day of a date starts and ends. The current day ends at `i64::MAX`; a date with no
+    /// day of its own runs from midnight to midnight.
+    pub fn bounds(&self, date: i64, offset: Offset) -> (i64, i64) {
+        match self.starts.iter().position(|s| s.date == date) {
+            Some(i) => (self.starts[i].at, self.starts.get(i + 1).map_or(i64::MAX, |s| s.at)),
+            None => (midnight(date, offset), midnight(date + 1, offset)),
         }
     }
-    DayStart::Night { from: best.0, len: best.1, days: low }
+
+    /// The `night` line of the day of a date.
+    pub fn line(&self, date: i64, offset: Offset) -> String {
+        let hm = |ts: i64| {
+            let m = (ts + offset(ts)).rem_euclid(DAY) / MINUTE;
+            format!("{:02}:{:02}", m / 60, m % 60)
+        };
+        let pause = |(a, b): (i64, i64)| format!("{}–{} ({})", hm(a), hm(b), fmt::human_duration((b - a) as f64 / 1000.0));
+        let i = self.starts.iter().position(|s| s.date == date);
+        let Some((i, before)) = i.and_then(|i| self.starts[i].night.map(|n| (i, n))) else {
+            return "night     no pause before the day; it starts at midnight".to_string();
+        };
+        match self.starts.get(i + 1) {
+            None => format!("night     before the day {}; the day runs until now", pause(before)),
+            Some(DayStart { night: Some(after), .. }) => {
+                format!("night     before the day {}, after it {}; a day runs from the middle of one night to the middle of the next", pause(before), pause(*after))
+            }
+            Some(_) => format!("night     before the day {}; the next day starts at midnight", pause(before)),
+        }
+    }
+
+    /// The median start of the days with a night that start in `[from, to)`, in minutes after
+    /// local midnight; a start in the evening before counts as negative.
+    pub fn median_start(&self, (from, to): (i64, i64), offset: Offset) -> Option<i64> {
+        let mut minutes: Vec<i64> = self
+            .starts
+            .iter()
+            .filter(|s| s.night.is_some() && s.at >= from && s.at < to)
+            .map(|s| {
+                let m = (s.at + offset(s.at)).rem_euclid(DAY) / MINUTE;
+                if m >= (DAY - NIGHT_FROM) / MINUTE { m - DAY / MINUTE } else { m }
+            })
+            .collect();
+        minutes.sort_unstable();
+        minutes.get(minutes.len() / 2).copied()
+    }
+
+    /// The pause report's `nights` line.
+    pub fn nights_line(&self, window: (i64, i64), offset: Offset) -> String {
+        match self.median_start(window, offset) {
+            Some(m) => {
+                let m = m.rem_euclid(DAY / MINUTE);
+                format!("nights    a day runs from the middle of one night to the middle of the next; days started at a median {:02}:{:02}", m / 60, m % 60)
+            }
+            None => "nights    no night in this time; days start at midnight".to_string(),
+        }
+    }
 }
 
 /// A break between two sittings of one day: when it ran, how long after its start all agents
@@ -393,7 +457,7 @@ pub struct Summary {
 
 impl Summary {
     /// The rhythm of these lanes in `[from, to)`, with days that start at `start`.
-    pub fn of(lanes: &[&Lane], (from, to): (i64, i64), start: DayStart, offset: Offset) -> Summary {
+    pub fn of(lanes: &[&Lane], (from, to): (i64, i64), days: &Days) -> Summary {
         let inside = |ts: i64| ts >= from && ts < to;
         let mut s = Summary::default();
         let mut actions: Vec<i64> = Vec::new();
@@ -419,7 +483,7 @@ impl Summary {
                 }
             }
             for &(end, msg) in &lane.answers {
-                if inside(msg) && start.day_of(end, offset) == start.day_of(msg, offset) {
+                if inside(msg) && days.day_of(end) == days.day_of(msg) {
                     s.answers.push((msg, msg - end));
                 }
             }
@@ -451,7 +515,7 @@ impl Summary {
         let work = union(lanes.iter().flat_map(|l| l.work.iter().copied()));
         for pair in s.sittings.windows(2) {
             let (from, to) = (pair[0].1, pair[1].0);
-            if start.day_of(from, offset) != start.day_of(to, offset) {
+            if days.day_of(from) != days.day_of(to) {
                 continue;
             }
             let worked = work.iter().map(|&(a, b)| (b.min(to) - a.max(from)).max(0)).sum();
@@ -520,8 +584,8 @@ impl Summary {
     }
 
     /// The table by hour of the day: messages, turn ends and the median answer of each hour that
-    /// has a message or an end, from the hour the day starts in.
-    pub fn hours(&self, start: DayStart, offset: Offset) -> Vec<Vec<String>> {
+    /// has a message or an end, from `first` on.
+    pub fn hours(&self, first: usize, offset: Offset) -> Vec<Vec<String>> {
         let hour = |ts: i64| ((ts + offset(ts)).rem_euclid(DAY) / HOUR) as usize;
         let mut messages = [0usize; 24];
         let mut ends = [0usize; 24];
@@ -529,7 +593,6 @@ impl Summary {
         self.messages.iter().for_each(|&ts| messages[hour(ts)] += 1);
         self.ends.iter().for_each(|&(ts, _, _)| ends[hour(ts)] += 1);
         self.answers.iter().for_each(|&(ts, a)| answers[hour(ts)].push(a));
-        let first = (start.minutes() / 60) as usize;
         let mut rows = vec![vec!["hour".to_string(), "messages".to_string(), "turn ends".to_string(), "median answer".to_string()]];
         for h in (0..24).map(|k| (first + k) % 24) {
             if messages[h] + ends[h] == 0 {
@@ -580,24 +643,19 @@ pub fn left_out_line(n: usize) -> Option<String> {
 /// The sessions a view read, with where their days start.
 #[derive(Clone, Debug)]
 pub struct View {
-    pub start: DayStart,
+    pub days: Days,
     pub timelines: Vec<Timeline>,
     pub lanes: Vec<Lane>,
 }
 
 impl View {
-    /// The view of these timelines, with the day found from the actions of the sessions it keeps
-    /// in the `NIGHT_DAYS` days before `end_ms`.
-    pub fn new(timelines: Vec<Timeline>, end_ms: i64, offset: Offset) -> View {
+    /// The view of these timelines, with the days found from the actions of the sessions it
+    /// keeps, as of `now_ms`.
+    pub fn new(timelines: Vec<Timeline>, now_ms: i64, offset: Offset) -> View {
         let lanes = timelines.iter().map(Lane::of).collect();
-        let mut view = View { start: DayStart::Midnight { days: 0 }, timelines, lanes };
-        view.start = view.day_start(end_ms, offset);
+        let mut view = View { days: Days::default(), timelines, lanes };
+        view.days = Days::of(view.kept().flat_map(|(t, _)| t.actions()), now_ms, offset);
         view
-    }
-
-    /// Where the day starts, found from the 30 days before `end_ms`.
-    pub fn day_start(&self, end_ms: i64, offset: Offset) -> DayStart {
-        day_start(self.kept().flat_map(|(t, _)| t.actions()), end_ms, offset)
     }
 
     fn kept(&self) -> impl Iterator<Item = (&Timeline, &Lane)> {
@@ -609,14 +667,15 @@ impl View {
         self.timelines.iter().filter(|t| t.left_out && t.actions().any(|ts| ts >= from && ts < to)).count()
     }
 
-    pub fn summary(&self, window: (i64, i64), offset: Offset) -> Summary {
+    pub fn summary(&self, window: (i64, i64)) -> Summary {
         let lanes: Vec<&Lane> = self.kept().map(|(_, l)| l).collect();
-        Summary::of(&lanes, window, self.start, offset)
+        Summary::of(&lanes, window, &self.days)
     }
 
-    pub fn strip(&self, summary: &Summary, window: (i64, i64), offset: Offset) -> Option<Strip> {
+    /// The strip of a day, at most `columns` wide.
+    pub fn strip(&self, summary: &Summary, window: (i64, i64), columns: i64, offset: Offset) -> Option<Strip> {
         let pairs: Vec<(&Timeline, &Lane)> = self.kept().collect();
-        Strip::of(&pairs, summary, window, self.start, offset)
+        Strip::of(&pairs, summary, window, &self.days, columns, offset)
     }
 }
 
@@ -633,9 +692,9 @@ pub struct SessionRhythm {
 }
 
 impl SessionRhythm {
-    /// The rhythm of a main session, with the day found from its own actions; `None` when it has
-    /// no turn or nobody typed in it.
-    pub fn of(s: &Session, offset: Offset) -> Option<SessionRhythm> {
+    /// The rhythm of a main session, with the days found from its own actions as of `now_ms`;
+    /// `None` when it has no turn or nobody typed in it.
+    pub fn of(s: &Session, now_ms: i64, offset: Offset) -> Option<SessionRhythm> {
         let t = Timeline::of(s, &[]);
         if t.left_out {
             return None;
@@ -644,9 +703,8 @@ impl SessionRhythm {
         if lane.turns.is_empty() {
             return None;
         }
-        let end = t.events.last().map_or(0, |e| e.0) + 1;
-        let start = day_start(t.actions(), end, offset);
-        let all = Summary::of(&[&lane], (i64::MIN, i64::MAX), start, offset);
+        let days = Days::of(t.actions(), now_ms, offset);
+        let all = Summary::of(&[&lane], (i64::MIN, i64::MAX), &days);
         Some(SessionRhythm {
             turns: lane.turns.len(),
             work_ms: lane.work_ms(),
@@ -685,14 +743,14 @@ pub struct Strip {
 impl Strip {
     /// The strip of a day `[from, to)`, or `None` when the user did not act in it. `lanes` pairs
     /// each timeline with its lane.
-    pub fn of(lanes: &[(&Timeline, &Lane)], summary: &Summary, (from, to): (i64, i64), start: DayStart, offset: Offset) -> Option<Strip> {
+    pub fn of(lanes: &[(&Timeline, &Lane)], summary: &Summary, (from, to): (i64, i64), days: &Days, columns: i64, offset: Offset) -> Option<Strip> {
         let first = *summary.sittings.first().map(|(a, _)| a)?;
         let last = summary.sittings.last().map_or(first, |s| s.1);
         let local = |ts: i64| ts + offset(ts);
         let floor_hour = |ts: i64| ts - local(ts).rem_euclid(HOUR);
         let begin = floor_hour(first);
         let end = floor_hour(last) + HOUR;
-        let minutes = COLUMN_MINUTES.iter().copied().find(|m| (end - begin) / (m * MINUTE) <= STRIP_COLUMNS).unwrap_or(60);
+        let minutes = COLUMN_MINUTES.iter().copied().find(|m| (end - begin + m * MINUTE - 1) / (m * MINUTE) <= columns).unwrap_or(60);
         let col = minutes * MINUTE;
         let n = ((end - begin) / col).max(1) as usize;
         let at = |ts: i64| ((ts - begin).div_euclid(col)).clamp(0, n as i64 - 1) as usize;
@@ -744,7 +802,7 @@ impl Strip {
         for (t, l, _) in shown.iter().take(STRIP_LANES) {
             let mut row = vec![' '; n];
             for &(end, msg) in &l.answers {
-                if start.day_of(end, offset) == start.day_of(msg, offset) {
+                if days.day_of(end) == days.day_of(msg) {
                     span(&mut row, end, msg, '-', &rank);
                 }
             }
@@ -792,13 +850,21 @@ mod tests {
         Timeline { agent: crate::testing::claude(), id: id.into(), title: None, left_out: false, events }
     }
 
-    fn night() -> DayStart {
-        DayStart::Night { from: 4, len: 12, days: 0 }
+    /// Days that start at 05:00 from 10-30 to 11-05.
+    fn night() -> Days {
+        Days {
+            starts: (-3..=3)
+                .map(|k| {
+                    let at = t(5, 0) + k * DAY;
+                    DayStart { date: nov2() + k, at, night: Some((at - 3 * HOUR, at + 3 * HOUR)) }
+                })
+                .collect(),
+        }
     }
 
     fn summary(lanes: &[Lane]) -> Summary {
         let refs: Vec<&Lane> = lanes.iter().collect();
-        Summary::of(&refs, (i64::MIN, i64::MAX), night(), &off)
+        Summary::of(&refs, (i64::MIN, i64::MAX), &night())
     }
 
     use Event::*;
@@ -896,54 +962,102 @@ mod tests {
         assert!(s.lines()[1].contains("stood still a median 6.0m after you left, and worked through 25% of a median break"), "{}", s.lines()[1]);
     }
 
-    /// Actions on `days` days at the given half hours.
-    fn actions(days: i64, slots: &[usize]) -> Vec<i64> {
-        (0..days).flat_map(|d| slots.iter().map(move |&s| MIDNIGHT - d * DAY + s as i64 * SLOT + 60_000)).collect()
+    /// Days from `actions`, as of `now`.
+    fn days(actions: &[i64], now: i64) -> Days {
+        Days::of(actions.iter().copied(), now, &off)
+    }
+
+    fn start_of(d: &Days, date: i64) -> Option<DayStart> {
+        d.starts.iter().copied().find(|s| s.date == date)
+    }
+
+    /// The local date of 2026-11-02, days since 1970-01-01.
+    fn nov2() -> i64 {
+        date_of(t(12, 0), &off)
     }
 
     #[test]
     fn the_authors_night() {
-        let busy: Vec<usize> = (0..SLOTS).filter(|s| !(4..16).contains(s)).collect();
-        let start = day_start(actions(30, &busy).into_iter(), MIDNIGHT + DAY, &off);
-        assert_eq!(start, DayStart::Night { from: 4, len: 12, days: 0 });
-        assert_eq!(start.minutes(), 5 * 60);
-        assert_eq!(start.line(), "night     02:00–08:00 in the last 30 days, with no message then; days start at 05:00");
+        // The evening of 11-01, the night to 08:20, the day, and the next morning.
+        let d = days(&[t(-3, 0), t(0, 22), t(8, 20), t(12, 0), t(22, 26), t(34, 3)], t(40, 0));
+        let s = start_of(&d, nov2()).unwrap();
+        assert_eq!((s.at, s.night), (t(4, 21), Some((t(0, 22), t(8, 20)))));
+        assert_eq!(d.bounds(nov2(), &off), (t(4, 21), t(28, 14) + 30_000), "it ends in the middle of the next night");
+        assert_eq!(d.line(nov2(), &off), "night     before the day 00:22–08:20 (8.0h), after it 22:26–10:03 (11.6h); a day runs from the middle of one night to the middle of the next");
+    }
+
+    #[test]
+    fn a_pause_in_the_afternoon_is_no_night() {
+        let d = days(&[t(-4, 0), t(1, 0), t(8, 0), t(10, 0), t(18, 0), t(20, 0)], t(40, 0));
+        assert_eq!(start_of(&d, nov2()).unwrap().at, t(4, 30), "the pause from 10:00 to 18:00 has its middle at 14:00");
     }
 
     #[test]
     fn a_night_that_is_not_empty() {
-        let mut all = actions(2, &(0..SLOTS).collect::<Vec<_>>());
-        all.extend(actions(20, &(0..SLOTS).filter(|s| !(5..14).contains(s)).collect::<Vec<_>>()));
-        let start = day_start(all.into_iter(), MIDNIGHT + DAY, &off);
-        assert_eq!(start, DayStart::Night { from: 5, len: 9, days: 2 });
-        assert_eq!(start.minutes(), 4 * 60 + 30);
-        assert_eq!(start.line(), "night     02:30–07:00 in the last 30 days, with messages then on 2 days; days start at 04:30");
+        // Breaks of 30 minutes through the night, and one of 40 from 03:10 to 03:50.
+        let mut acts: Vec<i64> = (0..=18).map(|k| t(-6, 0) + k * 30 * MINUTE).filter(|&ts| ts <= t(3, 10)).collect();
+        acts.push(t(3, 10));
+        acts.extend((0..17).map(|k| t(3, 50) + k * 30 * MINUTE));
+        let d = days(&acts, t(40, 0));
+        assert_eq!(start_of(&d, nov2()).unwrap().at, t(3, 30));
     }
 
     #[test]
     fn too_few_days_start_at_midnight() {
-        let start = day_start(actions(5, &[20, 30]).into_iter(), MIDNIGHT + DAY, &off);
-        assert_eq!(start, DayStart::Midnight { days: 5 });
-        assert_eq!(start.line(), "night     messages on fewer than 7 of the last 30 days; days start at midnight");
-        let old = day_start(actions(30, &[20]).into_iter(), MIDNIGHT + 100 * DAY, &off);
-        assert_eq!(old, DayStart::Midnight { days: 0 }, "only the 30 days before the end count");
+        // An action on 10-31 at 10:00 and the next on 11-03 at 10:00: the pause's middle, 11-01
+        // 22:00, is the night of 11-02, and 11-01 has none.
+        let d = days(&[t(-38, 0), t(34, 0)], t(60, 0));
+        let nov1 = nov2() - 1;
+        assert_eq!(start_of(&d, nov1), Some(DayStart { date: nov1, at: t(-24, 0), night: None }));
+        assert_eq!(d.line(nov1, &off), "night     no pause before the day; it starts at midnight");
+        assert_eq!(start_of(&d, nov2()).unwrap().at, t(-2, 0));
+        assert_eq!(d.line(nov2(), &off), "night     before the day 10:00–10:00 (3.0d); the next day starts at midnight");
     }
 
     #[test]
-    fn a_night_across_midnight_is_one_run() {
-        // Busy 08:00–22:00: the night runs from 22:00 to 08:00 and its middle is 03:00.
-        let start = day_start(actions(10, &(16..44).collect::<Vec<_>>()).into_iter(), MIDNIGHT + DAY, &off);
-        assert_eq!(start, DayStart::Night { from: 44, len: 20, days: 0 });
-        assert_eq!(start.minutes(), 3 * 60);
+    fn a_day_with_one_action() {
+        // 10-30 17:00, then 10-31 22:00 alone, then 11-01 09:00.
+        let d = days(&[t(-55, 0), t(-26, 0), t(-15, 0)], t(40, 0));
+        let oct31 = nov2() - 2;
+        assert_eq!(start_of(&d, oct31).unwrap().at, t(-55, 0) + (t(-26, 0) - t(-55, 0)) / 2, "07:30, the middle of the pause that ends at 22:00");
+    }
+
+    #[test]
+    fn the_current_day_runs_until_now() {
+        let d = days(&[t(0, 22), t(8, 20), t(22, 26)], t(23, 0));
+        assert_eq!(d.latest(), Some(nov2()));
+        assert_eq!(d.bounds(nov2(), &off), (t(4, 21), i64::MAX));
+        assert_eq!(d.line(nov2(), &off), "night     before the day 00:22–08:20 (8.0h); the day runs until now");
+    }
+
+    #[test]
+    fn before_the_morning_the_latest_action_is_still_yesterdays() {
+        // At 02:10 on 11-03, after a break from 19:00 to 20:30 and an action at 01:50: no pause of
+        // 4 hours yet, so no day of 11-03.
+        let d = days(&[t(0, 22), t(8, 20), t(19, 0), t(20, 30), t(23, 0), t(25, 50)], t(26, 10));
+        assert_eq!(d.latest(), Some(nov2()));
+        assert_eq!(d.day_of(t(25, 50)), Some(nov2()));
+        // Once 4 hours have gone by, a long pause counts though the window is still open.
+        let d = days(&[t(0, 22), t(8, 20), t(19, 0), t(25, 50), t(33, 55)], t(34, 0));
+        assert_eq!(d.latest(), Some(nov2() + 1));
     }
 
     #[test]
     fn days_run_from_start_to_start() {
-        let start = night();
-        assert_eq!(start.day_of(t(4, 59), &off) + 1, start.day_of(t(5, 0), &off));
-        assert_eq!(start.day_of(t(5, 0), &off), start.day_of(t(28, 59), &off), "02:10 the next night is the same day");
-        let day = start.day_of(t(12, 0), &off);
-        assert_eq!(start.bounds(day, &off), (t(5, 0), t(29, 0)));
+        let d = night();
+        assert_eq!(d.day_of(t(4, 59)).unwrap() + 1, d.day_of(t(5, 0)).unwrap());
+        assert_eq!(d.day_of(t(5, 0)), d.day_of(t(28, 59)), "02:10 the next night is the same day");
+        assert_eq!(d.bounds(nov2(), &off), (t(5, 0), t(29, 0)));
+        assert_eq!(d.bounds(nov2() + 30, &off), (t(30 * 24, 0), t(31 * 24, 0)), "a date with no day runs from midnight to midnight");
+    }
+
+    #[test]
+    fn the_nights_line_gives_the_median_start() {
+        assert_eq!(night().nights_line((i64::MIN, i64::MAX), &off), "nights    a day runs from the middle of one night to the middle of the next; days started at a median 05:00");
+        assert_eq!(Days::default().nights_line((i64::MIN, i64::MAX), &off), "nights    no night in this time; days start at midnight");
+        // A start in the evening before counts before midnight, not after.
+        let late = Days { starts: [t(-1, 30), t(24, 30), t(49, 30)].iter().enumerate().map(|(k, &at)| DayStart { date: nov2() + k as i64, at, night: Some((at - HOUR, at + HOUR)) }).collect() };
+        assert_eq!(late.median_start((i64::MIN, i64::MAX), &off), Some(30));
     }
 
     #[test]
@@ -1026,27 +1140,31 @@ mod tests {
     #[test]
     fn a_session_without_turns_has_no_line() {
         let s = Session::new(crate::testing::claude(), "x".into());
-        assert_eq!(SessionRhythm::of(&s, &off), None);
+        assert_eq!(SessionRhythm::of(&s, t(12, 0), &off), None);
     }
 
     #[test]
     fn the_hours_table_runs_from_the_start_of_the_day() {
         let lane = Lane::of(&timeline("a", &[(t(9, 0), Typed), (t(9, 4), TurnEnd), (t(9, 10), Typed), (t(9, 12), TurnEnd), (t(26, 0), Typed)]));
         let s = summary(&[lane]);
-        let rows = s.hours(night(), &off);
+        let rows = s.hours(5, &off);
         assert_eq!(rows[0], ["hour", "messages", "turn ends", "median answer"]);
         assert_eq!(rows[1], ["09", "2", "2", "6.0m"]);
         assert_eq!(rows[2], ["02", "1", "1", "16.8h"], "02:00 the next night is the same day, after the evening");
         let none = summary(&[Lane::of(&timeline("a", &[(t(9, 0), Typed), (t(9, 4), TurnEnd)]))]);
-        assert_eq!(none.hours(night(), &off)[1], ["09", "1", "1", "–"]);
+        assert_eq!(none.hours(5, &off)[1], ["09", "1", "1", "–"]);
     }
 
     fn strip(lanes: &[(Timeline, Lane)]) -> Vec<String> {
+        strip_in(lanes, 72)
+    }
+
+    fn strip_in(lanes: &[(Timeline, Lane)], columns: i64) -> Vec<String> {
         let pairs: Vec<(&Timeline, &Lane)> = lanes.iter().map(|(t, l)| (t, l)).collect();
         let refs: Vec<&Lane> = lanes.iter().map(|(_, l)| l).collect();
-        let day = night().bounds(night().day_of(t(12, 0), &off), &off);
-        let s = Summary::of(&refs, day, night(), &off);
-        Strip::of(&pairs, &s, day, night(), &off).unwrap().lines
+        let day = night().bounds(nov2(), &off);
+        let s = Summary::of(&refs, day, &night());
+        Strip::of(&pairs, &s, day, &night(), columns, &off).unwrap().lines
     }
 
     fn lane(id: &str, title: &str, events: &[(i64, Event)]) -> (Timeline, Lane) {
@@ -1080,6 +1198,15 @@ mod tests {
         assert_eq!(cells.len(), 58, "the row ends at the message at 22:26");
         assert_eq!(lines.last().unwrap(), "= agent working   - waiting for your answer   * your message   ? its question   ! you stopped it   # you were there");
         assert!(lines[1].starts_with(&format!("{:20}  #", "you")), "{}", lines[1]);
+    }
+
+    #[test]
+    fn a_narrow_pane_takes_wider_columns() {
+        let lines = strip_in(&[lane("a", "t", &[(t(8, 20), Typed), (t(22, 26), Typed)])], 50);
+        // 08:00–23:00 in 20-minute columns: 45 of them, three to an hour.
+        assert_eq!(lines[0], format!("{:20} 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22", ""));
+        let you: Vec<char> = lines[1].chars().skip(21).collect();
+        assert_eq!(you.len(), 44, "the last mark, at 22:26, is in column 44 of 45");
     }
 
     #[test]
