@@ -429,7 +429,7 @@ tokprof SHALL take a Claude Code session's own cost counter from the `cost-state
 - **AND** all of their requests are reported under the parent's id
 
 ### Requirement: Commands the filters apply to
-`--since`, `--until`, `--project`, `--session` and `--client` SHALL apply to every command but `prices`. The reports `summary`, `misses`, `whatif`, `tools`, `flame` and `bench` count the requests they select. The default command, `scan`, `handoff`, `sessions` and `ui` pick or list only the sessions they select: project and id as for the reports, the client as the Client filter requirement says, a main log last written on or after `--since`, and created before `--until`.
+`--since`, `--until`, `--project`, `--session` and `--client` SHALL apply to every command but `prices`. The reports `summary`, `misses`, `whatif`, `tools`, `pauses`, `flame` and `bench` count the requests they select. The default command, `scan`, `handoff`, `sessions` and `ui` pick or list only the sessions they select: project and id as for the reports, the client as the Client filter requirement says, a main log last written on or after `--since`, and created before `--until`.
 
 #### Scenario: Default command with a session filter
 - **WHEN** `tokprof --session 3f951de0` runs without a command
@@ -460,8 +460,12 @@ tokprof SHALL take a Claude Code session's own cost counter from the `cost-state
 - **WHEN** `tokprof --client sdk-ts` runs without a command
 - **THEN** it X-rays the latest session whose main log first names a client that contains `sdk-ts`
 
+#### Scenario: The pause report
+- **WHEN** `tokprof --since 30d --client sdk-ts pauses` runs
+- **THEN** it counts the pauses, cold returns and sessions of the `sdk-ts` requests of the last 30 days only
+
 ### Requirement: Line about the logs read
-`summary`, `misses`, `whatif`, `flame` and `bench` SHALL print one line to stderr after reading the logs: `read <agent> <N> files (<X.X> GB), … in <S.S>s`, for each agent with at least one file, with sizes on disk in units of 10^9 bytes. It counts every log file read, including subagent logs and logs that the project, id or time filters then leave out; `bench` does not read subagent logs.
+`summary`, `misses`, `whatif`, `tools`, `pauses`, `flame` and `bench` SHALL print one line to stderr after reading the logs: `read <agent> <N> files (<X.X> GB), … in <S.S>s`, for each agent with at least one file, with sizes on disk in units of 10^9 bytes. It counts every log file read, including subagent logs and logs that the project, id or time filters then leave out; `bench` does not read subagent logs.
 
 #### Scenario: Both agents
 - **WHEN** 1,234 Claude Code files of 5.6 GB and 78 Codex files of 0.9 GB are read in 3.2 seconds
