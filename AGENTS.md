@@ -19,12 +19,13 @@ A fix that restores specified behavior needs no proposal. If the code is right a
 ## Build and check
 
 ```sh
+cargo fmt --all
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo install --path crates/tokprof --root ~/.local    # the binary the author runs
 ```
 
-GitHub Actions check every push to main and every pull request (`.github/workflows/ci.yml`): the tests on Linux, macOS and Windows, the clippy line above, and `openspec validate --all --strict`. rustfmt is not checked, because the code does not follow its default style. On Windows a path prints with `\`, so a test must not expect `/` in a printed path.
+GitHub Actions check every push to main and every pull request (`.github/workflows/ci.yml`): the tests on Linux, macOS and Windows, the clippy line above, and `openspec validate --all --strict`. CI also checks the formatting with `cargo fmt --all --check`, in the style that `rustfmt.toml` sets. On Windows a path prints with `\`, so a test must not expect `/` in a printed path.
 
 ## Releases
 
