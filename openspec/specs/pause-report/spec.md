@@ -99,11 +99,15 @@ Each main session with a selected request SHALL fall in the range of the largest
 - **THEN** that row's share reads `60.5%`
 
 ### Requirement: Rhythm section
-After the agent sections, `tokprof pauses` SHALL print one rhythm section for all agents together, over the selected time and sessions: the title `Your rhythm: when you sat at the agents and what they did meanwhile`, a `nights` line with the median start of a day, the `left out` line (see work-rhythm), the five rhythm lines of work-rhythm, and a table by hour of the day.
+After the agent sections, `tokprof pauses` SHALL print one rhythm section for all agents together, over the selected time and sessions: the title `Your rhythm: when you sat at the agents and what they did meanwhile`, a `nights` line with the median start of a day, the `left out` line (see work-rhythm), the five rhythm lines of work-rhythm, the advice of work-rhythm over the selected time, and a table by hour of the day.
 
 #### Scenario: The section
 - **WHEN** `tokprof --since 30d pauses` runs
 - **THEN** the rhythm section follows the last agent section, and its five lines count the actions and turns of the last 30 days
+
+#### Scenario: The advice
+- **WHEN** `tokprof --since 30d pauses` runs
+- **THEN** the `advice` block follows the rhythm lines and the hour table follows it, and its cold returns are those of all agents in the report
 
 #### Scenario: Nights
 - **WHEN** the days of the selected time started, each in the middle of the night before it (see work-rhythm), at a median of 05:14
