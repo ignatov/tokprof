@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use tokprof_core::fmt::{count, int, table, tokens, usd};
-use tokprof_core::pool::{Pool, PrevalenceRow, RateRow, RhythmRow, RhythmUnit, Row, SpreadRow, SpreadUnit, Table, Unit};
+use tokprof_core::pool::{PainKind, PainRow, Pool, PrevalenceRow, RateRow, RhythmRow, RhythmUnit, Row, SpreadRow, SpreadUnit, Table, Unit};
 use tokprof_core::rhythm::duration;
 
 fn pct(share: f64) -> String {
@@ -281,7 +281,11 @@ const SPEND_TABLES: [(&str, &[&str]); 8] = [
 ];
 
 /// The note under each section's title (see share-pool, Section notes).
-const NOTES: [(&str, &str); 16] = [
+const NOTES: [(&str, &str); 17] = [
+    (
+        "Pains side by side",
+        "each pain by the people it touches: in a quarter of their days or sessions or more, or half of their spend for effort; the rows overlap, so money and time are not added up",
+    ),
     ("Where the money went", "what the spend paid for: model, content, origin, activity, prompt size, session length and client"),
     ("What could have been saved", "dollars the prompt cache lost to misses, by cause, and what the cheaper cache lifetime would have kept"),
     ("Cold returns by client", "returns to a session after its cache expired, per active hour"),
@@ -574,6 +578,44 @@ fn spread_table(p: &Pool, rows: &[SpreadRow], by_file: bool) -> String {
     table(&out, 2)
 }
 
+/// A value of `Pains side by side` in its row's kind: dollars or a time.
+fn pain_cell(r: &PainRow, x: Option<f64>) -> String {
+    match (r.kind, x) {
+        (PainKind::None, _) | (_, None) => "–".into(),
+        (PainKind::Time, Some(ms)) => span(ms),
+        (_, Some(usd_)) => usd(usd_),
+    }
+}
+
+/// The table of `Pains side by side`: per pain, the people it touches of the files with its
+/// fields, the kind of its money, the median file's money or time per active hour, and the pooled
+/// money or time; with `--by-file`, each file's share that the people rule reads.
+fn pains_table(p: &Pool, by_file: bool) -> String {
+    let mut head = ["pain", "people", "kind", "median file per active hour", "pooled"].map(str::to_string).to_vec();
+    if by_file {
+        head.extend(p.files.iter().map(|f| f.name.clone()));
+    }
+    let mut out = vec![head];
+    for r in &p.pains {
+        let mut name = r.name.to_string();
+        if r.of < p.files.len() {
+            name += &format!(" (in {} of {} files)", r.of, p.files.len());
+        }
+        let kind = match r.kind {
+            PainKind::None => "–",
+            PainKind::Avoidable => "avoidable",
+            PainKind::Spent => "spent",
+            PainKind::Time => "time",
+        };
+        let mut cells = vec![name, format!("{} of {}", r.people, r.of), kind.to_string(), pain_cell(r, r.median_per_hour), pain_cell(r, r.pooled)];
+        if by_file {
+            cells.extend(r.by_file.iter().map(|x| x.map_or("–".to_string(), pct)));
+        }
+        out.push(cells);
+    }
+    table(&out, 1)
+}
+
 /// The report over the pool. With one file, the columns about files are left out.
 pub fn text(p: &Pool, by_file: bool) -> String {
     let mut out = header(p);
@@ -588,6 +630,12 @@ pub fn text(p: &Pool, by_file: bool) -> String {
             out.push_str(&l);
             out.push('\n');
         }
+    }
+    // A pain touches people, so one file has no such section.
+    if !one && !p.pains.is_empty() {
+        section_head(&mut out, "Pains side by side", "", one);
+        out.push('\n');
+        out.push_str(&pains_table(p, by_file));
     }
 
     section_head(&mut out, "Where the money went", "", one);
@@ -1103,6 +1151,11 @@ mod tests {
         ];
         let positions: Vec<usize> = order.iter().map(|o| at(o)).collect();
         assert!(positions.windows(2).all(|w| w[0] < w[1]), "{positions:?}");
+        // In a pool, the pains come right after At a glance.
+        let pool = text(&pool_of(vec![rich_file(), rich_file()]), false);
+        let at = |title: &str| pool.find(&format!("\n{title}\n")).unwrap_or_else(|| panic!("{title}: {pool}"));
+        assert!(at("At a glance") < at("Pains side by side") && at("Pains side by side") < at("Where the money went"), "{pool}");
+        assert!(!t.contains("Pains side by side"), "one file has no pains: {t}");
         let mut old = file(1_000.0, None);
         old["format"] = json!(1);
         let t1 = text(&pool_of(vec![old]), false);
@@ -1353,14 +1406,16 @@ mod tests {
     #[test]
     fn every_section_has_its_note() {
         let t = text(&pool_of(vec![rich_file()]), false);
-        for (title, note) in NOTES {
+        // A pain touches people, so its section is in a pool only.
+        for (title, note) in NOTES.iter().filter(|(t, _)| *t != "Pains side by side") {
             let at = t.find(&format!("\n{title}\n")).unwrap_or_else(|| panic!("{title}: {t}"));
             let next = t[at + title.len() + 2..].lines().next().unwrap();
-            assert_eq!(next, note, "{title}");
+            assert_eq!(next, *note, "{title}");
         }
         let pool = text(&pool_of(vec![rich_file(), rich_file()]), false);
-        assert!(pool.contains(&format!("{}; median file: the median of each file's own share\n", NOTES[0].1)), "{pool}");
-        assert!(pool.contains(&format!("{}; files 5%+: the files where a row is 5% of their spend or more\n", NOTES[1].1)), "{pool}");
+        assert!(pool.contains(&format!("{}; median file: the median of each file's own share\n", NOTES[1].1)), "{pool}");
+        assert!(pool.contains(&format!("{}; files 5%+: the files where a row is 5% of their spend or more\n", NOTES[2].1)), "{pool}");
+        assert!(pool.contains(&format!("\nPains side by side\n{}\n", NOTES[0].1)), "{pool}");
     }
 
     #[test]
@@ -1381,6 +1436,35 @@ mod tests {
         let text = text(&p, true);
         let head = text.lines().find(|l| l.starts_with("agent   model") || l.starts_with("agent  model")).unwrap_or_else(|| panic!("{text}"));
         assert!(head.trim_end().ends_with("f0     f1     f2") || head.split_whitespace().rev().take(3).collect::<Vec<_>>() == ["f2", "f1", "f0"], "{head}");
+    }
+
+    #[test]
+    fn pains_side_by_side_in_a_pool() {
+        // Cold returns on 12, 12 and 3 of 30 days, and a file from before the prevalence parts.
+        let files: Vec<Value> = [12.0, 12.0, 3.0]
+            .iter()
+            .map(|d| {
+                let mut f = rich_file();
+                spread_parts(&mut f, *d, 1.0);
+                f
+            })
+            .chain([friction_file(1_000.0, 100.0, 30.0, json!({}))])
+            .collect();
+        let p = pool_of(files);
+        let t = text(&p, false);
+        let section = &t[t.find("\nPains side by side\n").unwrap()..t.find("\nWhere the money went").unwrap()];
+        assert!(section.contains("\npain  "), "{section}");
+        let row =
+            |name: &str| section.lines().find(|l| l.starts_with(name)).unwrap_or_else(|| panic!("{name}: {section}")).split_whitespace().collect::<Vec<_>>();
+        // 40% of the days in two files, 10% in the third; the fourth file has no prevalence part.
+        let idle = p.table("saved").unwrap().rows.iter().find(|r| r.name == "idle > TTL").unwrap();
+        assert!(row("cold returns (in 3 of 4 files)").ends_with(&["2", "of", "3", "avoidable", "$2.06", &usd(idle.usd)]), "{section}");
+        let retries = p.problems.iter().find(|r| r.name == "time waiting for retries").unwrap();
+        assert!(row("waits for retries").ends_with(&["time", &span(retries.median_rate.unwrap()), &span(retries.value)]), "{section}");
+        assert!(row("interrupts").ends_with(&["–", "–", "–"]), "{section}");
+        assert!(row("failures").ends_with(&["3", "of", "3", "spent", "$0.57", "$681"]), "$227 after failures in each of 3 files: {section}");
+        // No file has the effort dollars, so the pain has no row.
+        assert!(!section.contains("effort max or xhigh"), "{section}");
     }
 
     #[test]

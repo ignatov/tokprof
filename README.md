@@ -428,6 +428,7 @@ It holds no project, path, session id, title, task, prompt or tool text, and no 
 `tokprof pool` reads share files, or folders of them, and prints one report, pooled and for the median file:
 - the header, with the activity: active days and hours, the hours at the keyboard, busy hours, and the dollars per active hour and per hour at the keyboard;
 - at a glance: six lines on spend, what the cache lost, cold returns, problems, the person's time and what the agents made;
+- for a pool, pains side by side: per pain, how many people it touches in a quarter of their days or sessions or more (half of their spend for effort), whether its dollars are avoidable or spent, the median file's dollars or minutes per active hour, and the pooled dollars or time;
 - where the money went, with the models without a price under the model table, and the share of spend whose prompts the logs hold under the content table;
 - what could have been saved, per active hour too, the cold returns of each client and their avoidable dollars per active hour, and what coming back after a cold break would have cost in each way that `tokprof bench` replays;
 - problems: failed, refused and denied calls, the spend after failures, the waits for retries by the class of their last error, and slow requests, per active hour;

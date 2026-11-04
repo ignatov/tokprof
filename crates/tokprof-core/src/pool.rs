@@ -23,6 +23,11 @@ pub const TOP_ROWS: usize = 8;
 /// of the file's active days or main sessions.
 pub const COMMON_SHARE: f64 = 0.25;
 
+/// A file is touched by the effort pain of `Pains side by side` when at least this share of its
+/// spend was at max or xhigh. The other pains touch it from [`COMMON_SHARE`] of its days or
+/// sessions on (see [`PAINS`]).
+pub const EFFORT_PAIN_SHARE: f64 = 0.5;
+
 /// The tools and programs the tool table shows.
 pub const TOP_TOOLS: usize = 12;
 
@@ -356,6 +361,36 @@ pub struct SpreadRow {
     pub by_file: Vec<Option<[f64; 4]>>,
 }
 
+/// What a row of `Pains side by side` measures besides the people: dollars that could have been
+/// saved, dollars that were spent, time, or nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PainKind {
+    #[default]
+    None,
+    Avoidable,
+    Spent,
+    Time,
+}
+
+/// A row of `Pains side by side`: how many people a pain touches, and what it costs them, from the
+/// rows of the sections it sits in.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct PainRow {
+    pub name: &'static str,
+    /// The files the pain touches, of the files that have the fields it reads.
+    pub people: usize,
+    pub of: usize,
+    pub kind: PainKind,
+    /// The median file's dollars or ms per active hour, and the pooled dollars or ms. `None` for a
+    /// pain without money or time, or when no file has their part.
+    pub median_per_hour: Option<f64>,
+    pub pooled: Option<f64>,
+    /// Each file's share of its days, sessions or spend that the people rule reads; `None` for a
+    /// file without the fields.
+    pub by_file: Vec<Option<f64>>,
+}
+
 /// The pooled report.
 #[derive(Clone, Debug, Serialize)]
 pub struct Pool {
@@ -397,6 +432,7 @@ pub struct Pool {
     pub spread_files: usize,
     /// The main sessions that the session rows of both sections leave out, over those files.
     pub left_out_sessions: f64,
+    pub pains: Vec<PainRow>,
 }
 
 impl Pool {
@@ -952,7 +988,7 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
     }
     let activity = activity_of(&infos, &spends);
     let (effort_rows, effort_more) = effort_by_client(&files, min_files, spends.iter().sum());
-    Pool {
+    let mut pool = Pool {
         cold_by_client: cold_by_client(&files, min_files),
         cold_files: with_client_part(&files, "active_hours"),
         effort_files: with_client_part(&files, "effort"),
@@ -982,7 +1018,10 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
         quarter_1_usd: at_quarter(&sorted, 1),
         quarter_3_usd: at_quarter(&sorted, 3),
         tables,
-    }
+        pains: Vec::new(),
+    };
+    pool.pains = pains(&pool);
+    pool
 }
 
 /// The median of the values that are there.
@@ -1456,6 +1495,134 @@ fn spread(files: &[Value], min_files: usize) -> Vec<SpreadRow> {
     rows
 }
 
+/// Where a pain of `Pains side by side` finds the people it touches: a count of `How often it
+/// happens`, by key, or a row of `Habits that cost the most`, by name, as a share of each file's
+/// spend.
+#[derive(Clone, Copy)]
+enum PainPeople {
+    Prevalence(&'static str),
+    Habit(&'static str),
+}
+
+/// Where a pain finds its money or time: a row of `What could have been saved`, of `Habits that
+/// cost the most` or of `Problems`, by name.
+#[derive(Clone, Copy)]
+enum PainMoney {
+    Saved(&'static str),
+    Habit(&'static str),
+    Problem(&'static str),
+    Nothing,
+}
+
+/// One pain: its name, its people, the share of a file's days, sessions or spend from which it
+/// touches the person, and its money or time with their kind.
+struct Pain {
+    name: &'static str,
+    people: PainPeople,
+    share: f64,
+    money: PainMoney,
+    kind: PainKind,
+}
+
+/// The pains of `Pains side by side`, with their thresholds, in one place (see share-pool, People
+/// a pain touches).
+const PAINS: [Pain; 8] = [
+    Pain {
+        name: "cold returns",
+        people: PainPeople::Prevalence("days_with_cold_return"),
+        share: COMMON_SHARE,
+        money: PainMoney::Saved("idle > TTL"),
+        kind: PainKind::Avoidable,
+    },
+    Pain {
+        name: "contexts of 400k+",
+        people: PainPeople::Prevalence("sessions_over_400k"),
+        share: COMMON_SHARE,
+        money: PainMoney::Habit("prompts of 400k+"),
+        kind: PainKind::Spent,
+    },
+    Pain {
+        name: "sessions longer than a day",
+        people: PainPeople::Prevalence("sessions_over_1d"),
+        share: COMMON_SHARE,
+        money: PainMoney::Habit("sessions longer than a day"),
+        kind: PainKind::Spent,
+    },
+    Pain {
+        name: "failures",
+        people: PainPeople::Prevalence("sessions_with_failure_window"),
+        share: COMMON_SHARE,
+        money: PainMoney::Problem("spend after failures"),
+        kind: PainKind::Spent,
+    },
+    Pain {
+        name: "waits for retries",
+        people: PainPeople::Prevalence("days_with_retry_wait"),
+        share: COMMON_SHARE,
+        money: PainMoney::Problem("time waiting for retries"),
+        kind: PainKind::Time,
+    },
+    Pain { name: "interrupts", people: PainPeople::Prevalence("days_with_interrupt"), share: COMMON_SHARE, money: PainMoney::Nothing, kind: PainKind::None },
+    // The files hold the median of the answers to questions, not their total, so no time.
+    Pain {
+        name: "the agent asks",
+        people: PainPeople::Prevalence("sessions_with_question"),
+        share: COMMON_SHARE,
+        money: PainMoney::Nothing,
+        kind: PainKind::None,
+    },
+    Pain {
+        name: "effort max or xhigh",
+        people: PainPeople::Habit("effort max or xhigh"),
+        share: EFFORT_PAIN_SHARE,
+        money: PainMoney::Habit("effort max or xhigh"),
+        kind: PainKind::Spent,
+    },
+];
+
+/// The pooled dollars of a row of a money table, and the median of each file's dollars per active
+/// hour, over the files with both the row's part and active hours, as `per active hour` of `What
+/// could have been saved` takes them.
+fn per_hour_of(p: &Pool, row: &Row) -> (f64, Option<f64>) {
+    let rates: Vec<f64> =
+        row.by_file.iter().zip(&p.files).filter_map(|(share, f)| Some(share.as_ref()? * f.spend_usd / f.active_hours.filter(|h| *h > 0.0)?)).collect();
+    (row.usd, (!rates.is_empty()).then(|| median_of(rates.into_iter())))
+}
+
+/// The rows of `Pains side by side`, from the rows of the sections that count each pain, the most
+/// people first, then the most dollars. A pain without the fields of its people in any file has no
+/// row.
+fn pains(p: &Pool) -> Vec<PainRow> {
+    let habit = |name: &str| p.table("habits").and_then(|t| t.rows.iter().find(|r| r.name == name));
+    let mut rows = Vec::new();
+    for pain in &PAINS {
+        let by_file = match pain.people {
+            PainPeople::Prevalence(key) => p.prevalence.iter().find(|r| r.key == key).map(|r| r.by_file.clone()),
+            PainPeople::Habit(name) => habit(name).map(|r| r.by_file.clone()),
+        };
+        let Some(by_file) = by_file.filter(|b| b.iter().any(Option::is_some)) else { continue };
+        let (pooled, median_per_hour) = match pain.money {
+            PainMoney::Saved(name) => p.table("saved").and_then(|t| t.rows.iter().find(|r| r.name == name)).map(|r| per_hour_of(p, r)),
+            PainMoney::Habit(name) => habit(name).map(|r| per_hour_of(p, r)),
+            PainMoney::Problem(name) => p.problems.iter().find(|r| r.name == name && !r.under).map(|r| (r.value, r.median_rate)),
+            PainMoney::Nothing => None,
+        }
+        .map_or((None, None), |(pooled, median)| (Some(pooled), median));
+        rows.push(PainRow {
+            name: pain.name,
+            people: by_file.iter().flatten().filter(|s| **s >= pain.share).count(),
+            of: by_file.iter().flatten().count(),
+            kind: pain.kind,
+            median_per_hour,
+            pooled,
+            by_file,
+        });
+    }
+    let usd = |r: &PainRow| if matches!(r.kind, PainKind::Avoidable | PainKind::Spent) { r.pooled.unwrap_or(0.0) } else { 0.0 };
+    rows.sort_by(|a, b| b.people.cmp(&a.people).then_with(|| usd(b).total_cmp(&usd(a))));
+    rows
+}
+
 /// The busy time by kind: pooled, and each file's share of its own busy time.
 fn time_rows(files: &[Value]) -> Vec<TimeRow> {
     let per_file: Vec<Option<BTreeMap<String, (f64, f64)>>> = files
@@ -1817,6 +1984,73 @@ mod tests {
         assert_eq!(models, ["claude-opus-5-5", "other"]);
         assert!(p.table("origin").unwrap().rows.iter().all(|r| r.name != "skill:simplify"));
         assert!(row(&p, "origin", "skill").usd > 0.0, "the kind keeps the name's spend");
+    }
+
+    /// A file with the parts `Pains side by side` reads: cold returns on `cold_days` of 20 active
+    /// days, `big` of 40 main sessions with a context of 400k+, and `max` of its spend at max effort.
+    fn pain_file(spend: f64, cold_days: f64, big: f64, max: f64) -> Value {
+        let mut f = file(
+            spend,
+            json!({
+                "main_sessions": 40,
+                "prevalence": {"days_with_cold_return": cold_days, "days_with_retry_wait": 2, "days_with_interrupt": 5, "sessions_with_cold_return": 10,
+                    "sessions_with_failure_window": 12, "sessions_over_400k": big, "sessions_over_1d": 1, "sessions_with_question": 0, "left_out_sessions": 0},
+                "misses": {"idle > TTL": {"misses": 3, "tokens": 1, "avoidable_usd": spend * 0.05}},
+                "prompt_sizes": {"main": {"400–800k": {"requests": 1, "usd": spend * 0.3, "tokens": 1}}, "subagents": {}},
+                "session_spans": {"1–3d": {"requests": 1, "usd": spend * 0.2, "tokens": 1}},
+                "failures": {"failed": 4, "refused": 0, "denied": 0, "after": {"usd": spend * 0.02, "tokens": 1}},
+                "time": {"kinds": {"API retries": {"ms": 600_000, "after_turns_ms": 0}}, "requests": 10, "slow": 0, "slow_main": 0, "longest_ms": 1, "retried": 3},
+                "effort": {"main": {"max": {"requests": 5, "output_tokens": 5, "usd": spend * max}, "high": {"requests": 5, "output_tokens": 5, "usd": spend * (1.0 - max)}}, "subagents": {}},
+            }),
+        );
+        f["activity"] = json!({"active_days": 20, "active_hours": 50, "busy_ms": 1});
+        f["prevalence"] = json!({"days_with_cold_return": cold_days, "days_with_retry_wait": 2, "days_with_interrupt": 5});
+        f
+    }
+
+    #[test]
+    fn pains_agree_with_the_rows_of_their_sections() {
+        let files = vec![pain_file(1_000.0, 5.0, 10.0, 0.5), pain_file(2_000.0, 4.0, 9.0, 0.49), pain_file(500.0, 12.0, 0.0, 0.9), file(300.0, json!({}))];
+        let p = build(&named(files), 1);
+        let pain = |name: &str| p.pains.iter().find(|r| r.name == name).unwrap_or_else(|| panic!("no {name}: {:?}", p.pains));
+        let prevalence = |key: &str| p.prevalence.iter().find(|r| r.key == key).unwrap();
+        for (name, key) in [
+            ("cold returns", "days_with_cold_return"),
+            ("contexts of 400k+", "sessions_over_400k"),
+            ("sessions longer than a day", "sessions_over_1d"),
+            ("failures", "sessions_with_failure_window"),
+            ("waits for retries", "days_with_retry_wait"),
+            ("interrupts", "days_with_interrupt"),
+            ("the agent asks", "sessions_with_question"),
+        ] {
+            let (r, n) = (pain(name), prevalence(key));
+            assert_eq!((r.people, r.of), (n.common_files, n.files_with_part), "{name}");
+        }
+        // 25% of the days is enough, 20% is not; the file without the parts is not in n.
+        assert_eq!((pain("cold returns").people, pain("cold returns").of), (2, 3));
+        assert_eq!(pain("contexts of 400k+").people, 1, "10 of 40 sessions, and 9 of 40");
+        // Half of the spend at max is enough; the fourth file has effort too, at 90%.
+        let effort = row(&p, "habits", "effort max or xhigh");
+        assert_eq!((pain("effort max or xhigh").people, pain("effort max or xhigh").of), (3, 4));
+        assert_eq!(pain("effort max or xhigh").pooled, Some(effort.usd));
+        // The money and time are the rows of the sections they come from.
+        assert_eq!(pain("cold returns").pooled, Some(row(&p, "saved", "idle > TTL").usd));
+        assert_eq!(pain("cold returns").kind, PainKind::Avoidable);
+        assert_eq!(pain("contexts of 400k+").pooled, Some(row(&p, "habits", "prompts of 400k+").usd));
+        assert_eq!(pain("sessions longer than a day").pooled, Some(row(&p, "habits", "sessions longer than a day").usd));
+        let problem = |name: &str| p.problems.iter().find(|r| r.name == name).unwrap();
+        for (name, row) in [("failures", "spend after failures"), ("waits for retries", "time waiting for retries")] {
+            assert_eq!((pain(name).pooled, pain(name).median_per_hour), (Some(problem(row).value), problem(row).median_rate), "{name}");
+        }
+        assert_eq!(pain("waits for retries").kind, PainKind::Time);
+        assert_eq!((pain("interrupts").pooled, pain("the agent asks").median_per_hour), (None, None));
+        // Idle misses of 5% of $500, $1,000 and $2,000 over 50 active hours: the median is $1.
+        assert_eq!(pain("cold returns").median_per_hour, Some(1.0));
+        // The most people first, then the most dollars.
+        let order: Vec<(&str, usize)> = p.pains.iter().map(|r| (r.name, r.people)).collect();
+        assert!(order.windows(2).all(|w| w[0].1 >= w[1].1), "{order:?}");
+        let names: Vec<&str> = order.iter().map(|o| o.0).collect();
+        assert_eq!(names[..3], ["effort max or xhigh", "failures", "interrupts"], "3 people each; a pain without money last of them");
     }
 
     #[test]
