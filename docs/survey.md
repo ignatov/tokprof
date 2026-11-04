@@ -23,6 +23,8 @@ The file holds no project or file path, no session id or title, no prompt or too
 
 A person's own skills, commands, subagent types, MCP servers and scripts count only as `skill`, `command`, `agent`, `mcp` and `other`.
 
+The header can also hold `about`, the person's answers to three questions, when they give them: `role`, `agents` (how long they have used coding agents) and `bother` (one or two things that bother them most when they work with agents). The answers come from fixed lists, so they hold no name, and a skipped question leaves its key out.
+
 Before writing, tokprof searches the file for the home path, the user and host names, and the ids and titles of the sessions, and writes nothing if it finds one. After writing, it prints what the file says.
 
 The file is anonymous in what it holds, not in how it is sent. Whoever collects the files knows who sent which, and sees each person's spend. When that matters, collect them in a shared folder or a form that does not show the sender.
@@ -35,25 +37,34 @@ Fill in these four things, then send the prompt. Each person pastes it into thei
 - `<mcp servers>`: the MCP servers to count by name, comma separated, such as the servers of the IDE the group works in. When no server should be counted by name, delete `--mcp-names <mcp servers>` from the command in step 5.
 - `<recipient>`: where the file goes.
 
+Leave `<answers>` as it is: the agent fills it in from the person's answers to the three questions of step 1.
+
 ```
 Please run a survey of my coding-agent logs with tokprof <tag>, an open-source profiler
 (https://github.com/ignatov/tokprof). It reads the Claude Code and Codex logs on this machine
 and writes one JSON file of totals with no names in it. It makes no network calls.
 
-1. Make a new temporary folder.
-2. Pick the archive for this machine:
+1. Ask me these three questions in one message, and say I can skip any of them:
+   - My role: developer, qa, devops, manager, designer, researcher or other.
+   - How long I have used coding agents: under 3 months, 3 to 12 months, or over a year.
+   - What bothers me most with agents, one or two: cost, waiting, quality (of the work),
+     context (it loses track), setup, limits (rate or plan), or nothing.
+   Turn my answers into <answers>, such as role=developer,agents=over-1y,bother=waiting+cost
+   (agents is under-3m, 3-12m or over-1y). Leave out what I skip, and drop --about <answers>
+   below if I skip all three.
+2. Make a new temporary folder, and pick the archive for this machine:
    - Mac with Apple silicon: tokprof-aarch64-apple-darwin.tar.gz
    - Mac with Intel: tokprof-x86_64-apple-darwin.tar.gz
    - Linux on x86-64: tokprof-x86_64-unknown-linux-gnu.tar.gz
    - Linux on ARM64: tokprof-aarch64-unknown-linux-gnu.tar.gz
    - Windows on x86-64: tokprof-x86_64-pc-windows-msvc.zip
    - Windows on ARM64: tokprof-aarch64-pc-windows-msvc.zip
-3. Download it and SHA256SUMS from https://github.com/ignatov/tokprof/releases/download/<tag>/
+3. Download the archive and SHA256SUMS from https://github.com/ignatov/tokprof/releases/download/<tag>/
    into the folder. If a sandbox blocks the network, ask me to allow these two downloads.
 4. Check the archive's SHA-256 against its line in SHA256SUMS. If they differ, stop and tell me.
    If gh is installed, also run: gh attestation verify <archive> -R ignatov/tokprof
 5. Unpack the archive in the folder, and from there run
-   ./tokprof --since 30d share --survey <label> --mcp-names <mcp servers> -o <folder>/tokprof-share.json
+   ./tokprof --since 30d share --survey <label> --about <answers> --mcp-names <mcp servers> -o <folder>/tokprof-share.json
    On Windows, run .\tokprof.exe with the same arguments.
    It can take a few minutes on a long history, so allow it that long.
 6. Show me tokprof's output as it is.
@@ -76,7 +87,10 @@ tokprof pool ~/survey                   # the report over every .json file in th
 tokprof pool --min-files 3 ~/survey     # the same, with rows that fewer than 3 files have folded into other
 tokprof pool --by-file ~/survey         # a column per file, headed by its name
 tokprof pool --json ~/survey            # the numbers as JSON, to chart them
+tokprof pool --where about.role=developer ~/survey   # only the files of people who said they are developers
 ```
+
+`--where about.<key>=<value>` cuts the report by an answer about the person, such as `about.agents=under-3m` or `about.bother=waiting`, and may be given several times. Files without that answer are left out, and the first line says how many files were kept.
 
 The pool skips a file that is not a share file, one of a newer format, and a second copy of a file, with a line for each. It reads files of format 1 too: the tables built from the parts that format 1 lacks say how many files they count.
 
@@ -87,6 +101,7 @@ Before you show a pooled report to anyone outside the group, use `--min-files 3`
 - **The header**: how many files, the days they cover, the survey labels, the spend in all and per file at the median and quarters, and the activity: active hours, the hours at the keyboard, and the dollars per hour of each, pooled and at the median file. An active hour is a clock hour in which an agent sent a request of a main conversation, so it counts the agents' hours; the hours at the keyboard are the person's (see the rhythm in the README).
 - **At a glance**: six lines that sum up the sections below: spend, what the cache lost, cold returns, problems, the person's time, and what the agents made.
 - **Pains side by side**: for a pool, one row per pain to choose from: cold returns, contexts of 400k tokens or more, sessions longer than a day, failures, waits for retries, interrupts, questions from the agent, and the highest effort. `people` counts the files the pain touches: where it happened in a quarter of their active days or main sessions or more, or, for effort, where half of their spend or more was at max or xhigh. `kind` says whether the dollars could have been saved (`avoidable`) or were only spent in the pain (`spent`), or whether the row is time. `median file per active hour` and `pooled` are the numbers of the rows in the sections below, so they can be checked there. The rows overlap, so their money and time do not add up. The rows come with the most people first, then the most dollars.
+- **What people said**: for a pool, how many people gave each answer to the three questions, and how many did not answer. Next to each answer of `bother`, `the pain touches` says how many of the people who gave it the related measured pains touch, by the rule of `Pains side by side`: `cost` any pain with dollars; `waiting` the waits for retries, the agent's questions, or the agents standing still within 5 minutes after the person left in a quarter of the breaks or more; `context` the contexts of 400k tokens or more and the sessions longer than a day. `quality`, `setup`, `limits` and `nothing` have no measured pain. This compares what people feel with what the logs show. With `--min-files`, answers that fewer files gave fold into `<n> more`.
 - **Where the money went**: spend by model, cost component, content of the context, origin, activity, prompt size, how long the sessions ran, and client. `share` is of the pooled spend. `median file` is the median of each file's own share, which a single big spender cannot move. `files` counts the files with the row. Under the content table, a line says what share of the spend the logs hold the prompts of; the rest is `unknown`, as for Claude Code before 2.1.300. Under the model table, a line names the models without a price, such as Codex's `codex-auto-review`: their tokens count as $0, so the spend is that much short.
 - **What could have been saved**: avoidable dollars by cause of cache miss, and what the cheaper cache lifetime would have saved over the one in use, in all and per active hour. `files 5%+` counts the files where the row is 5% or more of their spend. `Cold returns by client` gives each client's active hours, its cold returns, and their avoidable dollars per active hour: the number to compare before and after a change in a client. It lists the 8 clients with the most active hours, then `<n> more`. `Coming back after a cold break` gives what the cold returns cost as resumed, against `/compact` first, a new session from a handoff note, and heartbeats, as `tokprof bench` replays them, and how often each way was the cheapest.
 - **Problems**: failed, refused and denied calls, the spend after failures, the requests that waited for retries and how long, and the requests of a minute or more, pooled and per active hour, with the median file's rate. Under the retried requests, a row per class of their last error: server errors, rate limits, authentication, timeouts, connection, and `computer asleep`, waits that the computer's sleep caused rather than the API.

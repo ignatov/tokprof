@@ -6,8 +6,9 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use tokprof_core::fmt::{count, int, table, tokens, usd};
-use tokprof_core::pool::{PainKind, PainRow, Pool, PrevalenceRow, RateRow, RhythmRow, RhythmUnit, Row, SpreadRow, SpreadUnit, Table, Unit};
+use tokprof_core::pool::{PainKind, PainRow, Pool, PrevalenceRow, RateRow, RhythmRow, RhythmUnit, Row, SpreadRow, SpreadUnit, Table, Touched, Unit};
 use tokprof_core::rhythm::duration;
+use tokprof_core::share::about_text;
 
 fn pct(share: f64) -> String {
     format!("{:.1}%", 100.0 * share)
@@ -37,8 +38,14 @@ fn header(p: &Pool) -> String {
     }
     let survey = if labels == ["none"] { String::new() } else { format!(" · survey {}", labels.join(", ")) };
     let days = window(p).map(|w| format!(" · {w}")).unwrap_or_default();
+    // The files `--where` kept, of those read.
+    let kept = p.filter.as_ref().map(|f| format!("{} of {} files where {}", p.files.len(), f.of, f.clauses.join(" and ")));
     if one {
-        let _ = writeln!(out, "share   {}{survey}", window(p).unwrap_or_default());
+        let kept = kept.map(|k| format!(" · {k}")).unwrap_or_default();
+        let _ = writeln!(out, "share   {}{survey}{kept}", window(p).unwrap_or_default());
+        if let Some(f) = p.files.first().filter(|f| !f.about.is_empty()) {
+            let _ = writeln!(out, "about   {}", about_text(&f.about));
+        }
         let _ = writeln!(out, "spend   {}", usd(p.spend_usd));
         if let Some(a) = &p.activity {
             let _ = writeln!(
@@ -53,7 +60,8 @@ fn header(p: &Pool) -> String {
             );
         }
     } else {
-        let _ = writeln!(out, "pool    {} files{days}{survey}", p.files.len());
+        let files = kept.unwrap_or_else(|| format!("{} files", p.files.len()));
+        let _ = writeln!(out, "pool    {files}{days}{survey}");
         let mut agents: BTreeMap<&str, usize> = BTreeMap::new();
         for f in &p.files {
             for a in &f.agents {
@@ -281,10 +289,14 @@ const SPEND_TABLES: [(&str, &[&str]); 8] = [
 ];
 
 /// The note under each section's title (see share-pool, Section notes).
-const NOTES: [(&str, &str); 17] = [
+const NOTES: [(&str, &str); 18] = [
     (
         "Pains side by side",
         "each pain by the people it touches: in a quarter of their days or sessions or more, or half of their spend for effort; the rows overlap, so money and time are not added up",
+    ),
+    (
+        "What people said",
+        "the answers to tokprof share --about; the pain touches: of the people who gave an answer of bother, those its measured pains touch, as Pains side by side counts them",
     ),
     ("Where the money went", "what the spend paid for: model, content, origin, activity, prompt size, session length and client"),
     ("What could have been saved", "dollars the prompt cache lost to misses, by cause, and what the cheaper cache lifetime would have kept"),
@@ -616,6 +628,24 @@ fn pains_table(p: &Pool, by_file: bool) -> String {
     table(&out, 1)
 }
 
+/// The table of `What people said`: per question, each answer with the files that gave it and their
+/// share of the pooled files, and for `bother` how many of them its measured pains touch.
+fn said_table(p: &Pool) -> String {
+    let mut out = vec![["question", "answer", "people", "the pain touches"].map(str::to_string).to_vec()];
+    let mut last = "";
+    for r in &p.said {
+        let question = if r.question == last { String::new() } else { r.question.to_string() };
+        last = r.question;
+        let touched = match r.touched {
+            Touched::Blank => String::new(),
+            Touched::None => "–".into(),
+            Touched::Count { people, of } => format!("{people} of {of}"),
+        };
+        out.push(vec![question, r.answer.clone(), files_cell(r.people, p.files.len()), touched]);
+    }
+    table(&out, 2)
+}
+
 /// The report over the pool. With one file, the columns about files are left out.
 pub fn text(p: &Pool, by_file: bool) -> String {
     let mut out = header(p);
@@ -636,6 +666,12 @@ pub fn text(p: &Pool, by_file: bool) -> String {
         section_head(&mut out, "Pains side by side", "", one);
         out.push('\n');
         out.push_str(&pains_table(p, by_file));
+    }
+    // One file is one person: its answers are in the `about` line of the header instead.
+    if !one && !p.said.is_empty() {
+        section_head(&mut out, "What people said", "", one);
+        out.push('\n');
+        out.push_str(&said_table(p));
     }
 
     section_head(&mut out, "Where the money went", "", one);
@@ -1151,10 +1187,11 @@ mod tests {
         ];
         let positions: Vec<usize> = order.iter().map(|o| at(o)).collect();
         assert!(positions.windows(2).all(|w| w[0] < w[1]), "{positions:?}");
-        // In a pool, the pains come right after At a glance.
-        let pool = text(&pool_of(vec![rich_file(), rich_file()]), false);
+        // In a pool, the pains come right after At a glance, and what people said after them.
+        let pool = text(&pool_of(vec![with_about(rich_file(), json!({"role": "qa"})), rich_file()]), false);
         let at = |title: &str| pool.find(&format!("\n{title}\n")).unwrap_or_else(|| panic!("{title}: {pool}"));
-        assert!(at("At a glance") < at("Pains side by side") && at("Pains side by side") < at("Where the money went"), "{pool}");
+        assert!(at("At a glance") < at("Pains side by side") && at("Pains side by side") < at("What people said"), "{pool}");
+        assert!(at("What people said") < at("Where the money went"), "{pool}");
         assert!(!t.contains("Pains side by side"), "one file has no pains: {t}");
         let mut old = file(1_000.0, None);
         old["format"] = json!(1);
@@ -1406,16 +1443,18 @@ mod tests {
     #[test]
     fn every_section_has_its_note() {
         let t = text(&pool_of(vec![rich_file()]), false);
-        // A pain touches people, so its section is in a pool only.
-        for (title, note) in NOTES.iter().filter(|(t, _)| *t != "Pains side by side") {
+        // A pain touches people, and one file's answers are in its header, so these two sections
+        // are in a pool only.
+        for (title, note) in NOTES.iter().filter(|(t, _)| !matches!(*t, "Pains side by side" | "What people said")) {
             let at = t.find(&format!("\n{title}\n")).unwrap_or_else(|| panic!("{title}: {t}"));
             let next = t[at + title.len() + 2..].lines().next().unwrap();
             assert_eq!(next, *note, "{title}");
         }
-        let pool = text(&pool_of(vec![rich_file(), rich_file()]), false);
-        assert!(pool.contains(&format!("{}; median file: the median of each file's own share\n", NOTES[1].1)), "{pool}");
-        assert!(pool.contains(&format!("{}; files 5%+: the files where a row is 5% of their spend or more\n", NOTES[2].1)), "{pool}");
+        let pool = text(&pool_of(vec![with_about(rich_file(), json!({"role": "qa"})), rich_file()]), false);
+        assert!(pool.contains(&format!("{}; median file: the median of each file's own share\n", NOTES[2].1)), "{pool}");
+        assert!(pool.contains(&format!("{}; files 5%+: the files where a row is 5% of their spend or more\n", NOTES[3].1)), "{pool}");
         assert!(pool.contains(&format!("\nPains side by side\n{}\n", NOTES[0].1)), "{pool}");
+        assert!(pool.contains(&format!("\nWhat people said\n{}\n", NOTES[1].1)), "{pool}");
     }
 
     #[test]
@@ -1436,6 +1475,49 @@ mod tests {
         let text = text(&p, true);
         let head = text.lines().find(|l| l.starts_with("agent   model") || l.starts_with("agent  model")).unwrap_or_else(|| panic!("{text}"));
         assert!(head.trim_end().ends_with("f0     f1     f2") || head.split_whitespace().rev().take(3).collect::<Vec<_>>() == ["f2", "f1", "f0"], "{head}");
+    }
+
+    fn with_about(mut f: Value, about: Value) -> Value {
+        f["about"] = about;
+        f
+    }
+
+    #[test]
+    fn what_people_said_in_a_pool() {
+        let mut files = vec![with_about(rich_file(), json!({"role": "developer", "agents": "over-1y", "bother": ["cost", "quality"]})); 5];
+        files.push(with_about(rich_file(), json!({"role": "qa"})));
+        files.push(with_about(rich_file(), json!({"agents": "3-12m"})));
+        files.extend(vec![rich_file(); 3]);
+        let t = text(&pool_of(files), false);
+        let section = &t[t.find("\nWhat people said\n").unwrap()..t.find("\nWhere the money went").unwrap()];
+        let lines: Vec<Vec<&str>> = section.lines().skip(4).map(|l| l.split_whitespace().collect()).collect();
+        assert_eq!(lines[0], ["question", "answer", "people", "the", "pain", "touches"], "{section}");
+        assert_eq!(lines[1], ["role", "developer", "5", "(50%)"], "{section}");
+        assert_eq!(lines[2], ["qa", "1", "(10%)"], "the question is not repeated: {section}");
+        assert_eq!(lines[3], ["not", "answered", "4", "(40%)"], "{section}");
+        assert_eq!(lines[4][..2], ["agents", "3-12m"], "in the order of the list: {section}");
+        // A pain of cost touches each of the five who said it.
+        let cost = lines.iter().find(|l| l.get(1) == Some(&"cost")).unwrap();
+        assert_eq!(cost, &["bother", "cost", "5", "(50%)", "5", "of", "5"], "{section}");
+        let quality = lines.iter().find(|l| l.first() == Some(&"quality")).unwrap();
+        assert_eq!(quality, &["quality", "5", "(50%)", "–"], "{section}");
+        // One file: no section, and the answers in the header.
+        let one = text(&pool_of(vec![with_about(rich_file(), json!({"bother": ["waiting", "cost"], "role": "developer"}))]), false);
+        assert!(!one.contains("What people said"), "{one}");
+        assert_eq!(one.lines().nth(1), Some("about   role=developer,bother=waiting+cost"), "{one}");
+        assert!(!text(&pool_of(vec![rich_file(), rich_file()]), false).contains("What people said"));
+    }
+
+    #[test]
+    fn a_filtered_pool_says_how_many_files_it_kept() {
+        let mut p = pool_of(vec![rich_file(), rich_file()]);
+        p.filter = Some(pool::Filter { clauses: vec!["about.role=developer".into(), "about.bother=waiting".into()], of: 8 });
+        let t = text(&p, false);
+        assert!(t.starts_with("pool    2 of 8 files where about.role=developer and about.bother=waiting · 2026-10-04 – 2026-11-03\n"), "{t}");
+        let mut one = pool_of(vec![rich_file()]);
+        one.filter = Some(pool::Filter { clauses: vec!["about.role=qa".into()], of: 8 });
+        let t = text(&one, false);
+        assert!(t.starts_with("share   2026-10-04 – 2026-11-03 · 1 of 8 files where about.role=qa\n"), "{t}");
     }
 
     #[test]

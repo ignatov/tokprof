@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::share::{DISTRIBUTIONS, FORMAT, PREVALENCE_DAYS, PREVALENCE_SESSIONS, PROMPT_RANGES, QUANTILES, SPAN_RANGES};
+use crate::share::{ABOUT, ABOUT_LIST, About, DISTRIBUTIONS, FORMAT, PREVALENCE_DAYS, PREVALENCE_SESSIONS, PROMPT_RANGES, QUANTILES, SPAN_RANGES, about_of};
 
 /// A row is a habit or a saving of a file when it is at least this share of the file's spend.
 pub const NOTABLE_SHARE: f64 = 0.05;
@@ -27,6 +27,9 @@ pub const COMMON_SHARE: f64 = 0.25;
 /// spend was at max or xhigh. The other pains touch it from [`COMMON_SHARE`] of its days or
 /// sessions on (see [`PAINS`]).
 pub const EFFORT_PAIN_SHARE: f64 = 0.5;
+
+/// The pause ranges of a wait under 5 minutes, as `… within 5 minutes` counts them.
+const WITHIN_5M: [&str; 2] = ["under 1m", "1–5m"];
 
 /// The tools and programs the tool table shows.
 pub const TOP_TOOLS: usize = 12;
@@ -71,6 +74,8 @@ pub struct FileInfo {
     pub busy_ms: Option<f64>,
     /// The time at the keyboard, from the file's rhythm part.
     pub keyboard_ms: Option<f64>,
+    /// The answers about the person, in the order of the questions.
+    pub about: About,
 }
 
 /// The section a table belongs to.
@@ -391,6 +396,37 @@ pub struct PainRow {
     pub by_file: Vec<Option<f64>>,
 }
 
+/// What a row of `What people said` shows under `the pain touches`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Touched {
+    /// Nothing: a row of `role`, `agents` or `not answered`.
+    #[default]
+    Blank,
+    /// `–`: an answer without a measured pain, or answers folded together.
+    None,
+    /// Of the people who gave the answer and have the fields of one of its pains, those that one of
+    /// them touches.
+    Count { people: usize, of: usize },
+}
+
+/// A row of `What people said`: one answer to one question, and how many people gave it.
+#[derive(Clone, Debug, Serialize)]
+pub struct SaidRow {
+    pub question: &'static str,
+    /// The answer, `<n> more` for answers folded together, or `not answered`.
+    pub answer: String,
+    pub people: usize,
+    pub touched: Touched,
+}
+
+/// The files `--where` kept: the conditions, as `about.role=developer`, and the files read.
+#[derive(Clone, Debug, Serialize)]
+pub struct Filter {
+    pub clauses: Vec<String>,
+    pub of: usize,
+}
+
 /// The pooled report.
 #[derive(Clone, Debug, Serialize)]
 pub struct Pool {
@@ -433,6 +469,10 @@ pub struct Pool {
     /// The main sessions that the session rows of both sections leave out, over those files.
     pub left_out_sessions: f64,
     pub pains: Vec<PainRow>,
+    /// The answers about the people; empty when no file has them.
+    pub said: Vec<SaidRow>,
+    /// The filter of `--where`, when one was given.
+    pub filter: Option<Filter>,
 }
 
 impl Pool {
@@ -774,6 +814,7 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
             active_hours: v.pointer("/activity/active_hours").and_then(Value::as_f64),
             busy_ms: v.pointer("/activity/busy_ms").and_then(Value::as_f64),
             keyboard_ms: v.pointer("/rhythm/keyboard_ms").and_then(Value::as_f64),
+            about: about_of(v),
         })
         .collect::<Vec<FileInfo>>();
     let mut sorted = spends.clone();
@@ -1019,9 +1060,106 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
         quarter_3_usd: at_quarter(&sorted, 3),
         tables,
         pains: Vec::new(),
+        said: Vec::new(),
+        filter: None,
     };
     pool.pains = pains(&pool);
+    pool.said = said(&pool, &files, min_files);
     pool
+}
+
+/// The files whose answers hold every condition of `--where`: for each question, all the answers
+/// given. A file without the question is left out.
+pub fn keep(named: &[(String, Value)], clauses: &[(&'static str, Vec<&'static str>)]) -> Vec<(String, Value)> {
+    named
+        .iter()
+        .filter(|(_, v)| {
+            let about = about_of(v);
+            clauses.iter().all(|(q, want)| about.iter().any(|(k, given)| k == q && want.iter().all(|w| given.contains(w))))
+        })
+        .cloned()
+        .collect()
+}
+
+/// What `the pain touches` reads for the agents standing still after the person left: not a row of
+/// `Pains side by side`, so its rule is here. A file whose `rhythm.stood_still` holds waits is
+/// touched when [`COMMON_SHARE`] or more of them were under 5 minutes.
+const STOOD_STILL: &str = "the agents stood still";
+
+/// The measured pains behind an answer of `bother` (see share-pool, The pains of each answer), by
+/// the names of `Pains side by side` and [`STOOD_STILL`]; `None` for an answer without one.
+fn pains_behind(answer: &str) -> Option<Vec<&'static str>> {
+    match answer {
+        "cost" => Some(PAINS.iter().filter(|p| matches!(p.kind, PainKind::Avoidable | PainKind::Spent)).map(|p| p.name).collect()),
+        "waiting" => Some(vec!["waits for retries", "the agent asks", STOOD_STILL]),
+        "context" => Some(vec!["contexts of 400k+", "sessions longer than a day"]),
+        _ => None,
+    }
+}
+
+/// Whether a pain touches each file, as `people` of `Pains side by side` counts it; `None` for a
+/// file without the fields.
+fn touched_by(p: &Pool, files: &[Value], name: &str) -> Vec<Option<bool>> {
+    if name == STOOD_STILL {
+        return files
+            .iter()
+            .map(|f| {
+                let w = f.pointer("/rhythm/stood_still")?;
+                let n = w["count"].as_f64().filter(|n| *n > 0.0)?;
+                let fast: f64 = WITHIN_5M.iter().filter_map(|k| w["by_pause"].get(*k)).filter_map(Value::as_f64).sum();
+                Some(fast / n >= COMMON_SHARE)
+            })
+            .collect();
+    }
+    let share = PAINS.iter().find(|x| x.name == name).map_or(COMMON_SHARE, |x| x.share);
+    match p.pains.iter().find(|r| r.name == name) {
+        Some(r) => r.by_file.iter().map(|s| s.map(|s| s >= share)).collect(),
+        None => vec![None; files.len()],
+    }
+}
+
+/// The rows of `What people said`: per question, in the order of the lists, each answer some file
+/// gave with its people, the answers fewer than `min_files` files gave folded into `<n> more`, then
+/// `not answered`. Empty when no file has answers.
+fn said(p: &Pool, files: &[Value], min_files: usize) -> Vec<SaidRow> {
+    if p.files.iter().all(|f| f.about.is_empty()) {
+        return Vec::new();
+    }
+    let answers_of = |f: &FileInfo, q: &str| f.about.iter().find(|(k, _)| *k == q).map(|(_, a)| a.clone());
+    let mut rows = Vec::new();
+    for (question, answers) in ABOUT {
+        let (mut folded, mut folded_files) = (0, BTreeSet::new());
+        for answer in answers.iter().copied() {
+            let gave: Vec<usize> = (0..p.files.len()).filter(|&i| answers_of(&p.files[i], question).is_some_and(|a| a.contains(&answer))).collect();
+            if gave.is_empty() {
+                continue;
+            }
+            if gave.len() < min_files {
+                folded += 1;
+                folded_files.extend(gave);
+                continue;
+            }
+            let touched = match (question == ABOUT_LIST, pains_behind(answer)) {
+                (false, _) => Touched::Blank,
+                (true, None) => Touched::None,
+                (true, Some(names)) => {
+                    let each: Vec<Vec<Option<bool>>> = names.iter().map(|n| touched_by(p, files, n)).collect();
+                    let known: Vec<bool> = gave.iter().filter_map(|&i| each.iter().filter_map(|t| t[i]).reduce(|a, b| a || b)).collect();
+                    if known.is_empty() { Touched::None } else { Touched::Count { people: known.iter().filter(|t| **t).count(), of: known.len() } }
+                }
+            };
+            rows.push(SaidRow { question, answer: answer.to_string(), people: gave.len(), touched });
+        }
+        if folded > 0 {
+            let touched = if question == ABOUT_LIST { Touched::None } else { Touched::Blank };
+            rows.push(SaidRow { question, answer: format!("{folded} more"), people: folded_files.len(), touched });
+        }
+        let silent = p.files.iter().filter(|f| answers_of(f, question).is_none()).count();
+        if silent > 0 {
+            rows.push(SaidRow { question, answer: "not answered".into(), people: silent, touched: Touched::Blank });
+        }
+    }
+    rows
 }
 
 /// The median of the values that are there.
@@ -1243,7 +1381,7 @@ fn wait_rows(parts: &[Option<&Value>], key: &str, name: &str, within: Option<&st
         let n = w.and_then(|w| w["count"].as_f64()).unwrap_or(0.0);
         medians.push(w.and_then(|w| w["median_ms"].as_f64()));
         let by = w.and_then(|w| w["by_pause"].as_object());
-        let fast: f64 = by.map_or(0.0, |b| ["under 1m", "1–5m"].iter().filter_map(|k| b.get(*k)).filter_map(Value::as_f64).sum());
+        let fast: f64 = by.map_or(0.0, |b| WITHIN_5M.iter().filter_map(|k| b.get(*k)).filter_map(Value::as_f64).sum());
         shares.push((n > 0.0).then(|| fast / n));
         fast_all += fast;
         count_all += n;
@@ -2051,6 +2189,86 @@ mod tests {
         assert!(order.windows(2).all(|w| w[0].1 >= w[1].1), "{order:?}");
         let names: Vec<&str> = order.iter().map(|o| o.0).collect();
         assert_eq!(names[..3], ["effort max or xhigh", "failures", "interrupts"], "3 people each; a pain without money last of them");
+    }
+
+    fn with_about(mut f: Value, about: Value) -> Value {
+        f["about"] = about;
+        f
+    }
+
+    fn said_rows(p: &Pool, question: &str) -> Vec<(String, usize, Touched)> {
+        p.said.iter().filter(|r| r.question == question).map(|r| (r.answer.clone(), r.people, r.touched)).collect()
+    }
+
+    #[test]
+    fn what_people_said_counts_each_answer_and_those_who_gave_none() {
+        let mut files = vec![with_about(file(100.0, json!({})), json!({"role": "developer", "bother": ["waiting", "cost"]})); 5];
+        files.push(with_about(file(100.0, json!({})), json!({"role": "qa", "agents": "3-12m"})));
+        files.push(with_about(file(100.0, json!({})), json!({"agents": "over-1y"})));
+        files.extend(vec![file(100.0, json!({})); 3]);
+        let p = build(&named(files), 1);
+        let blank = Touched::Blank;
+        assert_eq!(said_rows(&p, "role"), vec![("developer".into(), 5, blank), ("qa".into(), 1, blank), ("not answered".into(), 4, blank)]);
+        assert_eq!(said_rows(&p, "agents"), vec![("3-12m".into(), 1, blank), ("over-1y".into(), 1, blank), ("not answered".into(), 8, blank)]);
+        // Two answers each: the rows add up to more than the files.
+        let bother: Vec<(String, usize)> = said_rows(&p, "bother").into_iter().map(|r| (r.0, r.1)).collect();
+        assert_eq!(bother, vec![("cost".into(), 5), ("waiting".into(), 5), ("not answered".into(), 5)]);
+        // No answers, no section.
+        assert!(build(&named(vec![file(100.0, json!({})); 3]), 1).said.is_empty());
+    }
+
+    #[test]
+    fn rare_answers_fold_into_more_but_not_answered_never_does() {
+        let mut files = vec![with_about(file(100.0, json!({})), json!({"role": "developer"})); 6];
+        files.push(with_about(file(100.0, json!({})), json!({"role": "qa", "bother": ["quality"]})));
+        files.push(with_about(file(100.0, json!({})), json!({"role": "designer"})));
+        files.extend(vec![file(100.0, json!({})); 2]);
+        let p = build(&named(files), 3);
+        let blank = Touched::Blank;
+        assert_eq!(said_rows(&p, "role"), vec![("developer".into(), 6, blank), ("2 more".into(), 2, blank), ("not answered".into(), 2, blank)]);
+        assert_eq!(said_rows(&p, "bother"), vec![("1 more".into(), 1, Touched::None), ("not answered".into(), 9, blank)]);
+    }
+
+    #[test]
+    fn the_pain_touches_those_who_said_it_as_pains_side_by_side_counts_them() {
+        let mut quiet = pain_file(2_000.0, 4.0, 9.0, 0.49);
+        quiet["agents"]["claude"]["prevalence"]["sessions_with_failure_window"] = json!(0);
+        let mut waiter = pain_file(500.0, 12.0, 0.0, 0.9);
+        let files = vec![
+            with_about(pain_file(1_000.0, 5.0, 10.0, 0.5), json!({"bother": ["cost"]})),
+            with_about(quiet, json!({"bother": ["cost"]})),
+            with_about(waiter.clone(), json!({"bother": ["waiting"]})),
+            with_about(file(300.0, json!({})), json!({"bother": ["cost", "quality"]})),
+        ];
+        let p = build(&named(files.clone()), 1);
+        // The first is touched by cold returns, the fourth by effort at 90%; the second by none.
+        assert_eq!(p.pains.iter().find(|r| r.name == "effort max or xhigh").map(|r| r.people), Some(3));
+        let bother = said_rows(&p, "bother");
+        assert_eq!(bother[0], ("cost".into(), 3, Touched::Count { people: 2, of: 3 }));
+        // Retries on 2 of 20 days and no questions: the waiter is in n, not in k.
+        assert_eq!(bother[1], ("waiting".into(), 1, Touched::Count { people: 0, of: 1 }));
+        assert_eq!(bother[2], ("quality".into(), 1, Touched::None));
+        // The agents stood still under 5 minutes in 12 of 40 breaks: 30%, so the waiter is touched.
+        waiter["rhythm"] = json!({"stood_still": {"count": 40, "median_ms": 600_000, "by_pause": {"under 1m": 2, "1–5m": 10, "5–15m": 28}}});
+        let mut files = files;
+        files[2] = with_about(waiter, json!({"bother": ["waiting"]}));
+        let p = build(&named(files), 1);
+        assert_eq!(said_rows(&p, "bother")[1].2, Touched::Count { people: 1, of: 1 });
+    }
+
+    #[test]
+    fn where_keeps_the_files_with_every_answer_given() {
+        let files = named(vec![
+            with_about(file(100.0, json!({})), json!({"role": "developer", "bother": ["waiting", "cost"]})),
+            with_about(file(100.0, json!({})), json!({"role": "developer", "bother": ["cost"]})),
+            with_about(file(100.0, json!({})), json!({"role": "qa", "bother": ["waiting"]})),
+            file(100.0, json!({})),
+        ]);
+        let names = |kept: Vec<(String, Value)>| kept.into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+        assert_eq!(names(keep(&files, &[("role", vec!["developer"])])), ["f0", "f1"]);
+        assert_eq!(names(keep(&files, &[("role", vec!["developer"]), ("bother", vec!["waiting"])])), ["f0"]);
+        assert_eq!(names(keep(&files, &[("bother", vec!["waiting"])])), ["f0", "f2"]);
+        assert!(keep(&files, &[("agents", vec!["over-1y"])]).is_empty());
     }
 
     #[test]

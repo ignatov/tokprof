@@ -384,6 +384,7 @@ A session id can be shortened to its start. Codex ids are shown by their first t
 ```sh
 tokprof --since 30d share                              # ~/tokprof/share-2026-11-03.json
 tokprof --since 30d share --survey team-2026-11 -o f.json
+tokprof --since 30d share --about role=developer,agents=over-1y,bother=waiting+cost
 ```
 
 After writing, it prints what the file says, as `tokprof pool` would for that one file (see below).
@@ -419,7 +420,7 @@ Per agent, the file holds:
 | `distributions` | per measure, `n` and, from 5 values on, `p25`, `p50`, `p75` and `p90`: the cost of each main session with its subagents (`session_usd`), of the first request after each cold return (`cold_return_usd`), the typed messages per main session (`typed_per_session`), each turn you started (`turn_ms`), each answer to an end of turn (`answer_ms`), and the largest context of each main session (`largest_context`); the session measures leave out the sessions nobody typed in, as the rhythm does, and `left_out_sessions` counts them |
 | `prevalence` | how often things happened: the active days with a cold return, with a request that waited for retries, and with an interrupt; and the main sessions with a cold return, with spend after a failure, with a context of 400k tokens or more, longer than a day, and with a question from the agent, out of the main sessions less `left_out_sessions`; the file also has the day counts for all its agents together, a day counted once |
 
-The file also names its format (2), the tokprof version, the platform, the first and last day of the requests, and the survey label when `--survey` gives one. Its `rhythm` is the person's time with all the agents together, as the rhythm section of `tokprof pauses` counts it: the time at the keyboard, sittings and breaks, messages, ends of turn while the person was there, interrupts and questions, and four waits with their counts, medians and pause ranges: answers to an end of turn, answers to a question, the turns the person started, and how long the agents stood still after the person left.
+The file also names its format (2), the tokprof version, the platform, the first and last day of the requests, the survey label when `--survey` gives one, and `about` when `--about` gives answers about the person: `role` (`developer`, `qa`, `devops`, `manager`, `designer`, `researcher` or `other`), `agents`, how long the person has used coding agents (`under-3m`, `3-12m` or `over-1y`), and `bother`, one or two of what bothers them most (`cost`, `waiting`, `quality`, `context`, `setup`, `limits` or `nothing`, joined with `+`). Any other answer is an error that lists the allowed ones, so the answers are tokprof's own words and hold no name. Its `rhythm` is the person's time with all the agents together, as the rhythm section of `tokprof pauses` counts it: the time at the keyboard, sittings and breaks, messages, ends of turn while the person was there, interrupts and questions, and four waits with their counts, medians and pause ranges: answers to an end of turn, answers to a question, the turns the person started, and how long the agents stood still after the person left.
 
 It holds no project, path, session id, title, task, prompt or tool text, and no user or host name. Names stay only when they ship with the agent, as each log source lists them: built-in tools, slash commands, bundled skills and built-in subagent types. Well-known shell programs such as `git` and `sed` stay too. Your own skills, commands, subagent types, MCP servers and scripts count only as `skill`, `command`, `agent`, `mcp` and `other`. `--mcp-names docs,ide` keeps the named MCP servers by name. Before writing, tokprof searches every word in the file that it did not make itself, such as model, client and version names, for the home path, the user and host names, and the ids and titles of the sessions, and writes nothing when it finds one. Dollars have 4 decimals and tokens are whole, so files from several users can be summed.
 
@@ -429,6 +430,7 @@ It holds no project, path, session id, title, task, prompt or tool text, and no 
 - the header, with the activity: active days and hours, the hours at the keyboard, busy hours, and the dollars per active hour and per hour at the keyboard;
 - at a glance: six lines on spend, what the cache lost, cold returns, problems, the person's time and what the agents made;
 - for a pool, pains side by side: per pain, how many people it touches in a quarter of their days or sessions or more (half of their spend for effort), whether its dollars are avoidable or spent, the median file's dollars or minutes per active hour, and the pooled dollars or time;
+- for a pool where the files have `about`, what people said: how many gave each answer, how many did not answer, and next to each answer of `bother`, how many of those people its measured pains touch: `cost` the pains with dollars, `waiting` the waits for retries, the agent's questions and the agents standing still after the person left, `context` the contexts of 400k+ and sessions longer than a day;
 - where the money went, with the models without a price under the model table, and the share of spend whose prompts the logs hold under the content table;
 - what could have been saved, per active hour too, the cold returns of each client and their avoidable dollars per active hour, and what coming back after a cold break would have cost in each way that `tokprof bench` replays;
 - problems: failed, refused and denied calls, the spend after failures, the waits for retries by the class of their last error, and slow requests, per active hour;
@@ -450,7 +452,10 @@ tokprof pool ~/survey                   # every .json file in the folder
 tokprof pool --min-files 3 ~/survey     # rows that fewer than 3 files have fold into other
 tokprof pool --by-file a.json b.json    # a column per file
 tokprof pool --json ~/survey            # the numbers as JSON
+tokprof pool --where about.role=developer ~/survey   # only the files with that answer
 ```
+
+`--where about.<key>=<value>` pools only the files with that answer, and may be given several times. The first line then says how many files it kept, as `pool    5 of 8 files where about.role=developer`.
 
 [docs/survey.md](docs/survey.md) says how to run a survey: the prompt a person pastes into their agent, which downloads tokprof and writes the file, and how to collect and pool the files.
 

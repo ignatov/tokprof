@@ -76,6 +76,9 @@ const FIELDS: &[&str] = &[
     "last",
     "survey",
     "mcp_names",
+    "about",
+    "role",
+    "bother",
     "agents",
     "sessions",
     "main_sessions",
@@ -1044,12 +1047,13 @@ fn origin_parts(work: &Work, names: &PublicNames, keep_mcp: &[String]) -> Value 
 }
 
 /// What the header names besides the window: the tokprof that wrote the file, the platform it
-/// ran on, the survey label and the MCP servers kept by name.
+/// ran on, the survey label, the MCP servers kept by name and the answers about the person.
 pub struct Header<'a> {
     pub tokprof: &'a str,
     pub platform: &'a str,
     pub survey: Option<&'a str>,
     pub mcp_names: &'a [String],
+    pub about: &'a [(&'static str, Vec<&'static str>)],
 }
 
 /// The file's text: the value as indented JSON, ending with a newline.
@@ -1258,6 +1262,9 @@ pub fn to_json_with(c: &Collector, p: &Pauses, s: &Share, h: &Header, x: &Extra,
     if !h.mcp_names.is_empty() {
         file.insert("mcp_names".into(), json!(h.mcp_names));
     }
+    if !h.about.is_empty() {
+        file.insert("about".into(), about_json(h.about));
+    }
     file.insert("agents".into(), Value::Object(agents));
     Value::Object(file)
 }
@@ -1265,6 +1272,101 @@ pub fn to_json_with(c: &Collector, p: &Pauses, s: &Share, h: &Header, x: &Extra,
 /// Whether a survey label is 1 to 40 letters, digits, `.`, `_` or `-`.
 pub fn valid_label(label: &str) -> bool {
     (1..=40).contains(&label.chars().count()) && label.chars().all(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// The questions of `--about` and their answers, in the order the survey asks them (see
+/// share-export, Answers about the person).
+pub const ABOUT: [(&str, &[&str]); 3] = [
+    ("role", &["developer", "qa", "devops", "manager", "designer", "researcher", "other"]),
+    ("agents", &["under-3m", "3-12m", "over-1y"]),
+    ("bother", &["cost", "waiting", "quality", "context", "setup", "limits", "nothing"]),
+];
+
+/// The question that takes one or two answers, joined with `+`; the others take one.
+pub const ABOUT_LIST: &str = "bother";
+
+/// The answer of [`ABOUT_LIST`] that goes alone.
+const NOTHING: &str = "nothing";
+
+/// A person's answers: each question given, in the order of [`ABOUT`], with its answers.
+pub type About = Vec<(&'static str, Vec<&'static str>)>;
+
+/// `a, b or c`.
+fn or_list(items: &[&str]) -> String {
+    match items.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        _ => items.join(""),
+    }
+}
+
+/// The question and answers of one `<key>=<value>` clause, checked against [`ABOUT`]. The error
+/// names the allowed keys or answers.
+pub fn about_answer(clause: &str) -> Result<(&'static str, Vec<&'static str>), String> {
+    let keys = || "give <key>=<value>, with the keys role, agents and bother".to_string();
+    let (key, value) = clause.split_once('=').ok_or_else(keys)?;
+    let &(key, answers) = ABOUT.iter().find(|(k, _)| *k == key.trim()).ok_or_else(keys)?;
+    let given: Option<Vec<&'static str>> = value.split('+').map(|v| answers.iter().find(|a| **a == v.trim()).copied()).collect();
+    if key == ABOUT_LIST {
+        match given {
+            Some(g) if g.len() == 2 && g.contains(&NOTHING) => Err(format!("{key} takes {NOTHING} alone")),
+            Some(g) if g.len() == 1 || (g.len() == 2 && g[0] != g[1]) => Ok((key, g)),
+            _ => Err(format!("{key} takes one or two of {}, joined with '+'", or_list(answers))),
+        }
+    } else {
+        match given.as_deref() {
+            Some([one]) => Ok((key, vec![*one])),
+            _ => Err(format!("{key} takes {}", or_list(answers))),
+        }
+    }
+}
+
+/// The answers of `--about`, one clause each, in the order of [`ABOUT`]. The error names the
+/// clause, as `--about role=dev: role takes …`.
+pub fn parse_about(clauses: &[String]) -> Result<About, String> {
+    let mut about: About = Vec::new();
+    for clause in clauses {
+        let (key, answers) = about_answer(clause).map_err(|e| format!("--about {clause}: {e}"))?;
+        if about.iter().any(|(k, _)| *k == key) {
+            return Err(format!("--about {clause}: {key} is given twice"));
+        }
+        about.push((key, answers));
+    }
+    about.sort_by_key(|(k, _)| ABOUT.iter().position(|(q, _)| q == k));
+    Ok(about)
+}
+
+/// The `about` part of the header: `role` and `agents` as strings, `bother` as a list.
+pub fn about_json(about: &[(&'static str, Vec<&'static str>)]) -> Value {
+    Value::Object(
+        about
+            .iter()
+            .map(|(k, answers)| (k.to_string(), if *k == ABOUT_LIST { json!(answers) } else { json!(answers.first().copied().unwrap_or_default()) }))
+            .collect(),
+    )
+}
+
+/// The answers a file's `about` holds, in the order of [`ABOUT`]. A question whose value is not
+/// one of its answers, or not of its shape, is left out, as not answered.
+pub fn about_of(file: &Value) -> About {
+    let Some(part) = file.get("about").and_then(Value::as_object) else { return Vec::new() };
+    let mut out = Vec::new();
+    for (key, answers) in ABOUT {
+        let values: Option<Vec<&str>> = match (key == ABOUT_LIST, part.get(key)) {
+            (true, Some(Value::Array(items))) if (1..=2).contains(&items.len()) => items.iter().map(Value::as_str).collect(),
+            (false, Some(Value::String(s))) => Some(vec![s.as_str()]),
+            _ => None,
+        };
+        let known: Option<Vec<&'static str>> = values.and_then(|v| v.iter().map(|v| answers.iter().find(|a| *a == v).copied()).collect());
+        if let Some(known) = known {
+            out.push((key, known));
+        }
+    }
+    out
+}
+
+/// The answers as `--about` takes them, such as `role=developer,bother=waiting+cost`.
+pub fn about_text(about: &[(&'static str, Vec<&'static str>)]) -> String {
+    about.iter().map(|(k, a)| format!("{k}={}", a.join("+"))).collect::<Vec<_>>().join(",")
 }
 
 /// What a word of the file that tokprof did not make is, in the order the review lists them.
@@ -1315,6 +1417,7 @@ pub fn own_words(agents: &[AgentId]) -> HashSet<String> {
         .chain(PREVALENCE_DAYS)
         .chain(PREVALENCE_SESSIONS)
         .chain([crate::busy::MODEL, crate::busy::API_RETRIES, crate::busy::SUBAGENTS, crate::busy::COMPACTION, crate::busy::BACKGROUND, crate::busy::NOTHING])
+        .chain(ABOUT.iter().flat_map(|(_, answers)| answers.iter().copied()))
         .chain(["other", "unknown"])
         .chain(known_programs());
     own.extend(fixed.map(str::to_string));
@@ -1360,8 +1463,8 @@ pub fn words(v: &Value, own: &HashSet<String>) -> Vec<Word> {
             // tokprof's own.
             ("format" | "tokprof" | "platform" | "window" | "activity", _) => {}
             // The rhythm and the prevalence are tokprof's own parts: their keys are field names and
-            // pause ranges.
-            ("rhythm" | "prevalence", value) => walk(value, key, own, &mut out),
+            // pause ranges. The answers about the person are tokprof's own words too.
+            ("rhythm" | "prevalence" | "about", value) => walk(value, key, own, &mut out),
             (other, value) => {
                 out.push(Word { kind: WordKind::Other, text: other.to_string(), field: String::new() });
                 walk(value, other, own, &mut out);
@@ -1537,7 +1640,7 @@ mod tests {
         (c, p, s)
     }
 
-    const HEADER: Header<'static> = Header { tokprof: "0.1.0", platform: "macos-aarch64", survey: None, mcp_names: &[] };
+    const HEADER: Header<'static> = Header { tokprof: "0.1.0", platform: "macos-aarch64", survey: None, mcp_names: &[], about: &[] };
 
     fn file_with(sessions: &[Session], h: &Header) -> Value {
         let (c, p, s) = collect(sessions);
@@ -1623,6 +1726,68 @@ mod tests {
     fn labels_are_letters_digits_and_a_few_signs() {
         assert!(valid_label("team-2026-11") && valid_label("a.b_c") && valid_label(&"x".repeat(40)));
         assert!(!valid_label("team 11") && !valid_label("") && !valid_label(&"x".repeat(41)) && !valid_label("a/b"));
+    }
+
+    fn clauses(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn answers_about_the_person_go_into_the_header_in_the_order_of_the_questions() {
+        let about = parse_about(&clauses(&["bother=waiting+cost", "agents=over-1y", "role=developer"])).unwrap();
+        assert_eq!(about, vec![("role", vec!["developer"]), ("agents", vec!["over-1y"]), ("bother", vec!["waiting", "cost"])]);
+        assert_eq!(about_text(&about), "role=developer,agents=over-1y,bother=waiting+cost");
+        let h = Header { about: &about, ..HEADER };
+        let v = file_with(&[session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, one())])], &h);
+        assert_eq!(v["about"], json!({"role": "developer", "agents": "over-1y", "bother": ["waiting", "cost"]}));
+        assert_eq!(about_of(&v), about, "the pool reads back what share wrote");
+        // A skipped question leaves its key out; no answers, no part.
+        let qa = parse_about(&clauses(&["role=qa"])).unwrap();
+        let v = file_with(&[session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, one())])], &Header { about: &qa, ..HEADER });
+        assert_eq!(v["about"], json!({"role": "qa"}));
+        let v = file_with(&[session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, one())])], &HEADER);
+        assert!(v.get("about").is_none());
+    }
+
+    #[test]
+    fn answers_outside_the_lists_fail_with_the_allowed_ones() {
+        let err = |list: &[&str]| parse_about(&clauses(list)).unwrap_err();
+        assert_eq!(err(&["role=dev"]), "--about role=dev: role takes developer, qa, devops, manager, designer, researcher or other");
+        assert_eq!(
+            err(&["bother=cost+waiting+quality"]),
+            "--about bother=cost+waiting+quality: bother takes one or two of cost, waiting, quality, context, setup, limits or nothing, joined with '+'"
+        );
+        assert_eq!(
+            err(&["bother=cost+cost"]),
+            "--about bother=cost+cost: bother takes one or two of cost, waiting, quality, context, setup, limits or nothing, joined with '+'"
+        );
+        assert_eq!(err(&["bother=nothing+cost"]), "--about bother=nothing+cost: bother takes nothing alone");
+        assert_eq!(err(&["team=core"]), "--about team=core: give <key>=<value>, with the keys role, agents and bother");
+        assert_eq!(err(&["developer"]), "--about developer: give <key>=<value>, with the keys role, agents and bother");
+        assert_eq!(err(&["role=qa", "role=other"]), "--about role=other: role is given twice");
+        assert_eq!(err(&["agents=3-12m+over-1y"]), "--about agents=3-12m+over-1y: agents takes under-3m, 3-12m or over-1y");
+    }
+
+    #[test]
+    fn a_file_with_answers_outside_the_lists_counts_them_as_not_answered() {
+        let v = json!({"about": {"role": "boss", "agents": "3-12m", "bother": ["cost", "fun"]}});
+        assert_eq!(about_of(&v), vec![("agents", vec!["3-12m"])]);
+        assert!(about_of(&json!({"about": {"bother": "cost"}})).is_empty(), "bother is a list");
+    }
+
+    #[test]
+    fn the_answers_are_own_words_and_other_strings_under_about_are_searched() {
+        let about = parse_about(&clauses(&["role=other", "agents=under-3m", "bother=setup+limits"])).unwrap();
+        let s = session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, one())]);
+        let own = own_words(&agents());
+        let texts = |v: &Value| words(v, &own).into_iter().map(|w| w.text).collect::<BTreeSet<String>>();
+        let with = file_with(std::slice::from_ref(&s), &Header { about: &about, ..HEADER });
+        let without = file_with(std::slice::from_ref(&s), &HEADER);
+        assert_eq!(texts(&with), texts(&without));
+        let mut edited = with.clone();
+        edited["about"]["role"] = json!("/Users/me");
+        let w = words(&edited, &own);
+        assert!(w.iter().any(|w| w.text == "/Users/me" && w.field == "about.role"), "{w:?}");
     }
 
     #[test]

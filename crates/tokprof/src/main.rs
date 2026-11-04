@@ -148,6 +148,11 @@ enum Command {
         /// other MCP server counts as `mcp`.
         #[arg(long, value_delimiter = ',')]
         mcp_names: Vec<String>,
+        /// Answers about you, comma separated: role=developer|qa|devops|manager|designer|
+        /// researcher|other, agents=under-3m|3-12m|over-1y (time using coding agents), and
+        /// bother=one or two of cost|waiting|quality|context|setup|limits|nothing, joined with '+'.
+        #[arg(long, value_delimiter = ',')]
+        about: Vec<String>,
     },
     /// Pool share files of several people into one report: where the money went, what could
     /// have been saved, the habits that cost the most, tools and commands, and agent versions.
@@ -165,6 +170,10 @@ enum Command {
         /// Print the report's numbers as JSON instead of the tables.
         #[arg(long)]
         json: bool,
+        /// Pool only the files with this answer about the person, as about.<key>=<value>, such
+        /// as about.role=developer; may be given several times, and all must hold.
+        #[arg(long = "where", value_name = "about.<key>=<value>")]
+        where_: Vec<String>,
     },
     /// One day of your work with the agents: a strip with a lane per session that shows when the
     /// agent worked and when it waited for your answer, then your sittings, what the agents did
@@ -251,12 +260,32 @@ fn main() -> Result<()> {
         print!("{}", render_report::prices(&pricing, at));
         return Ok(());
     }
-    if let Command::Pool { paths, min_files, by_file, json } = &command {
+    if let Command::Pool { paths, min_files, by_file, json, where_ } = &command {
         if cli.since.is_some() || cli.until.is_some() || cli.project.is_some() || cli.session.is_some() || cli.client.is_some() {
             bail!("pool takes no filters: each file was filtered when it was written");
         }
-        let files = read_share_files(paths, catalog.home())?;
-        let p = pool::build(&files, *min_files);
+        let clauses = where_
+            .iter()
+            .map(|c| {
+                c.strip_prefix("about.")
+                    .ok_or_else(|| "give about.<key>=<value>, with the keys role, agents and bother".to_string())
+                    .and_then(share::about_answer)
+                    .map_err(|e| anyhow::anyhow!("--where {c}: {e}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut files = read_share_files(paths, catalog.home())?;
+        let mut filter = None;
+        if !clauses.is_empty() {
+            let text: Vec<String> = clauses.iter().map(|(k, a)| format!("about.{k}={}", a.join("+"))).collect();
+            let kept = pool::keep(&files, &clauses);
+            if kept.is_empty() {
+                bail!("no share file has {}", text.join(" and "));
+            }
+            filter = Some(pool::Filter { clauses: text, of: files.len() });
+            files = kept;
+        }
+        let mut p = pool::build(&files, *min_files);
+        p.filter = filter;
         if *json {
             println!("{}", serde_json::to_string_pretty(&p)?);
         } else {
@@ -269,6 +298,11 @@ fn main() -> Result<()> {
     {
         bail!("--survey takes 1 to 40 letters, digits, '.', '_' or '-'");
     }
+    // The answers about the person are checked before any log is read.
+    let about = match &command {
+        Command::Share { about, .. } => share::parse_about(about).map_err(anyhow::Error::msg)?,
+        _ => Vec::new(),
+    };
     // The reports and the commands that pick or list sessions select by the same filters.
     let select = Query {
         agents: agents.clone(),
@@ -423,7 +457,7 @@ fn main() -> Result<()> {
         print!("{}", render_rhythm::section(&view, window, offset, &returns, &style));
         return Ok(());
     }
-    if let Command::Share { output, survey, mcp_names } = &command {
+    if let Command::Share { output, survey, mcp_names, .. } = &command {
         let started = Instant::now();
         let mut files = catalog.discover(&agents);
         // A session's subagent logs go with it.
@@ -488,7 +522,7 @@ fn main() -> Result<()> {
             bail!("no requests found for these filters; nothing written");
         }
         let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-        let header = share::Header { tokprof: env!("CARGO_PKG_VERSION"), platform: &platform, survey: survey.as_deref(), mcp_names };
+        let header = share::Header { tokprof: env!("CARGO_PKG_VERSION"), platform: &platform, survey: survey.as_deref(), mcp_names, about: &about };
         // The rhythm of all the main sessions together and of each agent's clients, over the
         // window of the filters, and the bench with its defaults.
         let offset = &rhythm::local_offset;
