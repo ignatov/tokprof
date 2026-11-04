@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/tokprof-core", "crates/tokprof-logio", "crates/tokprof-sources", "crates/tokprof", "sources/claude-code", "sources/codex"]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ignatov/tokprof"
