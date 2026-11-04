@@ -143,7 +143,7 @@ When the report covers one file, it SHALL leave out the `agents` line and the co
 - **AND** the tables of money have only the row name, the dollars and `share`, and no table has a column that counts files
 
 ### Requirement: Rows few files share
-`--min-files <n>` SHALL fold every table row that fewer than n files have into one `other` row of its table. Names under an origin kind are left out instead, and their spend stays in the kind's row. Versions that fewer than n files carry are left out. The default is 1, which folds nothing.
+`--min-files <n>` SHALL fold every table row that fewer than n files have into one `other` row of its table. Names under an origin kind are left out instead, and their spend stays in the kind's row. Versions that fewer than n files carry are left out. A row of `How the sessions spread` with quantiles from fewer than n files is left out too. The default is 1, which folds nothing.
 
 #### Scenario: A rare model
 - **WHEN** only 1 of 8 files used the model `claude-haiku-4-5-20251001`, and `--min-files 3` is given
@@ -152,6 +152,10 @@ When the report covers one file, it SHALL leave out the `agents` line and the co
 #### Scenario: A rare name
 - **WHEN** only 1 of 8 files has spend on `skill:simplify`, and `--min-files 3` is given
 - **THEN** `skill:simplify` is not printed, and its spend stays in the `skill` row
+
+#### Scenario: A spread of two people
+- **WHEN** only 2 of 8 files have quantiles of `cost of a session`, and `--min-files 3` is given
+- **THEN** that row is not printed, so its medians do not show one person's sessions
 
 ### Requirement: Per-file columns
 `--by-file` SHALL add one column per file to each table, headed by the file's name without `.json`, with the row's share of that file's spend. The columns come in the order in which the files were read.
@@ -310,6 +314,8 @@ After the header, the report SHALL print its sections in the order of the scenar
   - `Where the money went`;
   - `What could have been saved` with `Cold returns by client` and `Coming back after a cold break`;
   - `Problems`;
+  - `How often it happens`;
+  - `How the sessions spread`;
   - `Habits that cost the most`;
   - `Where the agent's time went`;
   - `Your time with the agents`;
@@ -321,11 +327,11 @@ After the header, the report SHALL print its sections in the order of the scenar
 
 #### Scenario: Format-1 files only
 - **WHEN** every pooled file has format 1
-- **THEN** the report has neither `Problems`, `Where the agent's time went`, `Your time with the agents`, `Working with the agent`, `Coming back after a cold break`, `Commits and pull requests` nor `Highest effort by client`
+- **THEN** the report has neither `Problems`, `How often it happens`, `How the sessions spread`, `Where the agent's time went`, `Your time with the agents`, `Working with the agent`, `Coming back after a cold break`, `Commits and pull requests` nor `Highest effort by client`
 - **AND** `At a glance` has only the lines whose parts format 1 has
 
 #### Scenario: Files written before the rhythm parts
-- **WHEN** every pooled file has format 2 but none has the rhythm, bench or outcome parts
+- **WHEN** every pooled file has format 2 but none has the rhythm, bench, outcome, prevalence or distribution parts
 - **THEN** the report has none of the sections built from them, and `Working with the agent` is left out, since its base is missing
 
 ### Requirement: At a glance
@@ -361,6 +367,8 @@ Every section title SHALL be followed by one line that says what the section cou
   - `Cold returns by client`: `returns to a session after its cache expired, per active hour`
   - `Coming back after a cold break`: `what the cold returns cost as resumed, against the other ways to come back (see tokprof bench)`
   - `Problems`: `calls that failed, requests that waited for retries, and slow requests, per active hour`
+  - `How often it happens`: `the active days and main sessions in which each happened at least once`
+  - `How the sessions spread`: `per session, cold return, turn or answer: the quarters and the 90th percentile, given from 5 values on`
   - `Habits that cost the most`: `where to look, not what could be saved; the rows overlap`
   - `Where the agent's time went`: `what the agents waited on while busy; after turns: while their own background work ran on`
   - `Your time with the agents`: `your sittings and answers, and what the agents did after you left`
@@ -375,6 +383,8 @@ Every section title SHALL be followed by one line that says what the section cou
 - **WHEN** the report covers several files
 - **THEN** the note of `Where the money went` ends with `; median file: the median of each file's own share`
 - **AND** the note of `What could have been saved` ends with `; files 5%+: the files where a row is 5% of their spend or more`
+- **AND** the note of `How often it happens` ends with `; files: where it happened at all; files 25%+: in a quarter of their days or sessions or more`
+- **AND** the note of `How the sessions spread` ends with `; p50 and q1–q3: the median and quarters of the files' own p50; p90: the median of their p90`
 
 ### Requirement: Coming back after a cold break
 After `Cold returns by client`, the report SHALL print `Coming back after a cold break`, from the bench parts of all agents (see share-export, Bench parts). It has one row per way, named as the bench names it, with `cost`, the pooled cost of all returns that way; `of resume`, that cost over the cost as resumed; and `cheapest in`, the returns where the way cost least, of all returns. For a pool, `median file` gives each file's `of resume`.
@@ -437,3 +447,51 @@ Every count of 1,000 or more in the report SHALL have thousands separators, as t
 #### Scenario: Calls of a tool
 - **WHEN** `Read` had 15080 calls
 - **THEN** its row shows `15,080`
+
+### Requirement: How often it happens
+After `Problems`, the report SHALL print `How often it happens`, from the prevalence parts (see share-export, Prevalence parts), with one row per count of the scenario below. The day rows come from the file's own prevalence part; the session rows from the agents' parts. The columns are `count`, `of` (the active days, or the main sessions someone worked in, of the same files) and `share`.
+
+#### Scenario: The rows
+- **WHEN** the report is printed
+- **THEN** its rows are `days with a cold return`, `days a request waited for retries`, `days you stopped the agent`, `sessions with a cold return`, `sessions with spend after a failure`, `sessions with a context of 400k+`, `sessions longer than a day` and `sessions where the agent asked`
+
+#### Scenario: One file
+- **WHEN** a file had a cold return on 28 of its 30 active days
+- **THEN** the row `days with a cold return` shows `28`, `30 days` and `93.3%`
+
+### Requirement: Sessions the rows leave out
+Under the tables of `How often it happens` and `How the sessions spread`, the report SHALL print `the session rows leave out <n> sessions that nobody typed in: a program ran them, or they ran in a temporary folder`, with the `left_out_sessions` of the files summed (see share-export, Sessions nobody typed in). With none left out, there is no such line.
+
+#### Scenario: Scripted runs
+- **WHEN** a file left out 129 Claude Code and 126 Codex sessions
+- **THEN** both tables end with `the session rows leave out 255 sessions that nobody typed in: a program ran them, or they ran in a temporary folder`
+
+### Requirement: Files in How often it happens
+For a pool, the counts of `How often it happens` SHALL be pooled, and the columns `median file` (of each file's share), `files` (the files where the count is above zero) and `files 25%+` (the files where it is 25% or more of their days or sessions) follow. Each count of files comes with its share of the files that have the part. `--min-files` leaves these rows as they are, since they count files.
+
+#### Scenario: A pool
+- **WHEN** 4 files had a cold return on 15, 0, 6 and 30 of their 30 active days, and a fifth file has no prevalence part
+- **THEN** the title reads `How often it happens, in 4 of 5 files`
+- **AND** the row `days with a cold return` shows `51`, `120 days`, `42.5%`, `50.0%` under `median file`, `3 (75%)` under `files` and `2 (50%)` under `files 25%+`
+
+### Requirement: How the sessions spread
+After `How often it happens`, the report SHALL print `How the sessions spread`, from the distribution parts (see share-export, Distribution parts), with one row per agent and measure of the scenario below. A row needs one file with quantiles for it. `values` is the number of values, summed over the files. For one file the columns `p25`, `p50`, `p75` and `p90` give the file's quantiles.
+
+#### Scenario: The measures
+- **WHEN** the files have every measure
+- **THEN** each agent's rows are `cost of a session`, `first request after a cold return`, `typed messages per session`, `the agent's turn`, `your answer to an end of turn` and `largest context of a session`
+
+#### Scenario: One file
+- **WHEN** a file's 100 Claude Code sessions have `p25` $0.01, `p50` $0.50, `p75` $15.00 and `p90` $67.00
+- **THEN** the row `claude  cost of a session` shows `100`, `$0.01`, `$0.50`, `$15.00` and `$67.00`
+
+#### Scenario: Too few values
+- **WHEN** no file has 5 cold returns of Codex
+- **THEN** there is no row `codex  first request after a cold return`
+
+### Requirement: Spread over files
+For a pool, `How the sessions spread` SHALL show `p50`, the median of the files' `p50`; `q1–q3`, their quarters; `p90`, the median of their `p90`; and `files`, the files with quantiles, as `<k> of <n>` when n files have the measure but only k have quantiles. Medians and quarters are taken as the pool header takes them.
+
+#### Scenario: A pool
+- **WHEN** 5 files' sessions cost a median $1, $2, $3, $4 and $5, each with a `p90` of $67 over 100 sessions, and a sixth file has 3 sessions and no quantiles
+- **THEN** the row `claude  cost of a session` shows `503`, `$3.00`, `$2.00–$4.00`, `$67.00` and `5 of 6`
