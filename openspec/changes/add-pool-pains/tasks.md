@@ -46,3 +46,5 @@ sessions longer than a day  0 of 8      spent                       $13.96  $7,3
 | left out | `cache lifetime: subagents` ($403) and `cache lifetime: main` ($0.68) are not in the cold returns (design, decision 5) |
 | one file | `tokprof pool` over one of the files prints no `Pains side by side` |
 | `--by-file --min-files 3` | the rows stay; each file's column shows the share the people rule reads |
+
+- [x] Let the two size pains touch a file through their share of its spend as well. Verify: over the eight files, `sessions longer than a day` touches 5 of 8 (was 0 of 8), `contexts of 400k+` stays 5 of 8, the other rows are unchanged.

@@ -40,6 +40,17 @@ For a pool, the report SHALL print `Pains side by side` right after `At a glance
 - **WHEN** no file has dollars per effort level
 - **THEN** there is no row `effort max or xhigh`
 
+### Requirement: Size pains touch through their spend
+`contexts of 400k+` and `sessions longer than a day` SHALL also touch a file whose spend in their row of `Habits that cost the most` is 25% or more of its spend. A few expensive sessions are a pain of their spend, not of their count.
+
+#### Scenario: A few long sessions that hold most of the spend
+- **WHEN** a file's sessions longer than a day are 10% of its main sessions and 60% of its spend
+- **THEN** `sessions longer than a day` touches that file
+
+#### Scenario: Neither many nor expensive
+- **WHEN** a file's prompts of 400k+ are in 2 of its 40 main sessions and 10% of its spend
+- **THEN** `contexts of 400k+` does not touch that file
+
 ### Requirement: Money and time of a pain
 `kind` SHALL say what a row's money is: `avoidable`, dollars that could have been saved; `spent`, dollars spent in the pain; `time`, time waited; `–` for none. `pooled` is the pooled value of the row it comes from. `median file per active hour` is the median, over the files with that row's part and active hours, of each file's value over its active hours; for a row of `Problems`, its `median file`. The rows overlap, so the section adds up neither money nor time.
 
@@ -114,7 +125,7 @@ Every section title SHALL be followed by one line that says what the section cou
 
 #### Scenario: Notes of a pool
 - **WHEN** the report covers several files
-- **THEN** the note of `Pains side by side` is `each pain by the people it touches: in a quarter of their days or sessions or more, or half of their spend for effort; the rows overlap, so money and time are not added up`
+- **THEN** the note of `Pains side by side` is `each pain by the people it touches: in a quarter of their days, sessions or spend or more, or half of their spend for effort; the rows overlap, so money and time are not added up`
 - **AND** the note of `Where the money went` ends with `; median file: the median of each file's own share`
 - **AND** the note of `What could have been saved` ends with `; files 5%+: the files where a row is 5% of their spend or more`
 - **AND** the note of `How often it happens` ends with `; files: where it happened at all; files 25%+: in a quarter of their days or sessions or more`

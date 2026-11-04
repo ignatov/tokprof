@@ -1657,6 +1657,9 @@ enum PainMoney {
 struct Pain {
     name: &'static str,
     people: PainPeople,
+    /// A row of `Habits that cost the most` whose share of a file's spend also touches the person:
+    /// a pain of a few expensive sessions touches them through their spend, not their sessions.
+    or_spend: Option<&'static str>,
     share: f64,
     money: PainMoney,
     kind: PainKind,
@@ -1668,6 +1671,7 @@ const PAINS: [Pain; 8] = [
     Pain {
         name: "cold returns",
         people: PainPeople::Prevalence("days_with_cold_return"),
+        or_spend: None,
         share: COMMON_SHARE,
         money: PainMoney::Saved("idle > TTL"),
         kind: PainKind::Avoidable,
@@ -1675,6 +1679,7 @@ const PAINS: [Pain; 8] = [
     Pain {
         name: "contexts of 400k+",
         people: PainPeople::Prevalence("sessions_over_400k"),
+        or_spend: Some("prompts of 400k+"),
         share: COMMON_SHARE,
         money: PainMoney::Habit("prompts of 400k+"),
         kind: PainKind::Spent,
@@ -1682,6 +1687,7 @@ const PAINS: [Pain; 8] = [
     Pain {
         name: "sessions longer than a day",
         people: PainPeople::Prevalence("sessions_over_1d"),
+        or_spend: Some("sessions longer than a day"),
         share: COMMON_SHARE,
         money: PainMoney::Habit("sessions longer than a day"),
         kind: PainKind::Spent,
@@ -1689,6 +1695,7 @@ const PAINS: [Pain; 8] = [
     Pain {
         name: "failures",
         people: PainPeople::Prevalence("sessions_with_failure_window"),
+        or_spend: None,
         share: COMMON_SHARE,
         money: PainMoney::Problem("spend after failures"),
         kind: PainKind::Spent,
@@ -1696,15 +1703,24 @@ const PAINS: [Pain; 8] = [
     Pain {
         name: "waits for retries",
         people: PainPeople::Prevalence("days_with_retry_wait"),
+        or_spend: None,
         share: COMMON_SHARE,
         money: PainMoney::Problem("time waiting for retries"),
         kind: PainKind::Time,
     },
-    Pain { name: "interrupts", people: PainPeople::Prevalence("days_with_interrupt"), share: COMMON_SHARE, money: PainMoney::Nothing, kind: PainKind::None },
+    Pain {
+        name: "interrupts",
+        people: PainPeople::Prevalence("days_with_interrupt"),
+        or_spend: None,
+        share: COMMON_SHARE,
+        money: PainMoney::Nothing,
+        kind: PainKind::None,
+    },
     // The files hold the median of the answers to questions, not their total, so no time.
     Pain {
         name: "the agent asks",
         people: PainPeople::Prevalence("sessions_with_question"),
+        or_spend: None,
         share: COMMON_SHARE,
         money: PainMoney::Nothing,
         kind: PainKind::None,
@@ -1712,6 +1728,7 @@ const PAINS: [Pain; 8] = [
     Pain {
         name: "effort max or xhigh",
         people: PainPeople::Habit("effort max or xhigh"),
+        or_spend: None,
         share: EFFORT_PAIN_SHARE,
         money: PainMoney::Habit("effort max or xhigh"),
         kind: PainKind::Spent,
@@ -1737,6 +1754,20 @@ fn pains(p: &Pool) -> Vec<PainRow> {
         let by_file = match pain.people {
             PainPeople::Prevalence(key) => p.prevalence.iter().find(|r| r.key == key).map(|r| r.by_file.clone()),
             PainPeople::Habit(name) => habit(name).map(|r| r.by_file.clone()),
+        };
+        // With `or_spend`, a file's share is the larger of its share of days or sessions and its
+        // share of spend in that habit row.
+        let by_file = match (by_file, pain.or_spend.and_then(habit)) {
+            (Some(b), Some(h)) => Some(
+                b.iter()
+                    .zip(&h.by_file)
+                    .map(|(a, s)| match (a, s) {
+                        (Some(a), Some(s)) => Some(a.max(*s)),
+                        (a, _) => *a,
+                    })
+                    .collect(),
+            ),
+            (b, _) => b,
         };
         let Some(by_file) = by_file.filter(|b| b.iter().any(Option::is_some)) else { continue };
         let (pooled, median_per_hour) = match pain.money {
@@ -2154,8 +2185,6 @@ mod tests {
         let prevalence = |key: &str| p.prevalence.iter().find(|r| r.key == key).unwrap();
         for (name, key) in [
             ("cold returns", "days_with_cold_return"),
-            ("contexts of 400k+", "sessions_over_400k"),
-            ("sessions longer than a day", "sessions_over_1d"),
             ("failures", "sessions_with_failure_window"),
             ("waits for retries", "days_with_retry_wait"),
             ("interrupts", "days_with_interrupt"),
@@ -2166,7 +2195,11 @@ mod tests {
         }
         // 25% of the days is enough, 20% is not; the file without the parts is not in n.
         assert_eq!((pain("cold returns").people, pain("cold returns").of), (2, 3));
-        assert_eq!(pain("contexts of 400k+").people, 1, "10 of 40 sessions, and 9 of 40");
+        // The size pains also touch a file through their share of its spend: prompts of 400k+ are
+        // 30% of each file's spend, sessions longer than a day 20% and 1 of 40 sessions.
+        assert_eq!(pain("contexts of 400k+").people, 3, "10 of 40 sessions, or 30% of the spend");
+        assert_eq!(prevalence("sessions_over_400k").common_files, 1, "10 of 40 sessions, and 9 of 40");
+        assert_eq!((pain("sessions longer than a day").people, pain("sessions longer than a day").of), (0, 3));
         // Half of the spend at max is enough; the fourth file has effort too, at 90%.
         let effort = row(&p, "habits", "effort max or xhigh");
         assert_eq!((pain("effort max or xhigh").people, pain("effort max or xhigh").of), (3, 4));
@@ -2188,7 +2221,7 @@ mod tests {
         let order: Vec<(&str, usize)> = p.pains.iter().map(|r| (r.name, r.people)).collect();
         assert!(order.windows(2).all(|w| w[0].1 >= w[1].1), "{order:?}");
         let names: Vec<&str> = order.iter().map(|o| o.0).collect();
-        assert_eq!(names[..3], ["effort max or xhigh", "failures", "interrupts"], "3 people each; a pain without money last of them");
+        assert_eq!(names[..3], ["effort max or xhigh", "contexts of 400k+", "failures"], "3 people each, the most dollars first");
     }
 
     fn with_about(mut f: Value, about: Value) -> Value {
@@ -2233,6 +2266,8 @@ mod tests {
     fn the_pain_touches_those_who_said_it_as_pains_side_by_side_counts_them() {
         let mut quiet = pain_file(2_000.0, 4.0, 9.0, 0.49);
         quiet["agents"]["claude"]["prevalence"]["sessions_with_failure_window"] = json!(0);
+        // Prompts of 400k+ at 10% of its spend: under the quarter that would touch it.
+        quiet["agents"]["claude"]["prompt_sizes"]["main"]["400–800k"]["usd"] = json!(200.0);
         let mut waiter = pain_file(500.0, 12.0, 0.0, 0.9);
         let files = vec![
             with_about(pain_file(1_000.0, 5.0, 10.0, 0.5), json!({"bother": ["cost"]})),

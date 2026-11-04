@@ -46,3 +46,8 @@ None: the pool reads only share files, and the section is a few loops over rows 
 - [A threshold hides a pain of few days] `sessions longer than a day` touches 0 of 8 people at 25% of their sessions, but holds $7,382 of spend. → The row still shows its dollars, and the sort puts it last, which is what the people column means. The dollars stay visible.
 - [Rows overlap] A request in a 400k+ prompt of a session longer than a day, at max effort, counts in three rows. → The note under the title says so, and the section has no total.
 - [Older files] A file without the prevalence parts counts only in the effort row. → Each row says in how many files it is.
+
+
+## Added after the first pool of eight files
+
+- On the first pool, `sessions longer than a day` touched 0 of 8 files although it held 65% of the spend: such sessions are few (15% of sessions) but expensive. `contexts of 400k+` and `sessions longer than a day` now also touch a file whose spend in their habit row is 25% or more of its spend (`or_spend` in `PAINS`). Then the row touches 5 of 8 files.

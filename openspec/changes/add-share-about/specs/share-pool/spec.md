@@ -173,7 +173,7 @@ Every section title SHALL be followed by one line that says what the section cou
 
 #### Scenario: Notes of a pool
 - **WHEN** the report covers several files
-- **THEN** the note of `Pains side by side` is `each pain by the people it touches: in a quarter of their days or sessions or more, or half of their spend for effort; the rows overlap, so money and time are not added up`
+- **THEN** the note of `Pains side by side` is `each pain by the people it touches: in a quarter of their days, sessions or spend or more, or half of their spend for effort; the rows overlap, so money and time are not added up`
 - **AND** the note of `What people said` is `the answers to tokprof share --about; the pain touches: of the people who gave an answer of bother, those its measured pains touch, as Pains side by side counts them`
 - **AND** the note of `Where the money went` ends with `; median file: the median of each file's own share`
 - **AND** the note of `What could have been saved` ends with `; files 5%+: the files where a row is 5% of their spend or more`
