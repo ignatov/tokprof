@@ -45,13 +45,13 @@ For each answer of `bother`, `the pain touches` SHALL read `<k> of <n>`: n is th
 ### Requirement: The pains of each answer
 The answers of `bother` SHALL have these pains:
 - `cost`: every pain of `Pains side by side` whose kind is `avoidable` or `spent`;
-- `waiting`: `waits for retries`, `the agent asks`, and the agents standing still: a file whose `rhythm.stood_still` holds waits is touched when 25% or more of them were under 5 minutes;
+- `waiting`, the person waiting for the agent: `waits for retries`. The agent's questions and the agents standing still after the person left are the agent waiting for the person, so they are not its pains;
 - `context`: `contexts of 400k+` and `sessions longer than a day`;
 - `quality`, `setup`, `limits` and `nothing`: none, shown as `–`.
 
-#### Scenario: Waiting from the breaks
-- **WHEN** a person said `waiting`, no prevalence part touches them, and in 12 of their 40 breaks the agents stood still under 5 minutes after they left
-- **THEN** the row `waiting` counts them among k, since 12 of 40 is 30%
+#### Scenario: Waiting is the person's
+- **WHEN** a person said `waiting`, requests waited for retries on 2 of their 20 active days, and in 12 of their 40 breaks the agents stood still under 5 minutes after they left
+- **THEN** the row `waiting` counts them in n but not in k
 
 #### Scenario: An answer without a measured pain
 - **WHEN** 2 people said `quality`
@@ -173,7 +173,7 @@ Every section title SHALL be followed by one line that says what the section cou
 
 #### Scenario: Notes of a pool
 - **WHEN** the report covers several files
-- **THEN** the note of `Pains side by side` is `each pain by the people it touches: in a quarter of their days, sessions or spend or more, or half of their spend for effort; the rows overlap, so money and time are not added up`
+- **THEN** the note of `Pains side by side` is `each pain by the people it touches: in a quarter of their days, sessions or spend or more, or half of their spend for effort; spent is what that work cost, not what changing it would save; the rows overlap, so money and time are not added up`
 - **AND** the note of `What people said` is `the answers to tokprof share --about; the pain touches: of the people who gave an answer of bother, those its measured pains touch, as Pains side by side counts them`
 - **AND** the note of `Where the money went` ends with `; median file: the median of each file's own share`
 - **AND** the note of `What could have been saved` ends with `; files 5%+: the files where a row is 5% of their spend or more`

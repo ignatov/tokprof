@@ -292,7 +292,7 @@ const SPEND_TABLES: [(&str, &[&str]); 8] = [
 const NOTES: [(&str, &str); 18] = [
     (
         "Pains side by side",
-        "each pain by the people it touches: in a quarter of their days, sessions or spend or more, or half of their spend for effort; the rows overlap, so money and time are not added up",
+        "each pain by the people it touches: in a quarter of their days, sessions or spend or more, or half of their spend for effort; spent is what that work cost, not what changing it would save; the rows overlap, so money and time are not added up",
     ),
     (
         "What people said",

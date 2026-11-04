@@ -125,7 +125,7 @@ Every section title SHALL be followed by one line that says what the section cou
 
 #### Scenario: Notes of a pool
 - **WHEN** the report covers several files
-- **THEN** the note of `Pains side by side` is `each pain by the people it touches: in a quarter of their days, sessions or spend or more, or half of their spend for effort; the rows overlap, so money and time are not added up`
+- **THEN** the note of `Pains side by side` is `each pain by the people it touches: in a quarter of their days, sessions or spend or more, or half of their spend for effort; spent is what that work cost, not what changing it would save; the rows overlap, so money and time are not added up`
 - **AND** the note of `Where the money went` ends with `; median file: the median of each file's own share`
 - **AND** the note of `What could have been saved` ends with `; files 5%+: the files where a row is 5% of their spend or more`
 - **AND** the note of `How often it happens` ends with `; files: where it happened at all; files 25%+: in a quarter of their days or sessions or more`

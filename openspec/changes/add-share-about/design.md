@@ -45,3 +45,9 @@ None: `share` adds one small part to the header after the logs are read, and the
 - [Answers are opinions] A person may tick `cost` without knowing what they spend. → That is the point of the touched column: it shows how many of them the measured pain touches.
 - [Few answers per value] A cut of a small pool by an answer can describe one person. → `--min-files` folds rare answers, and `docs/survey.md` already asks for `--min-files 3` before a report is shown to others. A `--where` cut that keeps fewer files shows the reader the count in its first line.
 - [A rule for standing still] Decision 8 is a new rule, not one of `Pains side by side`. → It is written in the spec and in one place in the code, next to the map.
+
+
+## Changed after a review of the pooled report
+
+- Item 8 is undone. `waiting` in the prompt is the person waiting for the agent. The agent's questions and the agents standing still after the person left are the agent waiting for the person, the other way round. `waiting` now has one pain, `waits for retries`, and the prompt says `waiting (for the agent)`.
+- The note of `Pains side by side` now says that `spent` is what that work cost, not what changing it would save. The effort row's $9,073 is all the spend at max or xhigh, while what high would have saved is a fraction of it.

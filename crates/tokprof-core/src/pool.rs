@@ -1081,17 +1081,14 @@ pub fn keep(named: &[(String, Value)], clauses: &[(&'static str, Vec<&'static st
         .collect()
 }
 
-/// What `the pain touches` reads for the agents standing still after the person left: not a row of
-/// `Pains side by side`, so its rule is here. A file whose `rhythm.stood_still` holds waits is
-/// touched when [`COMMON_SHARE`] or more of them were under 5 minutes.
-const STOOD_STILL: &str = "the agents stood still";
-
 /// The measured pains behind an answer of `bother` (see share-pool, The pains of each answer), by
-/// the names of `Pains side by side` and [`STOOD_STILL`]; `None` for an answer without one.
+/// the names of `Pains side by side`; `None` for an answer without one. `waiting` is the person
+/// waiting for the agent, so the agent's questions and its standing still after the person left,
+/// where the agent waits for the person, are not among its pains.
 fn pains_behind(answer: &str) -> Option<Vec<&'static str>> {
     match answer {
         "cost" => Some(PAINS.iter().filter(|p| matches!(p.kind, PainKind::Avoidable | PainKind::Spent)).map(|p| p.name).collect()),
-        "waiting" => Some(vec!["waits for retries", "the agent asks", STOOD_STILL]),
+        "waiting" => Some(vec!["waits for retries"]),
         "context" => Some(vec!["contexts of 400k+", "sessions longer than a day"]),
         _ => None,
     }
@@ -1100,17 +1097,6 @@ fn pains_behind(answer: &str) -> Option<Vec<&'static str>> {
 /// Whether a pain touches each file, as `people` of `Pains side by side` counts it; `None` for a
 /// file without the fields.
 fn touched_by(p: &Pool, files: &[Value], name: &str) -> Vec<Option<bool>> {
-    if name == STOOD_STILL {
-        return files
-            .iter()
-            .map(|f| {
-                let w = f.pointer("/rhythm/stood_still")?;
-                let n = w["count"].as_f64().filter(|n| *n > 0.0)?;
-                let fast: f64 = WITHIN_5M.iter().filter_map(|k| w["by_pause"].get(*k)).filter_map(Value::as_f64).sum();
-                Some(fast / n >= COMMON_SHARE)
-            })
-            .collect();
-    }
     let share = PAINS.iter().find(|x| x.name == name).map_or(COMMON_SHARE, |x| x.share);
     match p.pains.iter().find(|r| r.name == name) {
         Some(r) => r.by_file.iter().map(|s| s.map(|s| s >= share)).collect(),
@@ -2280,12 +2266,16 @@ mod tests {
         assert_eq!(p.pains.iter().find(|r| r.name == "effort max or xhigh").map(|r| r.people), Some(3));
         let bother = said_rows(&p, "bother");
         assert_eq!(bother[0], ("cost".into(), 3, Touched::Count { people: 2, of: 3 }));
-        // Retries on 2 of 20 days and no questions: the waiter is in n, not in k.
+        // Retries on 2 of 20 days: the waiter is in n, not in k.
         assert_eq!(bother[1], ("waiting".into(), 1, Touched::Count { people: 0, of: 1 }));
         assert_eq!(bother[2], ("quality".into(), 1, Touched::None));
-        // The agents stood still under 5 minutes in 12 of 40 breaks: 30%, so the waiter is touched.
+        // The agents standing still after the person left is the agent waiting, not the person.
         waiter["rhythm"] = json!({"stood_still": {"count": 40, "median_ms": 600_000, "by_pause": {"under 1m": 2, "1–5m": 10, "5–15m": 28}}});
         let mut files = files;
+        files[2] = with_about(waiter.clone(), json!({"bother": ["waiting"]}));
+        assert_eq!(said_rows(&build(&named(files.clone()), 1), "bother")[1].2, Touched::Count { people: 0, of: 1 });
+        // Retries on 10 of 20 days touch the waiter.
+        waiter["prevalence"]["days_with_retry_wait"] = json!(10);
         files[2] = with_about(waiter, json!({"bother": ["waiting"]}));
         let p = build(&named(files), 1);
         assert_eq!(said_rows(&p, "bother")[1].2, Touched::Count { people: 1, of: 1 });

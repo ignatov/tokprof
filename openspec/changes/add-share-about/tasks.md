@@ -67,3 +67,5 @@ The author's logs, `tokprof --since 7d share --about role=developer,agents=over-
 - the header holds `"about": {"agents": "over-1y", "bother": ["waiting", "cost"], "role": "developer"}`, the keys in the file's alphabetical order;
 - the report's second line is `about   role=developer,agents=over-1y,bother=waiting+cost`;
 - the leak check passed and the file was written; `--about role=dev` failed with the allowed roles and wrote nothing.
+
+- [x] Map `waiting` to the person waiting for the agent only (`waits for retries`), say `waiting (for the agent)` in the prompt, and say in the note of `Pains side by side` what `spent` means. Verify: the test of `the pain touches` keeps a person whose agents stood still in n and out of k; tests, clippy and strict validation pass.
