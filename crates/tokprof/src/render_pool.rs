@@ -908,7 +908,7 @@ fn report(p: &Pool, by_file: bool) -> String {
         section_head(&mut out, "Commits and pull requests", &coverage(o.files, n), one);
         out.push('\n');
         out.push_str(&rate_table(p, &o.rows, "action", "per hour at the keyboard", by_file));
-        let _ = writeln!(out, "{}", o.usd_per_commit.map_or("no commits by the agents".to_string(), |u| format!("{} of spend per commit", usd(u))));
+        let _ = writeln!(out, "{}", o.usd_per_commit.map_or("no commits by the agents".to_string(), |u| format!("{} of spend per commit", usd_rate(u))));
     }
     if let Some(t) = p.table("tools").filter(present) {
         section_head(&mut out, "Tools and commands", &coverage(t.files_with_part, n), one);
@@ -1490,6 +1490,15 @@ mod tests {
         let none = with_keyboard(friction_file(1_000.0, 10.0, 2.0, json!({"outcomes": {"commits": 0, "pushes": 0, "pull_requests": 0}})), 5.0);
         let t = text(&pool_of(vec![none]), false);
         assert!(t.contains("\nno commits by the agents\n") && t.contains("made      no commits by the agents"), "{t}");
+    }
+
+    #[test]
+    fn spend_per_commit_is_a_share_of_one_file_when_files_weigh_the_same() {
+        let shares = tokprof_core::share::as_shares(&rich_file(), false);
+        let t = text(&pool_of(vec![shares.clone(), shares]), false);
+        let section = &t[t.find("Commits and pull requests").unwrap()..];
+        assert!(section.contains("\n0.24% of spend per commit\n"), "{section}");
+        assert!(t.contains("pull requests: 0.24% of spend per commit"), "{t}");
     }
 
     #[test]

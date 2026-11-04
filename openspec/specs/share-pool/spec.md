@@ -641,11 +641,15 @@ With `--min-files <n>`, the answers of a question that fewer than n files gave S
 - **THEN** the rows of `role` are `developer` with `6 (60%)`, `2 more` with `2 (20%)` and `not answered` with `2 (20%)`
 
 ### Requirement: Files without totals
-When a pooled file has no totals (see share-export, Totals in the file), the pool SHALL weigh every file the same, as if each spent one unit and used one unit of tokens; a file with totals is divided by them first. Every dollar of the report then prints as a share of the files' units of spend, such as `7.0%` for `$808` of `$11,465` in one file, and every rate of dollars per active hour as a share of one file's spend, such as `0.018%` under `per active hour`.
+When a pooled file has no totals (see share-export, Totals in the file), the pool SHALL weigh every file the same, as if each spent one unit and used one unit of tokens; a file with totals is divided by them first. Every dollar of the report then prints as a share of the files' units of spend, such as `7.0%` for `$808` of `$11,465` in one file, and every rate of dollars, per active hour or per commit, as a share of one file's spend, such as `0.018%` under `per active hour`.
 
 #### Scenario: Two files, one heavy
 - **WHEN** a file spent 10% of its $11,000 on `idle > TTL`, another 30% of its $300, and one of them has no totals
 - **THEN** `idle > TTL` shows `20.0%` pooled, not the 10.5% of the pooled dollars
+
+#### Scenario: Spend per commit
+- **WHEN** two files without totals are pooled and the agents of each made 410 commits
+- **THEN** the `made` line and the line under `Commits and pull requests` both read `0.24% of spend per commit`, of one file's spend
 
 #### Scenario: Every file with totals
 - **WHEN** every pooled file has format 1 or 2, or format 3 with totals
