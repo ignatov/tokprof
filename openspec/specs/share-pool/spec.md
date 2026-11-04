@@ -21,7 +21,7 @@ Pools the share files of several people into one report: where their money went,
 - **THEN** it fails with `pool takes no filters: each file was filtered when it was written`
 
 ### Requirement: Files the pool skips
-The pool SHALL skip a file that is not a share file, one whose format is newer than it reads, and one whose content equals a file it already read. For each, it prints one line on stderr: `skipped <path>: not a tokprof share file`, `skipped <path>: format <n> needs a newer tokprof` or `skipped <path>: the same as <path>`.
+The pool SHALL skip a file that is not a share file, one whose format is newer than it reads, and one whose content equals a file it already read. It reads formats 1 to 3. For each file it skips, it prints one line on stderr: `skipped <path>: not a tokprof share file`, `skipped <path>: format <n> needs a newer tokprof` or `skipped <path>: the same as <path>`.
 
 #### Scenario: A file sent twice
 - **WHEN** a folder holds `a.json` and `a (1).json` with the same content
@@ -32,8 +32,8 @@ The pool SHALL skip a file that is not a share file, one whose format is newer t
 - **THEN** both are read
 
 #### Scenario: A newer format
-- **WHEN** a file has format 3
-- **THEN** stderr says `skipped <path>: format 3 needs a newer tokprof`
+- **WHEN** a file has format 4
+- **THEN** stderr says `skipped <path>: format 4 needs a newer tokprof`
 
 ### Requirement: Pool header
 The report SHALL start with three lines:
@@ -180,7 +180,7 @@ When the report covers one file, it SHALL leave out the `agents` line and the co
 - **THEN** stdout is one JSON object, and each share is a fraction such as `0.731`, not text
 
 ### Requirement: Survey guide
-The repository SHALL hold `docs/survey.md`: how to run a survey with tokprof, and a prompt to paste into a coding agent, with the placeholders `<tag>`, `<label>`, `<mcp servers>` and `<recipient>`. The guide also says how to collect the files and pool them with `tokprof pool`, and what the `about` part of the header holds. It says to pass `--min-files 3` before a pooled report is shown to others.
+The repository SHALL hold `docs/survey.md`: how to run a survey with tokprof, and a prompt to paste into a coding agent, with the placeholders `<tag>`, `<label>`, `<mcp servers>` and `<recipient>`. It says how to collect and pool the files, what `about` holds, that the file holds shares instead of dollars, and that its counts, days, hours and durations stay, since hiding them would lose information. It says to pass `--min-files 3` before a pooled report is shown to others.
 
 #### Scenario: The steps of the prompt
 - **WHEN** an agent follows the prompt with the placeholders filled in
@@ -202,6 +202,10 @@ The repository SHALL hold `docs/survey.md`: how to run a survey with tokprof, an
 - **WHEN** the person running the survey wants the calls of an IDE's MCP servers counted by name
 - **THEN** the guide says to put their names, comma separated, in place of `<mcp servers>`, which also lists them in each file's header
 - **AND** when no server should be counted by name, it says to delete `--mcp-names <mcp servers>` from the command
+
+#### Scenario: Dollars in a survey
+- **WHEN** the person running the survey wants pooled dollars
+- **THEN** the guide says to add `--dollars` to the command, and that those files show each person's spend, so they are best collected without the sender
 
 ### Requirement: Activity line
 The header SHALL have an `activity` line after `spend` (see share-export, Activity parts and Rhythm parts). For one file it gives the active days, the active hours, the hours at the keyboard, the busy hours, and the dollars per active hour and per hour at the keyboard. For a pool it gives the pooled hours of both kinds and their dollars per hour, then the median per file of the active days, the active hours and the dollars per active hour. Only the files with the parts count.
@@ -635,3 +639,28 @@ With `--min-files <n>`, the answers of a question that fewer than n files gave S
 #### Scenario: A rare role
 - **WHEN** of 10 files 1 said `qa`, 1 said `designer`, 6 said `developer` and 2 did not answer, and `--min-files 3` is given
 - **THEN** the rows of `role` are `developer` with `6 (60%)`, `2 more` with `2 (20%)` and `not answered` with `2 (20%)`
+
+### Requirement: Files without totals
+When a pooled file has no totals (see share-export, Totals in the file), the pool SHALL weigh every file the same, as if each spent one unit and used one unit of tokens; a file with totals is divided by them first. Every dollar of the report then prints as a share of the files' units of spend, such as `7.0%` for `$808` of `$11,465` in one file, and every rate of dollars per active hour as a share of one file's spend, such as `0.018%` under `per active hour`.
+
+#### Scenario: Two files, one heavy
+- **WHEN** a file spent 10% of its $11,000 on `idle > TTL`, another 30% of its $300, and one of them has no totals
+- **THEN** `idle > TTL` shows `20.0%` pooled, not the 10.5% of the pooled dollars
+
+#### Scenario: Every file with totals
+- **WHEN** every pooled file has format 1 or 2, or format 3 with totals
+- **THEN** the report prints dollars, as before this change
+
+### Requirement: Spend line without totals
+When the report weighs files the same, the `spend` line of its header SHALL read `spend   in shares: each file weighs the same, since <k> of <n> files hold no dollars`, or for one file `spend   in shares: the file holds no dollars`, and the `spend` line of `At a glance` starts `spend     in shares of each file's spend`, followed by the shares per hour.
+
+#### Scenario: A pool of shares
+- **WHEN** 8 files are pooled and 6 of them hold no totals
+- **THEN** the header's third line reads `spend   in shares: each file weighs the same, since 6 of 8 files hold no dollars`
+
+### Requirement: Same shares from both kinds
+A file written by `share` and one written by `share --dollars` over the same requests SHALL give the same shares in every table of the report. The pains of `Pains side by side` touch the same people whether the files hold totals or not, since its rules read only shares.
+
+#### Scenario: The author's 30 days
+- **WHEN** the author's 30 days are written once with `--dollars` and once without, and each is pooled alone
+- **THEN** both reports show `idle > TTL` at 7.0% and `effort max or xhigh` at 80.4% of spend
