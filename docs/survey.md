@@ -27,7 +27,11 @@ The header can also hold `about`, the person's answers to three questions, when 
 
 Before writing, tokprof searches the file for the home path, the user and host names, and the ids and titles of the sessions, and writes nothing if it finds one. After writing, it prints what the file says.
 
-The file is anonymous in what it holds, not in how it is sent. Whoever collects the files knows who sent which, and sees each person's spend. When that matters, collect them in a shared folder or a form that does not show the sender.
+The file holds no dollars: every dollar amount is a share of the person's own spend, and every token amount a share of their tokens. `share` prints the two totals on the person's screen and does not write them, so the file can be sent under one's name. Nothing else is lost: with the two totals, every number comes back to the cent.
+
+What the file still shows as it is: counts, active days and hours, the time at the keyboard, pauses, answers and the agent's turns. Those stay because hiding them would lose information: they are small whole numbers, so any rescaling still gives them away. The spend can also be guessed roughly from the requests and the sizes of the contexts.
+
+Whoever collects the files knows who sent which. For pooled dollars, add `--dollars` to the command in step 5: those files show each person's spend, so collect them in a shared folder or a form that does not show the sender.
 
 ## The prompt
 
@@ -92,7 +96,9 @@ tokprof pool --where about.role=developer ~/survey   # only the files of people 
 
 `--where about.<key>=<value>` cuts the report by an answer about the person, such as `about.agents=under-3m` or `about.bother=waiting`, and may be given several times. Files without that answer are left out, and the first line says how many files were kept.
 
-The pool skips a file that is not a share file, one of a newer format, and a second copy of a file, with a line for each. It reads files of format 1 too: the tables built from the parts that format 1 lacks say how many files they count.
+The pool skips a file that is not a share file, one of a newer format, and a second copy of a file, with a line for each. It reads files of format 1 and 2 too: the tables built from the parts that format 1 lacks say how many files they count.
+
+When a file holds no dollars, the report weighs every person the same, and each dollar prints as a share: `pooled` is the mean of the people's shares, such as `8.0%` of their spend on cold returns, and a rate per active hour is a share of one person's spend per hour. The header says so. Counts, times and the people of each pain are the same as in dollars. To get a team's money, multiply its bill by a share only when the people spend alike; one heavy user moves the bill but not the mean share.
 
 Before you show a pooled report to anyone outside the group, use `--min-files 3`. Then no row describes one or two people. In a small group, a pooled report still shows each person's range, so ask the group first.
 

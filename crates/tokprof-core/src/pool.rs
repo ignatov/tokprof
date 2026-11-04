@@ -11,7 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::share::{ABOUT, ABOUT_LIST, About, DISTRIBUTIONS, FORMAT, PREVALENCE_DAYS, PREVALENCE_SESSIONS, PROMPT_RANGES, QUANTILES, SPAN_RANGES, about_of};
+use crate::share::{
+    ABOUT, ABOUT_LIST, About, DISTRIBUTIONS, PREVALENCE_DAYS, PREVALENCE_SESSIONS, PROMPT_RANGES, QUANTILES, SHARES_FORMAT, SPAN_RANGES, about_of,
+};
 
 /// A row is a habit or a saving of a file when it is at least this share of the file's spend.
 pub const NOTABLE_SHARE: f64 = 0.05;
@@ -51,7 +53,7 @@ pub fn parse(text: &str) -> Result<Value, Skip> {
     if !v.get("agents").is_some_and(Value::is_object) {
         return Err(Skip::NotShare);
     }
-    if format > FORMAT {
+    if format > SHARES_FORMAT {
         return Err(Skip::Newer(format));
     }
     Ok(v)
@@ -473,6 +475,9 @@ pub struct Pool {
     pub said: Vec<SaidRow>,
     /// The filter of `--where`, when one was given.
     pub filter: Option<Filter>,
+    /// When some file holds no dollars: how many of the files, and every file then weighs the
+    /// same, its dollars being shares of its own spend.
+    pub units: Option<(usize, usize)>,
 }
 
 impl Pool {
@@ -796,7 +801,31 @@ fn lifetime_saving(file: &Value, bucket: &str) -> Option<f64> {
 
 /// The report over these files, given as (name, file). Rows that fewer than `min_files` files
 /// have are folded or left out (see [`fold_rare`]).
+/// The files in dollars, when each holds them; otherwise every file in shares of its own spend,
+/// with how many held no dollars.
+type Named = Vec<(String, Value)>;
+
+fn in_one_unit(named: &[(String, Value)]) -> (Named, Option<(usize, usize)>) {
+    let without = named.iter().filter(|(_, v)| crate::share::shares_only(v)).count();
+    let files = named
+        .iter()
+        .map(|(name, v)| {
+            let v = match (without, crate::share::from_shares(v)) {
+                (0, Some(dollars)) => dollars,
+                (0, None) => v.clone(),
+                (_, _) if crate::share::shares_only(v) => v.clone(),
+                (_, Some(dollars)) => crate::share::as_shares(&dollars, false),
+                (_, None) => crate::share::as_shares(v, false),
+            };
+            (name.clone(), v)
+        })
+        .collect();
+    (files, (without > 0).then_some((without, named.len())))
+}
+
 pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
+    let (named, units) = in_one_unit(named);
+    let named = &named[..];
     let files: Vec<Value> = named.iter().map(|(_, v)| v.clone()).collect();
     let spends: Vec<f64> = files.iter().map(spend_of).collect();
     let infos = named
@@ -1062,6 +1091,7 @@ pub fn build(named: &[(String, Value)], min_files: usize) -> Pool {
         pains: Vec::new(),
         said: Vec::new(),
         filter: None,
+        units,
     };
     pool.pains = pains(&pool);
     pool.said = said(&pool, &files, min_files);
@@ -2300,7 +2330,28 @@ mod tests {
     fn files_are_share_files_of_a_format_this_tokprof_reads() {
         assert_eq!(parse("not json"), Err(Skip::NotShare));
         assert_eq!(parse(r#"{"format": 2}"#), Err(Skip::NotShare));
-        assert_eq!(parse(r#"{"format": 3, "agents": {}}"#), Err(Skip::Newer(3)));
+        assert_eq!(parse(r#"{"format": 4, "agents": {}}"#), Err(Skip::Newer(4)));
         assert!(parse(r#"{"format": 1, "agents": {}}"#).is_ok());
+        assert!(parse(r#"{"format": 3, "agents": {}}"#).is_ok());
+    }
+
+    #[test]
+    fn a_heavy_file_and_a_light_one_give_the_mean_share_when_one_lacks_totals() {
+        let miss = |usd: f64| json!({"misses": {"idle > TTL": {"misses": 3, "tokens": 1, "avoidable_usd": usd}}});
+        let heavy = file(11_000.0, miss(1_100.0));
+        let light = file(300.0, miss(90.0));
+        let idle = |p: &Pool| p.table("saved").unwrap().rows.iter().find(|r| r.name == "idle > TTL").unwrap().share;
+        // In dollars, the heavy file carries the pool.
+        let dollars = build(&[("a".into(), heavy.clone()), ("b".into(), light.clone())], 1);
+        assert!(dollars.units.is_none());
+        assert!((idle(&dollars) - 1_190.0 / 11_300.0).abs() < 1e-9);
+        // One file in shares: each file weighs the same.
+        let shares = build(&[("a".into(), heavy.clone()), ("b".into(), crate::share::as_shares(&light, false))], 1);
+        assert_eq!(shares.units, Some((1, 2)));
+        assert!((idle(&shares) - 0.2).abs() < 1e-6, "{}", idle(&shares));
+        // A file with its totals is read back in dollars.
+        let kept = build(&[("a".into(), crate::share::as_shares(&heavy, true)), ("b".into(), light)], 1);
+        assert!(kept.units.is_none());
+        assert!((kept.spend_usd - 11_300.0).abs() < 1e-6);
     }
 }

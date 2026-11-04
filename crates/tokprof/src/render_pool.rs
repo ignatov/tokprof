@@ -2,13 +2,48 @@
 //! wrote: the header, where the money went, what could have been saved, the habits that cost the
 //! most, tools and commands, and the agent versions.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use tokprof_core::fmt::{count, int, table, tokens, usd};
+use tokprof_core::fmt::{self, count, int, table, tokens};
 use tokprof_core::pool::{PainKind, PainRow, Pool, PrevalenceRow, RateRow, RhythmRow, RhythmUnit, Row, SpreadRow, SpreadUnit, Table, Touched, Unit};
 use tokprof_core::rhythm::duration;
 use tokprof_core::share::about_text;
+
+thread_local! {
+    /// The files of a report whose dollars are shares, each file weighing one unit of spend.
+    static UNITS: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+/// A share of spend with the decimals that keep small shares readable.
+fn share_text(x: f64) -> String {
+    let p = 100.0 * x;
+    if p == 0.0 || p.abs() >= 1.0 {
+        format!("{p:.1}%")
+    } else if p.abs() >= 0.1 {
+        format!("{p:.2}%")
+    } else {
+        format!("{p:.3}%")
+    }
+}
+
+/// Pooled dollars; in a report of shares, the share of the files' units of spend.
+fn usd(x: f64) -> String {
+    match UNITS.with(Cell::get) {
+        Some(n) => share_text(x / n as f64),
+        None => fmt::usd(x),
+    }
+}
+
+/// One file's dollars or a rate of dollars, such as per active hour; in a report of shares, the
+/// share of one file's spend.
+fn usd_rate(x: f64) -> String {
+    match UNITS.with(Cell::get) {
+        Some(_) => share_text(x),
+        None => fmt::usd(x),
+    }
+}
 
 fn pct(share: f64) -> String {
     format!("{:.1}%", 100.0 * share)
@@ -46,7 +81,10 @@ fn header(p: &Pool) -> String {
         if let Some(f) = p.files.first().filter(|f| !f.about.is_empty()) {
             let _ = writeln!(out, "about   {}", about_text(&f.about));
         }
-        let _ = writeln!(out, "spend   {}", usd(p.spend_usd));
+        let _ = match p.units {
+            Some(_) => writeln!(out, "spend   in shares: the file holds no dollars"),
+            None => writeln!(out, "spend   {}", usd(p.spend_usd)),
+        };
         if let Some(a) = &p.activity {
             let _ = writeln!(
                 out,
@@ -55,8 +93,8 @@ fn header(p: &Pool) -> String {
                 a.active_hours,
                 keyboard_part(a.keyboard_ms, ""),
                 busy_hours(a.busy_ms),
-                usd(a.usd_per_hour),
-                a.usd_per_keyboard_hour.map_or(String::new(), |u| format!(" · {} per hour at the keyboard", usd(u)))
+                usd_rate(a.usd_per_hour),
+                a.usd_per_keyboard_hour.map_or(String::new(), |u| format!(" · {} per hour at the keyboard", usd_rate(u)))
             );
         }
     } else {
@@ -70,25 +108,28 @@ fn header(p: &Pool) -> String {
         }
         let agents: Vec<String> = agents.iter().map(|(a, n)| format!("{a} {n}")).collect();
         let _ = writeln!(out, "agents  {}", agents.join(" · "));
-        let _ = writeln!(
-            out,
-            "spend   {} in all · per file: median {}, quarters {} and {}",
-            usd(p.spend_usd),
-            usd(p.median_usd),
-            usd(p.quarter_1_usd),
-            usd(p.quarter_3_usd)
-        );
+        let _ = match p.units {
+            Some((k, n)) => writeln!(out, "spend   in shares: each file weighs the same, since {k} of {n} files hold no dollars"),
+            None => writeln!(
+                out,
+                "spend   {} in all · per file: median {}, quarters {} and {}",
+                usd(p.spend_usd),
+                usd(p.median_usd),
+                usd(p.quarter_1_usd),
+                usd(p.quarter_3_usd)
+            ),
+        };
         if let Some(a) = &p.activity {
             let _ = writeln!(
                 out,
                 "activity  {} active hours{} · {} per active hour{} · per file: median {} active days, {} active hours, {} per active hour{}",
                 a.active_hours,
                 keyboard_part(a.keyboard_ms, &files_note(a.keyboard_files, p.files.len())),
-                usd(a.usd_per_hour),
-                a.usd_per_keyboard_hour.map_or(String::new(), |u| format!(" · {} per hour at the keyboard", usd(u))),
+                usd_rate(a.usd_per_hour),
+                a.usd_per_keyboard_hour.map_or(String::new(), |u| format!(" · {} per hour at the keyboard", usd_rate(u))),
                 a.median_days,
                 a.median_hours,
-                usd(a.median_usd_per_hour),
+                usd_rate(a.median_usd_per_hour),
                 if a.files < p.files.len() { format!(" (in {} of {} files)", a.files, p.files.len()) } else { String::new() }
             );
         }
@@ -130,7 +171,7 @@ fn rate_cell(r: &RateRow, rate: Option<f64>) -> String {
     match (rate, r.unit) {
         (None, _) => "–".into(),
         (Some(x), Unit::Count) => format!("{x:.2}"),
-        (Some(x), Unit::Usd) => usd(x),
+        (Some(x), Unit::Usd) => usd_rate(x),
         (Some(x), Unit::Ms) => span(x),
     }
 }
@@ -217,7 +258,7 @@ fn money_table(p: &Pool, t: &Table, first: &[&str], money: &str, files_col: &str
         cells.push(usd(r.usd));
         cells.push(pct(r.share));
         if per_hour {
-            cells.push(r.per_hour.map_or("–".to_string(), usd));
+            cells.push(r.per_hour.map_or("–".to_string(), usd_rate));
         }
         if !one {
             cells.push(pct(r.median_file));
@@ -352,11 +393,11 @@ fn glance(p: &Pool) -> Vec<String> {
     let one = p.files.len() == 1;
     let mut lines = Vec::new();
     let in_median = |x: String| if one { String::new() } else { format!(" (median file {x})") };
-    let mut spend = usd(p.spend_usd);
+    let mut spend = if p.units.is_some() { "in shares of each file's spend".to_string() } else { usd(p.spend_usd) };
     if let Some(a) = &p.activity {
-        spend += &format!(" · {} per active hour{}", usd(a.usd_per_hour), in_median(usd(a.median_usd_per_hour)));
+        spend += &format!(" · {} per active hour{}", usd_rate(a.usd_per_hour), in_median(usd_rate(a.median_usd_per_hour)));
         if let (Some(u), Some(m)) = (a.usd_per_keyboard_hour, a.median_usd_per_keyboard_hour) {
-            spend += &format!(" · {} per hour at the keyboard{}{}", usd(u), in_median(usd(m)), files_note(a.keyboard_files, p.files.len()));
+            spend += &format!(" · {} per hour at the keyboard{}{}", usd_rate(u), in_median(usd_rate(m)), files_note(a.keyboard_files, p.files.len()));
         }
     }
     lines.push(format!("spend     {spend}"));
@@ -446,7 +487,7 @@ fn glance(p: &Pool) -> Vec<String> {
                 n(0),
                 n(1),
                 n(2),
-                usd(u),
+                usd_rate(u),
                 files_note(o.files, p.files.len())
             ),
             None => format!("made      no commits by the agents{}", files_note(o.files, p.files.len())),
@@ -549,7 +590,7 @@ fn left_out_line(p: &Pool) -> String {
 /// A value of `How the sessions spread`, in its row's unit.
 fn spread_cell(unit: SpreadUnit, x: f64) -> String {
     match unit {
-        SpreadUnit::Usd => usd(x),
+        SpreadUnit::Usd => usd_rate(x),
         SpreadUnit::Count => int(x.round() as u64),
         SpreadUnit::Ms => span(x),
         SpreadUnit::Tokens => tokens(x),
@@ -591,10 +632,11 @@ fn spread_table(p: &Pool, rows: &[SpreadRow], by_file: bool) -> String {
 }
 
 /// A value of `Pains side by side` in its row's kind: dollars or a time.
-fn pain_cell(r: &PainRow, x: Option<f64>) -> String {
+fn pain_cell(r: &PainRow, x: Option<f64>, rate: bool) -> String {
     match (r.kind, x) {
         (PainKind::None, _) | (_, None) => "–".into(),
         (PainKind::Time, Some(ms)) => span(ms),
+        (_, Some(usd_)) if rate => usd_rate(usd_),
         (_, Some(usd_)) => usd(usd_),
     }
 }
@@ -619,7 +661,7 @@ fn pains_table(p: &Pool, by_file: bool) -> String {
             PainKind::Spent => "spent",
             PainKind::Time => "time",
         };
-        let mut cells = vec![name, format!("{} of {}", r.people, r.of), kind.to_string(), pain_cell(r, r.median_per_hour), pain_cell(r, r.pooled)];
+        let mut cells = vec![name, format!("{} of {}", r.people, r.of), kind.to_string(), pain_cell(r, r.median_per_hour, true), pain_cell(r, r.pooled, false)];
         if by_file {
             cells.extend(r.by_file.iter().map(|x| x.map_or("–".to_string(), pct)));
         }
@@ -648,6 +690,13 @@ fn said_table(p: &Pool) -> String {
 
 /// The report over the pool. With one file, the columns about files are left out.
 pub fn text(p: &Pool, by_file: bool) -> String {
+    UNITS.with(|u| u.set(p.units.map(|_| p.files.len())));
+    let out = report(p, by_file);
+    UNITS.with(|u| u.set(None));
+    out
+}
+
+fn report(p: &Pool, by_file: bool) -> String {
     let mut out = header(p);
     let n = p.files.len();
     let one = n == 1;
@@ -685,10 +734,13 @@ pub fn text(p: &Pool, by_file: bool) -> String {
                 .iter()
                 .map(|u| {
                     let files = if one { String::new() } else { format!(", {}", count(u.files as u64, "file", "files")) };
-                    format!("{} ({} tokens{files})", u.model, tokens(u.tokens))
+                    let amount =
+                        if p.units.is_some() { format!("{} of the tokens", share_text(u.tokens / n as f64)) } else { format!("{} tokens", tokens(u.tokens)) };
+                    format!("{} ({amount}{files})", u.model)
                 })
                 .collect();
-            let _ = writeln!(out, "models without a price: {}; their tokens count as $0", models.join(", "));
+            let zero = if p.units.is_some() { "no spend" } else { "$0" };
+            let _ = writeln!(out, "models without a price: {}; their tokens count as {zero}", models.join(", "));
         }
         if let (true, Some(c)) = (key == "content", &p.coverage)
             && c.share < 0.9995
@@ -713,7 +765,7 @@ pub fn text(p: &Pool, by_file: bool) -> String {
                     int(r.hours.unwrap_or(0.0).round() as u64),
                     int(r.value.round() as u64),
                     format!("{:.2}", r.rate.unwrap_or(0.0)),
-                    usd(r.second_rate.unwrap_or(0.0)),
+                    usd_rate(r.second_rate.unwrap_or(0.0)),
                 ]);
             }
             out.push('\n');

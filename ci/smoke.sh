@@ -72,4 +72,4 @@ mkdir -p "$(dirname "$out")"
 HOME="$(native "$work/home")" USERPROFILE="$(native "$work/home")" XDG_CONFIG_HOME="$(native "$work/home/.config")" \
   TOKPROF_DIR="$(native "$work/profiles")" TZ=UTC \
   CLAUDE_CONFIG_DIR="$(native "$root/sources/claude-code/tests/fixtures")" CODEX_HOME="$(native "$root/sources/codex/tests/fixtures")" \
-  "$bin" share -o "$(native "$out")"
+  "$bin" share --dollars -o "$(native "$out")"

@@ -153,6 +153,10 @@ enum Command {
         /// bother=one or two of cost|waiting|quality|context|setup|limits|nothing, joined with '+'.
         #[arg(long, value_delimiter = ',')]
         about: Vec<String>,
+        /// Write the spend and the tokens into the header, so that the file holds dollars. Without
+        /// it, every dollar and token amount is a share of them, and they stay on this machine.
+        #[arg(long)]
+        dollars: bool,
     },
     /// Pool share files of several people into one report: where the money went, what could
     /// have been saved, the habits that cost the most, tools and commands, and agent versions.
@@ -457,7 +461,7 @@ fn main() -> Result<()> {
         print!("{}", render_rhythm::section(&view, window, offset, &returns, &style));
         return Ok(());
     }
-    if let Command::Share { output, survey, mcp_names, .. } = &command {
+    if let Command::Share { output, survey, mcp_names, dollars, .. } = &command {
         let started = Instant::now();
         let mut files = catalog.discover(&agents);
         // A session's subagent logs go with it.
@@ -553,10 +557,12 @@ fn main() -> Result<()> {
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
-        std::fs::write(&path, share::pretty(&value)).with_context(|| format!("writing {}", path.display()))?;
+        std::fs::write(&path, share::pretty(&share::as_shares(&value, *dollars))).with_context(|| format!("writing {}", path.display()))?;
         println!("wrote {}", display_path(&path.to_string_lossy(), None, catalog.home()));
         let name = path.file_stem().map_or_else(|| "share".to_string(), |n| n.to_string_lossy().to_string());
+        let (usd, tokens) = share::totals(&value);
         print!("\n{}", render_pool::text(&pool::build(&[(name, value)], 1), false));
+        println!("{}", share::totals_line(usd, tokens, *dollars));
         println!("Nothing was sent anywhere: review the file, then send it yourself.");
         return Ok(());
     }

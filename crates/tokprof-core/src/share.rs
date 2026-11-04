@@ -69,6 +69,7 @@ const ORIGIN_KINDS: [&str; 7] = ["prompt", "skill", "agent", "command", "notific
 /// The keys of the file's parts.
 const FIELDS: &[&str] = &[
     "format",
+    "totals",
     "tokprof",
     "platform",
     "window",
@@ -1056,11 +1057,169 @@ pub struct Header<'a> {
     pub about: &'a [(&'static str, Vec<&'static str>)],
 }
 
-/// The file's text: the value as indented JSON, ending with a newline.
+/// The file's text: one line per row of a table, that is per object whose objects hold no object
+/// (such as a tool with its rent and trips), and one line per key of the objects above them,
+/// ending with a newline.
 pub fn pretty(v: &Value) -> String {
-    let mut text = serde_json::to_string_pretty(v).unwrap_or_default();
+    let mut text = String::new();
+    layout(v, 0, &mut text);
     text.push('\n');
     text
+}
+
+/// How deep objects nest in a value: 0 for a number or string, 1 for an object of numbers.
+fn nesting(v: &Value) -> usize {
+    match v {
+        Value::Object(m) => 1 + m.values().map(nesting).max().unwrap_or(0),
+        Value::Array(a) => a.iter().map(nesting).max().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn layout(v: &Value, depth: usize, out: &mut String) {
+    let pad = |out: &mut String, depth: usize| out.push_str(&"  ".repeat(depth));
+    if nesting(v) <= 2 {
+        out.push_str(&serde_json::to_string(v).unwrap_or_default());
+        return;
+    }
+    match v {
+        Value::Object(m) => {
+            out.push('{');
+            for (i, (k, x)) in m.iter().enumerate() {
+                out.push_str(if i == 0 { "\n" } else { ",\n" });
+                pad(out, depth + 1);
+                out.push_str(&serde_json::to_string(k).unwrap_or_default());
+                out.push_str(": ");
+                layout(x, depth + 1, out);
+            }
+            out.push('\n');
+            pad(out, depth);
+            out.push('}');
+        }
+        Value::Array(a) => {
+            out.push('[');
+            for (i, x) in a.iter().enumerate() {
+                out.push_str(if i == 0 { "\n" } else { ",\n" });
+                pad(out, depth + 1);
+                layout(x, depth + 1, out);
+            }
+            out.push('\n');
+            pad(out, depth);
+            out.push(']');
+        }
+        _ => {}
+    }
+}
+
+/// The format of a file whose dollar and token amounts are shares of its own spend and tokens.
+pub const SHARES_FORMAT: u64 = 3;
+
+/// The significant digits of a share: enough that the shares times the totals give every dollar
+/// back within $0.005 and every token amount within 1 per million.
+pub const SHARE_DIGITS: usize = 7;
+
+/// Whether a key names a dollar amount, or a distribution of dollars.
+fn usd_key(k: &str) -> bool {
+    k == "usd" || k.ends_with("_usd")
+}
+
+/// Whether a key names a token amount. Context sizes (`median_context`, `min_context`, the
+/// largest-context quantiles) are sizes of one prompt, not amounts, and keep their tokens.
+fn tokens_key(k: &str) -> bool {
+    k == "tokens" || k.ends_with("_tokens")
+}
+
+fn number(x: f64) -> Value {
+    serde_json::Number::from_f64(x).map_or(json!(0), Value::Number)
+}
+
+/// `x` to `SHARE_DIGITS` significant digits.
+fn significant(x: f64) -> f64 {
+    if x == 0.0 || !x.is_finite() {
+        return 0.0;
+    }
+    format!("{:.*e}", SHARE_DIGITS - 1, x).parse().unwrap_or(x)
+}
+
+/// Applies `usd` to every dollar amount of a value and `tokens` to every token amount: the numbers
+/// keyed `usd` or `*_usd`, the quantiles of a distribution named `*_usd`, and the numbers keyed
+/// `tokens` or `*_tokens`. Every other number stays.
+pub fn map_amounts(v: &mut Value, usd: &dyn Fn(f64) -> f64, tokens: &dyn Fn(f64) -> f64) {
+    match v {
+        Value::Object(m) => {
+            for (k, x) in m.iter_mut() {
+                match x {
+                    Value::Number(n) if usd_key(k) => *x = number(usd(n.as_f64().unwrap_or(0.0))),
+                    Value::Number(n) if tokens_key(k) => *x = number(tokens(n.as_f64().unwrap_or(0.0))),
+                    Value::Object(q) if usd_key(k) => {
+                        for (name, y) in q.iter_mut() {
+                            if let (true, Some(f)) = (QUANTILES.iter().any(|(n, _)| n == name), y.as_f64()) {
+                                *y = number(usd(f));
+                            }
+                        }
+                    }
+                    _ => map_amounts(x, usd, tokens),
+                }
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(|x| map_amounts(x, usd, tokens)),
+        _ => {}
+    }
+}
+
+/// A file's spend and tokens: the totals of its models, every agent.
+pub fn totals(v: &Value) -> (f64, f64) {
+    let models =
+        v.get("agents").and_then(Value::as_object).into_iter().flatten().flat_map(|(_, a)| a.get("spend").and_then(Value::as_object).into_iter().flatten());
+    models.fold((0.0, 0.0), |(u, t), (_, m)| {
+        let at = |k: &str| m.pointer(&format!("/total/{k}")).and_then(Value::as_f64).unwrap_or(0.0);
+        (u + at("usd"), t + at("tokens"))
+    })
+}
+
+/// The file of format 3 for a value in dollars: each dollar amount as its share of the spend and
+/// each token amount as its share of the tokens, and, with `keep`, the two totals as `totals`.
+pub fn as_shares(v: &Value, keep: bool) -> Value {
+    let (usd, tokens) = totals(v);
+    let share = |total: f64| move |x: f64| if total > 0.0 { significant(x / total) } else { 0.0 };
+    let mut out = v.clone();
+    map_amounts(&mut out, &share(usd), &share(tokens));
+    if let Value::Object(m) = &mut out {
+        m.insert("format".into(), json!(SHARES_FORMAT));
+        m.remove("totals");
+        if keep {
+            m.insert("totals".into(), json!({"usd": (usd * 1e4).round() / 1e4, "tokens": tokens.round()}));
+        }
+    }
+    out
+}
+
+/// The value in dollars of a file of format 3 with `totals`; `None` for a file without them.
+pub fn from_shares(v: &Value) -> Option<Value> {
+    let usd = v.pointer("/totals/usd").and_then(Value::as_f64)?;
+    let tokens = v.pointer("/totals/tokens").and_then(Value::as_f64)?;
+    let mut out = v.clone();
+    map_amounts(&mut out, &|x| (x * usd * 1e4).round() / 1e4, &|x| (x * tokens).round());
+    if let Value::Object(m) = &mut out {
+        m.insert("format".into(), json!(FORMAT));
+        m.remove("totals");
+    }
+    Some(out)
+}
+
+/// The line under the report of `share`: what the file holds of the two totals.
+pub fn totals_line(usd: f64, tokens: f64, kept: bool) -> String {
+    let (usd, tokens) = (crate::fmt::usd(usd), crate::fmt::tokens(tokens));
+    if kept {
+        format!("the file holds dollars: {usd} and {tokens} tokens")
+    } else {
+        format!("the file holds shares of {usd} and {tokens} tokens, not dollars; these two totals stay on this machine")
+    }
+}
+
+/// Whether a file holds shares without the totals to turn them into dollars.
+pub fn shares_only(v: &Value) -> bool {
+    v.get("format").and_then(Value::as_u64) == Some(SHARES_FORMAT) && v.get("totals").is_none()
 }
 
 /// The file's content, from one scan into the three collectors with the same filters. `day`
@@ -1461,7 +1620,7 @@ pub fn words(v: &Value, own: &HashSet<String>) -> Vec<Word> {
             }
             // The tokprof version, the platform, the window's days and the activity counts are
             // tokprof's own.
-            ("format" | "tokprof" | "platform" | "window" | "activity", _) => {}
+            ("format" | "tokprof" | "platform" | "window" | "activity" | "totals", _) => {}
             // The rhythm and the prevalence are tokprof's own parts: their keys are field names and
             // pause ranges. The answers about the person are tokprof's own words too.
             ("rhythm" | "prevalence" | "about", value) => walk(value, key, own, &mut out),
@@ -1698,6 +1857,64 @@ mod tests {
         logs.push(session(crate::testing::claude(), "t", vec![("main", ChainKind::Main, vec![request(0, None, Usage::default())])]));
         let v = file(&logs);
         assert_eq!((v["agents"]["claude"]["sessions"].as_u64(), v["agents"]["claude"]["main_sessions"].as_u64()), (Some(10), Some(1)));
+    }
+
+    #[test]
+    fn every_amount_is_a_share_of_the_two_totals_and_comes_back_with_them() {
+        let v = file(&[
+            session(crate::testing::claude(), "s", vec![("main", ChainKind::Main, one())]),
+            session(crate::testing::codex(), "c", vec![("main", ChainKind::Main, one())]),
+        ]);
+        let (usd, tokens) = totals(&v);
+        assert!(usd > 0.0 && tokens > 0.0);
+        let shares = as_shares(&v, false);
+        assert_eq!(shares["format"], SHARES_FORMAT);
+        assert!(shares.get("totals").is_none() && shares_only(&shares));
+        assert!((totals(&shares).0 - 1.0).abs() < 1e-6 && (totals(&shares).1 - 1.0).abs() < 1e-6);
+        // Counts stay as they are.
+        assert_eq!(shares["agents"]["claude"]["main_sessions"], v["agents"]["claude"]["main_sessions"]);
+        let kept = as_shares(&v, true);
+        assert!(!shares_only(&kept));
+        let back = from_shares(&kept).unwrap();
+        assert_eq!(back["format"], FORMAT);
+        // Every amount comes back within $0.005 and 1 token per million; everything else equals.
+        fn same(a: &Value, b: &Value, key: &str) {
+            match (a, b) {
+                (Value::Object(x), Value::Object(y)) => {
+                    assert_eq!(x.keys().collect::<Vec<_>>(), y.keys().collect::<Vec<_>>());
+                    x.iter().for_each(|(k, v)| same(v, &y[k], k));
+                }
+                (Value::Number(x), Value::Number(y)) => {
+                    let (x, y) = (x.as_f64().unwrap(), y.as_f64().unwrap());
+                    assert!((x - y).abs() <= 0.005 + x.abs() * 1e-6, "{key}: {x} against {y}");
+                }
+                _ => assert_eq!(a, b, "{key}"),
+            }
+        }
+        same(&v, &back, "");
+        assert!(from_shares(&shares).is_none());
+    }
+
+    #[test]
+    fn quantiles_of_dollars_turn_into_shares_and_their_count_stays() {
+        let mut v = json!({"agents": {"claude": {"spend": {"m": {"total": {"usd": 200.0, "tokens": 10}}},
+            "distributions": {"session_usd": {"n": 6, "p50": 20.0}, "largest_context": {"n": 6, "p50": 300000}},
+            "pauses": {"median_context": 120000}}}});
+        v = as_shares(&v, false);
+        let a = &v["agents"]["claude"];
+        assert_eq!((a["distributions"]["session_usd"]["p50"].as_f64(), a["distributions"]["session_usd"]["n"].as_u64()), (Some(0.1), Some(6)));
+        assert_eq!(a["distributions"]["largest_context"]["p50"], 300000);
+        assert_eq!(a["pauses"]["median_context"], 120000);
+    }
+
+    #[test]
+    fn the_layout_puts_a_row_on_one_line_and_holds_the_same_value() {
+        let v = json!({"format": 3, "agents": {"claude": {"tools": {"Read": {"calls": 2, "rent": {"usd": 0.5, "tokens": 0.25}}, "Bash": {"calls": 1, "programs": {"git": {"calls": 1, "rent": {"usd": 0.1}}}}}}}});
+        let text = pretty(&v);
+        assert!(text.contains("\"Read\": {\"calls\":2,\"rent\":{\"tokens\":0.25,\"usd\":0.5}}"), "{text}");
+        assert!(text.contains("\"git\": {\"calls\":1,\"rent\":{\"usd\":0.1}}"), "{text}");
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), v);
+        assert!(text.ends_with("}\n"));
     }
 
     #[test]

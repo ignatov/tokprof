@@ -58,7 +58,7 @@ fn the_file_goes_to_the_profile_directory_by_default() {
     assert!(stdout.starts_with(&format!("wrote ~{sep}tokprof{sep}{name}\n")), "{stdout}");
     assert!(stdout.ends_with("Nothing was sent anywhere: review the file, then send it yourself.\n"), "{stdout}");
     let text = std::fs::read_to_string(home.join("tokprof").join(&name)).unwrap();
-    assert!(text.contains("\"format\": 2") && text.contains("\"claude\""), "{text}");
+    assert!(text.contains("\"format\": 3") && text.contains("\"claude\"") && !text.contains("\"totals\""), "{text}");
     assert!(!text.contains("5e5510f0") && !text.contains("/w/p"), "{text}");
     std::fs::remove_dir_all(&home).unwrap();
 }
@@ -71,8 +71,8 @@ fn the_filters_pick_the_requests_and_the_window() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let text = std::fs::read_to_string(&target).unwrap();
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    assert!(text.contains(&format!("\"first\": \"{today}\"")), "{text}");
-    assert!(text.contains("\"requests\": 2"), "{text}");
+    assert!(text.contains(&format!("\"first\":\"{today}\"")), "{text}");
+    assert!(text.contains("\"requests\":2"), "{text}");
     std::fs::remove_dir_all(&home).unwrap();
 }
 
@@ -95,12 +95,21 @@ fn share_prints_the_report_of_its_file_and_no_list_of_words() {
     assert!(out.status.success(), "{stdout}{}", String::from_utf8_lossy(&out.stderr));
     let wrote = stdout.find("wrote ").unwrap();
     let report = stdout.find("share   ").unwrap();
+    let totals = stdout.find("the file holds shares of $").unwrap();
     let nothing = stdout.find("Nothing was sent anywhere").unwrap();
-    assert!(wrote < report && report < nothing, "{stdout}");
+    assert!(wrote < report && report < totals && totals < nothing, "{stdout}");
+    assert!(stdout.contains(", not dollars; these two totals stay on this machine\n"), "{stdout}");
     assert!(!stdout.contains("words to review"), "{stdout}");
     assert!(stdout.contains(" · survey team-2026-11\n") && stdout.contains("Where the money went"), "{stdout}");
-    // The report is what `tokprof pool` prints for the file.
-    let pooled = tokprof(&home, &["pool", target.to_str().unwrap()]);
+    // The report of the file in shares prints no dollars.
+    let shares = tokprof(&home, &["pool", target.to_str().unwrap()]);
+    let shares = String::from_utf8_lossy(&shares.stdout);
+    assert!(shares.contains("spend   in shares: the file holds no dollars\n") && !shares.contains('$'), "{shares}");
+    // With the totals, the report is what `share` printed.
+    let dollars = home.join("out/d.json");
+    let out = tokprof(&home, &["--since", "30d", "share", "--survey", "team-2026-11", "--dollars", "-o", dollars.to_str().unwrap()]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("the file holds dollars: $"), "{}", String::from_utf8_lossy(&out.stdout));
+    let pooled = tokprof(&home, &["pool", dollars.to_str().unwrap()]);
     assert!(stdout.contains(&*String::from_utf8_lossy(&pooled.stdout)), "{}", String::from_utf8_lossy(&pooled.stdout));
     std::fs::remove_dir_all(&home).unwrap();
 }
@@ -136,7 +145,7 @@ fn the_pool_reads_share_files_and_skips_the_others() {
     std::fs::copy(&a, dir.join("a (1).json")).unwrap();
     std::fs::write(dir.join("notes.txt"), "not read").unwrap();
     std::fs::write(dir.join("bad.json"), "{}").unwrap();
-    std::fs::write(dir.join("newer.json"), r#"{"format": 3, "agents": {}}"#).unwrap();
+    std::fs::write(dir.join("newer.json"), r#"{"format": 4, "agents": {}}"#).unwrap();
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::copy(&a, dir.join("sub/b.json")).unwrap();
     let out = tokprof(&home, &["pool", dir.to_str().unwrap()]);
@@ -146,7 +155,7 @@ fn the_pool_reads_share_files_and_skips_the_others() {
     assert!(
         stderr.contains("a (1).json: the same as ")
             && stderr.contains("bad.json: not a tokprof share file")
-            && stderr.contains("newer.json: format 3 needs a newer tokprof"),
+            && stderr.contains("newer.json: format 4 needs a newer tokprof"),
         "{stderr}"
     );
     assert!(!stderr.contains("notes.txt") && !stderr.contains("b.json"), "{stderr}");
