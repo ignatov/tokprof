@@ -307,6 +307,22 @@ fn the_lanes_draw_the_log_s_times_name_them_under_the_pointer_and_select_a_lane(
     assert_eq!(rt.state.browser.selected(), rt.state.browser.row_of("id3"));
     assert_eq!(rt.state.browser.selected(), Some(3));
     assert!(!rt.state.browser.zoomed());
+
+    // A filter that leaves the session out leaves its lane out, and says so.
+    rt.update(|s, _| {
+        let view = s.viewport();
+        for c in "/air".chars() {
+            s.browser.on_key(Key::Char(c), view);
+        }
+        s.browser.on_key(Key::Enter, view);
+    });
+    settle(&mut rt);
+    assert!(rt.presented("lane-id3").is_none(), "id3 is in ~/src/app, not ~/src/air");
+    assert!(rt.presented("lanes-none").is_some(), "no session of this day matches");
+    assert!(rt.presented("lane-you").is_some(), "your own lane stays");
+    rt.update(|s, _| s.browser.clear_filter());
+    settle(&mut rt);
+    assert!(rt.presented("lane-id3").is_some() && rt.presented("lanes-none").is_none(), "back with the filter cleared");
 }
 
 #[test]
@@ -365,9 +381,16 @@ fn the_bar_names_the_day_and_its_buttons_step_it() {
     click(&mut rt, "filter");
     settle(&mut rt);
     assert!(rt.state.browser.editing(), "a click on the filter starts typing it");
+    assert!(inside(&rt, "bar", "caret").is_some() && inside(&rt, "bar", "filter-text").is_none(), "an empty field shows the caret alone");
     typed(&mut rt, "air");
-    assert_eq!(text_in(&rt, "bar", "filter-text"), "air▌");
+    assert_eq!(text_in(&rt, "bar", "filter-text"), "air", "the text, and a thin caret after it");
+    assert!(inside(&rt, "bar", "caret").is_some_and(|c| c.rect[2] < 2.0));
     assert_eq!(rt.state.browser.len(), 1);
+    press(&mut rt, RuneKey::Enter);
+    assert!(inside(&rt, "bar", "caret").is_none(), "no caret once the filter is typed");
+    click(&mut rt, "filter-clear");
+    settle(&mut rt);
+    assert_eq!((rt.state.browser.filter(), rt.state.browser.len(), rt.state.browser.editing()), ("", 3, false), "× clears the filter");
     click(&mut rt, "zoom-day");
     settle(&mut rt);
     assert!(!rt.state.fit, "24 h");

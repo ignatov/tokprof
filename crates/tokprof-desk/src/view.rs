@@ -162,16 +162,14 @@ fn bar(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
 fn filter_field(s: &Desk, p: &Pal) -> El {
     let b = &s.browser;
     let editing = b.editing();
-    let (shown, color) = match (editing, b.filter().is_empty()) {
-        (true, _) => (format!("{}▌", b.filter()), p.ink),
-        (false, true) => ("Filter by project or id".to_string(), p.ink3),
-        (false, false) => (b.filter().to_string(), p.ink),
-    };
-    row()
+    let empty = b.filter().is_empty();
+    let mut field = row()
         .key("filter")
         .w(210.0)
         .h(26.0)
-        .px(9.0)
+        .pl(9.0)
+        .pr(4.0)
+        .gap(1.0)
         .center_y()
         .radius(6.0)
         .fill(p.panel)
@@ -183,8 +181,31 @@ fn filter_field(s: &Desk, p: &Pal) -> El {
                 let view = s.viewport();
                 s.browser.on_key(Key::Char('/'), view);
             }
-        })
-        .child(text(shown).key("filter-text").font(pal::BODY).color(color).single_line().truncate().grow(1.0).min_w(0.0))
+        });
+    // The placeholder, or what is typed; while typing, it ends at the caret, its start cut when long.
+    if !(empty && editing) {
+        let (shown, color) = if empty { ("Filter by project or id", p.ink3) } else { (b.filter(), p.ink) };
+        let t = text(shown.to_string()).key("filter-text").font(pal::BODY).color(color).single_line().min_w(0.0);
+        field = field.child(if editing { t.truncate_head().shrink() } else { t.truncate().grow(1.0) });
+    }
+    if editing {
+        field = field.child(el().key("caret").w(1.5).h(15.0).radius(0.75).fill(p.ink)).child(spacer().grow(1.0));
+    }
+    if !empty {
+        let clear = row()
+            .key("filter-clear")
+            .w(18.0)
+            .h(18.0)
+            .radius(9.0)
+            .center()
+            .fill(p.hover)
+            .role("button")
+            .label("Clear the filter")
+            .on_press(|s: &mut Desk| s.browser.clear_filter())
+            .child(text("×").font(pal::SMALL_STRONG).color(p.ink2).single_line());
+        field = field.child(clear);
+    }
+    field
 }
 
 /// The slots of the list: a row per listed session and, in time order, a separator row before

@@ -105,6 +105,17 @@ Selecting a session whose last activity is on another day than the lanes show SH
 - **WHEN** the user selects a session last active yesterday at 16:00
 - **THEN** the lanes show yesterday, with its lane highlighted
 
+### Requirement: Lanes and the filter
+While a filter is set, the lanes SHALL show only the sessions it lists, and the bar counts them as `<n> of <m> sessions`; when it lists none of the day's, a line under the `You` lane says so. While a filter is being typed, the lanes stay on their day, wherever the selection goes. The filter field draws a thin caret after the text being typed, and a clear button while a filter is set.
+
+#### Scenario: A filter that lists nothing of the day
+- **WHEN** the user types the filter `zzzz` and no session matches
+- **THEN** the lanes show only `You` and the line `no session of this day matches “zzzz”`, and the bar reads `0 of 6 sessions` on a day of six
+
+#### Scenario: Clearing the filter
+- **WHEN** the user clicks the clear button of the filter
+- **THEN** the filter is empty, the list holds every session again, and every lane of the day is back
+
 ### Requirement: Session list
 A row of the list SHALL show the last activity (`HH:MM`, after a separator row naming the day), a dot in the agent's color, the session's title or, while the title is not known, its project, and its cost with tabular figures (`…` while it is being costed). The selected row is filled with the accent color. The separators show only in time order.
 

@@ -483,6 +483,15 @@ impl<T> Browser<T> {
         self.step_day(delta);
     }
 
+    /// Clears the filter, typed or being typed, as a field's clear button does.
+    pub fn clear_filter(&mut self) {
+        self.editing = false;
+        if !self.filter.is_empty() {
+            self.filter.clear();
+            self.refilter();
+        }
+    }
+
     /// Shows the day of the latest action again, as Today does.
     pub fn show_latest_day(&mut self) {
         if self.day.is_some() {
@@ -813,12 +822,14 @@ impl<T> Browser<T> {
 
     /// Handles a key; returns false to quit.
     pub fn on_key(&mut self, key: Key, view: Viewport) -> bool {
-        let before = self.selected_entry().map(|i| self.entries[i].row.session_id.clone());
+        let (before, typing) = (self.selected_entry().map(|i| self.entries[i].row.session_id.clone()), self.editing);
         let go_on = match self.beside_key(key) {
             Some(go_on) => go_on,
             None => self.key(key, view),
         };
-        if self.selected_entry().map(|i| &self.entries[i].row.session_id) != before.as_ref() {
+        // The day follows a session the user moved to, not the first one a filter being typed
+        // happens to leave.
+        if !typing && self.selected_entry().map(|i| &self.entries[i].row.session_id) != before.as_ref() {
             self.follow_selection();
         }
         go_on
@@ -1757,6 +1768,18 @@ mod tests {
         press(&mut a, Key::Char('g'));
         assert_eq!(a.day, Some(None), "the latest day for a session of it");
         assert!(a.open_session("id1") && a.day == Some(Some(now - 2)) && a.selected() == Some(1), "a lane's click keeps the day beside");
+
+        // A filter being typed moves the selection to what it leaves, and the day stays.
+        press(&mut a, Key::Char('g'));
+        assert_eq!(a.day, Some(None));
+        for c in "/~/c".chars() {
+            press(&mut a, Key::Char(c));
+        }
+        assert_eq!((a.selected().map(|r| a.session(r)), a.day), (Some("id2"), Some(None)), "the filter leaves only ~/c, and the day stays");
+        press(&mut a, Key::Enter);
+        assert_eq!(a.day, Some(None), "and stays once it is typed");
+        press(&mut a, Key::Char('d'));
+        assert_eq!(a.day, Some(Some(now - 4)), "d shows the selected session's day");
     }
 
     #[test]

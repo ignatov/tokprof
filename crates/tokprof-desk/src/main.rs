@@ -692,13 +692,19 @@ fn main() -> Result<()> {
 /// A named state a frame without a window can start from (`--scene`).
 type Scene = (&'static str, fn(&mut Desk));
 
-/// The scenes: a pane with the keyboard.
+/// The scenes: a pane with the keyboard, and a filter being typed that matches nothing.
 const SCENES: &[Scene] = &[
     ("lanes-keyboard", |s| s.pane = Focus::Lanes),
     ("inspector-keyboard", |s| {
         s.pane = Focus::Inspector;
         s.tab = Tab::Tools;
         s.cursor = 2;
+    }),
+    ("filter-typing", |s| {
+        let view = s.viewport();
+        for c in "/zzzz".chars() {
+            s.browser.on_key(Key::Char(c), view);
+        }
     }),
 ];
 

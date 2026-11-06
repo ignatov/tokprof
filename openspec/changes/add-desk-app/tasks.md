@@ -20,5 +20,6 @@
 - [x] 3.2 Write the install of the app in README.md (the archives, Applications, the first launch) and in `crates/tokprof-desk/README.md`, and the bundle to AGENTS.md's window checks.
 - [x] 3.3 Run the root and the window's checks and `openspec validate --all --strict`; install the bundle in `~/Applications` and link `~/.local/bin/tokprof-desk` to its binary; commit.
   - The window: 36 tests pass, clippy clean; the root's format and architecture checks pass; `openspec validate --all --strict` passes with add-desk-window, which this commit adds as well. The bundle is in `~/Applications`, and `~/.local/bin/tokprof-desk` links to its binary.
-- [ ] 3.4 Push `main`, run the release workflow by hand, and check the app archives it keeps: they unzip to `tokprof.app`, and the arm64 one opens here.
+- [x] 3.4 Push `main`, run the release workflow by hand, and check the app archives it keeps: they unzip to `tokprof.app`, and the arm64 one opens here.
+  - 2026-11-06: main pushed (7b18a81..39626ae); the run by hand, 42277126975, passed every job, both macOS builds with the app among them, and published nothing. The archives are checked on the release itself in 3.5.
 - [ ] 3.5 Bump `tokprof` and `tokprof-desk` to 0.1.5, tag `v0.1.5`, and check the release: the eight archives, `SHA256SUMS` and `gh attestation verify` on the app archives, and the downloaded app opens after its quarantine is removed. Record it here.

@@ -147,8 +147,13 @@ pub fn pointer_text(lanes: &StripLanes, lives: &[Option<(i64, i64)>], range: Ran
     out
 }
 
+/// Whether a lane shows: while a filter is set, only the lanes of the sessions it lists.
+fn filtered_in(s: &Desk, lane: &tokprof_core::rhythm::StripLane) -> bool {
+    s.browser.filter().is_empty() || s.browser.row_of(&lane.id).is_some()
+}
+
 /// The day's summary in the bar: when its first action was, to now or to its last, its sittings
-/// and its sessions with actions.
+/// and its sessions with actions, of them the ones a filter lists while one is set.
 pub fn summary(s: &Desk) -> Option<String> {
     let parts = s.browser.day_parts()?;
     let (_, lanes) = parts.strip.as_ref()?;
@@ -159,12 +164,12 @@ pub fn summary(s: &Desk) -> Option<String> {
     let sittings = line_of(&parts.below, "sittings").and_then(|l| l.split(|c: char| !c.is_ascii_digit()).find(|n| !n.is_empty()).map(str::to_string));
     let sittings = sittings.unwrap_or_else(|| lanes.you.len().to_string());
     let plural = |n: &str, one: &str, many: &str| format!("{n} {}", if n == "1" { one } else { many });
-    Some(format!(
-        "{} to {to}, {}, {}",
-        local_time(first, "%H:%M"),
-        plural(&sittings, "sitting", "sittings"),
-        plural(&lanes.lanes.len().to_string(), "session", "sessions")
-    ))
+    let all = lanes.lanes.len().to_string();
+    let sessions = match s.browser.filter().is_empty() {
+        true => plural(&all, "session", "sessions"),
+        false => format!("{} of {}", lanes.lanes.iter().filter(|l| filtered_in(s, l)).count(), plural(&all, "session", "sessions")),
+    };
+    Some(format!("{} to {to}, {}, {sessions}", local_time(first, "%H:%M"), plural(&sittings, "sitting", "sittings")))
 }
 
 /// The line of a day's text that starts with `label`, without its color codes or its label.
@@ -183,7 +188,7 @@ pub fn version(s: &Desk, cx: &Cx<Desk>, max_h: f32, dark: bool) -> u64 {
     view::hash_of((
         (parts.map(|p| p as *const DayParts as usize), b.day_noon(), b.day_is_latest(), s.fit, dark, max_h.to_bits()),
         (cx.layout_size(SCALE).map(|sz| sz[0].to_bits()), b.selected().map(|r| b.session(r)), s.pointer.as_ref().map(|p| (p.lane.clone(), p.x.to_bits()))),
-        (view::minute(), lanes, known.to_bits(), pending, s.pane == crate::Focus::Lanes),
+        (view::minute(), lanes, known.to_bits(), pending, s.pane == crate::Focus::Lanes, b.filter()),
     ))
 }
 
@@ -226,8 +231,18 @@ pub fn lanes_of(s: &Desk, parts: &DayParts, cx: &Cx<Desk>, p: &Pal, max_h: f32) 
     let grid = Grid { range, width, now: now_in.filter(|&n| range.holds(n)) };
     let mut body = col().key("lanes-body").w_full().child(ruler(lanes, &grid, p)).child(you_lane(lanes, &grid, p));
     let selected = b.selected().map(|r| b.session(r).to_string());
+    let mut shown = 0;
     for (lane, life) in lanes.lanes.iter().zip(&lives) {
+        if !filtered_in(s, lane) {
+            continue;
+        }
+        shown += 1;
         body = body.child(session_lane(s, lanes, lane, *life, selected.as_deref(), &grid, p));
+    }
+    if shown == 0 && !lanes.lanes.is_empty() {
+        let note = format!("no session of this day matches “{}”", b.filter());
+        body = body
+            .child(row().key("lanes-none").w_full().h(LANE).pl(LABEL_WIDTH + 14.0).center_y().child(text(note).font(pal::BODY).color(p.ink2).single_line()));
     }
     let scroller = col().key("lanes-scroll").w_full().max_h((max_h - UNDER).max(3.0 * LANE)).scroll(ScrollSpec { stick_bottom: false }).child(body);
     let pointer = s.pointer.as_ref().map(|ptr| pointer_text(lanes, &lives, range, ptr, width)).unwrap_or_default();
