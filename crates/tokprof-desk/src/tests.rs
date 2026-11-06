@@ -1112,3 +1112,137 @@ fn a_short_group_goes_above_a_long_one_as_good_and_loose_matches_are_left_out() 
     let at = |t: &str| titles.iter().position(|x| *x == t).unwrap_or_else(|| panic!("{t} in {titles:?}"));
     assert!(at("Today") < at("Keyboard to the list"), "{titles:?}");
 }
+
+/// The window on the fixture's session, its inspector showing `Flame` with the keyboard.
+fn flame_desk() -> (Runtime<Desk>, Arc<Catalog>, Query) {
+    let (catalog, select) = fixture();
+    let mut browser = Browser::start(catalog.clone(), Pricing::defaults(), select.clone(), false, Arc::new(|| {}), frontend()).unwrap();
+    browser.settle();
+    let mut rt = runtime(Desk::new(browser, false), (1400.0, 900.0));
+    press(&mut rt, RuneKey::Tab);
+    typed(&mut rt, "0");
+    settle(&mut rt);
+    (rt, catalog, select)
+}
+
+fn shifted(rt: &mut Runtime<Desk>, key: RuneKey) {
+    rt.key(KeyEvent { key, mods: rune::Mods { shift: true, ..rune::Mods::default() } });
+    settle(rt);
+}
+
+#[test]
+fn the_flame_tab_draws_the_stacks_tokprof_flame_writes() {
+    let (mut rt, catalog, select) = flame_desk();
+    assert_eq!((rt.state.tab, rt.state.pane), (inspector::Tab::Flame, Focus::Inspector), "0 shows Flame");
+    let tree = rt.state.flame_tree().unwrap();
+    // The `.collapsed` file of the same session, as `tokprof flame --session <id>` writes it.
+    let x = rt.state.browser.xray().cloned_x();
+    let row = tokprof_core::xray::rows(&catalog, &select, 10).into_iter().find(|r| r.id == x.short_id).expect("the session's row");
+    let out = std::env::temp_dir().join(format!("tokprof-desk-flame-{}.collapsed", std::process::id()));
+    tokprof_core::xray::export(&catalog, &row, &Pricing::defaults(), &out).unwrap();
+    let written: i64 = std::fs::read_to_string(&out).unwrap().lines().map(|l| l.rsplit_once(' ').unwrap().1.parse::<i64>().unwrap()).sum();
+    let _ = std::fs::remove_file(out);
+    assert!(written > 0);
+    assert_eq!(tree.total(), written, "the root is the sum of the profile, in µ$");
+    let scan: f64 = x.components.iter().map(|v| v.usd).sum();
+    assert!((tree.total() as f64 / 1e6 - scan).abs() < 0.005, "and the session's total: {} against {scan}", tree.total());
+    assert!(text_in(&rt, "flame-crumbs", "flame-total").starts_with(&format!("{} · 100.0%", tokprof_core::fmt::usd(tree.total() as f64 / 1e6))));
+    // Each child of the root is as wide as its share, less the gap.
+    let root = rt.presented("frame-0").unwrap().0;
+    let graph = rt.presented(flame::GRAPH).unwrap().0;
+    assert!((root[2] - graph[2]).abs() < 0.5, "the root is full width");
+    assert!(tree.nodes[0].children.len() >= 2, "the fixture has a main chain and a subagent");
+    for &c in &tree.nodes[0].children {
+        let want = tree.nodes[c].value as f32 / tree.total() as f32 * (root[2] + flame::GAP) - flame::GAP;
+        if want >= flame::MIN_W {
+            let bar = rt.presented(&format!("frame-{c}")).unwrap().0;
+            assert!((bar[2] - want).abs() < 0.5, "{}: {} against {want}", tree.nodes[c].name, bar[2]);
+        } else {
+            assert!(rt.presented(&format!("frame-{c}")).is_none());
+        }
+    }
+    let hidden = flame::layout(&tree, 0, graph[2]).1;
+    assert_eq!(text_in(&rt, "flame-info", "flame-hidden"), flame::hidden_note(hidden));
+    assert_eq!(text_in(&rt, "flame-info", "flame-line"), flame::describe(&tree, 0), "the line names the cursor's frame");
+    // The pointer on a frame names it in the line, instead of the cursor's.
+    let main = tree.nodes[0].children[0];
+    let (mx, my) = rt.find(&format!("frame-{main}")).unwrap();
+    rt.pointer_move(mx, my);
+    settle(&mut rt);
+    assert_eq!(text_in(&rt, "flame-info", "flame-line"), flame::describe(&tree, main));
+    rt.pointer_move(1.0, 1.0);
+    settle(&mut rt);
+    assert_eq!(text_in(&rt, "flame-info", "flame-line"), flame::describe(&tree, 0), "and the cursor's again once it leaves");
+    // The tree is built once per X-ray.
+    press(&mut rt, RuneKey::Down);
+    assert!(Rc::ptr_eq(&tree, &rt.state.flame_tree().unwrap()));
+}
+
+#[test]
+fn flame_zooms_by_click_and_enter_and_out_by_crumb_and_esc() {
+    let (mut rt, _, _) = flame_desk();
+    let tree = rt.state.flame_tree().unwrap();
+    let width = rt.presented("frame-0").unwrap().0[2];
+    let main = tree.nodes[0].children[0];
+    click(&mut rt, &format!("frame-{main}"));
+    settle(&mut rt);
+    assert_eq!(rt.state.flame.root, tree.path(main));
+    assert!((rt.presented(&format!("frame-{main}")).unwrap().0[2] - width).abs() < 0.5, "the frame clicked fills the width");
+    assert!(rt.presented("frame-0").is_none(), "the session's bar gives way to the crumb");
+    assert_eq!(text_in(&rt, "crumb-1", "crumb-name"), tree.nodes[main].name);
+    click(&mut rt, "crumb-0");
+    settle(&mut rt);
+    assert!(rt.state.flame.root.is_empty(), "the first crumb shows the whole session");
+    assert_eq!(rt.state.flame.cursor, tree.path(main), "with the cursor where the root was");
+
+    // Keys: up to the root, down to its first child, right to the next.
+    rt.pointer_move(1.0, 1.0);
+    press(&mut rt, RuneKey::Up);
+    assert!(rt.state.flame.cursor.is_empty());
+    press(&mut rt, RuneKey::Down);
+    press(&mut rt, RuneKey::Right);
+    let second = tree.nodes[0].children[1];
+    assert_eq!(rt.state.flame.cursor, tree.path(second));
+    assert_eq!(text_in(&rt, "flame-info", "flame-line"), flame::describe(&tree, second));
+    press(&mut rt, RuneKey::Right);
+    assert_eq!(rt.state.flame.cursor, tree.path(*tree.nodes[0].children.get(2).unwrap_or(&second)), "the last drawn sibling stays");
+    press(&mut rt, RuneKey::Left);
+    press(&mut rt, RuneKey::Left);
+    assert_eq!(rt.state.flame.cursor, tree.path(main));
+    assert_eq!(rt.state.tab, inspector::Tab::Flame, "← and → stay in the graph");
+    press(&mut rt, RuneKey::Enter);
+    assert_eq!(rt.state.flame.root, tree.path(main), "⏎ zooms into the cursor's frame");
+    assert!(!rt.state.browser.zoomed(), "and does not show the inspector full size");
+    press(&mut rt, RuneKey::Escape);
+    assert!(rt.state.flame.root.is_empty(), "esc zooms out");
+    assert_eq!(rt.state.pane, Focus::Inspector, "and keeps the keyboard");
+    press(&mut rt, RuneKey::Enter);
+    press(&mut rt, RuneKey::Backspace);
+    assert!(rt.state.flame.root.is_empty(), "Backspace zooms out");
+    press(&mut rt, RuneKey::Escape);
+    assert_eq!(rt.state.pane, Focus::List, "esc at the top gives the keyboard back");
+
+    // Shift+← leaves the graph for the tab before.
+    press(&mut rt, RuneKey::Tab);
+    shifted(&mut rt, RuneKey::Left);
+    assert_eq!(rt.state.tab, inspector::Tab::Cache);
+    shifted(&mut rt, RuneKey::Right);
+    assert_eq!(rt.state.tab, inspector::Tab::Flame);
+}
+
+#[test]
+fn a_click_on_the_shown_root_zooms_out_one_level() {
+    let (mut rt, _, _) = flame_desk();
+    let tree = rt.state.flame_tree().unwrap();
+    let main = tree.nodes[0].children[0];
+    let turn = tree.nodes[main].children[0];
+    click(&mut rt, &format!("frame-{main}"));
+    settle(&mut rt);
+    click(&mut rt, &format!("frame-{turn}"));
+    settle(&mut rt);
+    assert_eq!(rt.state.flame.root, tree.path(turn));
+    assert_eq!(text_in(&rt, "crumb-2", "crumb-name"), tree.nodes[turn].name);
+    click(&mut rt, &format!("frame-{turn}"));
+    settle(&mut rt);
+    assert_eq!(rt.state.flame.root, tree.path(main));
+}

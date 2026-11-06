@@ -4,6 +4,7 @@
 
 mod ansi;
 mod day;
+mod flame;
 mod inspector;
 mod keys;
 mod overlay;
@@ -209,6 +210,11 @@ pub struct Desk {
     /// inspector last drew it.
     pub cursor: usize,
     pub tab_rows: Cell<usize>,
+    /// The `Flame` tab's zoom, cursor and hover, the tree of the X-ray shown, and the width its
+    /// graph was last laid out in.
+    pub flame: flame::State,
+    pub flame_memo: RefCell<flame::Memo>,
+    pub flame_w: f32,
 }
 
 /// The panes that take the keyboard, in the order Tab moves through them.
@@ -263,6 +269,9 @@ impl Desk {
             pane: Focus::List,
             cursor: 0,
             tab_rows: Cell::new(0),
+            flame: flame::State::default(),
+            flame_memo: RefCell::default(),
+            flame_w: 0.0,
         }
     }
 
@@ -316,8 +325,12 @@ impl Desk {
 
     /// The keys of the inspector while it has the keyboard: the tab before or after or of a
     /// digit, and the cursor through the tab's rows, or the inspector scrolled where the tab has
-    /// none; the rest go on to the browser.
+    /// none; the rest go on to the browser. In `Flame`, the graph takes its keys first, and
+    /// Shift+← and → switch tabs.
     fn inspector_key(&mut self, e: &KeyEvent, tx: &mut Tx) -> bool {
+        if self.tab == Tab::Flame && self.flame_key(e) {
+            return true;
+        }
         let at = Tab::ALL.iter().position(|&t| t == self.tab).unwrap_or(0);
         let text = match &e.key {
             RuneKey::Text(t) if plain(e) => Some(t.as_str()),
@@ -334,6 +347,10 @@ impl Desk {
             }
             (_, Some(d)) if d.len() == 1 && ("1"..="9").contains(&d) => {
                 self.show_tab(Tab::ALL[d.parse::<usize>().unwrap_or(1) - 1], tx);
+                return true;
+            }
+            (_, Some("0")) => {
+                self.show_tab(Tab::Flame, tx);
                 return true;
             }
             _ => {}
@@ -453,7 +470,7 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
         s.separator_on_top = matches!(s.slots.borrow().get(slot), Some(Slot::Day(_)));
         s.browser.set_top(top);
     }
-    let arrived = s.browser.tick();
+    let arrived = s.browser.tick() | s.flame_dive();
     // Rune would keep the first row on the screen there whatever came or went; the browser keeps
     // the rows on the screen in place instead, as `tokprof ui` does, so the list scrolls to its
     // first row.
@@ -593,6 +610,8 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
                 s.pane = s.pane.step(e.mods.shift);
                 return true;
             }
+            // In a zoomed flame graph, esc zooms out before it gives the keyboard back.
+            RuneKey::Escape if s.tab == Tab::Flame && inspector::keyboard(s) && s.flame_out() => return true,
             RuneKey::Escape if !zoomed && s.pane != Focus::List => {
                 s.pane = Focus::List;
                 return true;
@@ -710,9 +729,8 @@ fn checked(cli: &Cli, catalog: &Catalog) -> Result<(Query, tokprof_core::pricing
     let select = query(cli, agents)?;
     let pricing = paths::pricing(cli.prices.as_deref())?;
     let tab = match cli.tab.as_deref() {
-        Some(name) => {
-            Tab::named(name).ok_or_else(|| anyhow::anyhow!("--tab takes one of: summary, requests, spend, work, waits, prompts, tools, context, cache"))?
-        }
+        Some(name) => Tab::named(name)
+            .ok_or_else(|| anyhow::anyhow!("--tab takes one of: summary, requests, spend, work, waits, prompts, tools, context, cache, flame"))?,
         None => Tab::Summary,
     };
     colors(cli)?;
@@ -782,8 +800,8 @@ fn main() -> Result<()> {
 /// A named state a frame without a window can start from (`--scene`).
 type Scene = (&'static str, fn(&mut Desk));
 
-/// The scenes: a pane with the keyboard, a filter being typed that matches nothing, the settings
-/// open, the palette open with a query, and the key help.
+/// The scenes: a pane with the keyboard, the flame graph zoomed two levels in, a filter being typed
+/// that matches nothing, the settings open, the palette open with a query, and the key help.
 const SCENES: &[Scene] = &[
     ("settings", |s| s.panel = Some(settings::Panel::default())),
     ("palette", |s| s.palette = Some(palette::Palette { query: "to".into(), at: 0 })),
@@ -793,6 +811,11 @@ const SCENES: &[Scene] = &[
         s.pane = Focus::Inspector;
         s.tab = Tab::Tools;
         s.cursor = 2;
+    }),
+    ("flame-zoomed", |s| {
+        s.pane = Focus::Inspector;
+        s.tab = Tab::Flame;
+        s.flame.dive = 2;
     }),
     ("filter-typing", |s| {
         let view = s.viewport();

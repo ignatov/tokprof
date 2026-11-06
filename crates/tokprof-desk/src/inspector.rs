@@ -32,10 +32,11 @@ pub enum Tab {
     Tools,
     Context,
     Cache,
+    Flame,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 9] = [Tab::Summary, Tab::Requests, Tab::Spend, Tab::Work, Tab::Waits, Tab::Prompts, Tab::Tools, Tab::Context, Tab::Cache];
+    pub const ALL: [Tab; 10] = [Tab::Summary, Tab::Requests, Tab::Spend, Tab::Work, Tab::Waits, Tab::Prompts, Tab::Tools, Tab::Context, Tab::Cache, Tab::Flame];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -48,6 +49,7 @@ impl Tab {
             Tab::Tools => "Tools",
             Tab::Context => "Context",
             Tab::Cache => "Cache",
+            Tab::Flame => "Flame",
         }
     }
 
@@ -74,6 +76,7 @@ pub fn version(s: &Desk, cx: &Cx<Desk>, theme: &str) -> u64 {
     view::hash_of((
         (b.xray().map(|x| x as *const XRay as usize), pending, s.tab, theme, selected),
         (b.zoomed(), cx.layout_size(TRACK).map(|sz| sz[0].to_bits()), view::minute(), keyboard(s), s.cursor),
+        (s.tab == Tab::Flame).then(|| crate::flame::version(s, cx)),
     ))
 }
 
@@ -133,6 +136,7 @@ pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
             Tab::Tools => tools(x, p),
             Tab::Context => context(x, p),
             Tab::Cache => cache(x, p),
+            Tab::Flame => crate::flame::tab(s, x, cx, p),
         },
         None => match s.browser.report() {
             Pane::Text(t) => vec![note(t.text.clone(), p)],
@@ -897,6 +901,7 @@ mod tests {
     fn tabs_are_named_as_the_x_ray_blocks() {
         assert_eq!(Tab::named("prompts"), Some(Tab::Prompts));
         assert_eq!(Tab::named("nothing"), None);
-        assert_eq!(Tab::ALL.map(Tab::name).join(" "), "Summary Requests Spend Work Waits Prompts Tools Context Cache");
+        assert_eq!(Tab::ALL.map(Tab::name).join(" "), "Summary Requests Spend Work Waits Prompts Tools Context Cache Flame");
+        assert_eq!(Tab::named("flame"), Some(Tab::Flame));
     }
 }
