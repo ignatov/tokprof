@@ -1065,9 +1065,22 @@ fn the_key_help_names_the_keys_the_window_handles() {
     let named = helped();
     for k in [
         "⌘K", "⌘,", "?", "Tab", "⇧Tab", "⏎", "esc", "⌫", "[", "]", "d", "/", "s", "r", "c", "f", "o", "q", "⌘Q", "⌘W", "Ctrl+C", "↑", "↓", "←", "→", "j", "k",
-        "h", "l", "g", "G", "PgUp", "PgDn", "Home", "End", "1–9", "Space", "Ctrl+P", "Ctrl+N", "⌘1", "⌘2",
+        "h", "l", "g", "G", "PgUp", "PgDn", "Home", "End", "1–9", "Space", "Ctrl+P", "Ctrl+N", "⌘1", "⌘2", "0", "⇧←", "⇧→",
     ] {
         assert!(named.contains(&k), "the key help names {k}");
+    }
+    let flame: Vec<&str> = keys::GROUPS.iter().find(|g| g.0 == "Flame").expect("a Flame group").1.iter().flat_map(|r| r.keys.iter().copied()).collect();
+    // Every key the graph takes is named in its group, as the browser's are below.
+    let (mut rt, _, _) = flame_desk();
+    let keys = [RuneKey::Left, RuneKey::Right, RuneKey::Up, RuneKey::Down, RuneKey::Enter, RuneKey::Backspace, RuneKey::Escape, RuneKey::Home, RuneKey::End];
+    let names = ["←", "→", "↑", "↓", "⏎", "⌫", "esc", "Home", "End"];
+    for (key, name) in keys.into_iter().zip(names) {
+        let taken = rt.state.flame_key(&KeyEvent::from(key.clone()));
+        assert!(!taken || flame.contains(&name), "Flame takes {name}, its group does not name it");
+    }
+    for c in (' '..='~').map(|c| c.to_string()) {
+        let taken = rt.state.flame_key(&KeyEvent::from(RuneKey::Text(c.clone())));
+        assert!(!taken || flame.contains(&c.as_str()), "Flame takes {c:?}, its group does not name it");
     }
     // Every character the browser does something with is named; c, f and o copy and write
     // files, so they are only named above.
@@ -1723,4 +1736,15 @@ fn the_palette_in_reports_shows_day_for_what_works_on_day() {
     command(&mut rt, '2');
     run(&mut rt, "reports: the last 7");
     assert_eq!((rt.state.reports.mode, rt.state.reports.days), (reports::Mode::Reports, 7));
+}
+
+#[test]
+fn backspace_on_flame_at_the_top_leaves_full_size() {
+    let (mut rt, _, _) = flame_desk();
+    assert_eq!(rt.state.tab, inspector::Tab::Flame);
+    press(&mut rt, RuneKey::Escape);
+    press(&mut rt, RuneKey::Enter);
+    assert!(rt.state.browser.zoomed(), "⏎ shows the inspector full size");
+    press(&mut rt, RuneKey::Backspace);
+    assert!(!rt.state.browser.zoomed(), "⌫ at the top of the graph goes back, as the key help says");
 }

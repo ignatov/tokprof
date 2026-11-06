@@ -341,12 +341,10 @@ fn candidates(s: &Desk) -> Vec<Entry> {
     let mut out: Vec<Entry> =
         Action::ALL.iter().filter(|a| a.offered(s)).map(|&a| Entry { keys: a.keys(), ..Entry::new(Group::Actions, Pick::Act(a), a.title()) }).collect();
     const DIGITS: [&str; 9] = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
-    out.extend(
-        Tab::ALL
-            .iter()
-            .enumerate()
-            .map(|(i, &t)| Entry { keys: DIGITS.get(i).map_or(&[][..], std::slice::from_ref), ..Entry::new(Group::Tabs, Pick::Tab(t), t.name()) }),
-    );
+    out.extend(Tab::ALL.iter().enumerate().map(|(i, &t)| {
+        let keys = if t == Tab::Flame { &["0"][..] } else { DIGITS.get(i).map_or(&[][..], std::slice::from_ref) };
+        Entry { keys, ..Entry::new(Group::Tabs, Pick::Tab(t), t.name()) }
+    }));
     // The sessions, and the days they were last active on, as the list's separators group them.
     let offset = &rhythm::local_offset;
     let mut days: BTreeMap<i64, (usize, f64)> = BTreeMap::new();

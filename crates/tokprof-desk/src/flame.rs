@@ -334,10 +334,8 @@ impl Desk {
                 self.flame_set(&tree, cursor, cursor);
                 return true;
             }
-            (K::Backspace, _) => {
-                self.flame_out();
-                return true;
-            }
+            // At the top there is nothing to zoom out of: ⌫ goes on, and leaves full size.
+            (K::Backspace, _) => return self.flame_out(),
             _ => return false,
         };
         let (root, cursor) = self.flame_at(&tree);

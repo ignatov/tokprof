@@ -28,7 +28,7 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
             k(&["⌘1", "⌘2"], "Day, Reports"),
             k(&["?"], "this key help"),
             k(&["Tab", "⇧Tab"], "keyboard to the next, previous pane"),
-            k(&["⏎"], "inspector full size"),
+            k(&["⏎"], "inspector full size; in Flame, zoom in"),
             k(&["esc", "⌫"], "back from full size"),
             k(&["[", "]"], "day before, day after"),
             k(&["d"], "the selected session's day"),
@@ -62,6 +62,16 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
         ],
     ),
     (
+        "Settings",
+        &[
+            k(&["Tab", "⇧Tab"], "next, previous section"),
+            k(&["←", "→", "h", "l"], "appearance or theme before, after"),
+            k(&["↑", "↓", "k", "j"], "theme above, below"),
+            k(&["Home", "End"], "the first, the last theme"),
+            k(&["esc", "⏎", "⌘,"], "close"),
+        ],
+    ),
+    (
         "List",
         &[
             k(&["↑", "↓", "k", "j"], "session above, below"),
@@ -75,13 +85,26 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
     (
         "Inspector",
         &[
-            k(&["←", "→", "h", "l"], "tab before, after"),
+            k(&["←", "→", "h", "l"], "tab before, after; in Flame, frame"),
+            k(&["⇧←", "⇧→"], "tab before, after, in Flame too"),
             k(&["1–9"], "the tab of that place"),
+            k(&["0"], "Flame"),
             k(&["↑", "↓", "k", "j"], "row above, below, or scroll"),
             k(&["PgUp", "PgDn"], "ten rows up, down"),
             k(&["Home", "End", "g", "G"], "the first, the last row"),
             k(&["Space"], "a page down"),
             k(&["esc"], "keyboard back to the list"),
+        ],
+    ),
+    (
+        "Flame",
+        &[
+            k(&["←", "→", "h", "l"], "frame before, after"),
+            k(&["↓", "j"], "its first child"),
+            k(&["↑", "k"], "its parent"),
+            k(&["⏎"], "zoom into the frame"),
+            k(&["esc", "⌫"], "zoom out; at the top, as elsewhere"),
+            k(&["⇧←", "⇧→"], "tab before, after"),
         ],
     ),
     (
@@ -96,20 +119,10 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
             k(&["esc", "⌘1"], "back to Day"),
         ],
     ),
-    (
-        "Settings",
-        &[
-            k(&["Tab", "⇧Tab"], "next, previous section"),
-            k(&["←", "→", "h", "l"], "appearance or theme before, after"),
-            k(&["↑", "↓", "k", "j"], "theme above, below"),
-            k(&["Home", "End"], "the first, the last theme"),
-            k(&["esc", "⏎", "⌘,"], "close"),
-        ],
-    ),
 ];
 
 /// The groups in the left column; the rest go in the right one.
-const LEFT: usize = 3;
+const LEFT: usize = 4;
 
 /// The card's width and the width of a column of groups in it.
 const CARD_W: f32 = 860.0;
