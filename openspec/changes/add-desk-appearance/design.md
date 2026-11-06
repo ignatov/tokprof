@@ -65,7 +65,13 @@ The alphas are those the built-in pair used, so a mark sits on its background as
 
 `Settings…` with ⌘, in the app menu; `on_key` takes ⌘, too, for a headless script or a menu that failed. The panel is a `settings: Option<SettingsPanel>` in `Desk` holding which of the three parts has the keyboard; while it is set, `on_key` sends every key to it, except ⌘Q.
 
-A card 640 points wide and at most the window's height less 120, in the middle, over a scrim of the background at 50% that covers the window: a click on the scrim closes the panel, and the card keeps its own clicks, so nothing behind it is pressed. On top, `Settings` and `Appearance` with a segmented control in the style of the list's `Time / Cost / Next`. Below, `Light theme` and `Dark theme` side by side, each a scrolling list of rows 30 points high: the name, then six 12-point swatches (canvas, content, accent, success, warning, danger), the chosen row filled with the accent. `Done` at the bottom right. The part with the keyboard has the accent line the panes use. A pick saves at once; there is no Cancel, as in macOS settings.
+The panel follows the look of Rex's own settings, which the author likes: large rounded corners, parts as soft groups instead of boxes with borders, pills for buttons and keys, and pictures of the themes rather than strips of swatches.
+
+A card 760 points wide, at most the window's height less 80, radius 22, in the middle, over a scrim of the background at 35% that blurs the window (backdrop blur, σ 10) and covers it: a click on the scrim closes the panel, and the card keeps its own clicks, so nothing behind it is pressed. Its head holds `Settings` and a pill with the theme the window shows; its foot the keys as keycaps (`Tab` section, `← → ↑ ↓` choose, `⏎` done) and `Done`, a pill in the accent. Between them the body scrolls, with three parts, each a title over a group of radius 16 in the bar's color, ringed in the accent (outline 2, offset 2) while it has the keyboard:
+- `Appearance`: three tiles, each a 74-point picture of a window (its bar, two lines of text, an accent and a green) in the chosen light theme, the chosen dark theme, or both side by side for `As in system`, the label under it; the chosen tile ringed and its label in the accent.
+- `Light theme` and `Dark theme`: grids of 4 columns of cards, each a 78-point picture of the theme's canvas with a `~/` prompt pill in its raised surface and text, `tokprof` in its secondary text, and five overlapping dots (accent, success, warning, danger, info), the name under it; the chosen card ringed and its name in the accent.
+
+In a grid ← → go to the card before and after, ↑ ↓ four cards back or on (staying put where there is none), Home and End to the ends; every move picks the theme, so the window shows it at once, and scrolls the card into view. Tab scrolls the part it reaches into view. A pick saves at once; there is no Cancel, as in macOS settings.
 
 ## Risks / Trade-offs
 

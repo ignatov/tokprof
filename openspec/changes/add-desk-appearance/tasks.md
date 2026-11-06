@@ -28,3 +28,12 @@
 - [x] 4.4 Update `crates/tokprof-desk/README.md`: the settings, ⌘,, where they are kept, and the themes with their source and how to regenerate them.
 - [x] 4.5 Reinstall the window the author runs (`cargo install --path . --root ~/.local` and the app bundle as add-desk-app's `bundle.sh` builds it).
   - 2026-11-06: `bundle.sh` built and signed the app, installed as `~/Applications/tokprof.app`, which `~/.local/bin/tokprof-desk` links to; `cargo install` would replace that link, so it was not run.
+
+## 5. The panel in the look of Rex
+
+The author found the first panel too rectangular and asked for Rex's look and for the keyboard.
+
+- [x] 5.1 Redraw the panel as the design's "The panel" says: the rounded card over a blurred scrim, the head with the shown theme, the parts as soft groups ringed while they have the keyboard, the appearance tiles with window pictures, the theme cards in grids of 4, and the foot with the keys and `Done`.
+- [x] 5.2 Move through a grid with ← → ↑ ↓, Home and End, and scroll the part Tab reaches into view. Unit-test the steps at the grid's edges; test in the runtime that Home, ↓, ↑ in `Light theme` and →, End in `Dark theme` pick the cards they reach, that the chosen ones are named in the accent, and that the foot names the keys.
+- [x] 5.3 Render `--scene settings` in light and dark and look at them; run `cargo fmt`, `cargo test` and `cargo clippy --all-targets -- -D warnings`.
+- [ ] 5.4 Reinstall the app, and with it check by eye that the keys move through the panel in the window as in the tests.

@@ -61,7 +61,7 @@ A theme SHALL give the window's background, panels, lines, text and accent, and 
 - **THEN** its next-request cell is drawn in the theme's red
 
 ### Requirement: Settings panel
-`Settings…` in the app menu and ⌘, SHALL open the settings panel, a card in the middle of the window over a dimmed window. While it is open, the keys and clicks go to the panel only, and ⌘Q still quits. ⌘, again, esc, its `Done` button and a click outside the card close it, and the window is as it was before it opened.
+`Settings…` in the app menu and ⌘, SHALL open the settings panel, a rounded card in the middle of the window over the window dimmed and blurred. While it is open, the keys and clicks go to the panel only, and ⌘Q still quits. ⌘, again, esc, its `Done` button and a click outside the card close it, and the window is as it was before it opened.
 
 #### Scenario: Opening the settings
 - **WHEN** the user presses ⌘,
@@ -76,7 +76,7 @@ A theme SHALL give the window's background, panels, lines, text and accent, and 
 - **THEN** the panel closes, and the same session, tab and day are shown as before it opened
 
 ### Requirement: Appearance and theme settings
-The settings panel SHALL offer `Appearance` with `As in system` (the default), `Light` and `Dark`, a list `Light theme` of the light themes and a list `Dark theme` of the dark ones, each row with the theme's name and a strip of its background, text, accent, green, yellow and red. A click picks a choice, and the window takes it at once. Under `As in system` the window follows the system, also when it changes. The close, minimize and zoom buttons keep the system's appearance.
+The settings panel SHALL offer `Appearance` as three tiles, `As in system` (the default), `Light` and `Dark`, each with a small picture of the window in it, and `Light theme` and `Dark theme` as grids of theme cards, each a picture of the theme's background with a prompt in its text and dots of its accent, green, yellow, red and blue, its name under it. A click picks a choice, and the window takes it at once. Under `As in system` the window follows the system, also when it changes.
 
 #### Scenario: A dark theme on a light system
 - **WHEN** the system is light and the user picks `Dark` and then `Ink Meridian` in `Dark theme`
@@ -86,12 +86,20 @@ The settings panel SHALL offer `Appearance` with `As in system` (the default), `
 - **WHEN** the window is dark and the user picks `Alpine Milk` in `Light theme`
 - **THEN** the window stays dark, and it is drawn in Alpine Milk once it turns light
 
+#### Scenario: The system's buttons
+- **WHEN** the system is light and the window is drawn in a dark theme
+- **THEN** the close, minimize and zoom buttons keep the system's light appearance
+
 ### Requirement: Keys in the settings
-In the settings panel, Tab and Shift+Tab SHALL move the keyboard between `Appearance`, `Light theme` and `Dark theme`; ← and → pick the appearance; ↑ and ↓ move through a theme list, scrolled into view, and pick the theme they reach; ⏎ closes the panel.
+In the settings panel, Tab and Shift+Tab SHALL move the keyboard between `Appearance`, `Light theme` and `Dark theme`, the part with it ringed in the accent; ← and → pick the appearance; in a grid, ← → go to the card before and after, ↑ ↓ to the card above and below, Home and End to the first and last, each picking the theme it reaches, scrolled into view; ⏎ closes the panel. The panel's foot names these keys.
 
 #### Scenario: The next dark theme
-- **WHEN** `Dark theme` has the keyboard on Merino Dark and the user presses ↓
+- **WHEN** `Dark theme` has the keyboard on Merino Dark and the user presses →
 - **THEN** the dark theme after Merino Dark is picked and the window takes it at once
+
+#### Scenario: The card below
+- **WHEN** `Light theme` has the keyboard on its first card and the user presses ↓
+- **THEN** the first card of the grid's next row is picked
 
 ### Requirement: Saved settings
 The window SHALL keep its settings in `prefs.json` in `~/Library/Application Support/io.github.ignatov.tokprof/`: `appearance` as `system`, `light` or `dark`, and `light_theme` and `dark_theme` as theme ids. It writes the file only when a choice changes and reads it when it starts. A missing or broken file gives the defaults, and a value it does not know gives that setting's default.

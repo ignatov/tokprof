@@ -8,7 +8,6 @@ use rune::{Color, El, Key as RuneKey, KeyEvent, ScrollSpec, Tx, col, el, row, sp
 
 use crate::pal::{self, Pal};
 use crate::themes::{self, Theme};
-use crate::view;
 use crate::{Desk, plain};
 
 /// The app's id, as the bundle names it: its settings file is in a folder of this name.
@@ -175,7 +174,11 @@ impl Desk {
         };
         match (&e.key, text) {
             (RuneKey::Escape | RuneKey::Enter, _) => self.panel = None,
-            (RuneKey::Tab, _) => self.panel = Some(Panel { part: panel.part.step(e.mods.shift) }),
+            (RuneKey::Tab, _) => {
+                let part = panel.part.step(e.mods.shift);
+                self.panel = Some(Panel { part });
+                tx.scroll_into_view(part.key());
+            }
             _ if panel.part == Part::Appearance => {
                 let at = Appearance::ALL.iter().position(|&a| a == self.settings.appearance).unwrap_or(0);
                 let to = match (&e.key, text) {
@@ -189,14 +192,7 @@ impl Desk {
                 let dark = panel.part == Part::Dark;
                 let list: Vec<&Theme> = themes::of(dark).collect();
                 let at = list.iter().position(|t| t.id == self.settings.theme_id(dark)).unwrap_or(0);
-                let last = list.len() - 1;
-                let to = match (&e.key, text) {
-                    (RuneKey::Up, _) | (_, Some("k")) => at.saturating_sub(1),
-                    (RuneKey::Down, _) | (_, Some("j")) => (at + 1).min(last),
-                    (RuneKey::Home, _) => 0,
-                    (RuneKey::End, _) => last,
-                    _ => return true,
-                };
+                let Some(to) = grid_step(&e.key, text, at, list.len()) else { return true };
                 let id = list[to].id.clone();
                 self.pick_theme(dark, &id);
                 tx.scroll_into_view(format!("theme-{id}"));
@@ -206,101 +202,294 @@ impl Desk {
     }
 }
 
-/// The key of a theme's row in the panel.
+/// How many theme cards a row of the grid holds.
+pub const COLUMNS: usize = 4;
+
+/// The card a key goes to in a grid of `count` cards from card `at`: the one before or after,
+/// above or below (staying put at an edge), or the first or the last.
+fn grid_step(key: &RuneKey, text: Option<&str>, at: usize, count: usize) -> Option<usize> {
+    let last = count.checked_sub(1)?;
+    Some(match (key, text) {
+        (RuneKey::Left, _) | (_, Some("h")) => at.saturating_sub(1),
+        (RuneKey::Right, _) | (_, Some("l")) => (at + 1).min(last),
+        (RuneKey::Up, _) | (_, Some("k")) => at.checked_sub(COLUMNS).unwrap_or(at),
+        (RuneKey::Down, _) | (_, Some("j")) => Some(at + COLUMNS).filter(|&i| i <= last).unwrap_or(at),
+        (RuneKey::Home, _) => 0,
+        (RuneKey::End, _) => last,
+        _ => return None,
+    })
+}
+
+impl Part {
+    /// The key of the part's group in the panel.
+    fn key(self) -> &'static str {
+        match self {
+            Part::Appearance => "part-appearance",
+            Part::Light => "part-light",
+            Part::Dark => "part-dark",
+        }
+    }
+}
+
+/// The key of a theme's card in the panel.
 pub fn row_key(t: &Theme) -> String {
     format!("theme-{}", t.id)
 }
 
-/// The settings panel over the window: a card over a dimmed window; a click outside the card
-/// closes it.
+/// The card's width and its padding, and the room a group takes around its content.
+const CARD_W: f32 = 760.0;
+const CARD_PAD: f32 = 24.0;
+const GROUP_PAD: f32 = 14.0;
+const GAP: f32 = 12.0;
+/// A pill, as Rex rounds its buttons and keys.
+const PILL: f32 = 999.0;
+
+/// The settings panel over the window: a rounded card over the window dimmed and blurred; a
+/// click outside the card closes it.
 pub fn panel(s: &Desk, panel: Panel, p: &Pal, height: f32) -> El {
-    let card_h = (height - 120.0).clamp(300.0, 640.0);
-    let appearance = Appearance::ALL.iter().map(|&a| {
-        view::segment(format!("appearance-{}", a.name()), a.label(), s.settings.appearance == a, p).on_press(move |s: &mut Desk| s.pick_appearance(a))
-    });
+    let card_h = (height - 80.0).clamp(320.0, 780.0);
+    let shown = s.theme.get();
+    let badge = row()
+        .key("settings-shown")
+        .h(26.0)
+        .px(12.0)
+        .gap(6.0)
+        .center_y()
+        .radius(PILL)
+        .fill(p.bar)
+        .child(text(if shown.dark() { "☾" } else { "☀" }).font(pal::BODY).color(p.ink2).single_line())
+        .child(text(shown.name.clone()).font(pal::SMALL_STRONG).color(p.ink2).single_line());
+    let head = row()
+        .w_full()
+        .px(CARD_PAD)
+        .pt(20.0)
+        .pb(16.0)
+        .center_y()
+        .child(text("Settings").key("settings-title").font(pal::TITLE).color(p.ink).single_line())
+        .child(spacer().grow(1.0))
+        .child(badge);
+    let body = col().key("settings-body").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(
+        col()
+            .w_full()
+            .px(CARD_PAD)
+            .py(18.0)
+            .gap(22.0)
+            .child(section(Part::Appearance, "Appearance", appearance_tiles(s, p), panel.part, p))
+            .child(section(Part::Light, "Light theme", theme_grid(s, false, p), panel.part, p))
+            .child(section(Part::Dark, "Dark theme", theme_grid(s, true, p), panel.part, p)),
+    );
+    let done = row()
+        .key("settings-done")
+        .h(32.0)
+        .px(20.0)
+        .center_y()
+        .radius(PILL)
+        .fill(p.accent)
+        .hover(p.accent.alpha(0.88))
+        .role("button")
+        .label("Done")
+        .on_press(|s: &mut Desk| s.panel = None)
+        .child(text("Done").font(pal::STRONG).color(p.on_accent).single_line());
+    let foot = row()
+        .w_full()
+        .px(CARD_PAD)
+        .py(14.0)
+        .gap(14.0)
+        .center_y()
+        .child(hint(&["Tab"], "section", p))
+        .child(hint(&["←", "→", "↑", "↓"], "choose", p))
+        .child(hint(&["⏎"], "done", p))
+        .child(spacer().grow(1.0))
+        .child(done);
     let card = col()
         .key("settings")
-        .w(640.0)
+        .w(CARD_W)
         .h(card_h)
-        .padding(20.0)
-        .gap(14.0)
-        .radius(12.0)
+        .radius(22.0)
         .fill(p.panel)
-        .border(1.0, p.line)
-        .shadow(12.0, 40.0, Color::BLACK.alpha(0.25))
+        .border(1.0, p.row_line)
+        .shadow(24.0, 64.0, Color::BLACK.alpha(0.28))
+        .clip_rounded(22.0)
         .role("dialog")
         .label("Settings")
         // A click on the card stays on it; one outside it closes the panel. Rune's modal would
         // take Tab itself, so the scrim stands in for it.
         .on_press(|_: &mut Desk| {})
-        .child(text("Settings").key("settings-title").font(pal::TITLE).color(p.ink).single_line())
-        .child(col().gap(6.0).child(heading("Appearance", panel.part == Part::Appearance, p)).child(row().child(view::segments(
-            "appearance",
-            appearance.collect(),
-            p,
-        ))))
-        .child(row().key("theme-lists").w_full().grow(1.0).min_h(0.0).gap(16.0).child(theme_list(s, false, panel.part == Part::Light, p)).child(theme_list(
-            s,
-            true,
-            panel.part == Part::Dark,
-            p,
-        )))
-        .child(row().w_full().child(spacer().grow(1.0)).child(view::button("settings-done", "Done", true, p).on_press(|s: &mut Desk| s.panel = None)));
-    el().key("settings-scrim").absolute(0.0, 0.0).w_full().h_full().fill(p.bg.alpha(0.5)).center().on_press(|s: &mut Desk| s.panel = None).child(card)
+        .child(head)
+        .child(el().w_full().h(1.0).fill(p.row_line))
+        .child(body)
+        .child(el().w_full().h(1.0).fill(p.row_line))
+        .child(foot);
+    el().key("settings-scrim")
+        .absolute(0.0, 0.0)
+        .w_full()
+        .h_full()
+        .fill(p.bg.alpha(0.35))
+        .backdrop_blur(10.0)
+        .center()
+        .on_press(|s: &mut Desk| s.panel = None)
+        .child(card)
 }
 
-/// A part's title, with the line that marks it as the one with the keyboard under it.
-fn heading(label: &'static str, on: bool, p: &Pal) -> El {
-    col().gap(3.0).child(text(label).font(pal::HEAD).color(p.ink2).single_line()).child(el().w(28.0).h(2.0).radius(1.0).fill(if on {
-        p.accent
-    } else {
-        Color::TRANSPARENT
-    }))
+/// A part of the panel: its title over a soft group, ringed in the accent while it has the
+/// keyboard.
+fn section(part: Part, title: &'static str, content: El, keyboard: Part, p: &Pal) -> El {
+    let on = part == keyboard;
+    let group = col().key(part.key()).w_full().padding(GROUP_PAD).radius(16.0).fill(p.bar).child(content);
+    let group = if on { group.outline(2.0, 2.0, p.accent) } else { group };
+    col().w_full().gap(10.0).child(text(title).font(pal::HEAD).color(if on { p.accent } else { p.ink2 }).single_line()).child(group)
 }
 
-/// The list of the light or the dark themes, the chosen one marked.
-fn theme_list(s: &Desk, dark: bool, keyboard: bool, p: &Pal) -> El {
+/// Keys and what they do, as the panel's foot names them.
+fn hint(keys: &[&'static str], what: &'static str, p: &Pal) -> El {
+    let caps = keys.iter().map(|k| {
+        row()
+            .h(20.0)
+            .min_w(20.0)
+            .px(6.0)
+            .center()
+            .radius(5.0)
+            .fill(p.bar)
+            .border(1.0, p.row_line)
+            .child(text(*k).font(pal::SMALL_STRONG).color(p.ink2).single_line())
+    });
+    row().gap(3.0).center_y().children(caps).child(text(what).font(pal::SMALL).color(p.ink3).single_line().pl(4.0))
+}
+
+/// The three appearances as tiles with a small window in each: the system's shows the light
+/// theme and the dark one side by side.
+fn appearance_tiles(s: &Desk, p: &Pal) -> El {
+    let light = themes::pick(s.settings.theme_id(false), false);
+    let dark = themes::pick(s.settings.theme_id(true), true);
+    let tile_w = (CARD_W - 2.0 * CARD_PAD - 2.0 * GROUP_PAD - 2.0 * GAP) / 3.0;
+    let tiles = Appearance::ALL.iter().map(|&a| {
+        let chosen = s.settings.appearance == a;
+        let picture = match a {
+            Appearance::System => row().w_full().h_full().child(window_picture(light).w(tile_w / 2.0)).child(window_picture(dark).w(tile_w / 2.0)),
+            Appearance::Light => window_picture(light).w_full(),
+            Appearance::Dark => window_picture(dark).w_full(),
+        };
+        // The picture is clipped to its corners; the ring goes on the box around it, which the
+        // clip leaves alone.
+        let picture = el().w_full().h_full().radius(12.0).clip_rounded(12.0).border(1.0, p.row_line).child(picture);
+        let frame = el().w_full().h(74.0).radius(12.0).child(picture);
+        let frame = if chosen { frame.outline(2.0, 2.0, p.accent) } else { frame };
+        col()
+            .key(format!("appearance-{}", a.name()))
+            .w(tile_w)
+            .gap(8.0)
+            .items_center()
+            .role("radio")
+            .checked(chosen)
+            .label(a.label())
+            .on_press(move |s: &mut Desk| s.pick_appearance(a))
+            .child(frame)
+            .child(
+                text(a.label())
+                    .key(format!("appearance-label-{}", a.name()))
+                    .font(if chosen { pal::STRONG } else { pal::BODY })
+                    .color(if chosen { p.accent } else { p.ink })
+                    .single_line(),
+            )
+    });
+    row().w_full().gap(GAP).children(tiles)
+}
+
+/// A window in a theme, drawn small: its bar, a few lines of text and an accent.
+fn window_picture(t: &Theme) -> El {
+    let line = |w: f32, c: Color| el().w(w).h(5.0).radius(2.5).fill(c);
+    col().h_full().fill(t.color("canvas")).child(el().w_full().h(14.0).fill(t.color("surfaceSubtle"))).child(
+        col()
+            .padding(9.0)
+            .gap(6.0)
+            .child(line(46.0, t.color("content").alpha(0.7)))
+            .child(line(30.0, t.color("contentTertiary")))
+            .child(row().gap(4.0).child(line(18.0, t.color("accent"))).child(line(12.0, t.color("success")))),
+    )
+}
+
+/// The light or the dark themes as a grid of cards, the chosen one ringed.
+fn theme_grid(s: &Desk, dark: bool, p: &Pal) -> El {
     let chosen = s.settings.theme_id(dark).to_string();
-    let rows = themes::of(dark).map(|t| theme_row(t, t.id == chosen, dark, p));
-    let list = col()
-        .key(if dark { "dark-themes" } else { "light-themes" })
-        .w_full()
-        .grow(1.0)
-        .min_h(0.0)
-        .scroll(ScrollSpec { stick_bottom: false })
-        .radius(8.0)
-        .border(1.0, p.line)
-        .role("listbox")
-        .label(if dark { "Dark theme" } else { "Light theme" })
-        .child(col().w_full().padding(4.0).gap(2.0).children(rows));
-    col().w(0.0).grow(1.0).h_full().min_h(0.0).gap(6.0).child(heading(if dark { "Dark theme" } else { "Light theme" }, keyboard, p)).child(list)
+    let card_w = (CARD_W - 2.0 * CARD_PAD - 2.0 * GROUP_PAD - (COLUMNS as f32 - 1.0) * GAP) / COLUMNS as f32;
+    let cards = themes::of(dark).map(|t| theme_card(t, t.id == chosen, dark, card_w, p));
+    row().w_full().gap(GAP).flex_wrap().role("listbox").label(if dark { "Dark theme" } else { "Light theme" }).children(cards)
 }
 
-/// A theme's row: its name and a strip of its background, text, accent, green, yellow and red.
-fn theme_row(t: &'static Theme, chosen: bool, dark: bool, p: &Pal) -> El {
-    let swatches =
-        ["canvas", "content", "accent", "success", "warning", "danger"].map(|role| el().w(12.0).h(12.0).radius(3.0).fill(t.color(role)).border(1.0, p.line));
-    row()
-        .key(row_key(t))
-        .w_full()
-        .h(30.0)
-        .px(10.0)
-        .gap(8.0)
+/// A theme's card: its background with a prompt in its text and dots of its accent, green,
+/// yellow, red and blue, and its name under it.
+fn theme_card(t: &'static Theme, chosen: bool, dark: bool, w: f32, p: &Pal) -> El {
+    let canvas = t.color("canvas");
+    let dots = ["accent", "success", "warning", "danger", "info"]
+        .iter()
+        .enumerate()
+        .map(|(i, role)| el().absolute(i as f32 * 11.0, 0.0).w(16.0).h(16.0).radius(8.0).fill(t.color(role)).border(2.0, canvas));
+    let prompt = row()
+        .gap(6.0)
         .center_y()
-        .radius(6.0)
-        .fill(if chosen { p.accent } else { Color::TRANSPARENT })
-        .hover(if chosen { p.accent } else { p.hover })
+        .child(
+            row()
+                .h(18.0)
+                .px(6.0)
+                .center_y()
+                .radius(6.0)
+                .fill(t.color("surfaceRaised"))
+                .border(1.0, t.color("strokeSubtle"))
+                .child(text("~/").font(pal::SMALL_STRONG).color(t.color("content")).single_line()),
+        )
+        .child(text("tokprof").font(pal::SMALL).color(t.color("contentSecondary")).single_line());
+    let picture = col()
+        .w_full()
+        .h(78.0)
+        .padding(10.0)
+        .radius(12.0)
+        .fill(canvas)
+        .border(1.0, if dark { t.color("stroke") } else { t.color("strokeSubtle") })
+        .child(prompt)
+        .child(spacer().grow(1.0))
+        .child(el().w(16.0 + 4.0 * 11.0).h(16.0).children(dots));
+    let picture = if chosen { picture.outline(2.0, 2.0, p.accent) } else { picture };
+    col()
+        .key(row_key(t))
+        .w(w)
+        .gap(7.0)
         .role("option")
         .checked(chosen)
         .label(t.name.clone())
         .on_press(move |s: &mut Desk| s.pick_theme(dark, &t.id))
-        .child(text(t.name.clone()).font(pal::BODY).color(if chosen { p.on_accent } else { p.ink }).single_line().truncate().grow(1.0).min_w(0.0))
-        .child(row().gap(3.0).children(swatches))
+        .child(picture)
+        .child(
+            text(t.name.clone())
+                .key(format!("theme-name-{}", t.id))
+                .font(if chosen { pal::STRONG } else { pal::BODY })
+                .color(if chosen { p.accent } else { p.ink })
+                .single_line()
+                .truncate()
+                .pl(2.0),
+        )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_step_through_a_grid_and_stop_at_its_edges() {
+        // 14 cards in rows of 4: the last row holds 12 and 13.
+        let step = |key: RuneKey, at| grid_step(&key, None, at, 14);
+        assert_eq!(step(RuneKey::Right, 0), Some(1));
+        assert_eq!(step(RuneKey::Left, 0), Some(0));
+        assert_eq!(step(RuneKey::Right, 13), Some(13));
+        assert_eq!(step(RuneKey::Down, 1), Some(5));
+        assert_eq!(step(RuneKey::Down, 11), Some(11), "no card below 11");
+        assert_eq!(step(RuneKey::Down, 9), Some(13));
+        assert_eq!(step(RuneKey::Up, 13), Some(9));
+        assert_eq!(step(RuneKey::Up, 2), Some(2));
+        assert_eq!(step(RuneKey::Home, 7), Some(0));
+        assert_eq!(step(RuneKey::End, 7), Some(13));
+        assert_eq!(grid_step(&RuneKey::Text("j".into()), Some("j"), 0, 14), Some(4));
+        assert_eq!(step(RuneKey::PageDown, 0), None);
+    }
 
     #[test]
     fn appearances_by_name_both_ways() {

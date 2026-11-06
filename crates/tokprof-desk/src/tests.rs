@@ -696,11 +696,21 @@ fn command_comma_opens_the_settings_and_keys_stay_with_them() {
     press(&mut rt, RuneKey::Right);
     assert_eq!(rt.state.settings.appearance, settings::Appearance::Light, "→ from As in system picks Light");
     press(&mut rt, RuneKey::Tab);
-    press(&mut rt, RuneKey::Tab);
+    let light: Vec<&str> = themes::of(false).map(|t| t.id.as_str()).collect();
+    press(&mut rt, RuneKey::Home);
+    assert_eq!(rt.state.settings.light_theme, light[0], "Home in Light theme picks its first card");
     press(&mut rt, RuneKey::Down);
+    assert_eq!(rt.state.settings.light_theme, light[settings::COLUMNS], "↓ picks the card below");
+    press(&mut rt, RuneKey::Up);
+    press(&mut rt, RuneKey::Up);
+    assert_eq!(rt.state.settings.light_theme, light[0], "↑ on the first row stays");
+    press(&mut rt, RuneKey::Tab);
+    press(&mut rt, RuneKey::Right);
     let dark: Vec<&str> = themes::of(true).map(|t| t.id.as_str()).collect();
     let after = dark[dark.iter().position(|&id| id == themes::DEFAULT_DARK).unwrap() + 1];
-    assert_eq!(rt.state.settings.dark_theme, after, "↓ in Dark theme picks the next dark theme");
+    assert_eq!(rt.state.settings.dark_theme, after, "→ in Dark theme picks the next dark theme");
+    press(&mut rt, RuneKey::End);
+    assert_eq!(rt.state.settings.dark_theme, *dark.last().unwrap());
     press(&mut rt, RuneKey::Escape);
     assert!(rt.state.panel.is_none() && rt.presented("settings").is_none(), "esc closes it");
     assert_eq!(rt.state.browser.selected(), selected);
@@ -779,14 +789,17 @@ fn the_settings_scene_opens_the_panel_on_the_defaults() {
     for key in ["settings", "appearance-system", "theme-merino-light", "theme-merino-dark"] {
         assert!(rt.presented(key).is_some(), "{key}");
     }
-    // The chosen ones are filled with the accent of the theme the window is in.
+    // The chosen ones are named in the accent of the theme the window is in.
     let accent = rt.state.theme.get().color("accent");
     let marked = |key: &str| {
-        let fill = rt.elements().into_iter().find(|e| e.key.as_deref() == Some(key)).map(|e| e.fill).unwrap();
-        (fill.r - accent.r).abs() < 0.01 && (fill.g - accent.g).abs() < 0.01 && (fill.b - accent.b).abs() < 0.01
+        let c = rt.elements().into_iter().find(|e| e.key.as_deref() == Some(key)).and_then(|e| e.text_color).unwrap_or_else(|| panic!("no {key}"));
+        (c.r - accent.r).abs() < 0.01 && (c.g - accent.g).abs() < 0.01 && (c.b - accent.b).abs() < 0.01
     };
-    assert!(marked("appearance-system") && marked("theme-merino-light") && marked("theme-merino-dark"));
-    assert!(!marked("appearance-dark") && !marked("theme-alpine-milk"));
+    assert!(marked("appearance-label-system") && marked("theme-name-merino-light") && marked("theme-name-merino-dark"));
+    assert!(!marked("appearance-label-dark") && !marked("theme-name-alpine-milk"));
+    for hint in ["section", "choose", "done"] {
+        assert!(texts(&rt).iter().any(|t| t == hint), "the foot names the keys: {hint}");
+    }
 }
 
 #[test]
