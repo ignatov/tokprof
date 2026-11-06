@@ -264,7 +264,7 @@ Under `time`, the `rhythm` line counts the session's turns as [Your day with the
 
 ### The same in a window
 
-`tokprof-desk` shows what `tokprof ui` shows in a native window on macOS, with the same keys and the mouse: a click selects a session, a double click shows its X-ray full size, and the X-ray's text can be selected and copied. Each cost has a bar as long as its share of the dearest session. The day view draws its strip at the times of the log rather than in 10-minute columns, and the line under the strip names the time under the pointer and what the lane shows there.
+`tokprof-desk` shows what `tokprof ui` shows in a native window on macOS, laid out as a profiler. The day's lanes run along the top at the times of the log: your sittings, and per session its work, its waits for you, and a tail as long as its cache stays warm, up to a line at now. Below them are the sessions, with a countdown while a cache is warm and the next request's cost in red once it is cold, and an inspector of the selected session: its requests on a time axis up to now, the next request, the ways to continue with the cheapest marked, and tabs for the X-ray's blocks. It takes the keys of `tokprof ui` (← and → step the day) and the mouse.
 
 ```sh
 cargo install --path crates/tokprof-desk --root ~/.local

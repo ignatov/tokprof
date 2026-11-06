@@ -1,98 +1,230 @@
-//! What the window draws: the list of sessions on the left, the X-ray or the day on the right, and
-//! the footer with the keys, the filter and the status.
+//! What the window draws: its own title bar with the day's controls, the day's lanes under it,
+//! and under them the list of sessions on the left and the inspector of the selected one.
 
 use std::borrow::Cow;
 
-use rune::tok::{self, Theme};
-use rune::{Color, Cx, El, Family, GrowthSpec, ScrollSpec, Span, TextStyle, col, el, oklch, oklcha, rich, row, text};
-use tokprof_browse::browser::{Pane, now_ms};
+use rune::{Color, Cx, El, GrowthSpec, ScrollSpec, col, el, row, spacer, text};
+use tokprof_browse::browser::{Key, Sort, now_ms};
+use tokprof_core::fmt::{local_time, usd};
+use tokprof_core::rhythm;
 
-use crate::Desk;
-use crate::ansi::Styled;
+use crate::pal::{self, Pal};
+use crate::{Desk, Slot};
 
-/// The height of a row of the list, and of a line of the X-ray and the day.
-pub const ROW: f32 = 24.0;
-pub const LINE: f32 = 16.0;
-/// The width of the list.
-pub const LIST_WIDTH: f32 = 560.0;
-/// The keys of the list's and the right pane's scroll viewports.
+/// The height of the title bar, of a row of the list, and the width of the list.
+pub const BAR_H: f32 = 46.0;
+pub const ROW: f32 = 28.0;
+pub const LIST_WIDTH: f32 = 380.0;
+/// The keys of the list's and the inspector's scroll viewports.
 pub const LIST: &str = "list";
 pub const PANE: &str = "pane";
-/// The size, in characters, the browser lays the day's text out for.
+/// The size, in characters, the browser lays the day's text out for; the window draws the lanes
+/// itself and keeps only the text around them.
 pub const DAY_PANE: (u16, u16) = (200, 400);
-/// The widths of the cost and the next-request columns.
-const COST_WIDTH: f32 = 72.0;
-const NEXT_WIDTH: f32 = 92.0;
-
-pub const MONO: TextStyle = TextStyle::new(12.0, 400.0).family(Family::SystemMono).lh(LINE);
-const MONO_BOLD: TextStyle = TextStyle::new(12.0, 600.0).family(Family::SystemMono).lh(LINE);
-const TITLE: TextStyle = TextStyle::new(12.0, 500.0);
-
-/// The colors of the agent column, by the agent's place in the registry, as the terminal's: magenta,
-/// green, cyan and yellow.
-const AGENT_COLORS: [u8; 4] = [5, 2, 6, 3];
-
-/// One of the terminal's eight colors in the window's theme.
-pub fn ansi_color(c: u8, dark: bool, t: &Theme) -> Color {
-    let l = if dark { 0.76 } else { 0.52 };
-    match c % 8 {
-        1 => oklch(l - 0.08, 0.19, 25.0),
-        2 => oklch(l - 0.02, 0.17, 148.0),
-        3 => oklch(l + 0.06, 0.15, 82.0),
-        4 => oklch(l - 0.06, 0.15, 258.0),
-        5 => oklch(l - 0.04, 0.17, 322.0),
-        6 => oklch(l, 0.12, 205.0),
-        _ => t.text,
-    }
-}
-
-/// The styles of a text as spans: its colors, dim text in the secondary color, bold text bold.
-pub fn spans(s: &Styled, dark: bool, t: &Theme) -> Vec<Span> {
-    s.runs
-        .iter()
-        .map(|&(start, end, style)| {
-            let mut span = Span::new(start, end);
-            match style.fg {
-                Some(c) => span = span.color(ansi_color(c, dark, t)),
-                None if style.dim => span = span.color(t.text_secondary),
-                None => {}
-            }
-            if style.bold {
-                span = span.bold();
-            }
-            span
-        })
-        .collect()
-}
+/// The share of the window's height the lanes may take.
+const LANES_SHARE: f32 = 0.45;
+/// How long the bar shows a status message.
+pub const STATUS_SECS: u64 = 6;
 
 pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     let dark = cx.system_dark();
     s.dark.set(dark);
-    let t = tok::theme(dark);
-    let mut body = row().key("body").w_full().grow(1.0).min_h(0.0);
-    if !s.browser.zoomed() {
-        body = body.child(list_pane(s, &t)).child(el().w(1.0).h_full().fill(t.separator));
+    let p = pal::pal(dark);
+    *s.slots.borrow_mut() = slots(s);
+    let mut root = col()
+        .key("root")
+        .w_full()
+        .h_full()
+        .fill(p.bg)
+        .on_layout(|s: &mut Desk, r| s.window_h = r[3])
+        .child(bar(s, cx, &p))
+        .child(el().w_full().h(1.0).fill(p.line));
+    // The lanes and the inspector change when what they show does, and with the minute; the
+    // list's countdowns tick every second, so the view runs every second while one is on the
+    // screen and builds the two again only when they changed.
+    let inspector = |cx: &Cx<Desk>| rune::memo("inspector", crate::inspector::version(s, cx, dark), || crate::inspector::inspector(s, cx, &p));
+    if s.browser.zoomed() {
+        root = root.child(inspector(cx));
+    } else {
+        let height = if s.window_h > 0.0 { s.window_h } else { 900.0 };
+        let max_h = (height - BAR_H) * LANES_SHARE;
+        let lanes = rune::memo("lanes", crate::day::version(s, cx, max_h, dark), || crate::day::lanes(s, cx, &p, max_h));
+        let body = row().key("body").w_full().grow(1.0).min_h(0.0).child(list_pane(s, &p)).child(el().w(1.0).h_full().fill(p.line)).child(inspector(cx));
+        root = root.child(lanes).child(body);
     }
-    let right = right_pane(s, cx, &t, dark);
-    col().w_full().h_full().fill(t.bg).child(body.child(right)).child(el().w_full().h(1.0).fill(t.separator)).child(footer(s, &t, dark))
+    root
 }
 
-fn title_bar(key: &'static str, title: String, t: &Theme) -> El {
+/// A hash of what a part of the view shows, for `memo`.
+pub fn hash_of(parts: impl std::hash::Hash) -> u64 {
+    use std::hash::{BuildHasher, BuildHasherDefault};
+    BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default().hash_one(parts)
+}
+
+/// The minute of now, which the parts that show time are drawn again at.
+pub fn minute() -> i64 {
+    now_ms() / 60_000
+}
+
+/// A control in the bar: a label in a rounded box that does something when pressed.
+pub fn button(key: &'static str, label: &str, enabled: bool, p: &Pal) -> El {
     row()
         .key(key)
-        .w_full()
-        .h(30.0)
-        .px(12.0)
+        .h(24.0)
+        .px(10.0)
         .center_y()
-        .child(text(title.trim().to_string()).font(TITLE).color(t.text_secondary).single_line().truncate().grow(1.0).min_w(0.0))
+        .radius(6.0)
+        .fill(p.panel)
+        .border(1.0, p.line)
+        .hover(p.hover)
+        .role("button")
+        .label(label.to_string())
+        .disabled(!enabled)
+        .child(text(label.to_string()).font(pal::STRONG).color(if enabled { p.ink } else { p.ink3 }).single_line())
 }
 
-fn list_pane(s: &Desk, t: &Theme) -> El {
+/// One segment of a segmented control.
+pub fn segment(key: String, label: &str, on: bool, p: &Pal) -> El {
+    row()
+        .key(key)
+        .h(22.0)
+        .px(9.0)
+        .center_y()
+        .radius(5.0)
+        .fill(if on { p.accent } else { Color::TRANSPARENT })
+        .hover(if on { p.accent } else { p.hover })
+        .role("radio")
+        .checked(on)
+        .label(label.to_string())
+        .child(text(label.to_string()).font(pal::STRONG).color(if on { p.on_accent } else { p.ink2 }).single_line())
+}
+
+fn segments(key: &'static str, parts: Vec<El>, p: &Pal) -> El {
+    row().key(key).h(26.0).px(2.0).gap(2.0).center_y().radius(7.0).fill(p.panel).border(1.0, p.line).role("radiogroup").children(parts)
+}
+
+/// A dot of a color, as a status or an agent shows.
+pub fn dot(c: Color, size: f32) -> El {
+    el().w(size).h(size).radius(size / 2.0).fill(c)
+}
+
+/// The window's own title bar: the room for the window's buttons, the day's name with the steps
+/// to the days before and after, Today, the day's summary, the status, the lanes' zoom, the
+/// filter and the live mark. Dragging it where it has no control moves the window.
+fn bar(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
+    let b = &s.browser;
+    let inset = cx.titlebar_inset();
+    let latest = b.day_is_latest();
+    let mut bar = row()
+        .key("bar")
+        .w_full()
+        .h(BAR_H)
+        .fill(p.bar)
+        .window_drag()
+        .pl(if inset > 0.0 { inset + 16.0 } else { 16.0 })
+        .pr(14.0)
+        .gap(10.0)
+        .center_y()
+        .child(button("day-back", "‹", true, p).on_press(|s: &mut Desk| s.browser.step_day_by(-1)))
+        .child(text(local_time(b.day_noon(), "%A, %-d %B")).key("day-name").font(pal::DAY).color(p.ink).single_line())
+        .child(button("day-on", "›", !latest, p).on_press(|s: &mut Desk| s.browser.step_day_by(1)))
+        .child(button("today", "Today", !latest, p).on_press(|s: &mut Desk| s.browser.show_latest_day()));
+    if let Some(summary) = crate::day::summary(s) {
+        bar = bar.child(text(summary).key("day-summary").font(pal::BODY).color(p.ink2).single_line().truncate().shrink().min_w(0.0));
+    }
+    bar = bar.child(spacer().grow(1.0));
+    if s.status_shown() {
+        bar = bar.child(text(b.status().to_string()).key("status").font(pal::BODY).color(p.ink2).single_line().truncate().shrink().min_w(0.0));
+    }
+    let zoom = segments(
+        "zoom",
+        vec![
+            segment("zoom-fit".into(), "Fit", s.fit, p).on_press(|s: &mut Desk| s.fit = true),
+            segment("zoom-day".into(), "24 h", !s.fit, p).on_press(|s: &mut Desk| s.fit = false),
+        ],
+        p,
+    );
+    bar = bar.child(zoom).child(filter_field(s, p));
+    if s.live {
+        bar = bar
+            .child(row().key("live").gap(5.0).center_y().child(dot(p.warm_dot, 7.0)).child(text("Live").font(pal::SMALL_STRONG).color(p.warm).single_line()));
+    }
+    bar
+}
+
+/// The filter: what is typed, or what it filters while nothing is; a click starts typing.
+fn filter_field(s: &Desk, p: &Pal) -> El {
+    let b = &s.browser;
+    let editing = b.editing();
+    let (shown, color) = match (editing, b.filter().is_empty()) {
+        (true, _) => (format!("{}▌", b.filter()), p.ink),
+        (false, true) => ("Filter by project or id".to_string(), p.ink3),
+        (false, false) => (b.filter().to_string(), p.ink),
+    };
+    row()
+        .key("filter")
+        .w(210.0)
+        .h(26.0)
+        .px(9.0)
+        .center_y()
+        .radius(6.0)
+        .fill(p.panel)
+        .border(1.0, if editing { p.accent } else { p.line })
+        .role("searchbox")
+        .label("Filter")
+        .on_press(|s: &mut Desk| {
+            if !s.browser.editing() {
+                let view = s.viewport();
+                s.browser.on_key(Key::Char('/'), view);
+            }
+        })
+        .child(text(shown).key("filter-text").font(pal::BODY).color(color).single_line().truncate().grow(1.0).min_w(0.0))
+}
+
+/// The slots of the list: a row per listed session and, in time order, a separator row before
+/// the first session of each day.
+pub fn slots(s: &Desk) -> Vec<Slot> {
+    let b = &s.browser;
+    let mut out = Vec::with_capacity(b.len() + 16);
+    let by_time = b.sort_order() == Sort::Time;
+    let offset = &rhythm::local_offset;
+    let mut last = None;
+    for r in 0..b.len() {
+        if by_time {
+            let date = rhythm::date_of(b.active_ms(r), offset);
+            if last != Some(date) {
+                out.push(Slot::Day(date));
+                last = Some(date);
+            }
+        }
+        out.push(Slot::Row(r));
+    }
+    out
+}
+
+/// A day's name in the list: Today, Yesterday, the weekday within the week, the date before.
+pub fn day_label(date: i64, today: i64) -> String {
+    let noon = rhythm::midnight(date, &rhythm::local_offset) + 12 * 3_600_000;
+    match today - date {
+        0 => "Today".to_string(),
+        1 => "Yesterday".to_string(),
+        2..=6 => local_time(noon, "%A"),
+        _ => local_time(noon, "%a %-d %b %Y"),
+    }
+}
+
+fn list_pane(s: &Desk, p: &Pal) -> El {
+    let b = &s.browser;
     let offset = s.list_offset.clone();
+    let count = s.slots.borrow().len();
     let rows = col().key("rows").w_full().growth(GrowthSpec::default()).virtual_rows(
-        s.browser.len(),
+        count,
         ROW,
-        |s: &Desk, i| Cow::Borrowed(s.browser.session(i)),
+        |s: &Desk, i| match s.slots.borrow().get(i) {
+            Some(Slot::Row(r)) => Cow::Borrowed(s.browser.session(*r)),
+            Some(Slot::Day(d)) => Cow::Owned(format!("day-{d}")),
+            None => Cow::Borrowed("gone"),
+        },
         list_row,
     );
     // Where the rows on the screen go when sessions come and go is the browser's: the poll scrolls
@@ -106,39 +238,95 @@ fn list_pane(s: &Desk, t: &Theme) -> El {
         .on_scroll_offset(move |at| offset.set(at.offset[1]))
         .on_layout(|s: &mut Desk, r| s.list_height = r[3])
         .child(rows);
-    col().key("list-pane").w(LIST_WIDTH).h_full().min_h(0.0).child(title_bar("list-title", s.browser.list_title(now_ms()), t)).child(list)
+    let (total, pending) = b.known_total();
+    let n = b.len() as u64;
+    let mut title = format!("{} {}, {}", tokprof_core::fmt::int(n), if n == 1 { "session" } else { "sessions" }, usd(total));
+    if pending > 0 {
+        title += &format!(", costing {pending}");
+    }
+    let sorts = Sort::ALL.iter().map(|&sort| {
+        let label = match sort {
+            Sort::Time => "Time",
+            Sort::Cost => "Cost",
+            Sort::Next => "Next",
+        };
+        segment(format!("sort-{label}"), label, b.sort_order() == sort, p).on_press(move |s: &mut Desk| s.browser.sort_by(sort))
+    });
+    let head = row()
+        .key("list-head")
+        .w_full()
+        .h(34.0)
+        .px(12.0)
+        .gap(8.0)
+        .center_y()
+        .child(text(title).key("list-title").font(pal::SMALL_STRONG).color(p.ink2).single_line().truncate().grow(1.0).min_w(0.0))
+        .child(segments("sort", sorts.collect(), p));
+    col().key("list-pane").w(LIST_WIDTH).h_full().min_h(0.0).child(head).child(el().w_full().h(1.0).fill(p.line)).child(list)
 }
 
-/// Row `i` of the list. Its handlers find the session by its id: the row may hold another one
-/// by the time it is pressed.
+/// The time a cache stays warm, as the list counts it down: `24:47`, `1:02:03` past an hour.
+pub fn countdown(ms: i64) -> String {
+    let secs = (ms.max(0) + 999) / 1000;
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+/// Slot `i` of the list. A row's handlers find the session by its id: the row may hold another
+/// one by the time it is pressed.
 fn list_row(s: &Desk, i: usize) -> El {
-    let dark = s.dark.get();
-    let t = tok::theme(dark);
-    let c = s.browser.cells(i, now_ms());
-    let selected = s.browser.selected() == Some(i);
-    let (press, open) = (s.browser.session(i).to_string(), s.browser.session(i).to_string());
-    let share = bar_share(c.usd, s.browser.dearest());
-    let next = match &c.next {
-        Some((cell, cold)) => text(cell.clone()).key("next").font(MONO).color(ansi_color(if *cold { 1 } else { 2 }, dark, &t)).single_line(),
-        None => text(String::new()).key("next").font(MONO),
+    let p = pal::pal(s.dark.get());
+    let slot = s.slots.borrow().get(i).copied();
+    let r = match slot {
+        Some(Slot::Row(r)) => r,
+        Some(Slot::Day(date)) => {
+            let today = rhythm::date_of(now_ms(), &rhythm::local_offset);
+            return row()
+                .w_full()
+                .h(ROW)
+                .px(12.0)
+                .center_y()
+                .fill(p.bar)
+                .child(text(day_label(date, today)).key("day-label").font(pal::SMALL_STRONG).color(p.ink2).single_line());
+        }
+        None => return el().h(ROW),
     };
-    let mut cost = col().key("cost").w(COST_WIDTH).items_end().gap(2.0).child(text(c.cost.clone()).key("usd").font(MONO_BOLD).color(t.text).single_line());
-    if let Some(share) = share {
-        // Under the amount, from its right edge, as long as the share of the dearest session.
-        cost = cost.child(row().w_full().justify_end().child(el().key("bar").w(COST_WIDTH * share).h(2.0).radius(1.0).fill(tok::accent(0, dark))));
-    }
+    let b = &s.browser;
+    let now = now_ms();
+    let c = b.cells(r, now);
+    let selected = b.selected() == Some(r);
+    let (ink, ink2) = if selected { (p.on_accent, p.on_accent2) } else { (p.ink, p.ink2) };
+    let (press, open) = (b.session(r).to_string(), b.session(r).to_string());
+    let next = match (c.warm_until, c.next_usd) {
+        // Still being costed.
+        _ if c.usd.is_none() => row().key("next").child(text("…").key("next-text").font(pal::SMALL).color(if selected { ink2 } else { p.ink3 }).single_line()),
+        (Some(until), _) => row()
+            .key("next")
+            .gap(5.0)
+            .center_y()
+            .child(dot(p.warm_dot, 7.0))
+            .child(text(countdown(until - now)).key("next-text").font(pal::SMALL_NUM).color(if selected { ink } else { p.warm }).single_line()),
+        (None, Some(usd_next)) => row()
+            .key("next")
+            .gap(5.0)
+            .center_y()
+            .child(dot(p.cold_dot, 7.0))
+            .child(text(usd(usd_next)).key("next-text").font(pal::SMALL_NUM).color(if selected { ink } else { p.cold }).single_line()),
+        (None, None) => row().key("next").child(text("none").key("next-text").font(pal::SMALL).color(if selected { ink2 } else { p.ink3 }).single_line()),
+    };
+    let name = c.title.map_or_else(|| c.project.to_string(), str::to_string);
+    let agent = p.agents[c.agent_place % p.agents.len()];
     row()
         .w_full()
         .h(ROW)
-        .px(10.0)
-        .gap(10.0)
+        .px(12.0)
+        .gap(8.0)
         .center_y()
-        .radius(5.0)
-        .fill(if selected { oklcha(0.62, 0.12, 256.0, if dark { 0.26 } else { 0.18 }) } else { Color::TRANSPARENT })
-        .hover(t.hover)
+        .fill(if selected { p.accent } else { Color::TRANSPARENT })
+        .hover(if selected { p.accent } else { p.hover })
         .role("option")
-        .label(format!("{} {} {} {}", c.time, c.agent, c.project, c.cost))
+        .label(format!("{} {} {} {}", local_time(c.active_ms, "%H:%M"), c.agent, name, c.cost))
         .checked(selected)
+        .help_when_truncated(format!("{name}\n{}", c.project))
         .on_press_tx(move |s: &mut Desk, tx| {
             s.select_session(&press);
             tx.scroll_to_y(PANE, 0.0);
@@ -147,66 +335,9 @@ fn list_row(s: &Desk, i: usize) -> El {
             s.select_session(&open);
             s.browser.zoom_in();
         })
-        .child(text(c.time).key("time").font(MONO).color(t.text_secondary).single_line())
-        .child(
-            text(format!("{:<6}", c.agent)).key("agent").font(MONO).color(ansi_color(AGENT_COLORS[c.agent_place % AGENT_COLORS.len()], dark, &t)).single_line(),
-        )
-        .child(text(c.project.to_string()).key("project").font(MONO).color(t.text).single_line().truncate_head().grow(1.0).shrink().min_w(0.0))
-        .child(cost)
-        .child(row().w(NEXT_WIDTH).justify_end().child(next))
-}
-
-/// The length of a session's cost bar as a share of the column: its cost as a share of the dearest
-/// listed session's. A session still being costed has no bar.
-pub fn bar_share(usd: Option<f64>, dearest: Option<f64>) -> Option<f32> {
-    match (usd, dearest) {
-        (Some(usd), Some(dearest)) if dearest > 0.0 => Some((usd / dearest).clamp(0.0, 1.0) as f32),
-        (Some(_), _) => Some(0.0),
-        (None, _) => None,
-    }
-}
-
-/// A pane's text: the X-ray or the day with their colors, or a note while it is computed.
-fn pane_text(pane: Pane<'_, Styled>, dark: bool, t: &Theme) -> El {
-    match pane {
-        Pane::Text(s) => rich(s.text.clone(), spans(s, dark, t)).key("pane-text").font(MONO).color(t.text).selectable(true),
-        Pane::Computing(note) => text(note).key("pane-text").font(MONO).color(t.text_secondary),
-        Pane::Empty(note) => text(note).key("pane-text").font(MONO).color(t.text),
-    }
-}
-
-fn right_pane(s: &Desk, cx: &mut Cx<Desk>, t: &Theme, dark: bool) -> El {
-    // The day is as wide as the pane, its strip fitted to it; the X-ray keeps its lines whole and
-    // scrolls sideways when the pane is narrower.
-    let (title, body, sideways) = match (s.browser.showing_day(), s.browser.day_parts()) {
-        (true, Some(parts)) => (s.browser.day_title(), crate::day::day_view(s, parts, cx, t, dark), false),
-        (true, None) => (s.browser.day_title(), pane_text(s.browser.day_pane(), dark, t), false),
-        (false, _) => (s.browser.report_title(), pane_text(s.browser.report(), dark, t), true),
-    };
-    let offset = s.pane_offset.clone();
-    let scroll = col().key(PANE).w_full().grow(1.0).min_h(0.0).min_w(0.0);
-    let scroll = if sideways { scroll.scroll_xy() } else { scroll.scroll(ScrollSpec { stick_bottom: false }) };
-    let scroll = scroll
-        .on_scroll_offset(move |at| offset.set(at.offset[1]))
-        .on_layout(|s: &mut Desk, r| s.pane_height = r[3])
-        .child(col().px(12.0).pb(12.0).child(body));
-    col().key("right").grow(1.0).h_full().min_w(0.0).min_h(0.0).child(title_bar("pane-title", title, t)).child(scroll)
-}
-
-fn footer(s: &Desk, t: &Theme, dark: bool) -> El {
-    let b = &s.browser;
-    let line = row().key("footer").w_full().h(26.0).px(12.0).center_y();
-    let dim = |s: &str| text(s.to_string()).font(MONO).color(t.text_secondary).single_line();
-    let plain = |s: String| text(s).font(MONO).color(t.text).single_line();
-    if b.editing() {
-        return line.child(dim("filter: ")).child(plain(format!("{}▌", b.filter()))).child(dim("   ⏎ done · esc clear"));
-    }
-    let mut line = line.child(dim(b.footer_keys().trim_start()).key("keys").truncate().shrink().min_w(0.0));
-    if !b.filter().is_empty() {
-        line = line.child(plain(format!("   filter: {}", b.filter())).key("filter"));
-    }
-    if !b.status().is_empty() {
-        line = line.child(text(format!("   {}", b.status())).key("status").font(MONO).color(ansi_color(3, dark, t)).single_line());
-    }
-    line
+        .child(text(local_time(c.active_ms, "%H:%M")).key("time").font(pal::SMALL_NUM).color(ink2).single_line().w(36.0))
+        .child(dot(agent, 7.0).key("agent"))
+        .child(text(name).key("title").font(pal::BODY).color(ink).single_line().truncate().grow(1.0).shrink().min_w(0.0))
+        .child(row().w(58.0).justify_end().child(text(c.cost).key("cost").font(pal::STRONG_NUM).color(ink).single_line()))
+        .child(row().w(68.0).justify_end().child(next))
 }

@@ -38,7 +38,7 @@ fn row(i: usize, project: &str, at: u64) -> SessionRow {
 /// `n` sessions that compute nothing, listed 0, 1, 2…; every third is in `~/src/air`.
 fn desk_of(n: usize) -> Desk {
     let rows = (0..n).map(|i| row(i, if i % 3 == 1 { "~/src/air" } else { "~/src/app" }, 10_000 - i as u64)).collect();
-    Desk::new(Browser::detached(Arc::new(Catalog::new(Vec::new(), PathBuf::new())), rows, Pricing::defaults(), frontend()))
+    Desk::new(Browser::detached(Arc::new(Catalog::new(Vec::new(), PathBuf::new())), rows, Pricing::defaults(), frontend()), false)
 }
 
 fn runtime(desk: Desk, size: (f32, f32)) -> Runtime<Desk> {
@@ -72,11 +72,11 @@ fn command(rt: &mut Runtime<Desk>, c: char) {
     rt.frame(1.0 / 60.0);
 }
 
-/// The element keyed `key` inside the row of `session`.
-fn in_row(rt: &Runtime<Desk>, session: &str, key: &str) -> Option<ElementInfo> {
+/// The element keyed `key` inside the element keyed `outer`.
+fn inside(rt: &Runtime<Desk>, outer: &str, key: &str) -> Option<ElementInfo> {
     let all = rt.elements();
-    let row = all.iter().position(|e| e.key.as_deref() == Some(session))?;
-    let inside = |mut at: Option<usize>| {
+    let row = all.iter().position(|e| e.key.as_deref() == Some(outer))?;
+    let within = |mut at: Option<usize>| {
         while let Some(i) = at {
             if i == row {
                 return true;
@@ -85,11 +85,16 @@ fn in_row(rt: &Runtime<Desk>, session: &str, key: &str) -> Option<ElementInfo> {
         }
         false
     };
-    all.iter().find(|e| e.key.as_deref() == Some(key) && inside(e.parent)).cloned()
+    all.iter().find(|e| e.key.as_deref() == Some(key) && within(e.parent)).cloned()
 }
 
-fn cost_text(rt: &Runtime<Desk>, session: &str) -> String {
-    in_row(rt, session, "usd").and_then(|e| e.text).unwrap_or_default()
+fn text_in(rt: &Runtime<Desk>, outer: &str, key: &str) -> String {
+    inside(rt, outer, key).and_then(|e| e.text).unwrap_or_default()
+}
+
+/// Every text on the screen.
+fn texts(rt: &Runtime<Desk>) -> Vec<String> {
+    rt.elements().into_iter().filter_map(|e| e.text).collect()
 }
 
 fn click(rt: &mut Runtime<Desk>, key: &str) {
@@ -112,18 +117,22 @@ fn filters_select_as_tokprof_ui_does() {
     assert!(query(&Cli::parse_from(["tokprof-desk", "--until", "11/05"]), Vec::new()).is_err());
 }
 
+fn empty_catalog(name: &str) -> (Catalog, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("tokprof-desk-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    (Catalog::new(vec![Box::new(tokprof_source_claude_code::ClaudeCode::at(dir.clone(), Path::new("/h")))], PathBuf::from("/h")), dir)
+}
+
 #[test]
 fn no_logs_fail_before_any_window_opens() {
-    let dir = std::env::temp_dir().join(format!("tokprof-desk-empty-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let catalog = Catalog::new(vec![Box::new(tokprof_source_claude_code::ClaudeCode::at(dir.clone(), Path::new("/h")))], PathBuf::from("/h"));
+    let (catalog, dir) = empty_catalog("empty");
     let err = desk(&Cli::parse_from(["tokprof-desk"]), catalog, true, Arc::new(|| {})).err().map(|e| e.to_string());
     assert_eq!(err.as_deref(), Some("no session logs found"));
     let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
-fn a_bad_size_fails_as_ui_dump_does() {
+fn a_bad_size_or_tab_fails_before_any_window_opens() {
     let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     assert!(check_size(&args(&["--snap", "a.png", "--size", "1400x900"])).is_ok());
     assert!(check_size(&args(&["--size=900x600"])).is_ok());
@@ -131,6 +140,10 @@ fn a_bad_size_fails_as_ui_dump_does() {
         let err = check_size(&args(bad)).unwrap_err().to_string();
         assert_eq!(err, "--size takes WIDTHxHEIGHT", "{bad:?}");
     }
+    let (catalog, dir) = empty_catalog("tab");
+    let err = desk(&Cli::parse_from(["tokprof-desk", "--tab", "nope"]), catalog, true, Arc::new(|| {})).err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(err.starts_with("--tab takes one of: summary, requests"), "{err}");
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// The catalog of the Claude Code source's test logs: one session with a subagent.
@@ -158,64 +171,64 @@ fn a_cost_from_the_worker_shows_after_one_poll() {
         assert!(Instant::now() < deadline, "the costing did not wake the window");
         std::thread::sleep(Duration::from_millis(10));
     }
-    let mut rt = Runtime::new(Desk::new(browser), view::view, (1400.0, 900.0), Env::new(true, 1.0));
+    let mut rt = Runtime::new(Desk::new(browser, false), view::view, (1400.0, 900.0), Env::new(true, 1.0));
     rt.frame(0.0);
-    assert_eq!(cost_text(&rt, &session), "…", "a frame that does not poll shows no cost");
-    assert!(in_row(&rt, &session, "bar").is_none());
+    assert_eq!(text_in(&rt, &session, "cost"), "…", "a frame that does not poll shows no cost");
+    assert_eq!(text_in(&rt, &session, "next-text"), "…", "nor a next request");
     rt.poll = Some(poll);
     rt.frame(1.0 / 60.0);
-    let shown = cost_text(&rt, &session);
+    let shown = text_in(&rt, &session, "cost");
     assert_eq!(shown, rt.state.browser.cells(0, now_ms()).cost, "the next poll shows it");
     assert!(shown.starts_with('$'), "{shown}");
-    assert!(in_row(&rt, &session, "bar").is_some(), "with its bar");
 }
 
 #[test]
-fn the_x_ray_is_the_renderer_s_text_selectable_and_scrolls_full_size() {
+fn the_inspector_shows_the_numbers_of_tokprof_scan() {
     let (catalog, select) = fixture();
     let mut browser = Browser::start(catalog.clone(), Pricing::defaults(), select.clone(), false, Arc::new(|| {}), frontend()).unwrap();
     browser.settle();
-    let mut rt = runtime(Desk::new(browser), (1400.0, 400.0));
-    let file = tokprof_core::xray::rows(&catalog, &select, 1).remove(0).file;
-    let x = tokprof_core::xray::xray(&catalog, &file, &Pricing::defaults(), now_ms()).unwrap();
-    let colored = tokprof_browse::render_xray::text(&x, &tokprof_core::fmt::Style::with_color(true), &paths::profile_dir(), catalog.home());
-    let pane = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("pane-text")).unwrap();
-    let shown = pane.text.clone().unwrap();
-    assert!(colored.contains('\x1b'), "the renderer colors the X-ray");
-    assert_eq!(shown, ansi::parse(&colored).text, "the window shows its text without the codes");
-
-    // A drag across the `next` line selects it, and ⌘C copies it without color codes.
-    let clipboard = rune::clipboard::memory();
-    rt.use_clipboard(&clipboard);
-    let line = shown.lines().position(|l| l.starts_with("next ")).unwrap();
-    let y = pane.rect[1] + (line as f32 + 0.5) * view::LINE;
-    rt.pointer_down(pane.rect[0] + 1.0, y);
-    rt.pointer_move(pane.rect[0] + pane.rect[2] - 1.0, y);
-    rt.pointer_up(pane.rect[0] + pane.rect[2] - 1.0, y);
-    rt.frame(1.0 / 60.0);
-    command(&mut rt, 'c');
-    let copied = clipboard.text().map(|t| t.to_string()).unwrap_or_default();
-    assert_eq!(copied.trim_end(), shown.lines().nth(line).unwrap().trim_end(), "⌘C copies the selected line");
-    assert!(!copied.contains('\x1b'));
-
-    press(&mut rt, RuneKey::Enter);
-    assert!(rt.state.browser.zoomed(), "⏎ shows the X-ray full size");
-    press(&mut rt, RuneKey::Down);
-    assert_eq!(rt.state.pane_offset.get(), view::LINE, "↓ scrolls it by a line");
-    press(&mut rt, RuneKey::PageDown);
-    let paged = rt.state.pane_offset.get();
-    assert!(paged > 10.0 * view::LINE, "PgDn by a page: {paged}");
-    for _ in 0..20 {
-        press(&mut rt, RuneKey::PageDown);
+    let mut rt = runtime(Desk::new(browser, false), (1400.0, 900.0));
+    let x = rt.state.browser.xray().cloned_x();
+    let scan = tokprof_browse::render_xray::text(&x, &tokprof_core::fmt::Style::with_color(false), &paths::profile_dir(), catalog.home());
+    // The total spend and every component's amount, as the spend block prints them.
+    let total = text_in(&rt, "spend", "spend-total");
+    assert!(scan.contains(&format!("spend     {total} (API-equivalent)")), "{total} in:\n{scan}");
+    for (c, share, amount) in inspector::components(&x) {
+        let line = scan.lines().find(|l| l.trim_start().starts_with(c.name())).unwrap_or_else(|| panic!("no {} line", c.name()));
+        assert!(line.contains(&format!("{:5.1}%", 100.0 * share)) && line.trim_end().ends_with(&amount), "{line} against {share} {amount}");
+        assert!(texts(&rt).contains(&amount), "{amount} on the screen");
     }
-    let end = rt.state.pane_offset.get();
-    press(&mut rt, RuneKey::Text(" ".into()));
-    assert_eq!(rt.state.pane_offset.get(), end, "the last page stays on the screen");
-    press(&mut rt, RuneKey::Up);
-    assert_eq!(rt.state.pane_offset.get(), end - view::LINE);
-    assert_eq!(rt.state.browser.selected(), Some(0), "and the same session stays selected");
-    press(&mut rt, RuneKey::Escape);
-    assert!(!rt.state.browser.zoomed() && rt.shell_request.is_none(), "esc goes back to the list");
+    assert_eq!(text_in(&rt, "header", "title"), x.title.clone().unwrap_or_else(|| "Untitled session".into()));
+
+    // The tools tab holds the rows of the X-ray's tool table.
+    click(&mut rt, "tab-Tools");
+    settle(&mut rt);
+    assert_eq!(rt.state.tab, inspector::Tab::Tools);
+    let cells = tokprof_browse::render_tools::tool_cells(&x.tools, tokprof_core::tools::RowOrder::Rent, 8, false);
+    let shown = texts(&rt);
+    for row in cells.rows.iter().skip(1) {
+        for cell in row.iter().filter(|c| !c.is_empty()) {
+            assert!(shown.contains(cell), "{cell} of {row:?} on the screen");
+        }
+    }
+    // The prompts tab, each typed message with its cost.
+    click(&mut rt, "tab-Prompts");
+    settle(&mut rt);
+    let shown = texts(&rt);
+    for p in &x.prompts {
+        assert!(shown.contains(&tokprof_core::fmt::usd(p.spend.usd)) && shown.contains(&p.label), "prompt {} on the screen", p.number);
+    }
+}
+
+/// The X-ray the inspector shows, for a test to compare.
+trait ClonedX {
+    fn cloned_x(self) -> tokprof_core::xray::XRay;
+}
+
+impl ClonedX for Option<&tokprof_core::xray::XRay> {
+    fn cloned_x(self) -> tokprof_core::xray::XRay {
+        self.expect("the fixture's X-ray").clone()
+    }
 }
 
 thread_local! {
@@ -223,9 +236,9 @@ thread_local! {
     static DAY: std::cell::RefCell<Option<tokprof_browse::render_rhythm::DayParts>> = const { std::cell::RefCell::new(None) };
 }
 
-fn day_only(s: &Desk, cx: &mut rune::Cx<Desk>) -> rune::El {
-    let t = rune::tok::theme(true);
-    DAY.with(|d| rune::col().w_full().h_full().px(12.0).child(day::day_view(s, d.borrow().as_ref().unwrap(), cx, &t, true)))
+fn lanes_only(s: &Desk, cx: &mut rune::Cx<Desk>) -> rune::El {
+    let p = pal::pal(true);
+    DAY.with(|d| rune::col().w_full().h_full().child(day::lanes_of(s, d.borrow().as_ref().unwrap(), cx, &p, 600.0)))
 }
 
 /// A day from 04:00 local with one session that worked from 14:00 to 14:30 and got a message at
@@ -247,81 +260,128 @@ fn synthetic_day() -> tokprof_browse::render_rhythm::DayParts {
         }],
     };
     let strip = tokprof_core::rhythm::Strip { lines: vec!["(the strip in characters)".into()] };
-    tokprof_browse::render_rhythm::DayParts { above: "tokprof · day\nday       …\n\n".into(), strip: Some((strip, lanes)), below: "\nsittings  1\n".into() }
+    let below = "\nsittings  1, 50m at the keyboard\nanswers   the agent's turn took a median 30m\ncache     no cold returns\n";
+    tokprof_browse::render_rhythm::DayParts { above: "tokprof · day\nday       …\n\n".into(), strip: Some((strip, lanes)), below: below.into() }
 }
 
 #[test]
-fn the_day_strip_draws_the_log_s_times_names_them_under_the_pointer_and_opens_a_lane() {
+fn the_lanes_draw_the_log_s_times_name_them_under_the_pointer_and_select_a_lane() {
     let parts = synthetic_day();
     let lanes = parts.strip.clone().unwrap().1;
     DAY.with(|d| *d.borrow_mut() = Some(parts));
-    let mut rt = Runtime::new(desk_of(10), day_only, (1400.0, 900.0), Env::new(true, 1.0));
+    let mut rt = Runtime::new(desk_of(10), lanes_only, (1400.0, 900.0), Env::new(true, 1.0));
     settle(&mut rt);
     let lane = lanes.lanes[0].clone();
     let track = rt.presented(&format!("track-{}", lane.id)).unwrap().0;
-    let hours = rt.presented(day::HOURS).unwrap().0;
-    assert_eq!((track[0], track[2]), (hours[0], hours[2]), "every lane's track lines up with the hours row");
+    let scale = rt.presented(day::SCALE).unwrap().0;
+    assert_eq!((track[0], track[2]), (scale[0], scale[2]), "every lane's track lines up with the hours row");
     assert!(track[0] >= day::LABEL_WIDTH, "after the labels");
 
+    // Fit shows 13:00 to 15:00: the sitting starts at 13:55 and ends at 14:45, two hours at least.
+    let range = day::range(&lanes, &[], None, true);
+    assert_eq!(range.end - range.begin, 2 * 3_600_000);
     // Each piece of work is a bar from its start to its end, at least a point wide.
     let (a, b, _) = *lane.marks.iter().find(|m| m.2 == rhythm::Mark::Work).expect("the session worked");
-    let (x, w) = day::bar(a, b, lanes.begin, track[2]);
-    let bars: Vec<[f32; 4]> = rt.elements().iter().filter(|e| e.key.as_deref() == Some("work")).map(|e| e.rect).collect();
-    assert!(bars.iter().any(|r| (r[0] - (track[0] + x)).abs() < 0.5 && r[2] >= w - 0.5 && r[2] >= 1.0), "a bar at {x} wide {w}: {bars:?}");
+    let (x, w) = range.bar(a, b, track[2]).unwrap();
+    let bar = inside(&rt, &format!("track-{}", lane.id), "work-0").expect("the work bar").rect;
+    assert!((bar[0] - (track[0] + x)).abs() < 0.5 && (bar[2] - w).abs() < 0.5, "a bar at {x} wide {w}: {bar:?}");
 
     // The pointer over it names the time, the session and the work.
-    let mid = track[0] + x + w / 2.0;
-    rt.pointer_move(mid, track[1] + day::LANE / 2.0);
+    rt.pointer_move(track[0] + x + w / 2.0, track[1] + day::LANE / 2.0);
     settle(&mut rt);
     let line = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("pointer-text")).and_then(|e| e.text).unwrap();
     assert!(line.ends_with(&format!(" · {} · agent working", lane.label.trim_end())), "{line}");
     assert_eq!(line.len() - line.trim_start_matches(|c: char| c.is_ascii_digit() || c == ':').len(), 5, "it starts with the time, HH:MM: {line}");
 
-    // The message is a mark at its moment, and the you lane shows the sitting.
-    let message = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("message")).unwrap().rect;
-    let x = day::x_of(lane.marks[1].0, lanes.begin, track[2]);
-    assert!((message[0] + message[2] / 2.0 - (track[0] + x)).abs() < 0.5, "at 14:40: {message:?}");
-    assert!(rt.presented("track-you").is_some() && rt.elements().iter().any(|e| e.key.as_deref() == Some("present")));
+    // The message is a mark at its moment, and the You lane shows the sitting.
+    let message = inside(&rt, &format!("track-{}", lane.id), "message-0").unwrap().rect;
+    let at = range.x(lane.marks[1].0, track[2]);
+    assert!((message[0] + message[2] / 2.0 - (track[0] + at)).abs() < 0.5, "at 14:40: {message:?}");
+    assert!(inside(&rt, "track-you", "present-0").is_some());
     assert!(rt.elements().iter().any(|e| e.key.as_deref() == Some("legend")));
+    assert_eq!(text_in(&rt, "day-cache", ""), "", "the day's lines under the lanes");
+    assert!(texts(&rt).iter().any(|t| t == "no cold returns"), "{:?}", texts(&rt));
 
-    // A click on the lane selects its session in the list.
-    rt.state.browser.show_day(0);
+    // A click on the lane selects its session in the list, with the day beside it.
     click(&mut rt, &format!("lane-{}", lane.id));
-    assert!(!rt.state.browser.showing_day() && !rt.state.browser.zoomed(), "back to the list with the X-ray");
     assert_eq!(rt.state.browser.selected(), rt.state.browser.row_of("id3"));
     assert_eq!(rt.state.browser.selected(), Some(3));
+    assert!(!rt.state.browser.zoomed());
 }
 
 #[test]
-fn bars_are_shares_of_the_dearest_session() {
-    assert_eq!(view::bar_share(Some(30.0), Some(120.0)), Some(0.25), "a quarter as long as the dearest");
-    assert_eq!(view::bar_share(Some(120.0), Some(120.0)), Some(1.0));
-    assert_eq!(view::bar_share(Some(0.0), Some(0.0)), Some(0.0), "sessions that cost nothing");
-    assert_eq!(view::bar_share(None, Some(120.0)), None, "a session still being costed has no bar");
-    let rt = runtime(desk_of(3), (1400.0, 900.0));
-    assert_eq!(cost_text(&rt, "id0"), "…");
-    assert!(in_row(&rt, "id0", "bar").is_none(), "and no bar");
+fn a_countdown_reads_minutes_and_seconds_rounded_up() {
+    assert_eq!(view::countdown(24 * 60_000 + 47_000), "24:47");
+    assert_eq!(view::countdown(24 * 60_000 + 46_001), "24:47", "a part of a second still counts");
+    assert_eq!(view::countdown(59_000), "0:59");
+    assert_eq!(view::countdown(3_723_000), "1:02:03");
+    assert_eq!(view::countdown(-5), "0:00");
 }
 
 #[test]
-fn the_list_keeps_its_width_and_the_x_ray_takes_the_rest() {
-    for width in [1400.0, 900.0, 720.0] {
-        let rt = runtime(desk_of(3), (width, 600.0));
+fn the_list_keeps_its_width_and_the_inspector_takes_the_rest() {
+    for width in [1400.0, 960.0] {
+        let rt = runtime(desk_of(3), (width, 640.0));
         let list = rt.presented("list-pane").unwrap().0;
-        let right = rt.presented("right").unwrap().0;
+        let inspector = rt.presented("inspector").unwrap().0;
         assert_eq!(list[2], view::LIST_WIDTH, "at {width}");
-        assert_eq!(right[2], width - view::LIST_WIDTH - 1.0, "at {width}: the rest, less the line between them");
+        assert_eq!(inspector[2], width - view::LIST_WIDTH - 1.0, "at {width}: the rest, less the line between them");
     }
 }
 
 #[test]
-fn the_titles_and_the_footer_read_as_in_the_terminal() {
-    let rt = runtime(desk_of(30), (1400.0, 900.0));
-    let text = |key: &str| rt.elements().into_iter().find(|e| e.key.as_deref() == Some(key)).and_then(|e| e.text);
-    let title = rt.elements().into_iter().filter(|e| e.parent.is_some()).find_map(|e| e.text.filter(|t| t.contains(" sessions · "))).unwrap();
-    assert!(title.starts_with("30 sessions · $0.00 · by time · costing 30…"), "{title}");
-    assert_eq!(text("keys").as_deref(), Some(rt.state.browser.footer_keys().trim_start()));
-    assert_eq!(text("pane-text").as_deref(), Some("computing the X-ray of id0 (0.0 MB)…"));
+fn nothing_of_the_window_s_own_lies_under_the_traffic_lights() {
+    let mut rt = Runtime::new(desk_of(3), view::view, (1400.0, 900.0), Env::new(true, 1.0));
+    rt.set_titlebar_inset(78.0);
+    settle(&mut rt);
+    let lights = CHROME.traffic_light_rects().unwrap();
+    let all = rt.elements();
+    let overlaps = |r: [f32; 4], l: [f32; 4]| r[0] < l[0] + l[2] && l[0] < r[0] + r[2] && r[1] < l[1] + l[3] && l[1] < r[1] + r[3];
+    // Only the bar and what holds it are under the buttons.
+    let holders = ["root", "bar"];
+    for e in all.iter().filter(|e| e.rect[2] > 0.0 && e.rect[3] > 0.0) {
+        if lights.iter().any(|&l| overlaps(e.rect, l)) {
+            assert!(e.key.as_deref().is_some_and(|k| holders.contains(&k)) || e.parent.is_none(), "{:?} at {:?} is under the traffic lights", e.key, e.rect);
+        }
+    }
+    let back = rt.presented("day-back").unwrap().0;
+    assert_eq!(back[0], 78.0 + 16.0, "the day's controls start right of the buttons");
+}
+
+#[test]
+fn the_bar_names_the_day_and_its_buttons_step_it() {
+    let mut rt = runtime(desk_of(3), (1400.0, 900.0));
+    let today = tokprof_core::fmt::local_time(rt.state.browser.day_noon(), "%A, %-d %B");
+    assert_eq!(text_in(&rt, "bar", "day-name"), today);
+    assert!(rt.state.browser.day_is_latest());
+    click(&mut rt, "day-back");
+    settle(&mut rt);
+    // The latest day is not known in a browser that computes nothing, so the step goes nowhere
+    // yet; the keys and the buttons share the model's step either way.
+    rt.update(|s, _| s.browser.step_day_by(-1));
+    click(&mut rt, "today");
+    settle(&mut rt);
+    assert!(rt.state.browser.day_is_latest(), "Today goes back to the latest day");
+    click(&mut rt, "filter");
+    settle(&mut rt);
+    assert!(rt.state.browser.editing(), "a click on the filter starts typing it");
+    typed(&mut rt, "air");
+    assert_eq!(text_in(&rt, "bar", "filter-text"), "air▌");
+    assert_eq!(rt.state.browser.len(), 1);
+    click(&mut rt, "zoom-day");
+    settle(&mut rt);
+    assert!(!rt.state.fit, "24 h");
+}
+
+#[test]
+fn the_list_title_counts_the_sessions_and_the_sorts_switch() {
+    let mut rt = runtime(desk_of(30), (1400.0, 900.0));
+    assert_eq!(text_in(&rt, "list-head", "list-title"), "30 sessions, $0.00, costing 30");
+    assert!(texts(&rt).iter().any(|t| t == "Thu 1 Jan 1970"), "a separator names the day: {:?}", &texts(&rt)[..20]);
+    click(&mut rt, "sort-Cost");
+    settle(&mut rt);
+    assert_eq!(rt.state.browser.sort_order(), tokprof_browse::browser::Sort::Cost);
+    assert!(!texts(&rt).iter().any(|t| t == "Thu 1 Jan 1970"), "no separators but in time order");
 }
 
 #[test]
@@ -345,9 +405,9 @@ fn keys_move_filter_sort_and_quit() {
     assert_eq!(rt.state.browser.len(), 30, "esc clears it");
 
     press(&mut rt, RuneKey::Text("s".into()));
-    assert!(rt.state.browser.list_title(now_ms()).contains("· by cost "), "s sorts by cost");
+    assert_eq!(rt.state.browser.sort_order(), tokprof_browse::browser::Sort::Cost, "s sorts by cost");
     press(&mut rt, RuneKey::Text("r".into()));
-    assert!(rt.state.browser.list_title(now_ms()).contains("· by cost "), "r sorts again in the same order");
+    assert_eq!(rt.state.browser.sort_order(), tokprof_browse::browser::Sort::Cost, "r sorts again in the same order");
 
     typed(&mut rt, "/q");
     assert_eq!(rt.state.browser.filter(), "q", "q is typed into a filter");
@@ -359,7 +419,7 @@ fn keys_move_filter_sort_and_quit() {
 }
 
 #[test]
-fn command_q_and_w_quit_and_esc_in_the_list_quits() {
+fn command_q_and_w_quit_and_esc_quits_but_from_full_size() {
     let mut rt = runtime(desk_of(3), (1400.0, 900.0));
     command(&mut rt, 'w');
     assert_eq!(rt.shell_request, Some(Shell::Close));
@@ -368,10 +428,12 @@ fn command_q_and_w_quit_and_esc_in_the_list_quits() {
     assert_eq!(rt.shell_request, Some(Shell::Quit));
     let mut rt = runtime(desk_of(3), (1400.0, 900.0));
     press(&mut rt, RuneKey::Enter);
+    assert!(rt.state.browser.zoomed() && rt.presented("lanes").is_none(), "⏎ shows the inspector full size");
     press(&mut rt, RuneKey::Escape);
-    assert_eq!(rt.shell_request, None, "esc in the full-size X-ray goes back to the list");
+    assert_eq!(rt.shell_request, None, "esc in the full-size inspector goes back");
+    assert!(rt.presented("lanes").is_some());
     press(&mut rt, RuneKey::Escape);
-    assert_eq!(rt.shell_request, Some(Shell::Quit), "esc in the list with no filter quits");
+    assert_eq!(rt.shell_request, Some(Shell::Quit), "esc with no filter quits");
 }
 
 #[test]
@@ -379,7 +441,6 @@ fn a_click_selects_a_session_a_double_click_zooms_and_the_wheel_scrolls() {
     let mut rt = runtime(desk_of(60), (1400.0, 900.0));
     click(&mut rt, "id4");
     assert_eq!(rt.state.browser.selected(), Some(4), "a click selects its row");
-    assert_eq!(rt.state.browser.report_title(), " claude id4 · ~/src/air ");
     let (x, y) = rt.find("id4").unwrap();
     rt.frame(0.6);
     rt.pointer_down(x, y);
@@ -388,7 +449,7 @@ fn a_click_selects_a_session_a_double_click_zooms_and_the_wheel_scrolls() {
     rt.pointer_down(x, y);
     rt.pointer_up(x, y);
     settle(&mut rt);
-    assert!(rt.state.browser.zoomed(), "a double click shows its X-ray full size");
+    assert!(rt.state.browser.zoomed(), "a double click shows its inspector full size");
     assert!(rt.presented("list-pane").is_none(), "the list is not drawn");
 
     let mut rt = runtime(desk_of(60), (1400.0, 900.0));
@@ -400,12 +461,22 @@ fn a_click_selects_a_session_a_double_click_zooms_and_the_wheel_scrolls() {
 }
 
 #[test]
+fn a_click_on_a_tab_shows_it() {
+    let mut rt = runtime(desk_of(3), (1400.0, 900.0));
+    for t in inspector::Tab::ALL.iter().rev() {
+        click(&mut rt, &format!("tab-{}", t.name()));
+        settle(&mut rt);
+        assert_eq!(rt.state.tab, *t);
+    }
+}
+
+#[test]
 fn rows_on_the_screen_stay_when_a_session_joins_above_them() {
     let mut rt = runtime(desk_of(80), (1400.0, 900.0));
     let (x, y) = rt.find("id3").unwrap();
     rt.wheel(x, y, -480.0);
     settle(&mut rt);
-    let on_screen = ["id25", "id30", "id40"];
+    let on_screen = ["id25", "id30", "id33"];
     let before: Vec<[f32; 4]> = on_screen.iter().map(|k| rt.presented(k).unwrap().0).collect();
     rt.update(|s, _| s.browser.apply_change(Change::Session(Box::new(row(80, "~/src/new", 20_000)))));
     settle(&mut rt);
@@ -424,7 +495,7 @@ fn rows_on_the_screen_stay_when_a_session_joins_above_them() {
 }
 
 #[test]
-fn the_list_comes_back_where_it_was_after_the_full_size_x_ray() {
+fn the_list_comes_back_where_it_was_after_the_full_size_inspector() {
     let mut rt = runtime(desk_of(80), (1400.0, 900.0));
     let (x, y) = rt.find("id3").unwrap();
     rt.wheel(x, y, -480.0);
@@ -444,6 +515,7 @@ fn window_keys_are_the_browser_s_keys() {
     assert_eq!(key(RuneKey::Text("G".into())), Some(Key::Char('G')));
     assert_eq!(key(RuneKey::Escape), Some(Key::Esc));
     assert_eq!(key(RuneKey::Enter), Some(Key::Enter));
+    assert_eq!(key(RuneKey::Left), Some(Key::Left), "← steps the day, in the browser's window mode");
     assert_eq!(key(RuneKey::Tab), None, "Tab moves focus");
     assert_eq!(key(RuneKey::Command('c')), None, "⌘C copies the selected text");
     let ctrl_c = KeyEvent { key: RuneKey::Text("c".into()), mods: rune::Mods { ctrl: true, ..rune::Mods::default() } };

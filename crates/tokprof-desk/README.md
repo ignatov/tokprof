@@ -1,12 +1,13 @@
 # tokprof-desk
 
-The session browser of tokprof in a native window: what `tokprof ui` shows in the terminal, drawn with [Rune](https://github.com/anomalyco/rune), a Rust UI framework with its own GPU renderer.
+The session browser of tokprof in a native window laid out as a profiler, drawn with [Rune](https://github.com/anomalyco/rune), a Rust UI framework with its own GPU renderer. It shows what `tokprof ui` shows, as controls in the system font rather than terminal text.
 
-- The list of sessions on the left: the last activity, the agent, the project, the cost so far with a bar as long as its share of the dearest session listed, and what one more request would cost now, green while the prompt cache is warm and red once it is cold. The cell turns red at the moment the cache goes cold.
-- The X-ray of the selected session on the right: the text `tokprof scan` prints, in the system's monospaced font with its colors. Select text with the mouse and copy it with ⌘C.
-- The day of your latest message with `d`: the strip drawn at the times of the log, a lane per session, the time under the pointer named under the strip, and a click on a lane to select its session.
-- The keys of `tokprof ui` (see the key table in the [README](../../README.md#quick-start)), ⌘Q and ⌘W to quit, a click to select a session, a double click to show its X-ray full size, and the wheel to scroll.
-- It follows the agents' log directories as `tokprof ui` does: new sessions join the list, sessions that grow are costed again, and the rows on the screen stay where they are.
+- **The day's lanes** along the top: a `You` lane with your sittings, then a lane per session with its work, its waits for your answer, your messages, its questions and your stops, at the times of the log. After each session's last request a green tail fades out over the time its cache stays warm, and a red line marks now. `Fit` shows the hours of the day's actions, `24 h` the whole day; the line under the lanes names the time under the pointer and what the lane shows there, and a click on a lane selects its session.
+- **The sessions** below them on the left, by day: the last activity, the agent's dot, the title, the cost so far, and the next request: while the cache is warm, the time it stays warm counting down in green; once it is cold, what one more request costs, in red. The cell turns red at the moment the cache goes cold.
+- **The inspector** of the selected session on the right, under tabs. `Summary` has the session's requests on a time axis up to now, with the time the cache stayed warm and has been cold and the next request at now; the next request's cost; the ways to continue (resume, a new session from a handoff, `/compact`) with the cheapest marked; the spend; and the advice. `Requests`, `Spend`, `Work`, `Waits`, `Prompts`, `Tools`, `Context` and `Cache` hold the X-ray's blocks of those names, with the numbers `tokprof scan` prints.
+- **The bar** at the top is the window's own: the day's name with the days before and after, Today, the day's summary, the zoom, the filter and the status, right of the window's buttons.
+- **Keys** are those of `tokprof ui` (see the key table in the [README](../../README.md#quick-start)), except that ← and → step the day; ⏎ shows the inspector full size, `d` the selected session's day, ⌘Q and ⌘W quit. A click selects a session, a double click shows its inspector full size, and the wheel scrolls.
+- It follows the agents' log directories as `tokprof ui` does: new sessions join the list and the lanes, sessions that grow are costed again, and the rows on the screen stay where they are.
 
 ## Install
 
@@ -23,26 +24,29 @@ tokprof-desk --project tokprof --since 7d  # the filters of tokprof ui
 Rune renders headless with the same renderer, so the window can be checked without a person:
 
 ```sh
-tokprof-desk --snap out.png --tree out.json             # the list and the X-ray of the newest session
-tokprof-desk --snap day.png --day 2026-11-03            # the day view of that date
-tokprof-desk --snap out.png --size 900x600 --theme light
+tokprof-desk --snap out.png --tree out.json             # the latest day, the list and the newest session
+tokprof-desk --snap day.png --day 2026-11-03            # the lanes of that date
+tokprof-desk --snap tools.png --tab tools               # another tab of the inspector
+tokprof-desk --snap out.png --size 960x640 --theme light
 ```
 
-Without a window it follows no logs: it waits up to 20 s for the X-ray of the newest session, or for the day `--day` names, then 0.5 s more for costs, as `tokprof ui --dump` waits. `--tree` writes every element with its text and place. The size is in points, 1400x900 by default.
+Without a window it follows no logs: it waits up to 20 s for the X-ray of the newest session and for the day, then 0.5 s more for costs, as `tokprof ui --dump` waits. `--tree` writes every element with its text and place. The size is in points, 1400x900 by default; the window is no smaller than 960x640.
 
 ## How it is built
 
-The sessions, their costs, X-rays and days come from `crates/tokprof-browse`, which `tokprof ui` uses too: the keys mean the same in both. This crate draws them:
+The sessions, their costs, X-rays and days come from `crates/tokprof-browse`, which `tokprof ui` uses too: the keys mean the same in both, and the window puts the browser in its mode with the day always beside the list. This crate draws them:
 
 | File | What it holds |
 |---|---|
 | `src/main.rs` | The command line, the state of the window, the poll that takes in what the background work sent, and the keys |
-| `src/view.rs` | The list, the X-ray pane and the footer |
-| `src/day.rs` | The day view and its strip |
-| `src/ansi.rs` | The X-ray's and the day's color codes as styled ranges |
+| `src/view.rs` | The bar, the layout and the list |
+| `src/day.rs` | The day's lanes |
+| `src/inspector.rs` | The inspector's tabs, from the X-ray's data |
+| `src/pal.rs` | The colors in light and dark, and the type |
+| `src/ansi.rs` | The day's text without its color codes |
 | `src/tests.rs` | The window driven headless through Rune's `Runtime` |
 
-The browser's workers wake the window when they send; nothing polls while the window rests.
+The browser's workers wake the window when they send. At rest it draws again only when a cache goes cold, every second while a warm row counts down on the screen, and every minute for the now line; the lanes and the inspector are built again only when what they show changed.
 
 ## Rune
 
