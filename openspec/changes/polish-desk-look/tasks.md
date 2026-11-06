@@ -46,12 +46,12 @@
 
 These restore specified behavior, so they need no proposal of their own; they are recorded here for the review.
 
-- [ ] 8.1 Reports keeps the day cursor as a date, so a report with fewer dates (a DST day) cannot index past its end. Regression test with a report that shrinks from 31 to 30 dates.
-- [ ] 8.2 The palette in Reports runs the Day-only actions after switching to Day. Test.
-- [ ] 8.3 The key help lists the Flame keys and says what ← → and ⏎ do there; the key-help test checks them.
-- [ ] 8.4 ⌫ on Flame at the top goes on to the browser, so it leaves full size.
-- [ ] 8.5 Ctrl+C quits in Reports; `add-desk-reports`'s delta names the keys that still work there.
-- [ ] 8.6 Flame's clicks find their frame by path, not by index.
-- [ ] 8.7 Flame's tree cache is keyed by the session and a generation of the X-ray, not by its address.
-- [ ] 8.8 The reports worker does not read a period twice in a row.
+- [x] 8.1 Reports keeps the day cursor as a date, so a report with fewer dates (a DST day) cannot index past its end. Regression test with a report that shrinks from 31 to 30 dates.
+- [x] 8.2 The palette in Reports runs the Day-only actions after switching to Day. Test.
+- [x] 8.3 The key help lists the Flame keys and says what ← → and ⏎ do there; the key-help test checks them.
+- [x] 8.4 ⌫ on Flame at the top goes on to the browser, so it leaves full size.
+- [x] 8.5 Ctrl+C quits in Reports; `add-desk-reports`'s delta names the keys that still work there.
+- [x] 8.6 Flame's clicks find their frame by path, not by index.
+- [x] 8.7 Flame's tree cache holds the X-ray it was built from (the browser hands out its Arc), so a later X-ray cannot take its address; the inspector's memo holds its X-ray for the same reason.
+- [x] 8.8 The reports worker does not read a period twice in a row: only the report asked for ends the wait, and the worker skips a job it has just answered. Unit test of the wait.
 - [ ] 8.9 Not tonight: X-rays build the flame stacks for every session and are never evicted (review item 9). Build the stacks only for Flame, or keep the X-rays of a few sessions.
