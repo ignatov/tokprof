@@ -1,0 +1,28 @@
+# The window is a workspace of its own: the root workspace, its CI and its release builds neither
+# fetch nor build Rune while Rune is pre-release. Its version is its own for the same reason.
+[workspace]
+
+[package]
+name = "tokprof-desk"
+description = "The session browser of tokprof in a native window"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/ignatov/tokprof"
+publish = false
+
+[dependencies]
+tokprof-browse = { path = "../tokprof-browse" }
+tokprof-core = { path = "../tokprof-core" }
+tokprof-sources = { path = "../tokprof-sources" }
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+# Rune is pre-release and its `dev` branch is never rewritten: pin a full rev of it, and move it
+# in a commit of its own (README.md says how).
+rune = { git = "https://github.com/anomalyco/rune", rev = "781e2b6d87cd5f32d6f4365956fad4baaf24ee50", default-features = false, features = ["accessibility", "metal-backend"] }
+
+[dev-dependencies]
+tokprof-source-claude-code = { path = "../../sources/claude-code" }
+
+[profile.release]
+debug = "line-tables-only"

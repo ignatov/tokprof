@@ -231,6 +231,10 @@ pub struct Browser<T> {
     pane: (u16, u16),
     /// The local hour the first day shown starts its strip at; later days start theirs there too.
     day_axis: Option<i64>,
+    /// Whether the browser costs sessions in the background; a detached one does not.
+    costs: bool,
+    /// Counts the times the list was put in place again after the logs changed.
+    relisted: u32,
 }
 
 impl<T> Browser<T> {
@@ -329,7 +333,9 @@ impl<T> Browser<T> {
         let (xray_tx, _) = mpsc::channel();
         let (day_tx, _) = mpsc::channel();
         let notify = Notify { tx: notes_tx, wake: Arc::new(|| {}) };
-        Browser::new(catalog, rows, Arc::new(pricing), frontend, notes, notify, xray_tx, day_tx)
+        let mut browser = Browser::new(catalog, rows, Arc::new(pricing), frontend, notes, notify, xray_tx, day_tx);
+        browser.costs = false;
+        browser
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -372,18 +378,37 @@ impl<T> Browser<T> {
             day_tx,
             pane: (0, 0),
             day_axis: None,
+            costs: true,
+            relisted: 0,
         };
         browser.refilter();
         browser
     }
 
     /// Takes in what the background work sent, and asks for what is due: costs of sessions that
-    /// changed, the selected session's X-ray, and the shown day.
-    pub fn tick(&mut self) {
-        self.absorb();
+    /// changed, the selected session's X-ray, and the shown day. Returns whether anything
+    /// arrived.
+    pub fn tick(&mut self) -> bool {
+        let arrived = self.absorb();
         self.request_glances();
         self.request_report();
         self.request_day();
+        arrived
+    }
+
+    /// When `tick` would next ask for something it holds back now: the cost of a session that
+    /// keeps changing, the X-ray of the selected one, or the current day, each of which waits as
+    /// long as its last computation took. A screen that sleeps until something happens wakes
+    /// then.
+    pub fn next_due(&self) -> Option<Instant> {
+        let now = Instant::now();
+        let glance = self.entries.iter().filter(|e| !e.gone && !e.glancing && e.glanced < e.version && e.glance_after > now).map(|e| e.glance_after).min();
+        let report = self.selected_entry().filter(|&i| {
+            let e = &self.entries[i];
+            e.reported != e.version && self.pending != Some((i, e.version)) && e.report.is_some() && now < self.report_after
+        });
+        let day = self.day.filter(|key| key.is_none() && self.days.get(key).is_some_and(|d| d.changes != self.changes) && now < self.day_after);
+        [glance, report.map(|_| self.report_after), day.map(|_| self.day_after)].into_iter().flatten().min()
     }
 
     /// Waits up to 20 s for the X-ray of the selected session, then 0.5 s more for costs, for a
@@ -399,6 +424,24 @@ impl<T> Browser<T> {
         self.absorb();
     }
 
+    /// Shows the day of `date` full size, as `d` and the arrows reach it.
+    pub fn show_day(&mut self, date: i64) {
+        self.day = Some(Some(date));
+        self.zoom = true;
+        self.scroll = 0;
+    }
+
+    /// Waits up to 20 s for the day shown, for a screen that draws one frame and exits. The day
+    /// is laid out for the pane set last.
+    pub fn settle_day(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        self.request_day();
+        while Instant::now() < deadline && self.day.is_some_and(|key| !self.days.contains_key(&key)) {
+            std::thread::sleep(Duration::from_millis(50));
+            self.absorb();
+        }
+    }
+
     /// The selected session's entry.
     fn selected_entry(&self) -> Option<usize> {
         self.selected.and_then(|s| self.visible.get(s).copied())
@@ -412,11 +455,13 @@ impl<T> Browser<T> {
         }
     }
 
-    /// Takes in what the background work sent. It fills in cells and never moves a row that
-    /// stays listed: rows move only when the user sorts or filters.
-    fn absorb(&mut self) {
-        let mut listed = false;
+    /// Takes in what the background work sent; returns whether anything arrived. It fills in
+    /// cells and never moves a row that stays listed: rows move only when the user sorts or
+    /// filters.
+    fn absorb(&mut self) -> bool {
+        let (mut listed, mut arrived) = (false, false);
         while let Ok(note) = self.notes.try_recv() {
+            arrived = true;
             match note {
                 Note::Glance(i, version, g, took) => {
                     let e = &mut self.entries[i];
@@ -450,6 +495,7 @@ impl<T> Browser<T> {
         if listed {
             self.relist();
         }
+        arrived
     }
 
     /// Takes in what the log directories changed without moving the rows that stay listed: a
@@ -458,6 +504,7 @@ impl<T> Browser<T> {
     /// with them, so the rows on it stay where they are. When the selected session is gone, the
     /// cursor stays on its row.
     fn relist(&mut self) {
+        self.relisted += 1;
         let (kept, at) = (self.selected_entry(), self.selected);
         let first = self.top;
         let mut offset = first;
@@ -487,6 +534,15 @@ impl<T> Browser<T> {
                 self.select(Some(at.unwrap_or(0).min(self.visible.len() - 1)));
                 self.scroll = 0;
             }
+        }
+    }
+
+    /// Takes in a change of the log directories as the watcher sends it: the rows that stay
+    /// listed keep their places (see `relist`).
+    pub fn apply_change(&mut self, change: Change) {
+        self.changes += 1;
+        if self.apply(change) {
+            self.relist();
         }
     }
 
@@ -545,6 +601,9 @@ impl<T> Browser<T> {
 
     /// Costs the sessions that are new or changed since their last glance, on a worker thread.
     fn request_glances(&mut self) {
+        if !self.costs {
+            return;
+        }
         let now = Instant::now();
         let due: Vec<(usize, u32, SessionRow)> = self
             .entries
@@ -801,6 +860,34 @@ impl<T> Browser<T> {
         }
     }
 
+    /// The session id of row `row`, which names its row while rows come and go.
+    pub fn session(&self, row: usize) -> &str {
+        &self.entries[self.visible[row]].row.session_id
+    }
+
+    /// The row of the session with this id.
+    pub fn row_of(&self, session: &str) -> Option<usize> {
+        self.visible.iter().position(|&i| self.entries[i].row.session_id == session)
+    }
+
+    /// Selects row `row`, as a click on it does; its X-ray shows from its top.
+    pub fn select_row(&mut self, row: usize) {
+        if row < self.visible.len() {
+            self.select(Some(row));
+            self.scroll = 0;
+        }
+    }
+
+    /// Shows the selected session's X-ray full size, as ⏎ does.
+    pub fn zoom_in(&mut self) {
+        self.zoom = true;
+    }
+
+    /// The dearest of the costs known of the listed sessions.
+    pub fn dearest(&self) -> Option<f64> {
+        self.visible.iter().filter_map(|&i| self.entries[i].glance.map(|g| g.cost)).max_by(f64::total_cmp)
+    }
+
     /// The selected row of the list.
     pub fn selected(&self) -> Option<usize> {
         self.selected
@@ -809,6 +896,12 @@ impl<T> Browser<T> {
     /// The first row on the screen.
     pub fn top(&self) -> usize {
         self.top
+    }
+
+    /// Counts the times the list was put in place again after the logs changed; a screen whose
+    /// own scrolling would keep other rows on it puts the first row back on `top` then.
+    pub fn relisted(&self) -> u32 {
+        self.relisted
     }
 
     /// Takes in the first row the screen shows after it drew the list.
@@ -1130,6 +1223,45 @@ mod tests {
         assert_eq!(screen(&a)[..2], shown[..2], "a session that leaves on the screen keeps the rows above it");
         assert_eq!(screen(&a)[2..9], shown[3..10], "and pulls the rows below it up by one");
         assert_eq!(a.selected_entry(), Some(15));
+    }
+
+    #[test]
+    fn a_click_selects_a_row_by_its_session_and_a_double_click_zooms() {
+        let mut a = thirty();
+        let row = a.row_of("id7").unwrap();
+        assert_eq!(a.session(row), "id7");
+        a.scroll = 5;
+        a.select_row(row);
+        assert_eq!((a.selected(), a.selected_entry(), a.scroll), (Some(row), Some(7), 0), "its X-ray shows from its top");
+        a.select_row(99);
+        assert_eq!(a.selected(), Some(row), "a row that is not listed selects nothing");
+        a.zoom_in();
+        assert!(a.zoomed());
+        assert_eq!(a.row_of("nope"), None);
+    }
+
+    #[test]
+    fn notes_say_what_arrived_and_next_due_when_held_back_work_is_due() {
+        let mut a = app(&["~/src/a", "~/src/b"]);
+        // `tick` returns what `absorb` does; these sessions cannot be costed without a source.
+        assert!(!a.absorb(), "nothing arrived");
+        a.entries[0].glanced = 1;
+        a.entries[1].glanced = 1;
+        assert_eq!(a.next_due(), None, "nothing is held back");
+        assert_eq!(a.dearest(), None, "no cost is known yet");
+        // Session 1 was costed and took 60 s; it changed since, so its next costing waits.
+        let later = Instant::now() + Duration::from_secs(60);
+        a.entries[1].glance = Some(xray::Glance { cost: 3.0, ..xray::Glance::default() });
+        a.entries[1].glanced = 1;
+        a.entries[1].version = 2;
+        a.entries[1].glance_after = later;
+        assert_eq!(a.next_due(), Some(later), "the costing held back is due then");
+        a.entries[0].glance = Some(xray::Glance { cost: 12.0, ..xray::Glance::default() });
+        assert_eq!(a.dearest(), Some(12.0));
+        take(&mut a, Change::Gone("/x/1.jsonl".into()));
+        assert_eq!(a.next_due(), None, "a session that left holds nothing back");
+        a.notify.tx.send(Note::Status("hi".into())).unwrap();
+        assert!(a.absorb(), "a note arrived");
     }
 
     #[test]

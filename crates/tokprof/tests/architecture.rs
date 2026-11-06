@@ -64,7 +64,7 @@ fn code_lines(path: &Path) -> Vec<(usize, String)> {
 fn the_framework_names_no_agent() {
     let root = root();
     let mut files = Vec::new();
-    for dir in ["crates/tokprof-core/src", "crates/tokprof-logio/src", "crates/tokprof-browse/src", "crates/tokprof/src"] {
+    for dir in ["crates/tokprof-core/src", "crates/tokprof-logio/src", "crates/tokprof-browse/src", "crates/tokprof/src", "crates/tokprof-desk/src"] {
         rust_files(&root.join(dir), &mut files);
     }
     let mut found = Vec::new();
@@ -82,14 +82,24 @@ fn the_framework_names_no_agent() {
     assert!(found.is_empty(), "agent knowledge outside sources/:\n{}", found.join("\n"));
 }
 
-#[test]
-fn the_packages_depend_as_the_layout_says() {
+/// The packages of the workspace at `dir`, without resolving their dependencies, so that nothing
+/// is fetched.
+fn packages(dir: &Path) -> Vec<serde_json::Value> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let out = Command::new(cargo).args(["metadata", "--format-version", "1", "--no-deps"]).current_dir(root()).output().unwrap();
+    let out = Command::new(cargo).args(["metadata", "--format-version", "1", "--no-deps"]).current_dir(dir).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let meta: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    meta["packages"].as_array().unwrap().clone()
+}
+
+#[test]
+fn the_packages_depend_as_the_layout_says() {
+    let root = root();
+    // The window is a workspace of its own, so that this one never fetches Rune.
+    let mut all = packages(&root);
+    all.extend(packages(&root.join("crates/tokprof-desk")));
     let mut broken = Vec::new();
-    for package in meta["packages"].as_array().unwrap() {
+    for package in &all {
         let name = package["name"].as_str().unwrap();
         // Normal dependencies on other packages of the workspace; dev-dependencies are free.
         let deps: Vec<&str> = package["dependencies"]
@@ -104,7 +114,7 @@ fn the_packages_depend_as_the_layout_says() {
             n if n.starts_with("tokprof-source-") => &["tokprof-core", "tokprof-logio"],
             "tokprof-sources" => &["tokprof-core", "tokprof-source-*"],
             "tokprof-browse" => &["tokprof-core"],
-            "tokprof" => &["tokprof-core", "tokprof-sources", "tokprof-browse"],
+            "tokprof" | "tokprof-desk" => &["tokprof-core", "tokprof-sources", "tokprof-browse"],
             other => panic!("a package the layout does not know: {other}"),
         };
         for dep in deps {

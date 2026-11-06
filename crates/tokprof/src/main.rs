@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use tokprof_browse::day::{self, keeps_client, temp_folders};
+use tokprof_browse::filters::{normalize_project, parse_date, parse_since};
 use tokprof_browse::reading::{sources, warnings};
 use tokprof_browse::{clipboard, paths, render_rhythm, render_sessions, render_xray};
 use tokprof_core::analysis::{self, Component};
@@ -699,13 +700,6 @@ fn default_name(cli: &Cli, value: Value) -> String {
     format!("{}.jfr", parts.join("-"))
 }
 
-/// `--project` as the projects are written: the home directory as `~`, no trailing `/`, so that a
-/// path the shell expanded matches.
-fn normalize_project(p: &str) -> String {
-    let p = if p.len() > 1 { p.trim_end_matches('/') } else { p };
-    display_path(p, None, &paths::home())
-}
-
 /// The first logs that could not be read, then how many more there were.
 fn warn(errors: &[String]) {
     for line in warnings(errors) {
@@ -785,19 +779,6 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-fn parse_date(s: &str) -> Result<i64> {
-    let d = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").with_context(|| format!("bad date {s:?}, expected YYYY-MM-DD"))?;
-    let t = d.and_hms_opt(0, 0, 0).context("bad date")?.and_local_timezone(chrono::Local).earliest().context("bad local date")?;
-    Ok(t.timestamp_millis())
-}
-
-fn parse_since(s: &str) -> Result<i64> {
-    match s.strip_suffix('d').and_then(|n| n.parse::<i64>().ok()) {
-        Some(days) => Ok(chrono::Utc::now().timestamp_millis() - days * 86_400_000),
-        None => parse_date(s),
-    }
-}
-
 /// A duration in hours or minutes, 6h or 90m, in ms.
 fn parse_duration(s: &str) -> Result<i64, String> {
     let (n, unit) = match s.strip_suffix('m') {
@@ -839,14 +820,5 @@ mod tests {
         assert_eq!(err.to_string(), "day picks its time by DATE; drop --since and --until");
         assert!(day_takes_no_time_filter(&Cli::parse_from(["tokprof", "--until", "2026-11-01", "day", "2026-10-30"])).is_err());
         assert!(day_takes_no_time_filter(&Cli::parse_from(["tokprof", "--project", "billing", "day"])).is_ok());
-    }
-
-    #[test]
-    fn project_filters_read_like_the_projects() {
-        let home = std::env::home_dir().unwrap().to_string_lossy().to_string();
-        assert_eq!(normalize_project(&format!("{home}/src/app")), "~/src/app");
-        assert_eq!(normalize_project("~/src/app/"), "~/src/app");
-        assert_eq!(normalize_project("billing"), "billing");
-        assert_eq!(normalize_project("/"), "/");
     }
 }

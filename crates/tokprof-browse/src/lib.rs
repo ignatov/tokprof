@@ -5,6 +5,7 @@
 pub mod browser;
 pub mod clipboard;
 pub mod day;
+pub mod filters;
 pub mod paths;
 pub mod reading;
 pub mod render_rhythm;
