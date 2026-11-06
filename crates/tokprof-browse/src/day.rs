@@ -100,7 +100,7 @@ pub fn build(
         },
     )?;
     cold.finish();
-    let read = crate::sources(catalog, &files, started.elapsed().as_secs_f64());
+    let read = crate::reading::sources(catalog, &files, started.elapsed().as_secs_f64());
     let view = View::new(timelines, now_ms, offset);
     let date = match date.or_else(|| view.days.latest()) {
         Some(d) => d,
@@ -113,7 +113,7 @@ pub fn build(
     let hour = axis_hour.unwrap_or_else(|| (bounds.0 + offset(bounds.0)).rem_euclid(24 * HOUR_MS) / HOUR_MS);
     let axis = axis_at(bounds.0, hour, offset);
     let text = crate::render_rhythm::day(&view, date, bounds, offset, &returns, priced, layout, Some(axis), style);
-    Ok(Day { date, text, read, warnings: crate::warnings(&stats.unreadable), axis_hour: hour })
+    Ok(Day { date, text, read, warnings: crate::reading::warnings(&stats.unreadable), axis_hour: hour })
 }
 
 /// The instant at a local hour that is nearest to `start`: the axis a strip starts at.

@@ -1913,13 +1913,25 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "notify",
  "ratatui",
  "rayon",
  "serde_json",
+ "tokprof-browse",
  "tokprof-core",
  "tokprof-source-claude-code",
  "tokprof-sources",
+]
+
+[[package]]
+name = "tokprof-browse"
+version = "0.1.4"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "notify",
+ "rayon",
+ "tokprof-core",
+ "tokprof-source-claude-code",
 ]
 
 [[package]]

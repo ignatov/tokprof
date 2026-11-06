@@ -64,7 +64,7 @@ fn code_lines(path: &Path) -> Vec<(usize, String)> {
 fn the_framework_names_no_agent() {
     let root = root();
     let mut files = Vec::new();
-    for dir in ["crates/tokprof-core/src", "crates/tokprof-logio/src", "crates/tokprof/src"] {
+    for dir in ["crates/tokprof-core/src", "crates/tokprof-logio/src", "crates/tokprof-browse/src", "crates/tokprof/src"] {
         rust_files(&root.join(dir), &mut files);
     }
     let mut found = Vec::new();
@@ -103,7 +103,8 @@ fn the_packages_depend_as_the_layout_says() {
             "tokprof-core" | "tokprof-logio" => &[],
             n if n.starts_with("tokprof-source-") => &["tokprof-core", "tokprof-logio"],
             "tokprof-sources" => &["tokprof-core", "tokprof-source-*"],
-            "tokprof" => &["tokprof-core", "tokprof-sources"],
+            "tokprof-browse" => &["tokprof-core"],
+            "tokprof" => &["tokprof-core", "tokprof-sources", "tokprof-browse"],
             other => panic!("a package the layout does not know: {other}"),
         };
         for dep in deps {

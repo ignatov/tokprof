@@ -320,7 +320,7 @@ fn waits_lines(out: &mut String, x: &XRay, style: &Style) {
 /// The calls that did not work: the tools whose calls failed, with what the requests after the
 /// failures cost until the tool worked again and the latest error, then the failures line.
 fn failure_lines(out: &mut String, x: &XRay, style: &Style) {
-    let Some(last) = crate::render_report::failures_line(&x.tools) else { return };
+    let Some(last) = crate::render_tools::failures_line(&x.tools) else { return };
     out.push('\n');
     let title = "calls that failed, and what the requests after them cost until the tool worked again";
     let _ = writeln!(out, "{} {}", style.dim(&format!("{:<9}", "failures")), style.dim(title));
@@ -359,7 +359,7 @@ fn tool_lines(out: &mut String, x: &XRay, style: &Style) {
     }
     out.push('\n');
     let _ = writeln!(out, "{} {}", style.dim(&format!("{:<9}", "tools")), style.dim("calls, sizes, rent and trips by tool (see tokprof tools)"));
-    for line in crate::render_report::tool_rows(&x.tools, tokprof_core::tools::RowOrder::Rent, 8, false).lines() {
+    for line in crate::render_tools::tool_rows(&x.tools, tokprof_core::tools::RowOrder::Rent, 8, false).lines() {
         let _ = writeln!(out, "  {line}");
     }
 }

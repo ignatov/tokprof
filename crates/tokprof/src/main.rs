@@ -5,9 +5,10 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
-use crate::day::{keeps_client, temp_folders};
+use tokprof_browse::day::{self, keeps_client, temp_folders};
+use tokprof_browse::reading::{sources, warnings};
+use tokprof_browse::{clipboard, paths, render_rhythm, render_sessions, render_xray};
 use tokprof_core::analysis::{self, Component};
-use tokprof_core::catalog::Catalog;
 use tokprof_core::export;
 use tokprof_core::labels::display_path;
 use tokprof_core::pauses::Pauses;
@@ -21,17 +22,10 @@ use tokprof_core::share::{self, Share};
 use tokprof_core::source::{AgentId, SessionRef};
 use tokprof_core::{bench, fmt, handoff, xray};
 
-mod clipboard;
-mod day;
-mod paths;
 mod render_bench;
 mod render_pool;
 mod render_report;
-mod render_rhythm;
-mod render_sessions;
-mod render_xray;
 mod ui;
-mod watch;
 
 #[derive(Parser)]
 #[command(name = "tokprof", version, about = "Token, cost and prompt-cache profiler for AI coding-agent session logs")]
@@ -719,31 +713,6 @@ fn warn(errors: &[String]) {
     }
 }
 
-fn warnings(errors: &[String]) -> Vec<String> {
-    const SHOWN: usize = 5;
-    let mut lines: Vec<String> = errors.iter().take(SHOWN).map(|e| format!("warning: {e}")).collect();
-    match errors.len().saturating_sub(SHOWN) {
-        0 => {}
-        1 => lines.push("warning: 1 more log could not be read".to_string()),
-        n => lines.push(format!("warning: {n} more logs could not be read")),
-    }
-    lines
-}
-
-fn sources(catalog: &Catalog, files: &[SessionRef], secs: f64) -> String {
-    let mut agents: Vec<&AgentId> = files.iter().map(|f| &f.agent).collect();
-    agents.sort_by_key(|a| catalog.order(a));
-    agents.dedup();
-    let mut parts = Vec::new();
-    for agent in agents {
-        let (n, bytes) = files.iter().filter(|f| &f.agent == agent).fold((0, 0u64), |(n, b), f| (n + 1, b + f.size));
-        if n > 0 {
-            parts.push(format!("{} {n} files ({:.1} GB)", agent.name(), bytes as f64 / 1e9));
-        }
-    }
-    format!("read {} in {secs:.1}s", parts.join(", "))
-}
-
 /// `day` picks its time by its date, so the time filters would contradict it.
 /// The share files among the paths: the files, and the `.json` files of the folders, not of
 /// their subfolders. A file that is not a share file, one of a newer format, and one with the
@@ -851,16 +820,6 @@ mod tests {
         let cli = Cli::parse_from(["tokprof", "bench"]);
         let Some(Command::Bench { requests, min_context, keep_warm, .. }) = cli.command else { panic!("not the bench") };
         assert_eq!((requests, min_context, keep_warm), (bench::DEFAULT_REQUESTS, bench::DEFAULT_MIN_CONTEXT, bench::DEFAULT_KEEP_WARM_MS));
-    }
-
-    #[test]
-    fn warnings_stop_after_five_and_count_the_rest() {
-        let errors: Vec<String> = (0..12).map(|i| format!("log{i}: broken")).collect();
-        let lines = warnings(&errors);
-        assert_eq!(lines.len(), 6);
-        assert_eq!((lines[0].as_str(), lines[5].as_str()), ("warning: log0: broken", "warning: 7 more logs could not be read"));
-        assert_eq!(warnings(&errors[..6]).last().unwrap(), "warning: 1 more log could not be read");
-        assert_eq!(warnings(&errors[..5]).len(), 5);
     }
 
     #[test]

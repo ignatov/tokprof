@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/tokprof-core", "crates/tokprof-logio", "crates/tokprof-sources", "crates/tokprof", "sources/claude-code", "sources/codex"]
+members = ["crates/tokprof-core", "crates/tokprof-logio", "crates/tokprof-sources", "crates/tokprof-browse", "crates/tokprof", "sources/claude-code", "sources/codex"]
 
 [workspace.package]
 version = "0.1.4"
@@ -13,6 +13,7 @@ publish = false
 tokprof-core = { path = "crates/tokprof-core" }
 tokprof-logio = { path = "crates/tokprof-logio" }
 tokprof-sources = { path = "crates/tokprof-sources" }
+tokprof-browse = { path = "crates/tokprof-browse" }
 tokprof-source-claude-code = { path = "sources/claude-code" }
 tokprof-source-codex = { path = "sources/codex" }
 ansi-to-tui = "8"

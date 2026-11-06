@@ -13,11 +13,11 @@ publish.workspace = true
 [dependencies]
 tokprof-core.workspace = true
 tokprof-sources.workspace = true
+tokprof-browse.workspace = true
 ansi-to-tui.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
-notify.workspace = true
 ratatui.workspace = true
 rayon.workspace = true
 serde_json.workspace = true
