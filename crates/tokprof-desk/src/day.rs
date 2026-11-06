@@ -179,14 +179,14 @@ fn line_of(text: &str, label: &str) -> Option<String> {
 
 /// What the lanes show, for `memo`: the day, the zoom, the size, the selection, the pointer,
 /// each lane's cache and the minute.
-pub fn version(s: &Desk, cx: &Cx<Desk>, max_h: f32, dark: bool) -> u64 {
+pub fn version(s: &Desk, cx: &Cx<Desk>, max_h: f32, theme: &str) -> u64 {
     let b = &s.browser;
     let parts = b.day_parts();
     let lanes: Vec<_> =
         parts.and_then(|p| p.strip.as_ref()).map_or(Vec::new(), |(_, l)| l.lanes.iter().map(|l| (b.cache_life(&l.id), b.row_of(&l.id))).collect());
     let (known, pending) = b.known_total();
     view::hash_of((
-        (parts.map(|p| p as *const DayParts as usize), b.day_noon(), b.day_is_latest(), s.fit, dark, max_h.to_bits()),
+        (parts.map(|p| p as *const DayParts as usize), b.day_noon(), b.day_is_latest(), s.fit, theme, max_h.to_bits()),
         (cx.layout_size(SCALE).map(|sz| sz[0].to_bits()), b.selected().map(|r| b.session(r)), s.pointer.as_ref().map(|p| (p.lane.clone(), p.x.to_bits()))),
         (view::minute(), lanes, known.to_bits(), pending, s.pane == crate::Focus::Lanes, b.filter()),
     ))
@@ -532,7 +532,7 @@ mod tests {
         // The last request at 13:58, the cache an hour, now 14:33: on a day from 04:00.
         let (last, now) = (9 * HOUR_MS + 58 * MIN, 10 * HOUR_MS + 33 * MIN);
         let g = Grid { range: Range { begin: 0, end: 24 * HOUR_MS }, width: 1440.0, now: Some(now) };
-        let p = crate::pal::pal(false);
+        let p = crate::pal::pal(crate::themes::default(false));
         let warm = g.tail((last, last + HOUR_MS), &p);
         assert_eq!(warm.len(), 2, "solid to now, fading after it");
         let cold = Grid { now: Some(last + 2 * HOUR_MS), ..g }.tail((last, last + HOUR_MS), &p);

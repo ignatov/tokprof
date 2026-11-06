@@ -27,9 +27,9 @@ const LANES_SHARE: f32 = 0.45;
 pub const STATUS_SECS: u64 = 6;
 
 pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
-    let dark = cx.system_dark();
-    s.dark.set(dark);
-    let p = pal::pal(dark);
+    let theme = s.settings.theme(cx.system_dark());
+    s.theme.set(theme);
+    let p = pal::pal(theme);
     *s.slots.borrow_mut() = slots(s);
     let mut root = col()
         .key("root")
@@ -42,15 +42,19 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     // The lanes and the inspector change when what they show does, and with the minute; the
     // list's countdowns tick every second, so the view runs every second while one is on the
     // screen and builds the two again only when they changed.
-    let inspector = |cx: &Cx<Desk>| rune::memo("inspector", crate::inspector::version(s, cx, dark), || crate::inspector::inspector(s, cx, &p));
+    let inspector = |cx: &Cx<Desk>| rune::memo("inspector", crate::inspector::version(s, cx, &theme.id), || crate::inspector::inspector(s, cx, &p));
     if s.browser.zoomed() {
         root = root.child(inspector(cx));
     } else {
         let height = if s.window_h > 0.0 { s.window_h } else { 900.0 };
         let max_h = (height - BAR_H) * LANES_SHARE;
-        let lanes = rune::memo("lanes", crate::day::version(s, cx, max_h, dark), || crate::day::lanes(s, cx, &p, max_h));
+        let lanes = rune::memo("lanes", crate::day::version(s, cx, max_h, &theme.id), || crate::day::lanes(s, cx, &p, max_h));
         let body = row().key("body").w_full().grow(1.0).min_h(0.0).child(list_pane(s, &p)).child(el().w(1.0).h_full().fill(p.line)).child(inspector(cx));
         root = root.child(lanes).child(body);
+    }
+    if let Some(panel) = s.panel {
+        let height = if s.window_h > 0.0 { s.window_h } else { 900.0 };
+        root = root.child(crate::settings::panel(s, panel, &p, height));
     }
     root
 }
@@ -99,7 +103,7 @@ pub fn segment(key: String, label: &str, on: bool, p: &Pal) -> El {
         .child(text(label.to_string()).font(pal::STRONG).color(if on { p.on_accent } else { p.ink2 }).single_line())
 }
 
-fn segments(key: &'static str, parts: Vec<El>, p: &Pal) -> El {
+pub fn segments(key: &'static str, parts: Vec<El>, p: &Pal) -> El {
     row().key(key).h(26.0).px(2.0).gap(2.0).center_y().radius(7.0).fill(p.panel).border(1.0, p.line).role("radiogroup").children(parts)
 }
 
@@ -140,7 +144,7 @@ fn bar(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
     }
     bar = bar.child(spacer().grow(1.0));
     if s.status_shown() {
-        bar = bar.child(text(b.status().to_string()).key("status").font(pal::BODY).color(p.ink2).single_line().truncate().shrink().min_w(0.0));
+        bar = bar.child(text(s.status.0.clone()).key("status").font(pal::BODY).color(p.ink2).single_line().truncate().shrink().min_w(0.0));
     }
     let zoom = segments(
         "zoom",
@@ -309,7 +313,7 @@ pub fn countdown(ms: i64) -> String {
 /// Slot `i` of the list. A row's handlers find the session by its id: the row may hold another
 /// one by the time it is pressed.
 fn list_row(s: &Desk, i: usize) -> El {
-    let p = pal::pal(s.dark.get());
+    let p = pal::pal(s.theme.get());
     let slot = s.slots.borrow().get(i).copied();
     let r = match slot {
         Some(Slot::Row(r)) => r,

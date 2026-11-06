@@ -1,12 +1,15 @@
-//! The window's colors and type: those of the profiler sketch the author chose, in light and
-//! dark, and the system font at a few sizes, with tabular figures where numbers line up.
+//! The window's colors and type: the colors of the chosen theme's roles, and the system font at
+//! a few sizes, with tabular figures where numbers line up.
+//!
+//! A theme's canvas, surfaces, strokes and content give the window's background, panels, lines
+//! and text; its accent the selection; its success, danger, warning and info the marks (green for
+//! work and warm caches, red for cold ones, now and stops, yellow for waits and cache writes, blue
+//! for reads and requests), and its terminal colors the rest (cyan for output and messages,
+//! magenta for questions, and the agents).
 
 use rune::{Color, TextStyle};
 
-/// A color from its sRGB hex.
-fn hx(s: &str) -> Color {
-    rune::color::hex(s).unwrap_or(Color::BLACK)
-}
+use crate::themes::Theme;
 
 /// The window's colors in one appearance.
 pub struct Pal {
@@ -37,6 +40,8 @@ pub struct Pal {
     pub warm_dot: Color,
     pub cold_dot: Color,
     pub cold_bg: Color,
+    /// The bars of the requests chart and of the chains.
+    pub bars: Color,
     pub read: Color,
     pub write: Color,
     pub out: Color,
@@ -52,43 +57,49 @@ pub struct Pal {
     pub neutral: Color,
 }
 
-pub fn pal(dark: bool) -> Pal {
-    let pick = |light: &str, dark_hex: &str| if dark { hx(dark_hex) } else { hx(light) };
+/// The window's colors in a theme. The alphas of the translucent marks are lower on a light
+/// theme, where the same share of a color reads stronger.
+pub fn pal(t: &Theme) -> Pal {
+    let c = |role: &str| t.color(role);
+    let dark = t.dark();
+    let (wait, you, tail) = if dark { (0.45, 0.35, 0.3) } else { (0.3, 0.22, 0.25) };
+    let on_accent = c("accentOnSolid");
     Pal {
-        bg: pick("#f5f5f3", "#1b1b1e"),
-        bar: pick("#ebebe7", "#232326"),
-        track: pick("#fcfcfb", "#161619"),
-        row_line: pick("#efefeb", "#222225"),
-        line: pick("#dadad5", "#2f2f33"),
-        hour: pick("#ececE8", "#222226"),
-        ink: pick("#1a1a1c", "#ededef"),
-        ink2: pick("#5e5e63", "#a4a4ab"),
-        ink3: pick("#8f8f95", "#6e6e75"),
-        panel: pick("#ffffff", "#212124"),
-        hover: if dark { Color::WHITE.alpha(0.05) } else { Color::BLACK.alpha(0.04) },
-        accent: pick("#0a6cf0", "#4d97ff"),
-        on_accent: Color::WHITE,
-        on_accent2: Color::WHITE.alpha(0.82),
-        sel: if dark { hx("#5096ff").alpha(0.15) } else { hx("#0a6cf0").alpha(0.09) },
-        now: pick("#d23a32", "#ff6b61"),
-        later: if dark { Color::WHITE.alpha(0.025) } else { Color::BLACK.alpha(0.025) },
-        warm: pick("#167a33", "#4cc46a"),
-        cold: pick("#c12c2c", "#ff6f66"),
-        warm_dot: hx("#0ca30c"),
-        cold_dot: hx("#d03b3b"),
-        cold_bg: pick("#fff5f3", "#2a1d1d"),
-        read: pick("#2a78d6", "#3987e5"),
-        write: pick("#eb6834", "#d95926"),
-        out: pick("#1baf7a", "#199e70"),
-        agents: [pick("#8748d1", "#b98cf5"), pick("#2f5fd0", "#86a5ff"), pick("#0f8f8f", "#4cc9c9"), pick("#b07a00", "#e0b040")],
-        work: pick("#2e8b4a", "#4cc26f"),
-        wait: if dark { hx("#e6b63c").alpha(0.5) } else { hx("#d6a014").alpha(0.55) },
-        message: pick("#1a87a8", "#4dbad8"),
-        question: pick("#b2409c", "#de80cb"),
-        stop: pick("#cc3530", "#ff6b61"),
-        you: if dark { hx("#82a0eb").alpha(0.42) } else { hx("#506ec8").alpha(0.42) },
-        tail: if dark { hx("#4cc26f").alpha(0.3) } else { hx("#2e8b4a").alpha(0.3) },
-        neutral: pick("#8592a8", "#66768f"),
+        bg: c("canvas"),
+        bar: c("surfaceSubtle"),
+        track: c("terminalBackground"),
+        row_line: c("strokeSubtle"),
+        line: c("stroke"),
+        hour: c("strokeSubtle"),
+        ink: c("content"),
+        ink2: c("contentSecondary"),
+        ink3: c("contentTertiary"),
+        panel: c("surfaceRaised"),
+        hover: c("controlHover"),
+        accent: c("accent"),
+        on_accent,
+        on_accent2: on_accent.alpha(0.82),
+        sel: c("accentDim"),
+        now: c("danger"),
+        later: c("content").alpha(0.025),
+        warm: c("success"),
+        cold: c("danger"),
+        warm_dot: c("success"),
+        cold_dot: c("danger"),
+        cold_bg: c("dangerContainer"),
+        bars: c("info"),
+        read: c("info"),
+        write: c("warning"),
+        out: c("terminalAnsi6"),
+        agents: [c("terminalAnsi5"), c("terminalAnsi4"), c("terminalAnsi6"), c("terminalAnsi3")],
+        work: c("success"),
+        wait: c("warning").alpha(wait),
+        message: c("terminalAnsi6"),
+        question: c("terminalAnsi5"),
+        stop: c("danger"),
+        you: c("info").alpha(you),
+        tail: c("success").alpha(tail),
+        neutral: c("contentTertiary"),
     }
 }
 

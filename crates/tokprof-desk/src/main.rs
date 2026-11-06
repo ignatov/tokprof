@@ -6,6 +6,8 @@ mod ansi;
 mod day;
 mod inspector;
 mod pal;
+mod settings;
+mod themes;
 mod view;
 
 use std::cell::{Cell, RefCell};
@@ -65,6 +67,10 @@ struct Cli {
     /// waits, prompts, tools, context, cache).
     #[arg(long)]
     tab: Option<String>,
+    /// With --snap or --tree: draw in this color theme, whatever --theme says (an id such as
+    /// merino-light or ink-meridian).
+    #[arg(long)]
+    colors: Option<String>,
     /// Stay in the terminal until the window closes, instead of starting it on its own.
     #[arg(long)]
     wait: bool,
@@ -153,9 +159,9 @@ pub enum Slot {
 /// The window's state: the browser and what the window keeps of its own.
 pub struct Desk {
     pub browser: Book,
-    /// Whether the window draws dark, as the system was when the view last ran; rows built later,
-    /// as the list scrolls, read it.
-    pub dark: Cell<bool>,
+    /// The theme the window draws in, as the view last chose it; rows built later, as the list
+    /// scrolls, read it.
+    pub theme: Cell<&'static themes::Theme>,
     /// The list's slots as the view last laid them out, for the rows it builds as it scrolls.
     pub slots: RefCell<Vec<Slot>>,
     /// How far the list and the inspector are scrolled, in points, as their viewports last said.
@@ -177,8 +183,16 @@ pub struct Desk {
     pub fit: bool,
     /// The window follows the logs.
     pub live: bool,
-    /// The browser's latest status, and when it came.
+    /// The status the bar shows, the browser's or the window's own, and when it came.
     pub status: (String, Instant),
+    /// The browser's status as the last poll saw it.
+    pub browser_status: String,
+    /// The appearance and the themes, and the store that keeps them: the app's settings file in a
+    /// window, memory without one.
+    pub settings: settings::Settings,
+    pub prefs: rune::prefs::Prefs,
+    /// The settings panel, while it is open.
+    pub panel: Option<settings::Panel>,
     /// The first slot on the screen is a day's separator, as the last poll found the list.
     pub separator_on_top: bool,
     /// The minute of the last poll: the lanes' now line and the inspector's times move at a new
@@ -216,9 +230,14 @@ impl Desk {
         browser.keep_day_beside();
         browser.set_pane(view::DAY_PANE);
         let relisted = browser.relisted();
+        let prefs = if live { rune::prefs::Prefs::open(settings::APP_ID) } else { rune::prefs::Prefs::memory() };
         Desk {
+            settings: settings::Settings::read(&prefs),
+            prefs,
+            panel: None,
+            browser_status: String::new(),
             browser,
-            dark: Cell::new(true),
+            theme: Cell::new(themes::default(true)),
             slots: RefCell::default(),
             list_offset: Rc::default(),
             pane_offset: Rc::default(),
@@ -238,6 +257,13 @@ impl Desk {
             cursor: 0,
             tab_rows: Cell::new(0),
         }
+    }
+
+    /// The desk with its settings in this store instead.
+    pub fn with_prefs(mut self, prefs: rune::prefs::Prefs) -> Desk {
+        self.settings = settings::Settings::read(&prefs);
+        self.prefs = prefs;
+        self
     }
 
     /// Shows tab `t` from its top, with the cursor on its first row.
@@ -449,8 +475,9 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
     let minute = now / 60_000;
     let turned = s.minute != minute;
     s.minute = minute;
-    if s.browser.status() != s.status.0 {
-        s.status = (s.browser.status().to_string(), Instant::now());
+    if s.browser.status() != s.browser_status {
+        s.browser_status = s.browser.status().to_string();
+        s.status = (s.browser_status.clone(), Instant::now());
     }
     if s.status_shown() {
         tx.wake_after(Duration::from_secs(view::STATUS_SECS).saturating_sub(s.status.1.elapsed()) + Duration::from_millis(5));
@@ -527,6 +554,15 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
     if e.is_command('q') {
         tx.quit();
         return true;
+    }
+    // ⌘, opens and closes the settings, as its menu item does where the menu does not take it
+    // first; while they are open, every other key is theirs.
+    if e.is_command(',') {
+        s.toggle_settings();
+        return true;
+    }
+    if s.panel.is_some() {
+        return s.settings_key(e, tx);
     }
     if e.is_command('w') {
         tx.close_window();
@@ -621,6 +657,9 @@ fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk>
     let mut desk = Desk::new(browser, !headless);
     desk.tab = tab;
     if headless {
+        if let Some(t) = colors(cli)? {
+            desk.settings = settings::Settings::of_theme(t);
+        }
         desk.browser.settle();
         if let Some(date) = cli.day.as_deref() {
             let date = rhythm::date_of(parse_date(date)? + 12 * 3_600_000, &rhythm::local_offset);
@@ -645,7 +684,17 @@ fn checked(cli: &Cli, catalog: &Catalog) -> Result<(Query, tokprof_core::pricing
         }
         None => Tab::Summary,
     };
+    colors(cli)?;
     Ok((select, pricing, tab))
+}
+
+/// The theme `--colors` names, if it names one.
+fn colors(cli: &Cli) -> Result<Option<&'static themes::Theme>> {
+    let Some(id) = cli.colors.as_deref() else { return Ok(None) };
+    match themes::find(id) {
+        Some(t) => Ok(Some(t)),
+        None => bail!("--colors takes one of: {}", themes::all().iter().map(|t| t.id.as_str()).collect::<Vec<_>>().join(", ")),
+    }
 }
 
 /// What a start from a terminal checks before the window starts on its own, so that its errors
@@ -685,15 +734,22 @@ fn main() -> Result<()> {
         on_key: Some(on_key),
         ..AppSpec::new("tokprof", (1400.0, 900.0), placeholder, view::view)
     };
-    App::new(spec).chrome(CHROME).init(move || desk).run();
+    let settings = rune::MenuItem::new("Settings…", |s: &mut Desk, _| s.toggle_settings()).id("settings");
+    let settings = match "cmd+,".parse::<rune::Shortcut>() {
+        Ok(chord) => settings.key_equivalent(chord),
+        Err(_) => settings,
+    };
+    App::new(spec).chrome(CHROME).menu_item(settings).init(move || desk).run();
     Ok(())
 }
 
 /// A named state a frame without a window can start from (`--scene`).
 type Scene = (&'static str, fn(&mut Desk));
 
-/// The scenes: a pane with the keyboard, and a filter being typed that matches nothing.
+/// The scenes: a pane with the keyboard, a filter being typed that matches nothing, and the
+/// settings open.
 const SCENES: &[Scene] = &[
+    ("settings", |s| s.panel = Some(settings::Panel::default())),
     ("lanes-keyboard", |s| s.pane = Focus::Lanes),
     ("inspector-keyboard", |s| {
         s.pane = Focus::Inspector;

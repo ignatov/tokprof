@@ -62,7 +62,7 @@ const TRACK_H: f32 = 62.0;
 
 /// What the inspector shows, for `memo`: the X-ray, the tab, the selected session with its next
 /// request and cache, the width of the request track, and the minute.
-pub fn version(s: &Desk, cx: &Cx<Desk>, dark: bool) -> u64 {
+pub fn version(s: &Desk, cx: &Cx<Desk>, theme: &str) -> u64 {
     let b = &s.browser;
     let now = now_ms();
     let selected = b.selected().map(|r| (b.session(r).to_string(), b.cells(r, now).next_usd.map(f64::to_bits), b.cache_life(b.session(r))));
@@ -72,7 +72,7 @@ pub fn version(s: &Desk, cx: &Cx<Desk>, dark: bool) -> u64 {
         Pane::Empty(n) => n.to_string(),
     };
     view::hash_of((
-        (b.xray().map(|x| x as *const XRay as usize), pending, s.tab, dark, selected),
+        (b.xray().map(|x| x as *const XRay as usize), pending, s.tab, theme, selected),
         (b.zoomed(), cx.layout_size(TRACK).map(|sz| sz[0].to_bits()), view::minute(), keyboard(s), s.cursor),
     ))
 }
@@ -404,13 +404,12 @@ fn request_track(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal, tall: f32) -> Optio
     }
     for (i, q) in x.points.iter().enumerate() {
         let h = height(q.usd);
-        track =
-            track.child(el().key(format!("request-{i}")).absolute(xs(q.ts_ms) - 1.5, 18.0 + tall - h).w(3.0).h(h).radius(1.5).fill(p.accent).help(format!(
-                "{}: {}, {} in context",
-                local_time(q.ts_ms, "%H:%M:%S"),
-                usd(q.usd),
-                tokens(q.prompt_tokens as f64)
-            )));
+        track = track.child(el().key(format!("request-{i}")).absolute(xs(q.ts_ms) - 1.5, 18.0 + tall - h).w(3.0).h(h).radius(1.5).fill(p.bars).help(format!(
+            "{}: {}, {} in context",
+            local_time(q.ts_ms, "%H:%M:%S"),
+            usd(q.usd),
+            tokens(q.prompt_tokens as f64)
+        )));
     }
     if let Some(n) = next {
         let h = height(n);
@@ -632,7 +631,7 @@ fn spend_tab(x: &XRay, p: &Pal) -> Vec<El> {
         let total: f64 = x.chains.iter().map(|(_, v)| if x.priced { v.usd } else { v.tokens }).sum();
         let rows: Vec<_> =
             x.chains.iter().map(|(n, v)| (n.clone(), (if x.priced { v.usd } else { v.tokens }) / total.max(1e-9), amount(x, v), String::new())).collect();
-        out.push(boxed("chains", "By chain", Some("the main conversation and its subagents".into()), bar_rows(&rows, p.accent, p), p));
+        out.push(boxed("chains", "By chain", Some("the main conversation and its subagents".into()), bar_rows(&rows, p.bars, p), p));
     }
     out
 }

@@ -237,7 +237,7 @@ thread_local! {
 }
 
 fn lanes_only(s: &Desk, cx: &mut rune::Cx<Desk>) -> rune::El {
-    let p = pal::pal(true);
+    let p = pal::pal(crate::themes::default(true));
     DAY.with(|d| rune::col().w_full().h_full().child(day::lanes_of(s, d.borrow().as_ref().unwrap(), cx, &p, 600.0)))
 }
 
@@ -654,4 +654,152 @@ fn a_start_from_a_terminal_fails_there_without_logs() {
     let (catalog, _) = fixture();
     assert!(check_before_start(&Cli::parse_from(["tokprof-desk"]), &catalog).is_ok(), "the fixture has a session");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Whether the window's background is drawn in this theme's canvas.
+fn drawn_in(rt: &Runtime<Desk>, id: &str) -> bool {
+    let fill = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("root")).map(|e| e.fill).unwrap();
+    let want = themes::find(id).unwrap().color("canvas");
+    [(fill.r, want.r), (fill.g, want.g), (fill.b, want.b)].iter().all(|(a, b)| (a - b).abs() < 0.01)
+}
+
+#[test]
+fn a_dark_theme_on_a_light_system_and_back_to_the_system() {
+    let mut rt = runtime(desk_of(3), (1400.0, 900.0));
+    rt.set_system_dark(false);
+    settle(&mut rt);
+    assert!(drawn_in(&rt, "merino-light"), "the default light theme");
+    rt.update(|s, _| {
+        s.pick_appearance(settings::Appearance::Dark);
+        s.pick_theme(true, "ink-meridian");
+    });
+    settle(&mut rt);
+    assert!(drawn_in(&rt, "ink-meridian"), "dark while the system is light");
+    rt.update(|s, _| s.pick_appearance(settings::Appearance::System));
+    settle(&mut rt);
+    assert!(drawn_in(&rt, "merino-light"));
+    rt.set_system_dark(true);
+    settle(&mut rt);
+    assert!(drawn_in(&rt, "ink-meridian"), "the system turned dark");
+}
+
+#[test]
+fn command_comma_opens_the_settings_and_keys_stay_with_them() {
+    let mut rt = runtime(desk_of(5), (1400.0, 900.0));
+    let selected = rt.state.browser.selected();
+    command(&mut rt, ',');
+    settle(&mut rt);
+    assert!(rt.presented("settings").is_some(), "the panel is open");
+    typed(&mut rt, "qj");
+    assert_eq!(rt.shell_request, None, "q does not quit behind the panel");
+    assert_eq!(rt.state.browser.selected(), selected, "j does not move the list");
+    press(&mut rt, RuneKey::Right);
+    assert_eq!(rt.state.settings.appearance, settings::Appearance::Light, "→ from As in system picks Light");
+    press(&mut rt, RuneKey::Tab);
+    press(&mut rt, RuneKey::Tab);
+    press(&mut rt, RuneKey::Down);
+    let dark: Vec<&str> = themes::of(true).map(|t| t.id.as_str()).collect();
+    let after = dark[dark.iter().position(|&id| id == themes::DEFAULT_DARK).unwrap() + 1];
+    assert_eq!(rt.state.settings.dark_theme, after, "↓ in Dark theme picks the next dark theme");
+    press(&mut rt, RuneKey::Escape);
+    assert!(rt.state.panel.is_none() && rt.presented("settings").is_none(), "esc closes it");
+    assert_eq!(rt.state.browser.selected(), selected);
+    assert_eq!(rt.shell_request, None);
+    command(&mut rt, ',');
+    command(&mut rt, ',');
+    assert!(rt.state.panel.is_none(), "⌘, again closes it");
+    command(&mut rt, ',');
+    command(&mut rt, 'q');
+    assert_eq!(rt.shell_request, Some(Shell::Quit), "⌘Q still quits");
+}
+
+#[test]
+fn a_click_on_a_theme_picks_it_and_done_closes_the_panel() {
+    let mut rt = runtime(desk_of(3), (1400.0, 900.0));
+    rt.set_system_dark(false);
+    command(&mut rt, ',');
+    settle(&mut rt);
+    click(&mut rt, "theme-alpine-milk");
+    settle(&mut rt);
+    assert_eq!(rt.state.settings.light_theme, "alpine-milk");
+    assert!(drawn_in(&rt, "alpine-milk"));
+    click(&mut rt, "settings-done");
+    assert!(rt.state.panel.is_none());
+}
+
+#[test]
+fn the_choices_are_kept_for_the_next_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("prefs.json");
+    let mut desk = desk_of(1).with_prefs(rune::prefs::Prefs::at(&path));
+    assert!(!path.exists(), "nothing is written before a choice changes");
+    desk.pick_appearance(settings::Appearance::Light);
+    desk.pick_theme(false, "alpine-milk");
+    let file = std::fs::read_to_string(&path).unwrap();
+    assert!(file.contains("alpine-milk") && file.contains("light"), "{file}");
+    let again = desk_of(1).with_prefs(rune::prefs::Prefs::at(&path));
+    assert_eq!(again.settings.appearance, settings::Appearance::Light);
+    assert_eq!(again.settings.theme(true).id, "alpine-milk");
+}
+
+#[test]
+fn a_settings_file_that_cannot_be_written_says_so_in_the_bar() {
+    let dir = tempfile::tempdir().unwrap();
+    // A file where the settings' folder should be: the folder cannot be made.
+    let blocker = dir.path().join("blocked");
+    std::fs::write(&blocker, "").unwrap();
+    let mut desk = desk_of(1).with_prefs(rune::prefs::Prefs::at(blocker.join("prefs.json")));
+    desk.pick_theme(true, "ink-meridian");
+    assert_eq!(desk.settings.dark_theme, "ink-meridian", "the choice still applies");
+    assert!(desk.status.0.starts_with("can't save settings"), "{}", desk.status.0);
+}
+
+#[test]
+fn a_frame_without_a_window_ignores_the_saved_settings_and_takes_colors() {
+    // A headless desk keeps its settings in memory: the defaults, whatever a file holds.
+    let memory = desk_of(1);
+    assert!(!memory.prefs.is_persistent());
+    assert_eq!(memory.settings, settings::Settings::default());
+    let t = colors(&Cli::parse_from(["tokprof-desk", "--colors", "ink-meridian"])).unwrap().unwrap();
+    assert_eq!(settings::Settings::of_theme(t).theme(false).id, "ink-meridian");
+    assert!(colors(&Cli::parse_from(["tokprof-desk"])).unwrap().is_none());
+    let (catalog, dir) = empty_catalog("colors");
+    let err = desk(&Cli::parse_from(["tokprof-desk", "--colors", "nosuch"]), catalog, true, Arc::new(|| {})).err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(err.starts_with("--colors takes one of: abyssal-trench, alpine-milk"), "{err}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_settings_scene_opens_the_panel_on_the_defaults() {
+    let mut desk = desk_of(3);
+    let (_, open) = SCENES.iter().find(|(name, _)| *name == "settings").unwrap();
+    open(&mut desk);
+    let mut rt = runtime(desk, (1400.0, 900.0));
+    settle(&mut rt);
+    for key in ["settings", "appearance-system", "theme-merino-light", "theme-merino-dark"] {
+        assert!(rt.presented(key).is_some(), "{key}");
+    }
+    // The chosen ones are filled with the accent of the theme the window is in.
+    let accent = rt.state.theme.get().color("accent");
+    let marked = |key: &str| {
+        let fill = rt.elements().into_iter().find(|e| e.key.as_deref() == Some(key)).map(|e| e.fill).unwrap();
+        (fill.r - accent.r).abs() < 0.01 && (fill.g - accent.g).abs() < 0.01 && (fill.b - accent.b).abs() < 0.01
+    };
+    assert!(marked("appearance-system") && marked("theme-merino-light") && marked("theme-merino-dark"));
+    assert!(!marked("appearance-dark") && !marked("theme-alpine-milk"));
+}
+
+#[test]
+fn a_click_outside_the_card_closes_the_panel_and_reaches_nothing_behind_it() {
+    let mut rt = runtime(desk_of(5), (1400.0, 900.0));
+    let selected = rt.state.browser.selected();
+    command(&mut rt, ',');
+    settle(&mut rt);
+    // The list's fourth row lies under the scrim, left of the card.
+    let (x, y) = rt.find("id3").expect("the row is on the screen");
+    rt.pointer_down(x, y);
+    rt.pointer_up(x, y);
+    settle(&mut rt);
+    assert!(rt.state.panel.is_none(), "the panel closed");
+    assert_eq!(rt.state.browser.selected(), selected, "the row under the scrim was not selected");
 }
