@@ -181,34 +181,24 @@ fn boxed(key: &str, title: &str, aside: Option<String>, body: El, p: &Pal) -> El
     col().key(key.to_string()).w_full().min_w(0.0).px(13.0).pt(11.0).pb(12.0).gap(9.0).radius(9.0).fill(p.panel).border(1.0, p.line).child(head).child(body)
 }
 
-/// A bar `share` of the way along its track.
-fn meter(share: f64, color: Color, p: &Pal, h: f32) -> El {
-    let share = share.clamp(0.0, 1.0) as f32;
-    row()
-        .grow(1.0)
-        .min_w(0.0)
-        .h(h)
-        .radius(h / 2.0)
-        .fill(p.hover)
-        .child(el().h(h).radius(h / 2.0).fill(color).grow(share.max(1e-4)).min_w(if share > 0.0 { 2.0 } else { 0.0 }))
-        .child(el().h(h).grow((1.0 - share).max(1e-4)).min_w(0.0))
-}
-
 /// Rows of a bar chart: a label, a bar as long as its share of the largest, the share, the value
 /// and a note.
-fn bar_rows(rows: &[(String, f64, String, String)], color: Color, p: &Pal) -> El {
+pub(crate) fn bar_rows(rows: &[(String, f64, String, String)], color: Color, p: &Pal) -> El {
     let max = rows.iter().map(|r| r.1).fold(0.0, f64::max).max(1e-9);
-    col().w_full().gap(4.0).children(rows.iter().map(|(label, share, value, note)| {
+    // Every row keeps the note's room when one has a note, so that the bars share one track and
+    // their lengths compare.
+    let notes = rows.iter().any(|r| !r.3.is_empty());
+    col().w_full().gap(4.0).children(rows.iter().enumerate().map(|(i, (label, share, value, note))| {
         let mut line = row()
             .w_full()
             .h(20.0)
             .gap(10.0)
             .center_y()
             .child(text(label.clone()).font(pal::BODY).color(p.ink).single_line().truncate().w(190.0))
-            .child(meter(share / max, color, p, 6.0))
+            .child(crate::overlay::meter(share / max, color, p, 6.0).key(format!("bar-{i}")))
             .child(row().w(50.0).justify_end().child(text(format!("{:.1}%", 100.0 * share)).font(pal::BODY_NUM).color(p.ink2).single_line()))
             .child(row().w(64.0).justify_end().child(text(value.clone()).font(pal::STRONG_NUM).color(p.ink).single_line()));
-        if !note.is_empty() {
+        if notes {
             line = line.child(text(note.clone()).font(pal::SMALL).color(p.ink3).single_line().truncate().w(150.0));
         }
         numbered(line, p)
@@ -507,7 +497,7 @@ fn next_box(s: &Desk, x: &XRay, p: &Pal) -> El {
     if let Some(w) = c.window_tokens.filter(|&w| w > 0) {
         let share = c.size_tokens as f64 / w as f64;
         body = body.child(
-            row().w_full().gap(8.0).center_y().child(meter(share, p.neutral, p, 6.0)).child(
+            row().w_full().gap(8.0).center_y().child(crate::overlay::meter(share, p.neutral, p, 6.0)).child(
                 text(format!("{}{} of {}", if c.approx { "~" } else { "" }, tokens(c.size_tokens as f64), tokens(w as f64)))
                     .font(pal::SMALL_NUM)
                     .color(p.ink2)

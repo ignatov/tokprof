@@ -1503,3 +1503,23 @@ fn the_palette_switches_to_reports_and_picks_a_period() {
     press(&mut rt, RuneKey::Text("?".into()));
     assert!(rt.state.help);
 }
+
+#[test]
+fn bars_of_one_chart_keep_the_order_of_their_shares_when_only_some_rows_have_a_note() {
+    // As Waits draws them: the model with a note of its requests, background commands without.
+    fn chart(_: &Desk, _: &mut rune::Cx<Desk>) -> rune::El {
+        let p = crate::pal::pal(crate::themes::default(false));
+        let rows = [
+            ("model".to_string(), 0.27, "1.2h".to_string(), "274 requests".to_string()),
+            ("background commands".to_string(), 0.242, "1.1h".to_string(), String::new()),
+            ("subagents".to_string(), 0.1, "20m".to_string(), "1.5h after the turn ended".to_string()),
+        ];
+        rune::col().w(900.0).child(inspector::bar_rows(&rows, p.message, &p))
+    }
+    let mut rt = Runtime::new(desk_of(0), chart, (1000.0, 300.0), Env::new(false, 1.0));
+    settle(&mut rt);
+    let width = |i: usize| inside(&rt, &format!("bar-{i}"), "fill").unwrap_or_else(|| panic!("no bar {i}")).rect[2];
+    let track = |i: usize| rt.elements().into_iter().find(|e| e.key.as_deref() == Some(&format!("bar-{i}"))).unwrap().rect;
+    assert!(width(0) > width(1) && width(1) > width(2), "27.0% > 24.2% > 10%: {} {} {}", width(0), width(1), width(2));
+    assert_eq!((track(0)[0], track(0)[2]), (track(1)[0], track(1)[2]), "one track for every row, with a note or without");
+}

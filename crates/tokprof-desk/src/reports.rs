@@ -391,7 +391,7 @@ fn computing(s: &Desk, p: &Pal) -> El {
         .radius(16.0)
         .fill(p.bar)
         .child(text(line).key("rep-progress").font(pal::BODY_NUM).color(p.ink2).single_line())
-        .child(row().w(320.0).child(meter(share, p.accent, p, 6.0)))
+        .child(row().w(320.0).child(crate::overlay::meter(share, p.accent, p, 6.0)))
 }
 
 fn note(t: String, p: &Pal) -> El {
@@ -412,19 +412,6 @@ fn card(part: Option<Part>, title: &str, aside: Option<String>, content: El, r: 
         top = top.child(spacer().grow(1.0)).child(text(a).font(pal::SMALL).color(p.ink3).single_line().truncate().shrink().min_w(0.0));
     }
     col().grow(1.0).min_w(0.0).gap(10.0).child(top).child(group)
-}
-
-/// A bar `share` of the way along its track.
-fn meter(share: f64, color: Color, p: &Pal, h: f32) -> El {
-    let share = share.clamp(0.0, 1.0) as f32;
-    row()
-        .grow(1.0)
-        .min_w(0.0)
-        .h(h)
-        .radius(h / 2.0)
-        .fill(p.hover)
-        .child(el().h(h).radius(h / 2.0).fill(color).grow(share.max(1e-4)).min_w(if share > 0.0 { 2.0 } else { 0.0 }))
-        .child(el().h(h).grow((1.0 - share).max(1e-4)).min_w(0.0))
 }
 
 fn component_color(c: Component, p: &Pal) -> Color {
@@ -638,7 +625,7 @@ fn bars(s: &Desk, part: Part, rows: Vec<(String, Spend)>, priced: bool, color: C
                 .gap(10.0)
                 .center_y()
                 .child(text(label.clone()).key("label").font(pal::BODY).color(if drill { p.ink } else { p.ink2 }).single_line().truncate().w(200.0))
-                .child(meter(key(&x) / first, if drill { color } else { p.neutral }, p, 6.0))
+                .child(crate::overlay::meter(key(&x) / first, if drill { color } else { p.neutral }, p, 6.0))
                 .child(
                     row()
                         .w(50.0)

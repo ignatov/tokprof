@@ -8,6 +8,18 @@ use crate::pal::{self, Pal};
 
 /// A pill, as Rex rounds its buttons and keys.
 pub const PILL: f32 = 999.0;
+/// A bar `share` of the way along its track, its filled part keyed `fill`.
+pub fn meter(share: f64, color: Color, p: &Pal, h: f32) -> El {
+    let share = share.clamp(0.0, 1.0) as f32;
+    row()
+        .grow(1.0)
+        .min_w(0.0)
+        .h(h)
+        .radius(h / 2.0)
+        .fill(p.hover)
+        .child(el().key("fill").h(h).radius(h / 2.0).fill(color).grow(share.max(1e-4)).min_w(if share > 0.0 { 2.0 } else { 0.0 }))
+        .child(el().h(h).grow((1.0 - share).max(1e-4)).min_w(0.0))
+}
 
 /// The window dimmed and blurred under a card, covering it: a press on it runs `close`, so
 /// nothing behind it is pressed. The card is laid out by `place`.
