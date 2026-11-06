@@ -6,7 +6,7 @@ use std::time::Instant;
 use rune::prefs::{Prefs, PrefsError};
 use rune::{Color, El, Key as RuneKey, KeyEvent, ScrollSpec, Tx, col, el, row, spacer, text};
 
-use crate::overlay::{self, PILL};
+use crate::overlay::{self, PILL, R_CARD, R_GROUP, R_TILE};
 use crate::pal::{self, Pal};
 use crate::themes::{self, Theme};
 use crate::{Desk, plain};
@@ -304,7 +304,7 @@ pub fn panel(s: &Desk, panel: Panel, p: &Pal, height: f32) -> El {
         .child(overlay::hint(&["⏎"], "done", p))
         .child(spacer().grow(1.0))
         .child(done);
-    let card = overlay::card("settings", "Settings", CARD_W, 22.0, p)
+    let card = overlay::card("settings", "Settings", CARD_W, R_CARD, p)
         .h(card_h)
         .child(head)
         .child(el().w_full().h(1.0).fill(p.row_line))
@@ -320,7 +320,7 @@ pub fn panel(s: &Desk, panel: Panel, p: &Pal, height: f32) -> El {
 /// keyboard.
 fn section(part: Part, title: &'static str, content: El, keyboard: Part, p: &Pal) -> El {
     let on = part == keyboard;
-    let group = col().key(part.key()).w_full().padding(GROUP_PAD).radius(16.0).fill(p.bar).child(content);
+    let group = col().key(part.key()).w_full().padding(GROUP_PAD).radius(R_GROUP).fill(p.bar).child(content);
     let group = if on { group.outline(2.0, 2.0, p.accent) } else { group };
     col().w_full().gap(10.0).child(text(title).font(pal::HEAD).color(if on { p.accent } else { p.ink2 }).single_line()).child(group)
 }
@@ -340,8 +340,9 @@ fn appearance_tiles(s: &Desk, p: &Pal) -> El {
         };
         // The picture is clipped to its corners; the ring goes on the box around it, which the
         // clip leaves alone.
-        let picture = el().w_full().h_full().radius(12.0).clip_rounded(12.0).border(1.0, p.row_line).child(picture);
-        let frame = el().w_full().h(74.0).radius(12.0).child(picture);
+        let picture =
+            el().w_full().h_full().radius(R_TILE).clip_rounded(R_TILE).border(1.0, if s.theme.get().dark() { p.line } else { p.row_line }).child(picture);
+        let frame = el().w_full().h(74.0).radius(R_TILE).child(picture);
         let frame = if chosen { frame.outline(2.0, 2.0, p.accent) } else { frame };
         col()
             .key(format!("appearance-{}", a.name()))
@@ -411,7 +412,7 @@ fn theme_card(t: &'static Theme, chosen: bool, dark: bool, w: f32, p: &Pal) -> E
         .w_full()
         .h(78.0)
         .padding(10.0)
-        .radius(12.0)
+        .radius(R_TILE)
         .fill(canvas)
         .border(1.0, if dark { t.color("stroke") } else { t.color("strokeSubtle") })
         .child(prompt)

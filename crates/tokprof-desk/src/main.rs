@@ -172,10 +172,10 @@ pub struct Desk {
     /// How far the list and the inspector are scrolled, in points, as their viewports last said.
     pub list_offset: Rc<Cell<f32>>,
     pub pane_offset: Rc<Cell<f32>>,
-    /// The heights of the list, the inspector and the window, from their layout.
+    /// The heights of the list and the inspector, and the window's size, from their layout.
     pub list_height: f32,
     pub pane_height: f32,
-    pub window_h: f32,
+    pub window: (f32, f32),
     /// When a listed cache goes cold next, as the last poll found it.
     pub next_cold: Option<i64>,
     /// The browser's count of lists put in place again, as the last poll saw it.
@@ -259,7 +259,7 @@ impl Desk {
             pane_offset: Rc::default(),
             list_height: 0.0,
             pane_height: 0.0,
-            window_h: 0.0,
+            window: (0.0, 0.0),
             next_cold: None,
             relisted,
             pointer: None,
@@ -685,23 +685,37 @@ fn browser_key(s: &mut Desk, key: Key, tx: &mut Tx) -> bool {
     true
 }
 
-/// `--size`, checked before Rune reads it, so that it fails as `tokprof ui --dump` does.
-fn check_size(args: &[String]) -> Result<()> {
+/// The values of `--size` among `args`.
+fn sizes(args: &[String]) -> Vec<&str> {
+    let mut out = Vec::new();
     let mut args = args.iter();
     while let Some(a) = args.next() {
-        let value = match a.strip_prefix("--size=") {
-            Some(v) => Some(v),
-            None if a == "--size" => Some(args.next().map_or("", String::as_str)),
-            None => None,
-        };
-        if let Some(v) = value {
-            let ok = v.split_once('x').is_some_and(|(w, h)| [w, h].iter().all(|n| n.parse::<f32>().is_ok_and(|n| n > 0.0)));
-            if !ok {
-                bail!("--size takes WIDTHxHEIGHT");
-            }
+        match a.strip_prefix("--size=") {
+            Some(v) => out.push(v),
+            None if a == "--size" => out.push(args.next().map_or("", String::as_str)),
+            None => {}
         }
     }
+    out
+}
+
+fn parse_size(v: &str) -> Option<(f32, f32)> {
+    let (w, h) = v.split_once('x')?;
+    let (w, h) = (w.parse::<f32>().ok()?, h.parse::<f32>().ok()?);
+    (w > 0.0 && h > 0.0).then_some((w, h))
+}
+
+/// `--size`, checked before Rune reads it, so that it fails as `tokprof ui --dump` does.
+fn check_size(args: &[String]) -> Result<()> {
+    if sizes(args).into_iter().any(|v| parse_size(v).is_none()) {
+        bail!("--size takes WIDTHxHEIGHT");
+    }
     Ok(())
+}
+
+/// The size `--size` asks for, the last one given.
+pub fn size_of(args: &[String]) -> Option<(f32, f32)> {
+    sizes(args).last().and_then(|v| parse_size(v))
 }
 
 /// The sessions the filters select, as `tokprof ui` selects them.
@@ -793,7 +807,9 @@ fn main() -> Result<()> {
         check_before_start(&cli, &tokprof_sources::catalog())?;
         return start_apart(&start, &exe, &args);
     }
-    let desk = desk(&cli, tokprof_sources::catalog(), rune::is_headless(), Arc::new(wake))?;
+    let mut desk = desk(&cli, tokprof_sources::catalog(), rune::is_headless(), Arc::new(wake))?;
+    // The first frame is laid out for the window's size before the root's layout says it.
+    desk.window = size_of(&args).unwrap_or(view::WINDOW);
     let spec = AppSpec {
         min_size: Some((960.0, 640.0)),
         // The system's font, as a Mac app's text is; Inter where there is none.
@@ -802,7 +818,7 @@ fn main() -> Result<()> {
         setup: Some(setup),
         poll: Some(poll),
         on_key: Some(on_key),
-        ..AppSpec::new("tokprof", (1400.0, 900.0), placeholder, view::view)
+        ..AppSpec::new("tokprof", view::WINDOW, placeholder, view::view)
     };
     let settings = rune::MenuItem::new("Settings…", |s: &mut Desk, _| s.toggle_settings()).id("settings");
     let settings = match "cmd+,".parse::<rune::Shortcut>() {

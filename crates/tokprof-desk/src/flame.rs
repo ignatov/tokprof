@@ -11,8 +11,8 @@ use tokprof_core::profile::{Measure, Stacks, Tint};
 use tokprof_core::xray::XRay;
 
 use crate::Desk;
+use crate::overlay::{self, PILL, R_GROUP, R_MARK, R_ROW};
 use crate::pal::{self, Pal};
-use crate::view::dot;
 
 /// The key of the graph, whose width the bars are laid out in.
 pub const GRAPH: &str = "flame-graph";
@@ -439,7 +439,7 @@ pub fn tab(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal) -> Vec<El> {
             }
         })
         .children(bars.iter().map(|b| bar(&tree, b, ring && b.node == cursor, p)));
-    let group = col().key("flame-group").w_full().padding(12.0).radius(12.0).fill(p.bar).child(graph);
+    let group = col().key("flame-group").w_full().padding(12.0).radius(R_GROUP).fill(p.bar).child(graph);
     let shown = s.flame_hover(&tree).unwrap_or(cursor);
     let info = row()
         .key("flame-info")
@@ -473,7 +473,7 @@ fn crumbs(tree: &Tree, root: usize, p: &Pal) -> El {
             .key(format!("crumb-{k}"))
             .h(24.0)
             .px(6.0)
-            .radius(6.0)
+            .radius(PILL)
             .center_y()
             .min_w(0.0)
             .shrink()
@@ -499,7 +499,7 @@ fn bar(tree: &Tree, b: &Bar, cursor: bool, p: &Pal) -> El {
         .absolute(b.x, b.y)
         .w(b.w)
         .h(ROW)
-        .radius(6.0f32.min(b.w / 2.0))
+        .radius(R_ROW.min(b.w / 2.0))
         .fill(fill)
         .hover(fill.mix(Color::WHITE, 0.3))
         .center_y()
@@ -542,12 +542,21 @@ fn legend(p: &Pal) -> El {
         ("uncached", Tint::Uncached),
         ("output", Tint::Output),
     ];
-    let mut out = row().key("flame-legend").w_full().gap(10.0).center_y();
+    let mut out = row().key("flame-legend").w_full().flex_wrap().gaps(6.0, 10.0).center_y();
     for (name, tint) in kinds {
-        out = out.child(row().gap(4.0).center_y().child(dot(color(tint, p).0, 7.0)).child(text(name).font(pal::SMALL).color(p.ink3).single_line()));
+        let swatch = el().w(10.0).h(10.0).radius(R_MARK).fill(fill(tint, p));
+        out = out.child(row().gap(5.0).center_y().child(swatch).child(text(name).font(pal::SMALL).color(p.ink3).single_line()));
     }
-    out.child(spacer().grow(1.0))
-        .child(text("click zooms · ← → ↑ ↓ move · ⏎ zoom · esc out · ⇧← ⇧→ tabs").font(pal::SMALL).color(p.ink3).single_line().truncate().shrink().min_w(0.0))
+    let keys = row()
+        .key("flame-keys")
+        .gap(12.0)
+        .center_y()
+        .child(text("click zooms").font(pal::SMALL).color(p.ink3).single_line())
+        .child(overlay::hint(&["←", "→", "↑", "↓"], "move", p))
+        .child(overlay::hint(&["⏎"], "zoom", p))
+        .child(overlay::hint(&["esc"], "out", p))
+        .child(overlay::hint(&["⇧←", "⇧→"], "tabs", p));
+    out.child(spacer().grow(1.0)).child(keys)
 }
 
 #[cfg(test)]

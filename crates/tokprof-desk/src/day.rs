@@ -9,6 +9,7 @@ use tokprof_browse::render_rhythm::DayParts;
 use tokprof_core::fmt::local_time;
 use tokprof_core::rhythm::{Mark, StripLanes};
 
+use crate::overlay::{self, R_MARK, R_ROW};
 use crate::pal::{self, Pal};
 use crate::view::{self, dot};
 use crate::{Desk, ansi};
@@ -26,8 +27,10 @@ const RIGHT: f32 = 16.0;
 /// The key of the hours row's scale, whose width every lane's track has.
 pub const SCALE: &str = "scale";
 const HOUR_MS: i64 = 3_600_000;
-/// The height under the lanes: the legend with the pointer's line, and the day's lines.
-const UNDER: f32 = 58.0;
+/// The height under the lanes: the legend with the pointer's line (24), the day's three lines
+/// (16 each, 2 apart), the room under them and the line under the lanes.
+const UNDER: f32 = 24.0 + 3.0 * DAY_LINE + 2.0 * 2.0 + 8.0 + 1.0;
+const DAY_LINE: f32 = 16.0;
 
 /// Where the pointer rests over the lanes: the lane's session, `None` for the `You` lane, and how
 /// far into the track, in points.
@@ -198,25 +201,20 @@ pub fn lanes(s: &Desk, cx: &Cx<Desk>, p: &Pal, max_h: f32) -> El {
         Some(parts) => lanes_of(s, parts, cx, p, max_h),
         None => {
             let note = format!("computing the day of {}…", local_time(s.browser.day_noon(), "%Y-%m-%d"));
-            frame(s, row().h(3.0 * LANE).px(16.0).center_y().child(text(note).key("lanes-note").font(pal::BODY).color(p.ink2)), p)
+            frame(row().h(3.0 * LANE).px(16.0).center_y().child(text(note).key("lanes-note").font(pal::BODY).color(p.ink2)), p)
         }
     }
 }
 
-fn frame(s: &Desk, body: El, p: &Pal) -> El {
-    col()
-        .key("lanes")
-        .w_full()
-        .fill(p.track)
-        .child(view::focus_line("lanes-focus", s.pane == crate::Focus::Lanes, p))
-        .child(body)
-        .child(el().w_full().h(1.0).fill(p.line))
+fn frame(body: El, p: &Pal) -> El {
+    col().key("lanes").w_full().fill(p.track).child(body).child(el().w_full().h(1.0).fill(p.line))
 }
 
 /// The lanes of a day.
 pub fn lanes_of(s: &Desk, parts: &DayParts, cx: &Cx<Desk>, p: &Pal, max_h: f32) -> El {
+    let keys = s.pane == crate::Focus::Lanes && !s.browser.zoomed();
     let b = &s.browser;
-    let frame = |body: El| frame(s, body, p);
+    let frame = |body: El| frame(body, p);
     let Some((_, lanes)) = &parts.strip else {
         return frame(
             row().h(3.0 * LANE).px(16.0).center_y().child(text("nobody typed in a session this day").key("lanes-note").font(pal::BODY).color(p.ink2)),
@@ -229,7 +227,7 @@ pub fn lanes_of(s: &Desk, parts: &DayParts, cx: &Cx<Desk>, p: &Pal, max_h: f32) 
     let tails: Vec<(i64, i64)> = lives.iter().flatten().copied().collect();
     let range = range(lanes, &tails, now_in, s.fit);
     let grid = Grid { range, width, now: now_in.filter(|&n| range.holds(n)) };
-    let mut body = col().key("lanes-body").w_full().child(ruler(lanes, &grid, p)).child(you_lane(lanes, &grid, p));
+    let mut body = col().key("lanes-body").w_full().child(ruler(lanes, &grid, keys, p)).child(you_lane(lanes, &grid, p));
     let selected = b.selected().map(|r| b.session(r).to_string());
     let mut shown = 0;
     for (lane, life) in lanes.lanes.iter().zip(&lives) {
@@ -237,7 +235,7 @@ pub fn lanes_of(s: &Desk, parts: &DayParts, cx: &Cx<Desk>, p: &Pal, max_h: f32) 
             continue;
         }
         shown += 1;
-        body = body.child(session_lane(s, lanes, lane, *life, selected.as_deref(), &grid, p));
+        body = body.child(session_lane(s, lanes, lane, *life, selected.as_deref(), keys, &grid, p));
     }
     if shown == 0 && !lanes.lanes.is_empty() {
         let note = format!("no session of this day matches “{}”", b.filter());
@@ -330,7 +328,7 @@ impl Grid {
     }
 }
 
-fn ruler(lanes: &StripLanes, g: &Grid, p: &Pal) -> El {
+fn ruler(lanes: &StripLanes, g: &Grid, keys: bool, p: &Pal) -> El {
     let per_hour = g.width / ((g.range.end - g.range.begin) as f32 / HOUR_MS as f32);
     let every = if per_hour >= 44.0 {
         1
@@ -368,7 +366,15 @@ fn ruler(lanes: &StripLanes, g: &Grid, p: &Pal) -> El {
         .h(RULER)
         .fill(p.track)
         .sticky_top(0.0)
-        .child(row().w(LABEL_WIDTH).h(RULER).px(14.0).center_y().child(text("Lanes, most actions first").font(pal::SMALL).color(p.ink3).single_line()))
+        .child(
+            row().w(LABEL_WIDTH).h(RULER).px(14.0).center_y().child(
+                text("Lanes, most actions first")
+                    .key("lanes-title")
+                    .font(if keys { pal::SMALL_STRONG } else { pal::SMALL })
+                    .color(if keys { p.accent } else { p.ink3 })
+                    .single_line(),
+            ),
+        )
         .child(scale)
 }
 
@@ -377,8 +383,11 @@ fn label(head: String, rest: String, agent: Option<Color>, p: &Pal) -> El {
     if let Some(c) = agent {
         l = l.child(dot(c, 7.0));
     }
-    l.child(text(head).font(pal::STRONG).color(p.ink).single_line())
-        .child(text(rest).font(pal::BODY).color(p.ink2).single_line().truncate().shrink().min_w(0.0))
+    // A long project gives up its end before the title is cut to nothing.
+    let most = LABEL_WIDTH * 0.6;
+    let least = pal::text_w(&head, pal::STRONG).min(most);
+    l.child(text(head).key("lane-head").font(pal::STRONG).color(p.ink).single_line().truncate().min_w(least).max_w(most))
+        .children((!rest.is_empty()).then(|| text(rest).key("lane-rest").font(pal::BODY).color(p.ink2).single_line().truncate().shrink().min_w(0.0)))
 }
 
 fn hover(track: El, lane: Option<String>) -> El {
@@ -405,6 +414,7 @@ fn session_lane(
     lane: &tokprof_core::rhythm::StripLane,
     life: Option<(i64, i64)>,
     selected: Option<&str>,
+    keys: bool,
     g: &Grid,
     p: &Pal,
 ) -> El {
@@ -418,7 +428,8 @@ fn session_lane(
             spans(m)
                 .into_iter()
                 .enumerate()
-                .filter_map(|(i, (a, b))| g.bar(mark_key(m), a, b, BAR, mark_color(m, p)).map(|e| e.key(format!("{}-{i}", mark_key(m))))),
+                .filter_map(|(i, (a, b))| g.bar(mark_key(m), a, b, BAR, mark_color(m, p)).map(|e| e.key(format!("{}-{i}", mark_key(m)))))
+                .map(|e| if m == Mark::Wait { e.border(1.0, p.wait_edge) } else { e }),
         );
     }
     for m in [Mark::Question, Mark::Message, Mark::Interrupt] {
@@ -438,27 +449,30 @@ fn session_lane(
     };
     let is_selected = selected.is_some_and(|id| b.row_of(&lane.id).is_some_and(|r| b.session(r) == id));
     let id = lane.id.clone();
-    row()
-        .key(format!("lane-{}", lane.id))
-        .w_full()
-        .h(LANE)
-        .fill(if is_selected { p.sel } else { Color::TRANSPARENT })
-        .hover(if is_selected { p.sel } else { p.hover })
-        .role("button")
-        .label(lane.label.clone())
-        .on_press_tx(move |s: &mut Desk, tx| {
+    let mut lane_row = row().key(format!("lane-{}", lane.id)).w_full().h(LANE).role("button").label(lane.label.clone()).checked(is_selected).on_press_tx(
+        move |s: &mut Desk, tx| {
             s.pane = crate::Focus::Lanes;
             s.open_lane(&id, tx);
-        })
-        .child(label(head, rest, agent, p))
-        .child(hover(g.track(format!("track-{}", lane.id), lanes, marks, p), Some(lane.id.clone())))
+        },
+    );
+    if is_selected {
+        // The selected lane: a light inset band under its marks, so the waits still show through,
+        // with an accent bar at its label, ringed while the lanes have the keyboard.
+        let band = el().key("lane-band").pin(Some(3.0), Some(1.0), Some(3.0), Some(1.0)).radius(R_ROW).fill(p.sel.alpha(p.sel.a * 0.6));
+        lane_row = lane_row
+            .child(overlay::ring_at(band, keys, 0.0, p))
+            .child(el().key("lane-mark").absolute(5.0, 6.0).w(3.0).h(LANE - 12.0).radius(1.5).fill(p.accent));
+    } else {
+        lane_row = lane_row.hover(p.hover);
+    }
+    lane_row.child(label(head, rest, agent, p)).child(hover(g.track(format!("track-{}", lane.id), lanes, marks, p), Some(lane.id.clone())))
 }
 
 fn legend(pointer: String, lead: f32, p: &Pal) -> El {
     let mut line = row().key("legend").w_full().h(24.0).pl(lead).pr(RIGHT).gap(14.0).center_y();
     for m in [Mark::Work, Mark::Wait, Mark::Message, Mark::Question, Mark::Interrupt, Mark::Present] {
         let swatch = match m {
-            Mark::Work | Mark::Wait | Mark::Present => el().w(10.0).h(10.0).radius(2.0).fill(mark_color(m, p)),
+            Mark::Work | Mark::Wait | Mark::Present => el().w(10.0).h(10.0).radius(R_MARK).fill(mark_color(m, p)),
             _ => el().w(2.0).h(12.0).radius(1.0).fill(mark_color(m, p)),
         };
         line = line.child(row().gap(6.0).center_y().child(swatch).child(text(m.name()).font(pal::SMALL).color(p.ink2).single_line()));
@@ -468,26 +482,68 @@ fn legend(pointer: String, lead: f32, p: &Pal) -> El {
     line.child(spacer().grow(1.0)).child(text(pointer).key("pointer-text").font(pal::SMALL_NUM).color(p.ink2).single_line().truncate().shrink().min_w(0.0))
 }
 
-/// The day's `sittings`, `answers` and `cache` lines, each after its label; the cache line in
-/// the cold color when the day had cold returns.
+/// The day's `sittings`, `answers` and `cache` lines, one under the other, each after its label;
+/// in the cache line the count of cold returns and the dollars in the cold color when the day had
+/// cold returns.
 fn day_lines(below: &str, lead: f32, p: &Pal) -> El {
-    let mut line = row().key("day-lines").w_full().h(22.0).pl(lead).pr(RIGHT).gap(24.0).center_y();
+    let mut lines = col().key("day-lines").w_full().pl(lead).pr(RIGHT).gap(2.0);
     for label in ["sittings", "answers", "cache"] {
         if let Some(rest) = line_of(below, label) {
-            let color = if label == "cache" && rest.contains("cold return") && !rest.starts_with("no ") { p.cold } else { p.ink2 };
-            line = line.child(
-                row()
-                    .key(format!("day-{label}"))
-                    .gap(5.0)
-                    .center_y()
-                    .shrink()
-                    .min_w(0.0)
-                    .child(text(label).font(pal::SMALL_STRONG).color(p.ink).single_line())
-                    .child(text(rest).font(pal::SMALL).color(color).single_line().truncate().shrink().min_w(0.0).selectable(true)),
-            );
+            let cold = label == "cache" && rest.contains("cold return") && !rest.starts_with("no ");
+            let mut line = row()
+                .key(format!("day-{label}"))
+                .w_full()
+                .h(DAY_LINE)
+                .center_y()
+                .child(text(format!("{label} ")).font(pal::SMALL_STRONG).color(p.ink).single_line().w(64.0));
+            let runs = if cold { cold_runs(&rest) } else { vec![(rest, false)] };
+            let last = runs.len() - 1;
+            for (i, (run, hot)) in runs.into_iter().enumerate() {
+                let t =
+                    text(run).font(if hot { pal::SMALL_STRONG } else { pal::SMALL }).color(if hot { p.cold } else { p.ink2 }).single_line().selectable(true);
+                line = line.child(if i == last { t.truncate().shrink().min_w(0.0) } else { t });
+            }
+            lines = lines.child(line);
         }
     }
-    line
+    lines
+}
+
+/// A cache line cut into runs, each marked when it is the count of cold returns or an amount of
+/// dollars: `6 cold returns, $3.57 in …` gives `6 cold returns`, `, `, `$3.57`, ` in …`.
+pub fn cold_runs(line: &str) -> Vec<(String, bool)> {
+    let mut out: Vec<(String, bool)> = Vec::new();
+    let mut push = |t: &str, hot: bool| match out.last_mut() {
+        Some(last) if last.1 == hot => last.0.push_str(t),
+        _ => out.push((t.to_string(), hot)),
+    };
+    let words: Vec<&str> = line.split_inclusive(' ').collect();
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i];
+        let bare = w.trim_end_matches([' ', ',', ';', '.']);
+        let tail = &w[bare.len()..];
+        let count = bare.chars().all(|c| c.is_ascii_digit() || c == ',') && !bare.is_empty() && words.get(i + 1).is_some_and(|n| n.starts_with("cold"));
+        if count {
+            // The count with the words `cold return(s)` after it.
+            let next = words[i + 1];
+            let after = words.get(i + 2).copied().unwrap_or("");
+            let returns = after.trim_end_matches([' ', ',', ';', '.']);
+            push(&format!("{w}{next}{returns}"), true);
+            push(&after[returns.len()..], false);
+            i += 3;
+            continue;
+        }
+        if bare.starts_with('$') && bare.len() > 1 {
+            push(bare, true);
+            push(tail, false);
+        } else {
+            push(w, false);
+        }
+        i += 1;
+    }
+    out.retain(|r| !r.0.is_empty());
+    out
 }
 
 #[cfg(test)]
@@ -567,6 +623,15 @@ mod tests {
         assert_eq!(at(Some("ecad11b9"), 2 * HOUR_MS), format!("{} · ecad11 Инфографика прерываний", hhmm(2 * HOUR_MS)), "nothing there");
         assert_eq!(at(None, 6 * HOUR_MS), format!("{} · you · you were there", hhmm(6 * HOUR_MS)));
         assert_eq!(at(Some("gone"), work), "", "a lane of another day");
+    }
+
+    #[test]
+    fn a_cache_line_marks_its_count_and_dollars_only() {
+        let runs = cold_runs("6 cold returns, $3.57 in their first requests, $3.10 avoidable");
+        let hot: Vec<&str> = runs.iter().filter(|r| r.1).map(|r| r.0.as_str()).collect();
+        assert_eq!(hot, ["6 cold returns", "$3.57", "$3.10"]);
+        assert_eq!(runs.iter().map(|r| r.0.as_str()).collect::<String>(), "6 cold returns, $3.57 in their first requests, $3.10 avoidable", "nothing lost");
+        assert_eq!(cold_runs("1 cold return: $0.40").iter().filter(|r| r.1).count(), 2);
     }
 
     #[test]

@@ -17,6 +17,7 @@ use tokprof_core::tools::RowOrder;
 use tokprof_core::xray::XRay;
 
 use crate::Desk;
+use crate::overlay::{self, PILL, R_GROUP, R_MARK, R_ROW};
 use crate::pal::{self, Pal};
 use crate::view::{self, dot};
 
@@ -75,7 +76,14 @@ pub fn version(s: &Desk, cx: &Cx<Desk>, theme: &str) -> u64 {
     };
     view::hash_of((
         (b.xray().map(|x| x as *const XRay as usize), pending, s.tab, theme, selected),
-        (b.zoomed(), cx.layout_size(TRACK).map(|sz| sz[0].to_bits()), view::minute(), keyboard(s), s.cursor),
+        (
+            b.zoomed(),
+            cx.layout_size(TRACK).map(|sz| sz[0].to_bits()),
+            cx.layout_size(view::PANE).map(|sz| sz[0].to_bits()),
+            view::minute(),
+            keyboard(s),
+            s.cursor,
+        ),
         (s.tab == Tab::Flame).then(|| crate::flame::version(s, cx)),
     ))
 }
@@ -96,35 +104,21 @@ thread_local! {
 fn numbered(line: El, p: &Pal) -> El {
     let (n, cursor) = ROWS.get();
     ROWS.set((n + 1, cursor));
-    let line = line.key(format!("row-{n}")).radius(5.0).on_press(move |s: &mut Desk| {
+    let line = line.key(format!("row-{n}")).radius(R_ROW).on_press(move |s: &mut Desk| {
         s.pane = crate::Focus::Inspector;
         s.cursor = n;
     });
-    if cursor == Some(n) { line.fill(p.sel) } else { line.hover(p.hover) }
+    if cursor == Some(n) { overlay::ring_at(line.fill(p.sel), true, 1.0, p) } else { line.hover(p.hover) }
 }
 
 pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
-    let tabs = row().key("tabs").w_full().h(38.0).px(12.0).children(Tab::ALL.into_iter().map(|t| {
-        let on = s.tab == t;
-        col()
-            .key(format!("tab-{}", t.name()))
-            .h(38.0)
-            .px(7.0)
-            .justify_center()
-            .role("tab")
-            .checked(on)
-            .label(t.name())
-            .hover(p.hover)
-            .on_press_tx(move |s: &mut Desk, tx| {
-                s.show_tab(t, tx);
-                s.pane = crate::Focus::Inspector;
-            })
-            .child(spacer().grow(1.0))
-            .child(text(t.name()).font(pal::HEAD).color(if on { p.ink } else { p.ink2 }).single_line())
-            .child(spacer().grow(1.0))
-            .child(el().w_full().h(2.0).radius(1.0).fill(if on { p.accent } else { Color::TRANSPARENT }))
-    }));
     ROWS.set((0, keyboard(s).then_some(s.cursor)));
+    // The pane's padding and a card's.
+    let pane_w = cx.layout_size(view::PANE).map(|sz| sz[0]).unwrap_or_else(|| {
+        let list = if s.browser.zoomed() { 0.0 } else { view::LIST_WIDTH + 1.0 };
+        view::window_size(s, cx).0 - list
+    });
+    ROOM.set(pane_w - 36.0 - 28.0);
     let body = match s.browser.xray() {
         Some(x) => match s.tab {
             Tab::Summary => summary(s, x, cx, p),
@@ -141,11 +135,40 @@ pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
         None => match s.browser.report() {
             Pane::Text(t) => vec![note(t.text.clone(), p)],
             Pane::Computing(n) => vec![note(n, p)],
-            Pane::Empty(n) => vec![note(n, p)],
+            Pane::Empty(n) => {
+                let mut head = n.to_string();
+                if let Some(c) = head.get(..1) {
+                    head = c.to_uppercase() + &head[1..];
+                }
+                vec![overlay::empty("pane-empty", head, None, p)]
+            }
         },
     };
     // Summary's ways are rows of a box, not of a list the cursor moves through.
     s.tab_rows.set(if s.tab == Tab::Summary { 0 } else { ROWS.get().0 });
+    // The chosen tab is a pill; while the inspector has the keyboard and its tab has no rows for a
+    // cursor, the ring marks it instead.
+    let ring_tab = keyboard(s) && s.tab_rows.get() == 0 && s.tab != Tab::Flame;
+    let tabs = row().key("tabs").w_full().h(44.0).px(10.0).gap(1.0).center_y().children(Tab::ALL.into_iter().map(|t| {
+        let on = s.tab == t;
+        let tab = row()
+            .key(format!("tab-{}", t.name()))
+            .h(28.0)
+            .px(8.0)
+            .center_y()
+            .radius(PILL)
+            .fill(if on { p.sel } else { Color::TRANSPARENT })
+            .hover(if on { p.sel } else { p.hover })
+            .role("tab")
+            .checked(on)
+            .label(t.name())
+            .on_press_tx(move |s: &mut Desk, tx| {
+                s.show_tab(t, tx);
+                s.pane = crate::Focus::Inspector;
+            })
+            .child(text(t.name()).font(pal::HEAD).color(if on { if keyboard(s) { p.accent } else { p.ink } } else { p.ink2 }).single_line());
+        overlay::ring(tab, on && ring_tab, p)
+    }));
     let offset = s.pane_offset.clone();
     let pane = col()
         .key(view::PANE)
@@ -156,29 +179,21 @@ pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
         .on_scroll_offset(move |at| offset.set(at.offset[1]))
         .on_layout(|s: &mut Desk, r| s.pane_height = r[3])
         .child(col().key("pane-body").w_full().px(18.0).pt(14.0).pb(26.0).gap(14.0).children(body));
-    col()
-        .key("inspector")
-        .grow(1.0)
-        .h_full()
-        .min_w(0.0)
-        .min_h(0.0)
-        .child(view::focus_line("inspector-focus", keyboard(s) && !s.browser.zoomed(), p))
-        .child(tabs)
-        .child(el().w_full().h(1.0).fill(p.line))
-        .child(pane)
+    col().key("inspector").grow(1.0).h_full().min_w(0.0).min_h(0.0).child(tabs).child(el().w_full().h(1.0).fill(p.line)).child(pane)
 }
 
 fn note(s: impl Into<String>, p: &Pal) -> El {
     text(s.into()).w_full().wrap().font(pal::BODY).color(p.ink2).selectable(true)
 }
 
-/// A box with a header, and a note at the header's right.
+/// A card: its title and a note at its right over a soft group, as Reports draws its cards.
 fn boxed(key: &str, title: &str, aside: Option<String>, body: El, p: &Pal) -> El {
     let mut head = row().w_full().gap(8.0).center_y().child(text(title.to_string()).font(pal::HEAD).color(p.ink2).single_line());
     if let Some(a) = aside {
         head = head.child(spacer().grow(1.0)).child(text(a).key("aside").font(pal::SMALL).color(p.ink3).single_line().truncate().shrink().min_w(0.0));
     }
-    col().key(key.to_string()).w_full().min_w(0.0).px(13.0).pt(11.0).pb(12.0).gap(9.0).radius(9.0).fill(p.panel).border(1.0, p.line).child(head).child(body)
+    let group = col().w_full().min_w(0.0).grow(1.0).padding(14.0).gap(9.0).radius(R_GROUP).fill(p.bar).child(body);
+    col().key(key.to_string()).w_full().min_w(0.0).gap(10.0).child(head).child(group)
 }
 
 /// Rows of a bar chart: a label, a bar as long as its share of the largest, the share, the value
@@ -210,10 +225,48 @@ pub(crate) fn bar_rows(rows: &[(String, f64, String, String)], color: Color, p: 
 struct Column(&'static str, f32, bool);
 
 fn table(cols: &[Column], rows: Vec<Vec<(String, Option<Color>)>>, p: &Pal) -> El {
+    table_dropping(cols, rows, &[], p)
+}
+
+/// The columns that fit in `room` points: those named in `drop` left out, first to last, while
+/// the fixed columns, the gaps and the text column's least width are more than the room.
+pub fn fitting(cols: &[(f32, &str)], drop: &[&str], room: f32) -> Vec<bool> {
+    let mut keep = vec![true; cols.len()];
+    let need = |keep: &[bool]| {
+        let shown: Vec<_> = cols.iter().zip(keep).filter(|(_, k)| **k).map(|(c, _)| c.0).collect();
+        shown.iter().map(|&w| if w == 0.0 { TEXT_MIN } else { w }).sum::<f32>() + 12.0 * (shown.len() as f32 - 1.0).max(0.0)
+    };
+    for name in drop {
+        if need(&keep) <= room {
+            break;
+        }
+        if let Some(i) = cols.iter().position(|c| c.1 == *name) {
+            keep[i] = false;
+        }
+    }
+    keep
+}
+
+/// The least width of a table's text column.
+const TEXT_MIN: f32 = 120.0;
+
+thread_local! {
+    /// The width a card's content has in the inspector, as it was last laid out.
+    static ROOM: std::cell::Cell<f32> = const { std::cell::Cell::new(f32::MAX) };
+}
+
+/// A table whose columns named in `drop` are left out, first to last, when the card is too narrow.
+fn table_dropping(cols: &[Column], rows: Vec<Vec<(String, Option<Color>)>>, drop: &[&str], p: &Pal) -> El {
+    let keep = fitting(&cols.iter().map(|c| (c.1, c.0)).collect::<Vec<_>>(), drop, ROOM.get());
+    let cols: Vec<&Column> = cols.iter().zip(&keep).filter(|(_, k)| **k).map(|(c, _)| c).collect();
+    let rows: Vec<Vec<(String, Option<Color>)>> = rows.into_iter().map(|r| r.into_iter().zip(&keep).filter(|(_, k)| **k).map(|(c, _)| c).collect()).collect();
     let cell = |t: String, c: &Column, color: Color, font| {
-        let t = text(t).font(font).color(color).single_line().truncate().min_w(0.0);
+        // A path keeps its start and its end.
+        let path = !c.2 && t.contains('/');
+        let t = text(t).font(font).color(color).single_line().min_w(0.0);
+        let t = if path { t.truncate_middle() } else { t.truncate() };
         match (c.1, c.2) {
-            (0.0, _) => row().grow(1.0).min_w(0.0).child(t),
+            (0.0, _) => row().grow(1.0).min_w(TEXT_MIN).child(t),
             (w, true) => row().w(w).justify_end().child(t),
             (w, false) => row().w(w).child(t),
         }
@@ -221,7 +274,7 @@ fn table(cols: &[Column], rows: Vec<Vec<(String, Option<Color>)>>, p: &Pal) -> E
     let head = row().w_full().h(22.0).gap(12.0).center_y().children(cols.iter().map(|c| cell(c.0.to_string(), c, p.ink2, pal::SMALL_STRONG)));
     let mut out = col().w_full().child(head).child(el().w_full().h(1.0).fill(p.line));
     for r in rows {
-        let line = row().w_full().h(24.0).gap(12.0).center_y().children(r.into_iter().zip(cols).map(|((t, color), c)| {
+        let line = row().w_full().h(24.0).gap(12.0).center_y().children(r.into_iter().zip(cols.iter().copied()).map(|((t, color), c)| {
             let font = if c.2 { pal::BODY_NUM } else { pal::BODY };
             cell(t, c, color.unwrap_or(p.ink), font)
         }));
@@ -255,7 +308,7 @@ fn component_color(c: Component, p: &Pal) -> Color {
     match c {
         Component::Read => p.read,
         Component::Write => p.write,
-        Component::Rewrite => p.cold,
+        Component::Rewrite => p.miss,
         Component::Output => p.out,
         _ => p.neutral,
     }
@@ -269,14 +322,14 @@ fn total(x: &XRay) -> String {
 fn spend_box(x: &XRay, p: &Pal) -> El {
     let parts = components(x);
     let bar = row().w_full().h(8.0).gap(2.0).children(parts.iter().map(|(c, share, _)| {
-        el().h(8.0).radius(2.0).grow(*share as f32).min_w(2.0).fill(component_color(*c, p)).help(format!("{}: {:.1}%", c.name(), 100.0 * share))
+        el().h(8.0).radius(R_MARK).grow(*share as f32).min_w(2.0).fill(component_color(*c, p)).help(format!("{}: {:.1}%", c.name(), 100.0 * share))
     }));
     let legend = col().w_full().gap(5.0).children(parts.iter().map(|(c, share, v)| {
         row()
             .w_full()
             .gap(8.0)
             .center_y()
-            .child(el().w(9.0).h(9.0).radius(2.0).fill(component_color(*c, p)))
+            .child(el().w(10.0).h(10.0).radius(R_MARK).fill(component_color(*c, p)))
             .child(text(c.name()).font(pal::BODY).color(p.ink).single_line().grow(1.0).min_w(0.0))
             .child(text(format!("{:.1}%", 100.0 * share)).font(pal::BODY_NUM).color(p.ink2).single_line())
             .child(row().w(56.0).justify_end().child(text(v.clone()).font(pal::STRONG_NUM).color(p.ink).single_line()))
@@ -300,7 +353,15 @@ fn header(s: &Desk, x: &XRay, p: &Pal) -> El {
         .gap(16.0)
         .center_y()
         .child(row().gap(6.0).center_y().child(dot(agent, 7.0)).child(text(x.agent.name().to_string()).font(pal::STRONG).color(agent).single_line()))
-        .child(text(x.project.clone()).font(pal::STRONG).color(p.ink).single_line().truncate_head().shrink().min_w(0.0))
+        .child(
+            text(x.project.clone())
+                .font(pal::STRONG)
+                .color(p.ink)
+                .single_line()
+                .truncate_head()
+                .min_w(pal::text_w(&x.project, pal::STRONG).min(320.0))
+                .max_w(320.0),
+        )
         .child(text(x.short_id.clone()).font(pal::BODY_NUM).color(p.ink2).single_line().selectable(true));
     if !x.models.is_empty() {
         let models = x.models.iter().map(|(m, n)| format!("{m} ×{n}")).collect::<Vec<_>>().join(", ");
@@ -327,7 +388,7 @@ fn header(s: &Desk, x: &XRay, p: &Pal) -> El {
                 .child(facts)
                 .child(text(what).key("what").font(pal::BODY).color(p.ink2).single_line().truncate().selectable(true)),
         )
-        .child(view::button("handoff", "Copy handoff line", true, p).on_press(|s: &mut Desk| {
+        .child(view::button("handoff", "Copy handoff line", true, p.bar, p).pr(5.0).child(overlay::keycap_on("c", p.panel, p)).on_press(|s: &mut Desk| {
             let view = s.viewport();
             s.browser.on_key(tokprof_browse::browser::Key::Char('c'), view);
         }))
@@ -405,6 +466,8 @@ fn request_track(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal, tall: f32) -> Optio
             tokens(q.prompt_tokens as f64)
         )));
     }
+    // Where the next request's label sits, so that the largest request's label keeps clear of it.
+    let mut next_label: Option<(f32, f32)> = None;
     if let Some(n) = next {
         let h = height(n);
         let c = if cold { p.cold } else { p.warm };
@@ -421,10 +484,14 @@ fn request_track(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal, tall: f32) -> Optio
                     .border_dash(3.0, 2.5),
             )
             .child(text(usd(n)).key("next-value").font(pal::SMALL_STRONG).color(c).single_line().absolute(x0 - 40.0, 0.0));
+        next_label = Some((x0 - 40.0, label_w(&usd(n))));
     }
     if let Some(dear) = x.points.iter().max_by(|a, b| a.usd.total_cmp(&b.usd)) {
-        track = track
-            .child(text(usd(dear.usd)).font(pal::SMALL_STRONG).color(p.ink).single_line().absolute(xs(dear.ts_ms) - 14.0, (tall - height(dear.usd)).max(0.0)));
+        let t = usd(dear.usd);
+        let y = (tall - height(dear.usd)).max(0.0);
+        if let Some(at) = dear_label_x(xs(dear.ts_ms), label_w(&t), y, next_label) {
+            track = track.child(text(t).key("dear-value").font(pal::SMALL_STRONG).color(p.ink).single_line().absolute(at, y));
+        }
     }
     // The times under the axis, each where there is room.
     let mut marks: Vec<(f32, String, &'static str)> =
@@ -454,6 +521,21 @@ fn request_track(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal, tall: f32) -> Optio
     let since = format!("{} to now", local_time(axis.begin, "%H:%M"));
     let body = col().w_full().child(track).child(el().w_full().h(1.0).fill(p.line)).child(axis_row);
     Some(boxed("requests-track", "Requests and the cache", Some(since), body, p))
+}
+
+/// About how wide a label of the request track is, in points.
+fn label_w(t: &str) -> f32 {
+    t.chars().count() as f32 * 7.2 + 4.0
+}
+
+/// Where the largest request's label goes over its bar at `bar_x`, `w` wide and `y` from the top:
+/// over the bar, else left of it when it would cover the next request's label (its left edge and
+/// width), else nowhere.
+pub fn dear_label_x(bar_x: f32, w: f32, y: f32, next: Option<(f32, f32)>) -> Option<f32> {
+    let clear = |x: f32| next.is_none_or(|(nx, nw)| y >= 16.0 || x + w + 4.0 <= nx || x >= nx + nw + 4.0);
+    let over = bar_x - 14.0;
+    let left = bar_x - 4.0 - w;
+    [over, left].into_iter().find(|&x| x >= 0.0 && clear(x))
 }
 
 /// The next request's cost and the cache's state, live: from the glance, as the list shows them.
@@ -546,7 +628,7 @@ fn ways_box(x: &XRay, p: &Pal) -> El {
                 .py(6.0)
                 .gap(10.0)
                 .center_y()
-                .radius(7.0)
+                .radius(R_ROW)
                 .fill(if best { p.sel } else { Color::TRANSPARENT })
                 .child(
                     col().grow(1.0).min_w(0.0).gap(1.0).child(text(name).font(pal::STRONG).color(p.ink).single_line()).child(
@@ -586,7 +668,8 @@ fn summary(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal) -> Vec<El> {
             .key("summary-boxes")
             .w_full()
             .gap(12.0)
-            .children([next_box(s, x, p), ways_box(x, p), spend_box(x, p)].map(|b| col().grow(1.0).min_w(0.0).child(b))),
+            .items_stretch()
+            .children([next_box(s, x, p), ways_box(x, p), spend_box(x, p)].map(|b| col().grow(1.0).min_w(0.0).child(b.grow(1.0)))),
     );
     out.extend(tips(x, p));
     out
@@ -609,12 +692,12 @@ fn requests(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal) -> Vec<El> {
         ]
     });
     let cols =
-        [Column("#", 40.0, true), Column("sent", 120.0, false), Column("after", 70.0, true), Column("in context", 90.0, true), Column("cost", 70.0, true)];
+        [Column("#", 40.0, true), Column("sent", 0.0, false), Column("after", 90.0, true), Column("in context", 110.0, true), Column("cost", 90.0, true)];
     let mut body = col().w_full().gap(8.0).child(table(&cols, rows.collect(), p));
     if shown > 0 {
         body = body.child(note(format!("and {shown} earlier requests"), p));
     }
-    let aside = format!("{} of the main conversation; an `after` longer than the cache lives is in red", count(x.points.len() as u64, "request", "requests"));
+    let aside = format!("{} of the main conversation; an after longer than the cache lives is in red", count(x.points.len() as u64, "request", "requests"));
     out.push(boxed("requests", "Requests", Some(aside), body, p));
     out
 }
@@ -644,7 +727,7 @@ fn work(x: &XRay, p: &Pal) -> Vec<El> {
             "tasks",
             "By task",
             Some("the session title, and what each subagent was asked to do".into()),
-            table(&[Column("cost", 70.0, true), Column("task", 0.0, false), Column("origin", 180.0, false)], rows, p),
+            table(&[Column("cost", 70.0, true), Column("task", 0.0, false), Column("origin", 240.0, false)], rows, p),
             p,
         ));
     }
@@ -718,7 +801,7 @@ fn prompts(x: &XRay, p: &Pal) -> Vec<El> {
         Column("you typed", 0.0, false),
         Column("it paid for", 260.0, false),
     ];
-    vec![boxed("prompts", "Prompts", Some("what each message you typed cost, subagents included".into()), table(&cols, rows, p), p)]
+    vec![boxed("prompts", "Prompts", Some("what each message you typed cost, subagents included".into()), table_dropping(&cols, rows, &["it paid for"], p), p)]
 }
 
 fn tools(x: &XRay, p: &Pal) -> Vec<El> {
@@ -738,7 +821,7 @@ fn tools(x: &XRay, p: &Pal) -> Vec<El> {
         .zip(cells.hints.iter().skip(1))
         .map(|(r, h)| r.iter().cloned().map(plain).chain([(h.clone(), Some(p.ink2))]).collect())
         .collect();
-    let mut body = col().w_full().gap(8.0).child(table(&cols, rows, p));
+    let mut body = col().w_full().gap(8.0).child(table_dropping(&cols, rows, &["hint", "after", "failed", "single"], p));
     if cells.more > 0 {
         body = body.child(note(format!("{} more", cells.more), p));
     }
@@ -764,7 +847,7 @@ fn context(x: &XRay, p: &Pal) -> Vec<El> {
                     .iter()
                     .take(8)
                     .map(|b| {
-                        let what = [b.tool.as_deref(), b.target.as_deref()].into_iter().flatten().collect::<Vec<_>>().join("  ");
+                        let what = [b.tool.as_deref(), b.target.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" ");
                         let when = if matches!(b.kind, BlockKind::Tools | BlockKind::System) { "setup".to_string() } else { format!("turn {}", b.turn) };
                         vec![plain(tokens(b.tokens)), plain(b.kind.name()), plain(what), (when, Some(p.ink2))]
                     })
@@ -786,7 +869,7 @@ fn context(x: &XRay, p: &Pal) -> Vec<El> {
             .into_iter()
             .take(10)
             .map(|((kind, tool, target), v)| {
-                let what = [tool.as_deref(), target.as_deref()].into_iter().flatten().collect::<Vec<_>>().join("  ");
+                let what = [tool.as_deref(), target.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" ");
                 vec![plain(amount(x, v)), plain(kind.name()), plain(what)]
             })
             .collect();
@@ -813,7 +896,12 @@ fn context(x: &XRay, p: &Pal) -> Vec<El> {
 fn cache(x: &XRay, p: &Pal) -> Vec<El> {
     let misses: Vec<_> = x.misses.iter().filter(|m| !m.cause.expected()).collect();
     if x.misses.is_empty() {
-        return vec![boxed("misses", "Cache misses", None, text("No misses").font(pal::STRONG).color(p.warm), p)];
+        return vec![overlay::empty(
+            "misses",
+            "No cache misses".into(),
+            Some(overlay::empty_line("every request after the first read its prefix from the cache", p)),
+            p,
+        )];
     }
     let rewritten: u64 = misses.iter().map(|m| m.rewritten).sum();
     let premium: f64 = misses.iter().filter_map(|m| m.premium_usd).sum();
@@ -849,7 +937,12 @@ fn cache(x: &XRay, p: &Pal) -> Vec<El> {
         Column("chain", 120.0, false),
     ];
     let color = if misses.is_empty() { p.ink } else { p.cold };
-    let body = col().w_full().gap(8.0).child(text(head).w_full().wrap().font(pal::STRONG).color(color).selectable(true)).child(table(&cols, rows, p));
+    let body = col().w_full().gap(8.0).child(text(head).w_full().wrap().font(pal::STRONG).color(color).selectable(true)).child(table_dropping(
+        &cols,
+        rows,
+        &["chain"],
+        p,
+    ));
     vec![boxed("misses", "Cache misses", None, body, p)]
 }
 
@@ -885,6 +978,29 @@ mod tests {
         ];
         assert_eq!(ways(&advice), [(Way::Handoff, 0.52), (Way::Resume, 0.84), (Way::Compact, 1.01)], "the handoff is the cheapest, marked first");
         assert!(ways(&advice[4..]).is_empty(), "advice on other things prices no way");
+    }
+
+    #[test]
+    fn the_largest_request_s_label_keeps_clear_of_the_next_one_s() {
+        // Far from the next request's label: over its bar.
+        assert_eq!(dear_label_x(100.0, 40.0, 0.0, Some((600.0, 40.0))), Some(86.0));
+        // Right under it: left of its bar, or nowhere when that too would cover it.
+        assert_eq!(dear_label_x(610.0, 40.0, 0.0, Some((630.0, 40.0))), Some(566.0));
+        assert_eq!(dear_label_x(640.0, 40.0, 0.0, Some((600.0, 40.0))), None);
+        // Lower down, where the other label is not.
+        assert_eq!(dear_label_x(640.0, 40.0, 30.0, Some((600.0, 40.0))), Some(626.0));
+    }
+
+    #[test]
+    fn narrow_tables_leave_out_their_least_columns_first() {
+        let cols = [(0.0, "tool"), (50.0, "calls"), (70.0, "failed"), (70.0, "after"), (230.0, "hint")];
+        let drop = ["hint", "after", "failed"];
+        assert_eq!(fitting(&cols, &drop, 900.0), [true; 5], "room for all");
+        // 120 + 50 + 70 + 70 + 230 and four gaps of 12 are 588.
+        assert_eq!(fitting(&cols, &drop, 587.0), [true, true, true, true, false], "the hint goes first");
+        assert_eq!(fitting(&cols, &drop, 300.0), [true, true, true, false, false], "then after");
+        assert_eq!(fitting(&cols, &drop, 250.0), [true, true, false, false, false], "then failed");
+        assert_eq!(fitting(&cols, &drop, 10.0), [true, true, false, false, false], "the others stay");
     }
 
     #[test]

@@ -12,6 +12,7 @@ use tokprof_core::pauses::AgentPauses;
 use tokprof_core::report::Spend;
 use tokprof_core::rhythm;
 
+use crate::overlay::{PILL, R_GROUP, R_MARK, R_ROW, R_TILE};
 use crate::pal::{self, Pal};
 use crate::view;
 use crate::{Desk, plain};
@@ -23,8 +24,8 @@ pub const TOP: usize = 10;
 /// The height of the day chart, and the width of its axis labels.
 const CHART_H: f32 = 170.0;
 const AXIS_W: f32 = 52.0;
-/// A pill, as the settings panel rounds them.
-const PILL: f32 = 999.0;
+/// The room above and under the day chart's lines, half a label's height.
+const PLOT_PAD: f32 = 7.0;
 
 /// What the window shows under the bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -271,7 +272,7 @@ pub fn switch(s: &Desk, p: &Pal) -> El {
             view::segment("mode-day".into(), "Day", mode == Mode::Day, p).on_press(|s: &mut Desk| show(s, Mode::Day)),
             view::segment("mode-reports".into(), "Reports", mode == Mode::Reports, p).on_press(|s: &mut Desk| show(s, Mode::Reports)),
         ],
-        p,
+        p.panel,
     )
 }
 
@@ -388,7 +389,7 @@ fn computing(s: &Desk, p: &Pal) -> El {
         .w_full()
         .padding(18.0)
         .gap(12.0)
-        .radius(16.0)
+        .radius(R_GROUP)
         .fill(p.bar)
         .child(text(line).key("rep-progress").font(pal::BODY_NUM).color(p.ink2).single_line())
         .child(row().w(320.0).child(crate::overlay::meter(share, p.accent, p, 6.0)))
@@ -402,7 +403,7 @@ fn note(t: String, p: &Pal) -> El {
 /// keyboard, as the settings panel draws its parts.
 fn card(part: Option<Part>, title: &str, aside: Option<String>, content: El, r: &crate::reports::State, p: &Pal) -> El {
     let on = part.is_some_and(|x| x == r.part);
-    let mut group = col().w_full().min_w(0.0).padding(14.0).radius(16.0).fill(p.bar).child(content);
+    let mut group = col().w_full().min_w(0.0).padding(14.0).radius(R_GROUP).fill(p.bar).child(content);
     if let Some(part) = part {
         group = group.key(part.key());
     }
@@ -418,7 +419,7 @@ fn component_color(c: Component, p: &Pal) -> Color {
     match c {
         Component::Read => p.read,
         Component::Write => p.write,
-        Component::Rewrite => p.cold,
+        Component::Rewrite => p.miss,
         Component::Output => p.out,
         _ => p.neutral,
     }
@@ -433,11 +434,11 @@ fn tile(key: &'static str, label: &str, value: String, sub: String, color: Color
         .px(14.0)
         .py(12.0)
         .gap(4.0)
-        .radius(12.0)
+        .radius(R_TILE)
         .fill(p.panel)
         .child(text(label.to_string()).font(pal::SMALL_STRONG).color(p.ink2).single_line())
         .child(text(value).key("value").font(pal::KPI).color(color).single_line())
-        .child(text(sub).key("sub").font(pal::SMALL).color(p.ink3).single_line().truncate().min_w(0.0))
+        .child(text(sub).key("sub").w_full().wrap().max_lines(2).font(pal::SMALL).color(p.ink3))
 }
 
 fn key_numbers(o: &Overview, p: &Pal) -> El {
@@ -478,22 +479,19 @@ fn day_chart(s: &Desk, report: &Report, o: &Overview, p: &Pal) -> El {
     let cursor = (r.part == Part::Days).then(|| r.day.unwrap_or(dates.len() - 1));
     let marked = r.hover.and_then(|h| dates.iter().position(|&d| d == h)).or(cursor);
     // The axis's labels on the left, and the plot with its lines and the columns over them.
-    let (mut axis, mut plot) = (el().w(AXIS_W).h(CHART_H), el().grow(1.0).min_w(0.0).h(CHART_H));
+    // The plot has room above and under its lines for the labels centered on them.
+    let (mut axis, mut plot) = (el().w(AXIS_W).h(CHART_H + 2.0 * PLOT_PAD), el().grow(1.0).min_w(0.0).h(CHART_H + 2.0 * PLOT_PAD));
     let lines = (top / step).round() as usize;
     for i in 0..=lines {
-        let y = CHART_H - (i as f64 * step / top) as f32 * CHART_H;
-        plot = plot.child(el().absolute(0.0, y.min(CHART_H - 1.0)).w_full().h(1.0).fill(p.row_line));
+        let y = PLOT_PAD + CHART_H - (i as f64 * step / top) as f32 * CHART_H;
+        plot = plot.child(el().absolute(0.0, y.min(PLOT_PAD + CHART_H - 1.0)).w_full().h(1.0).fill(p.row_line));
         axis = axis.child(
-            row()
-                .absolute(0.0, (y - 7.0).clamp(0.0, CHART_H - 14.0))
-                .w(AXIS_W - 8.0)
-                .justify_end()
-                .child(text(axis_label(i as f64 * step)).font(pal::HOURS).color(p.ink3).single_line()),
+            row().absolute(0.0, y - 7.0).w(AXIS_W - 8.0).justify_end().child(text(axis_label(i as f64 * step)).font(pal::HOURS).color(p.ink3).single_line()),
         );
     }
-    let columns = row().absolute(0.0, 0.0).w_full().h(CHART_H).gap(if dates.len() > 45 { 1.0 } else { 3.0 }).children(
+    let columns = row().absolute(0.0, PLOT_PAD).w_full().h(CHART_H).gap(if dates.len() > 45 { 1.0 } else { 3.0 }).children(
         dates.iter().zip(&spends).enumerate().map(|(i, (&date, d))| {
-            let mut stack = col().w_full().justify_end().radius(3.0).clip_rounded(3.0);
+            let mut stack = col().w_full().justify_end().radius(R_MARK).clip_rounded(R_MARK);
             for c in Component::ALL.iter().rev() {
                 let v = d.usd[Component::ALL.iter().position(|x| x == c).unwrap_or(0)];
                 let h = (v / top) as f32 * CHART_H;
@@ -522,17 +520,20 @@ fn day_chart(s: &Desk, report: &Report, o: &Overview, p: &Pal) -> El {
             if marked == Some(i) { column.fill(p.sel) } else { column.hover(p.hover) }
         }),
     );
-    let grid = row().w_full().h(CHART_H).child(axis).child(plot.child(columns));
+    let grid = row().w_full().h(CHART_H + 2.0 * PLOT_PAD).child(axis).child(plot.child(columns));
     // A date under every column that has room, and the month at its first.
     let every = match dates.len() {
         0..=16 => 1,
         17..=40 => 2,
         _ => 7,
     };
+    let month = |i: usize| i == 0 || local_time(noon(dates[i]), "%-d") == "1";
     let labels = row().w_full().pl(AXIS_W).gap(if dates.len() > 45 { 1.0 } else { 3.0 }).children(dates.iter().enumerate().map(|(i, &date)| {
         let at = noon(date);
-        let first = i == 0 || local_time(at, "%-d") == "1";
-        let shown = first || (dates.len() - 1 - i).is_multiple_of(every);
+        let first = month(i);
+        // A month's label is wider: the regular label beside it gives way.
+        let beside = every > 1 && ((i > 0 && month(i - 1)) || (i + 1 < dates.len() && month(i + 1)));
+        let shown = first || ((dates.len() - 1 - i).is_multiple_of(every) && !beside);
         let label = if !shown {
             String::new()
         } else if first {
@@ -581,14 +582,15 @@ fn readout(day: Option<(i64, DaySpend)>, all: &[DaySpend], p: &Pal) -> El {
         row()
             .gap(6.0)
             .center_y()
-            .child(el().w(9.0).h(9.0).radius(2.0).fill(component_color(*c, p)))
+            .child(el().w(10.0).h(10.0).radius(R_MARK).fill(component_color(*c, p)))
             .child(text(format!("{} {}", c.name(), usd(d.usd[i]))).font(pal::SMALL_NUM).color(p.ink2).single_line())
     });
     row()
         .key("rep-readout")
         .w_full()
         .pl(AXIS_W)
-        .gap(16.0)
+        .flex_wrap()
+        .gaps(6.0, 16.0)
         .center_y()
         .child(text(head).key("rep-readout-head").font(pal::STRONG_NUM).color(p.ink).single_line())
         .children(chips)
@@ -597,7 +599,7 @@ fn readout(day: Option<(i64, DaySpend)>, all: &[DaySpend], p: &Pal) -> El {
 /// Marks the row `i` of a part when its cursor is on it, and keys it for the keys to scroll to.
 fn cursor_row(line: El, part: Part, i: usize, s: &Desk, p: &Pal) -> El {
     let r = &s.reports;
-    let line = line.key(format!("{}-{i}", part.key())).radius(6.0);
+    let line = line.key(format!("{}-{i}", part.key())).radius(R_ROW);
     if r.part == part && r.row == i { line.fill(p.sel) } else { line.hover(p.hover) }
 }
 
@@ -698,7 +700,7 @@ fn models(s: &Desk, o: &Overview, p: &Pal) -> El {
         .map(|((agent, model), m)| {
             let mut row =
                 vec![agent.name().to_string(), model.clone(), int(m.requests), format!("{:.0}%", 100.0 * m.with_prompt as f64 / m.requests.max(1) as f64)];
-            row.extend(m.by_component.iter().map(|v| if m.priced { usd(v.usd) } else { tokens(v.tokens) }));
+            row.extend(m.by_component.iter().map(|v| if m.priced { usd(v.usd) } else { format!("{} tok", tokens(v.tokens)) }));
             row.push(if m.priced { usd(m.usd()) } else { format!("{} tok", tokens(m.tokens())) });
             row
         })

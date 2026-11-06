@@ -8,6 +8,7 @@ use tokprof_browse::browser::{Key, Sort, now_ms};
 use tokprof_core::fmt::{local_time, usd};
 use tokprof_core::rhythm;
 
+use crate::overlay::{self, PILL, R_ROW};
 use crate::pal::{self, Pal};
 use crate::{Desk, Slot};
 
@@ -31,12 +32,13 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     s.theme.set(theme);
     let p = pal::pal(theme);
     *s.slots.borrow_mut() = slots(s);
+    let height = window_size(s, cx).1;
     let mut root = col()
         .key("root")
         .w_full()
         .h_full()
         .fill(p.bg)
-        .on_layout(|s: &mut Desk, r| s.window_h = r[3])
+        .on_layout(|s: &mut Desk, r| s.window = (r[2], r[3]))
         .child(bar(s, cx, &p))
         .child(el().w_full().h(1.0).fill(p.line));
     // The lanes and the inspector change when what they show does, and with the minute; the
@@ -48,13 +50,11 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     } else if s.browser.zoomed() {
         root = root.child(inspector(cx));
     } else {
-        let height = if s.window_h > 0.0 { s.window_h } else { 900.0 };
-        let max_h = (height - BAR_H) * LANES_SHARE;
+        let max_h = lanes_max_h(height);
         let lanes = rune::memo("lanes", crate::day::version(s, cx, max_h, &theme.id), || crate::day::lanes(s, cx, &p, max_h));
         let body = row().key("body").w_full().grow(1.0).min_h(0.0).child(list_pane(s, &p)).child(el().w(1.0).h_full().fill(p.line)).child(inspector(cx));
         root = root.child(lanes).child(body);
     }
-    let height = if s.window_h > 0.0 { s.window_h } else { 900.0 };
     if let Some(panel) = s.panel {
         root = root.child(crate::settings::panel(s, panel, &p, height));
     }
@@ -67,6 +67,24 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     root
 }
 
+/// The window's height: as the root was last laid out, else as the window was opened (`--size`
+/// in a frame without a window).
+pub fn window_size(s: &Desk, cx: &Cx<Desk>) -> (f32, f32) {
+    match cx.layout_size("root").filter(|sz| sz[1] > 0.0) {
+        Some(sz) => (sz[0], sz[1]),
+        None if s.window.1 > 0.0 => s.window,
+        None => WINDOW,
+    }
+}
+
+/// The most the lanes take with what is under them, in a window `height` points high.
+pub fn lanes_max_h(height: f32) -> f32 {
+    (height - BAR_H) * LANES_SHARE
+}
+
+/// The window's size when it opens, in points.
+pub const WINDOW: (f32, f32) = (1400.0, 900.0);
+
 /// A hash of what a part of the view shows, for `memo`.
 pub fn hash_of(parts: impl std::hash::Hash) -> u64 {
     use std::hash::{BuildHasher, BuildHasherDefault};
@@ -78,16 +96,16 @@ pub fn minute() -> i64 {
     now_ms() / 60_000
 }
 
-/// A control in the bar: a label in a rounded box that does something when pressed.
-pub fn button(key: &'static str, label: &str, enabled: bool, p: &Pal) -> El {
+/// A control in the bar: a label in a pill that does something when pressed, on `fill`.
+pub fn button(key: &'static str, label: &str, enabled: bool, fill: Color, p: &Pal) -> El {
     row()
         .key(key)
-        .h(24.0)
-        .px(10.0)
+        .h(28.0)
+        .px(12.0)
+        .gap(6.0)
         .center_y()
-        .radius(6.0)
-        .fill(p.panel)
-        .border(1.0, p.line)
+        .radius(PILL)
+        .fill(fill)
         .hover(p.hover)
         .role("button")
         .label(label.to_string())
@@ -95,14 +113,30 @@ pub fn button(key: &'static str, label: &str, enabled: bool, p: &Pal) -> El {
         .child(text(label.to_string()).font(pal::STRONG).color(if enabled { p.ink } else { p.ink3 }).single_line())
 }
 
-/// One segment of a segmented control.
+/// A step in the bar: a sign in a circle.
+pub fn step_button(key: &'static str, sign: &str, label: &str, enabled: bool, p: &Pal) -> El {
+    row()
+        .key(key)
+        .w(28.0)
+        .h(28.0)
+        .center()
+        .radius(PILL)
+        .fill(p.panel)
+        .hover(p.hover)
+        .role("button")
+        .label(label.to_string())
+        .disabled(!enabled)
+        .child(text(sign.to_string()).font(pal::DAY).color(if enabled { p.ink } else { p.ink3 }).single_line())
+}
+
+/// One segment of a segmented control: a pill, the chosen one in the accent.
 pub fn segment(key: String, label: &str, on: bool, p: &Pal) -> El {
     row()
         .key(key)
-        .h(22.0)
-        .px(9.0)
+        .h(24.0)
+        .px(12.0)
         .center_y()
-        .radius(5.0)
+        .radius(PILL)
         .fill(if on { p.accent } else { Color::TRANSPARENT })
         .hover(if on { p.accent } else { p.hover })
         .role("radio")
@@ -111,19 +145,14 @@ pub fn segment(key: String, label: &str, on: bool, p: &Pal) -> El {
         .child(text(label.to_string()).font(pal::STRONG).color(if on { p.on_accent } else { p.ink2 }).single_line())
 }
 
-pub fn segments(key: &'static str, parts: Vec<El>, p: &Pal) -> El {
-    row().key(key).h(26.0).px(2.0).gap(2.0).center_y().radius(7.0).fill(p.panel).border(1.0, p.line).role("radiogroup").children(parts)
+/// Segments in a pill of `fill`: the bar's on the raised surface, the others on the bar's color.
+pub fn segments(key: &'static str, parts: Vec<El>, fill: Color) -> El {
+    row().key(key).h(28.0).px(2.0).gap(2.0).center_y().radius(PILL).fill(fill).role("radiogroup").children(parts)
 }
 
 /// A dot of a color, as a status or an agent shows.
 pub fn dot(c: Color, size: f32) -> El {
     el().w(size).h(size).radius(size / 2.0).fill(c)
-}
-
-/// The line along the top of a pane that marks it as the one with the keyboard; the same room,
-/// empty, on the others.
-pub fn focus_line(key: &'static str, on: bool, p: &Pal) -> El {
-    el().key(key).w_full().h(2.0).fill(if on { p.accent } else { Color::TRANSPARENT })
 }
 
 /// The window's own title bar: the room for the window's buttons, the day's name with the steps
@@ -148,10 +177,10 @@ fn bar(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
     let day = s.reports.mode == crate::reports::Mode::Day;
     if day {
         bar = bar
-            .child(button("day-back", "‹", true, p).on_press(|s: &mut Desk| s.browser.step_day_by(-1)))
+            .child(step_button("day-back", "‹", "The day before", true, p).on_press(|s: &mut Desk| s.browser.step_day_by(-1)))
             .child(text(local_time(b.day_noon(), "%A, %-d %B")).key("day-name").font(pal::DAY).color(p.ink).single_line())
-            .child(button("day-on", "›", !latest, p).on_press(|s: &mut Desk| s.browser.step_day_by(1)))
-            .child(button("today", "Today", !latest, p).on_press(|s: &mut Desk| s.browser.show_latest_day()));
+            .child(step_button("day-on", "›", "The day after", !latest, p).on_press(|s: &mut Desk| s.browser.step_day_by(1)))
+            .child(button("today", "Today", !latest, p.panel, p).on_press(|s: &mut Desk| s.browser.show_latest_day()));
     }
     if let Some(summary) = crate::day::summary(s).filter(|_| day) {
         bar = bar.child(text(summary).key("day-summary").font(pal::BODY).color(p.ink2).single_line().truncate().shrink().min_w(0.0));
@@ -166,7 +195,7 @@ fn bar(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
             segment("zoom-fit".into(), "Fit", s.fit, p).on_press(|s: &mut Desk| s.fit = true),
             segment("zoom-day".into(), "24 h", !s.fit, p).on_press(|s: &mut Desk| s.fit = false),
         ],
-        p,
+        p.panel,
     );
     if day {
         bar = bar.child(zoom).child(filter_field(s, p));
@@ -183,25 +212,16 @@ fn filter_field(s: &Desk, p: &Pal) -> El {
     let b = &s.browser;
     let editing = b.editing();
     let empty = b.filter().is_empty();
-    let mut field = row()
-        .key("filter")
-        .w(210.0)
-        .h(26.0)
-        .pl(9.0)
-        .pr(4.0)
-        .gap(1.0)
-        .center_y()
-        .radius(6.0)
-        .fill(p.panel)
-        .border(1.0, if editing { p.accent } else { p.line })
-        .role("searchbox")
-        .label("Filter")
-        .on_press(|s: &mut Desk| {
-            if !s.browser.editing() {
-                let view = s.viewport();
-                s.browser.on_key(Key::Char('/'), view);
-            }
-        });
+    let mut field =
+        row().key("filter").w(210.0).h(28.0).pl(12.0).pr(5.0).gap(1.0).center_y().radius(PILL).fill(p.panel).role("searchbox").label("Filter").on_press(
+            |s: &mut Desk| {
+                if !s.browser.editing() {
+                    let view = s.viewport();
+                    s.browser.on_key(Key::Char('/'), view);
+                }
+            },
+        );
+    field = overlay::ring(field, editing, p);
     // The placeholder, or what is typed; while typing, it ends at the caret, its start cut when long.
     if !(empty && editing) {
         let (shown, color) = if empty { ("Filter by project or id", p.ink3) } else { (b.filter(), p.ink) };
@@ -210,6 +230,9 @@ fn filter_field(s: &Desk, p: &Pal) -> El {
     }
     if editing {
         field = field.child(el().key("caret").w(1.5).h(15.0).radius(0.75).fill(p.ink)).child(spacer().grow(1.0));
+    }
+    if empty && !editing {
+        field = field.child(overlay::keycap_on("/", p.bar, p).key("filter-key"));
     }
     if !empty {
         let clear = row()
@@ -287,6 +310,7 @@ fn list_pane(s: &Desk, p: &Pal) -> El {
         .child(rows);
     let (total, pending) = b.known_total();
     let n = b.len() as u64;
+    let none = n == 0 && !b.filter().is_empty();
     let mut title = format!("{} {}, {}", tokprof_core::fmt::int(n), if n == 1 { "session" } else { "sessions" }, usd(total));
     if pending > 0 {
         title += &format!(", costing {pending}");
@@ -306,16 +330,28 @@ fn list_pane(s: &Desk, p: &Pal) -> El {
         .px(12.0)
         .gap(8.0)
         .center_y()
-        .child(text(title).key("list-title").font(pal::SMALL_STRONG).color(p.ink2).single_line().truncate().grow(1.0).min_w(0.0))
-        .child(segments("sort", sorts.collect(), p));
+        .child(
+            text(title)
+                .key("list-title")
+                .font(pal::SMALL_STRONG)
+                .color(if list_has_keys(s) { p.accent } else { p.ink2 })
+                .single_line()
+                .truncate()
+                .grow(1.0)
+                .min_w(0.0),
+        )
+        .child(segments("sort", sorts.collect(), p.bar));
     col()
         .key("list-pane")
         .w(LIST_WIDTH)
         .h_full()
         .min_h(0.0)
-        .child(focus_line("list-focus", s.pane == crate::Focus::List, p))
         .child(head)
         .child(el().w_full().h(1.0).fill(p.line))
+        .children(none.then(|| {
+            let what = format!("No session matches “{}”", b.filter());
+            col().w_full().padding(12.0).child(overlay::empty("list-empty", what, Some(overlay::hint(&["esc"], "clears the filter", p)), p))
+        }))
         .child(list)
 }
 
@@ -338,10 +374,10 @@ fn list_row(s: &Desk, i: usize) -> El {
             return row()
                 .w_full()
                 .h(ROW)
-                .px(12.0)
+                .px(18.0)
+                .pt(10.0)
                 .center_y()
-                .fill(p.bar)
-                .child(text(day_label(date, today)).key("day-label").font(pal::SMALL_STRONG).color(p.ink2).single_line());
+                .child(text(day_label(date, today)).key("day-label").font(pal::SMALL_STRONG).color(p.ink3).single_line());
         }
         None => return el().h(ROW),
     };
@@ -349,35 +385,49 @@ fn list_row(s: &Desk, i: usize) -> El {
     let now = now_ms();
     let c = b.cells(r, now);
     let selected = b.selected() == Some(r);
-    let (ink, ink2) = if selected { (p.on_accent, p.on_accent2) } else { (p.ink, p.ink2) };
+    let (ink, ink2) = (p.ink, p.ink2);
     let (press, open) = (b.session(r).to_string(), b.session(r).to_string());
     let next = match (c.warm_until, c.next_usd) {
         // Still being costed.
-        _ if c.usd.is_none() => row().key("next").child(text("…").key("next-text").font(pal::SMALL).color(if selected { ink2 } else { p.ink3 }).single_line()),
+        _ if c.usd.is_none() => row().key("next").child(text("…").key("next-text").font(pal::SMALL).color(p.ink3).single_line()),
         (Some(until), _) => row()
             .key("next")
             .gap(5.0)
             .center_y()
             .child(dot(p.warm_dot, 7.0))
-            .child(text(countdown(until - now)).key("next-text").font(pal::SMALL_NUM).color(if selected { ink } else { p.warm }).single_line()),
+            .child(text(countdown(until - now)).key("next-text").font(pal::SMALL_NUM).color(p.warm).single_line()),
         (None, Some(usd_next)) => row()
             .key("next")
             .gap(5.0)
             .center_y()
             .child(dot(p.cold_dot, 7.0))
-            .child(text(usd(usd_next)).key("next-text").font(pal::SMALL_NUM).color(if selected { ink } else { p.cold }).single_line()),
-        (None, None) => row().key("next").child(text("none").key("next-text").font(pal::SMALL).color(if selected { ink2 } else { p.ink3 }).single_line()),
+            .child(text(usd(usd_next)).key("next-text").font(pal::SMALL_NUM).color(p.cold).single_line()),
+        (None, None) => row().key("next").child(text("none").key("next-text").font(pal::SMALL).color(p.ink3).single_line()),
     };
     let name = c.title.map_or_else(|| c.project.to_string(), str::to_string);
     let agent = p.agents[c.agent_place % p.agents.len()];
+    // The selected row is a rounded row inset in the pane, ringed while the list has the keyboard.
+    let inner = row()
+        .key("cells")
+        .w_full()
+        .h_full()
+        .px(6.0)
+        .gap(8.0)
+        .center_y()
+        .radius(R_ROW)
+        .fill(if selected { p.sel } else { Color::TRANSPARENT })
+        .hover(if selected { p.sel } else { p.hover })
+        .child(text(local_time(c.active_ms, "%H:%M")).key("time").font(pal::SMALL_NUM).color(ink2).single_line().w(36.0))
+        .child(dot(agent, 7.0).key("agent"))
+        .child(text(name.clone()).key("title").font(pal::BODY).color(ink).single_line().truncate().grow(1.0).shrink().min_w(0.0))
+        .child(row().w(58.0).justify_end().child(text(c.cost.to_string()).key("cost").font(pal::STRONG_NUM).color(ink).single_line()))
+        .child(row().w(68.0).justify_end().child(next));
+    let inner = overlay::ring_at(inner, selected && list_has_keys(s), 1.0, &p);
     row()
         .w_full()
         .h(ROW)
-        .px(12.0)
-        .gap(8.0)
-        .center_y()
-        .fill(if selected { p.accent } else { Color::TRANSPARENT })
-        .hover(if selected { p.accent } else { p.hover })
+        .px(6.0)
+        .py(1.0)
         .role("option")
         .label(format!("{} {} {} {}", local_time(c.active_ms, "%H:%M"), c.agent, name, c.cost))
         .checked(selected)
@@ -391,9 +441,10 @@ fn list_row(s: &Desk, i: usize) -> El {
             s.select_session(&open);
             s.browser.zoom_in();
         })
-        .child(text(local_time(c.active_ms, "%H:%M")).key("time").font(pal::SMALL_NUM).color(ink2).single_line().w(36.0))
-        .child(dot(agent, 7.0).key("agent"))
-        .child(text(name).key("title").font(pal::BODY).color(ink).single_line().truncate().grow(1.0).shrink().min_w(0.0))
-        .child(row().w(58.0).justify_end().child(text(c.cost).key("cost").font(pal::STRONG_NUM).color(ink).single_line()))
-        .child(row().w(68.0).justify_end().child(next))
+        .child(inner)
+}
+
+/// Whether the list has the keyboard: as the pane that has it, while no filter is being typed.
+pub fn list_has_keys(s: &Desk) -> bool {
+    s.pane == crate::Focus::List && !s.browser.editing() && !s.browser.zoomed()
 }

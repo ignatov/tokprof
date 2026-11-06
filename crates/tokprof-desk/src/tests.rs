@@ -1523,3 +1523,137 @@ fn bars_of_one_chart_keep_the_order_of_their_shares_when_only_some_rows_have_a_n
     assert!(width(0) > width(1) && width(1) > width(2), "27.0% > 24.2% > 10%: {} {} {}", width(0), width(1), width(2));
     assert_eq!((track(0)[0], track(0)[2]), (track(1)[0], track(1)[2]), "one track for every row, with a note or without");
 }
+
+/// The keys of the elements ringed as having the keyboard, with the key of an ancestor for those
+/// that have none of their own.
+fn ringed(rt: &Runtime<Desk>) -> Vec<String> {
+    let all = rt.elements();
+    let named = |mut i: usize| loop {
+        if let Some(k) = &all[i].key {
+            return k.clone();
+        }
+        match all[i].parent {
+            Some(p) => i = p,
+            None => return String::new(),
+        }
+    };
+    (0..all.len()).filter(|&i| all[i].trace_name == Some(overlay::RING)).map(named).collect()
+}
+
+#[test]
+fn the_pane_with_the_keyboard_rings_its_selection_and_no_other_pane_does() {
+    let mut rt = runtime(desk_of(30), (1400.0, 900.0));
+    press(&mut rt, RuneKey::Down);
+    assert_eq!(ringed(&rt), ["cells"], "the list's selected row");
+    let id = rt.state.browser.session(rt.state.browser.selected().unwrap()).to_string();
+    let row = inside(&rt, &id, "cells").expect("the selected row's cells");
+    assert!(row.radius >= overlay::R_ROW - 0.01 && row.rect[0] > 0.0, "an inset rounded row: {:?}", row.rect);
+    let p = pal::pal(rt.state.theme.get());
+    assert_eq!(row.fill, p.sel, "in the selection color, not the accent");
+    assert_eq!(inside(&rt, &id, "title").and_then(|e| e.text_color), Some(p.ink), "with the ink's text");
+    assert_eq!(text_color(&rt, "list-title"), Some(p.accent), "the list's title in the accent");
+
+    // The inspector takes it: Summary has no rows, so its tab is ringed; the list's row is not.
+    press(&mut rt, RuneKey::Tab);
+    assert_eq!(rt.state.pane, Focus::Inspector);
+    assert_eq!(ringed(&rt), ["tab-Summary"]);
+    assert_eq!(inside(&rt, &id, "cells").map(|e| e.fill), Some(p.sel), "the row stays selected, quieter");
+    assert_ne!(text_color(&rt, "list-title"), Some(p.accent));
+
+    // Typing a filter: the field has the ring, not the list.
+    press(&mut rt, RuneKey::Escape);
+    press(&mut rt, RuneKey::Text("/".into()));
+    assert!(rt.state.browser.editing());
+    assert_eq!(ringed(&rt), ["filter"]);
+    press(&mut rt, RuneKey::Escape);
+    assert_eq!(ringed(&rt), ["cells"], "the list has it again");
+    assert!(rt.presented("filter-key").is_some(), "the idle filter names its key");
+}
+
+fn text_color(rt: &Runtime<Desk>, key: &str) -> Option<rune::Color> {
+    rt.elements().into_iter().find(|e| e.key.as_deref() == Some(key)).and_then(|e| e.text_color)
+}
+
+#[test]
+fn the_lanes_ring_the_selected_lane_while_they_have_the_keyboard() {
+    let parts = synthetic_day();
+    DAY.with(|d| *d.borrow_mut() = Some(parts));
+    let mut rt = Runtime::new(desk_of(10), lanes_only, (1400.0, 900.0), Env::new(true, 1.0));
+    settle(&mut rt);
+    click(&mut rt, "lane-id3");
+    settle(&mut rt);
+    assert_eq!((rt.state.pane, rt.state.browser.selected()), (Focus::Lanes, Some(3)));
+    assert!(inside(&rt, "lane-id3", "lane-mark").is_some(), "the selected lane's accent mark");
+    assert_eq!(ringed(&rt), ["lane-band"]);
+    let p = pal::pal(crate::themes::default(true));
+    assert_eq!(text_color(&rt, "lanes-title"), Some(p.accent));
+    rt.update(|s, _| s.pane = Focus::List);
+    settle(&mut rt);
+    assert!(ringed(&rt).is_empty() && inside(&rt, "lane-id3", "lane-band").is_some(), "the band stays, without the ring");
+}
+
+#[test]
+fn the_inspector_rings_the_cursor_s_row_and_an_empty_filter_says_so() {
+    let (catalog, select) = fixture();
+    let mut browser = Browser::start(catalog, Pricing::defaults(), select, false, Arc::new(|| {}), frontend()).unwrap();
+    browser.settle();
+    let mut rt = runtime(Desk::new(browser, false), (1400.0, 900.0));
+    press(&mut rt, RuneKey::Tab);
+    press(&mut rt, RuneKey::Text("7".into()));
+    press(&mut rt, RuneKey::Down);
+    assert_eq!(ringed(&rt), ["row-1"], "the cursor's row in Tools");
+
+    // A filter that lists nothing: the list says so, with the key that clears it.
+    press(&mut rt, RuneKey::Escape);
+    typed(&mut rt, "/zzzz");
+    assert!(rt.presented("list-empty").is_some());
+    assert_eq!(text_in(&rt, "list-empty", "empty-head"), "No session matches “zzzz”");
+}
+
+#[test]
+fn the_size_flag_gives_the_first_frame_its_height() {
+    let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(size_of(&args(&["--snap", "x.png", "--size", "960x640"])), Some((960.0, 640.0)));
+    assert_eq!(size_of(&args(&["--size=1400x700"])), Some((1400.0, 700.0)));
+    assert_eq!(size_of(&args(&["--snap", "x.png"])), None);
+}
+
+thread_local! {
+    static MANY: std::cell::RefCell<Option<tokprof_browse::render_rhythm::DayParts>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The lanes of thirty sessions, at the height the window gives them.
+fn many_lanes(s: &Desk, cx: &mut rune::Cx<Desk>) -> rune::El {
+    let p = pal::pal(crate::themes::default(true));
+    let max_h = view::lanes_max_h(view::window_size(s, cx).1);
+    MANY.with(|d| rune::col().w_full().h_full().child(day::lanes_of(s, d.borrow().as_ref().unwrap(), cx, &p, max_h)))
+}
+
+#[test]
+fn in_a_small_window_the_lanes_and_what_is_under_them_take_at_most_45_percent() {
+    let mut many = synthetic_day();
+    if let Some((_, lanes)) = &mut many.strip {
+        let lane = lanes.lanes[0].clone();
+        lanes.lanes = (0..30).map(|i| tokprof_core::rhythm::StripLane { id: format!("id{i}"), ..lane.clone() }).collect();
+    }
+    MANY.with(|d| *d.borrow_mut() = Some(many));
+    let mut desk = desk_of(30);
+    // As main seeds it from `--size`, before any layout.
+    desk.window = (960.0, 640.0);
+    let mut rt = Runtime::new(desk, many_lanes, (960.0, 640.0), Env::new(true, 1.0));
+    rt.frame(1.0 / 60.0);
+    let lanes = rt.presented("lanes").expect("the lanes").0;
+    assert!(lanes[3] <= 0.45 * (640.0 - view::BAR_H) + 1.0, "the first frame: {lanes:?}");
+    assert!(lanes[3] >= 0.4 * (640.0 - view::BAR_H), "and they take the room they have: {lanes:?}");
+}
+
+#[test]
+fn dark_themes_lower_the_large_marks_and_keep_the_text_colors() {
+    let t = crate::themes::find("neon-arcade").expect("neon-arcade");
+    let p = pal::pal(t);
+    assert_eq!(p.warm, t.color("success"), "text in the green stays as the theme has it");
+    assert_eq!(p.work, t.color("canvas").mix(t.color("success"), pal::DARK_FILL), "work's bars sit into the background");
+    assert_eq!(p.read, t.color("canvas").mix(t.color("info"), pal::DARK_FILL));
+    let light = pal::pal(crate::themes::default(false));
+    assert_eq!(light.work, crate::themes::default(false).color("success"), "light themes keep their marks");
+}

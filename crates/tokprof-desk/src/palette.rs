@@ -9,7 +9,7 @@ use tokprof_core::fmt::{local_time, usd};
 use tokprof_core::rhythm;
 
 use crate::inspector::Tab;
-use crate::overlay;
+use crate::overlay::{self, R_CARD, R_ROW};
 use crate::pal::{self, Pal};
 use crate::reports::Mode;
 use crate::{Desk, Focus};
@@ -263,9 +263,13 @@ pub fn entries(s: &Desk, query: &str) -> Vec<Entry> {
         return out;
     }
     all.retain_mut(|e| {
-        let title = fuzzy(&q, &e.title);
+        // A day's name is short words and numbers, where letters far apart match by chance: its
+        // letters match only in runs from the starts of words that follow one another.
+        let day = e.group == Group::Days;
+        let fits = |text: &str| fuzzy(&q, text).filter(|(_, at)| !day || in_word_runs(text, at));
+        let title = fits(&e.title);
         let detail = match e.group {
-            Group::Sessions | Group::Days => fuzzy(&q, &e.detail).map(|(score, at)| (score - DETAIL_PENALTY, at)),
+            Group::Sessions | Group::Days => fits(&e.detail).map(|(score, at)| (score - DETAIL_PENALTY, at)),
             _ => None,
         };
         match (title, detail) {
@@ -439,6 +443,27 @@ pub fn fuzzy(query: &str, text: &str) -> Option<(i32, Vec<usize>)> {
         at[i - 1] = from[i][at[i]];
     }
     Some((total, at))
+}
+
+/// Whether the letters at char places `at` of `text` lie in runs that each start a word, the
+/// words one after another: `8oct` in `Thu 8 Oct` does, `to` (T…O) does not.
+pub fn in_word_runs(text: &str, at: &[usize]) -> bool {
+    let t: Vec<char> = text.chars().collect();
+    // The word of each place, counting the words before it.
+    let mut word = Vec::with_capacity(t.len());
+    let mut n = 0usize;
+    for j in 0..t.len() {
+        if j > 0 && !t[j - 1].is_alphanumeric() && t[j].is_alphanumeric() {
+            n += 1;
+        }
+        word.push(n);
+    }
+    let starts = |j: usize| j == 0 || !t[j - 1].is_alphanumeric();
+    let Some(&first) = at.first() else { return true };
+    if first >= t.len() || !starts(first) {
+        return false;
+    }
+    at.windows(2).all(|w| w[1] == w[0] + 1 || (w[1] < t.len() && starts(w[1]) && word[w[1]] == word[w[0]] + 1))
 }
 
 /// The byte ranges of the chars at `places` in `text`, merged where they touch, drawn in the
@@ -675,7 +700,9 @@ pub fn view(s: &Desk, palette: &Palette, p: &Pal) -> El {
             }
             rows = rows.child(entry_row(i, e, i == at, p));
         }
-        col().key(LIST).w_full().max_h(ROWS * ROW_H + 12.0).scroll(ScrollSpec { stick_bottom: false }).child(rows)
+        let list_el = col().key(LIST).w_full().max_h(ROWS * ROW_H + 12.0).scroll(ScrollSpec { stick_bottom: false }).child(rows);
+        // More rows than it shows: the last one shown fades, so that it reads as more below.
+        if list.len() > ROWS as usize { overlay::faded(list_el, p.panel) } else { list_el }
     };
     let count = match list.len() {
         0 => String::new(),
@@ -694,7 +721,7 @@ pub fn view(s: &Desk, palette: &Palette, p: &Pal) -> El {
         .child(overlay::hint(&["esc"], "close", p))
         .child(spacer().grow(1.0))
         .child(text(count).key("palette-count").font(pal::SMALL).color(p.ink3).single_line());
-    let card = overlay::card("palette", "Command palette", CARD_W, 20.0, p)
+    let card = overlay::card("palette", "Command palette", CARD_W, R_CARD, p)
         .child(field)
         .child(el().w_full().h(1.0).fill(p.row_line))
         .child(body)
@@ -715,7 +742,7 @@ fn entry_row(i: usize, e: &Entry, on: bool, p: &Pal) -> El {
         .px(10.0)
         .gap(10.0)
         .center_y()
-        .radius(9.0)
+        .radius(R_ROW)
         .fill(if on { p.sel } else { Color::TRANSPARENT })
         .hover(if on { p.sel } else { p.hover })
         .role("option")
@@ -789,6 +816,18 @@ mod tests {
         assert_eq!(places("nd", "Next day"), vec![0, 5]);
         assert_eq!(places("sum", "Summary"), vec![0, 1, 2]);
         assert_eq!(places("é", "Café"), vec![3]);
+    }
+
+    #[test]
+    fn days_match_only_in_runs_from_the_starts_of_words() {
+        let day = |q: &str, t: &str| fuzzy(q, t).is_some_and(|(_, at)| in_word_runs(t, &at));
+        assert!(day("to", "Today") && day("tod", "Today"), "a run from the start");
+        assert!(!day("to", "Thu 8 Oct 2026"), "T in Thu, o in Oct: two words apart");
+        assert!(!day("to", "8 October"), "t inside a word");
+        assert!(day("8oct", "Thu 8 Oct 2026") && day("oct", "Thu 8 Oct 2026") && day("thu", "Thu 8 Oct 2026"));
+        assert!(day("ye", "Yesterday") && !day("ys", "Yesterday"));
+        // Sessions keep the loose matches.
+        assert!(fuzzy("to", "Thu 8 Oct 2026").is_some());
     }
 
     #[test]

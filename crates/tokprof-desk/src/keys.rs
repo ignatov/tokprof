@@ -5,7 +5,7 @@
 use rune::{El, Key as RuneKey, KeyEvent, ScrollSpec, Tx, col, el, row, spacer, text};
 
 use crate::Desk;
-use crate::overlay::{self, PILL};
+use crate::overlay::{self, R_CARD, R_GROUP};
 use crate::pal::{self, Pal};
 
 /// A row of the key help: the keys, any of which does it, and what it does.
@@ -70,7 +70,6 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
             k(&["←", "→", "h", "l"], "day before, day after"),
             k(&["esc"], "clear the filter, or quit"),
             k(&["⏎"], "while typing a filter: keep it"),
-            k(&["esc"], "while typing a filter: clear it"),
         ],
     ),
     (
@@ -147,16 +146,17 @@ impl Desk {
 /// The key help over the window: a card of the groups in two columns.
 pub fn view(p: &Pal, height: f32) -> El {
     let column = |groups: &[(&'static str, &'static [Keys])]| col().w(COLUMN_W).gap(GROUP_GAP).children(groups.iter().map(|(name, keys)| group(name, keys, p)));
-    let badge = row().h(26.0).px(12.0).center_y().radius(PILL).fill(p.bar).child(text("? or esc to close").font(pal::SMALL_STRONG).color(p.ink2).single_line());
-    let head = row()
+    let head = row().w_full().px(24.0).pt(20.0).pb(16.0).center_y().child(text("Keys").key("keys-title").font(pal::TITLE).color(p.ink).single_line());
+    let foot = row()
+        .key("keys-foot")
         .w_full()
         .px(24.0)
-        .pt(20.0)
-        .pb(16.0)
+        .py(14.0)
+        .gap(14.0)
         .center_y()
-        .child(text("Keys").key("keys-title").font(pal::TITLE).color(p.ink).single_line())
+        .child(overlay::hint(&["↑", "↓"], "scroll", p))
         .child(spacer().grow(1.0))
-        .child(badge);
+        .child(overlay::hint(&["?", "esc"], "close", p));
     let body = col()
         .key(BODY)
         .w_full()
@@ -164,11 +164,13 @@ pub fn view(p: &Pal, height: f32) -> El {
         .min_h(0.0)
         .scroll(ScrollSpec { stick_bottom: false })
         .child(row().w_full().px(24.0).py(14.0).gap(18.0).child(column(&GROUPS[..LEFT])).child(column(&GROUPS[LEFT..])));
-    let card = overlay::card("keys", "Keys", CARD_W, 20.0, p)
+    let card = overlay::card("keys", "Keys", CARD_W, R_CARD, p)
         .h(card_height().min(height - 80.0).max(320.0))
         .child(head)
         .child(el().w_full().h(1.0).fill(p.row_line))
-        .child(body);
+        .child(if card_height() > height - 80.0 { overlay::faded(body, p.panel).grow(1.0) } else { body })
+        .child(el().w_full().h(1.0).fill(p.row_line))
+        .child(foot);
     overlay::scrim("keys-scrim", p, |s| s.help = false).center().child(card)
 }
 
@@ -178,7 +180,8 @@ fn card_height() -> f32 {
     let group_h = |keys: &[Keys]| 16.0 + 10.0 + 20.0 + keys.len() as f32 * ROW_H;
     let column_h = |groups: &[(&str, &[Keys])]| groups.iter().map(|(_, keys)| group_h(keys)).sum::<f32>() + GROUP_GAP * (groups.len() as f32 - 1.0);
     let body = column_h(&GROUPS[..LEFT]).max(column_h(&GROUPS[LEFT..])) + 28.0;
-    20.0 + 16.0 + 26.0 + 1.0 + body
+    // The head, its line, the body, the line and the foot.
+    20.0 + 16.0 + 26.0 + 1.0 + body + 1.0 + 48.0
 }
 
 /// The height of a row of keys.
@@ -186,13 +189,15 @@ const ROW_H: f32 = 22.0;
 
 /// A group of keys: its name over a soft group of rows, the keycaps left and what they do right.
 fn group(name: &'static str, keys: &'static [Keys], p: &Pal) -> El {
+    // The keys' column as wide as the group's widest keys, so that what they do starts near them.
+    let caps_w = keys.iter().map(|k| k.keys.iter().map(|c| keycap_w(c) + 3.0).sum::<f32>()).fold(40.0, f32::max) + 8.0;
     let rows = keys.iter().map(|k| {
         row()
             .w_full()
             .h(ROW_H)
             .gap(12.0)
             .center_y()
-            .child(row().w(140.0).gap(3.0).center_y().children(k.keys.iter().map(|c| overlay::keycap_on(c, p.panel, p))))
+            .child(row().w(caps_w).gap(3.0).center_y().children(k.keys.iter().map(|c| overlay::keycap_on(c, p.panel, p))))
             .child(text(k.what).font(pal::BODY).color(p.ink).single_line().truncate().grow(1.0).shrink().min_w(0.0))
     });
     col()
@@ -200,5 +205,10 @@ fn group(name: &'static str, keys: &'static [Keys], p: &Pal) -> El {
         .w_full()
         .gap(10.0)
         .child(text(name).font(pal::HEAD).color(p.ink2).single_line())
-        .child(col().w_full().px(14.0).py(10.0).radius(16.0).fill(p.bar).children(rows))
+        .child(col().w_full().px(14.0).py(10.0).radius(R_GROUP).fill(p.bar).children(rows))
+}
+
+/// About how wide a keycap of `k` is: its text and its padding, at least square.
+fn keycap_w(k: &str) -> f32 {
+    (pal::text_w(k, pal::SMALL_STRONG) + 12.0).max(20.0)
 }
