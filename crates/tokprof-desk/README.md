@@ -7,6 +7,7 @@ The session browser of tokprof in a native window laid out as a profiler, drawn 
 - **The inspector** of the selected session on the right, under tabs. `Summary` has the session's requests on a time axis up to now, with the time the cache stayed warm and has been cold and the next request at now; the next request's cost; the ways to continue (resume, a new session from a handoff, `/compact`) with the cheapest marked; the spend; and the advice. `Requests`, `Spend`, `Work`, `Waits`, `Prompts`, `Tools`, `Context` and `Cache` hold the X-ray's blocks of those names, with the numbers `tokprof scan` prints.
 - **The bar** at the top is the window's own: the day's name with the days before and after, Today, the day's summary, the zoom, the filter and the status, right of the window's buttons.
 - **Keys** are those of `tokprof ui` (see the key table in the [README](../../README.md#quick-start)), except that ← and → step the day; ⏎ shows the inspector full size, `d` the selected session's day, ⌘Q and ⌘W quit. A click selects a session, a double click shows its inspector full size, and the wheel scrolls.
+- **Every list takes the keyboard.** Tab and Shift+Tab move it between the lanes, the list and the inspector, an accent line marks the pane that has it, and esc gives it back to the list. In the lanes, ↑↓ (`k`, `j`), Home and End select the session of another lane. In the inspector, ← → (`h`, `l`) and 1–9 switch tabs, and ↑↓, PgUp, PgDn, Home and End move a cursor through the tab's rows; in `Summary` they scroll.
 - It follows the agents' log directories as `tokprof ui` does: new sessions join the list and the lanes, sessions that grow are costed again, and the rows on the screen stay where they are.
 
 ## Install
@@ -27,6 +28,7 @@ Rune renders headless with the same renderer, so the window can be checked witho
 tokprof-desk --snap out.png --tree out.json             # the latest day, the list and the newest session
 tokprof-desk --snap day.png --day 2026-11-03            # the lanes of that date
 tokprof-desk --snap tools.png --tab tools               # another tab of the inspector
+tokprof-desk --snap keys.png --scene inspector-keyboard # the inspector with the keyboard (or lanes-keyboard)
 tokprof-desk --snap out.png --size 960x640 --theme light
 ```
 

@@ -264,7 +264,7 @@ Under `time`, the `rhythm` line counts the session's turns as [Your day with the
 
 ### The same in a window
 
-`tokprof-desk` shows what `tokprof ui` shows in a native window on macOS, laid out as a profiler. The day's lanes run along the top at the times of the log: your sittings, and per session its work, its waits for you, and a tail as long as its cache stays warm, up to a line at now. Below them are the sessions, with a countdown while a cache is warm and the next request's cost in red once it is cold, and an inspector of the selected session: its requests on a time axis up to now, the next request, the ways to continue with the cheapest marked, and tabs for the X-ray's blocks. It takes the keys of `tokprof ui` (← and → step the day) and the mouse.
+`tokprof-desk` shows what `tokprof ui` shows in a native window on macOS, laid out as a profiler. The day's lanes run along the top at the times of the log: your sittings, and per session its work, its waits for you, and a tail as long as its cache stays warm, up to a line at now. Below them are the sessions, with a countdown while a cache is warm and the next request's cost in red once it is cold, and an inspector of the selected session: its requests on a time axis up to now, the next request, the ways to continue with the cheapest marked, and tabs for the X-ray's blocks. It takes the keys of `tokprof ui` (← and → step the day) and the mouse, and Tab moves the keyboard between the lanes, the list and the inspector, whose tabs and rows the arrows then move through.
 
 ```sh
 cargo install --path crates/tokprof-desk --root ~/.local

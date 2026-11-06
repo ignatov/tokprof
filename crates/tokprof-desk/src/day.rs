@@ -183,7 +183,7 @@ pub fn version(s: &Desk, cx: &Cx<Desk>, max_h: f32, dark: bool) -> u64 {
     view::hash_of((
         (parts.map(|p| p as *const DayParts as usize), b.day_noon(), b.day_is_latest(), s.fit, dark, max_h.to_bits()),
         (cx.layout_size(SCALE).map(|sz| sz[0].to_bits()), b.selected().map(|r| b.session(r)), s.pointer.as_ref().map(|p| (p.lane.clone(), p.x.to_bits()))),
-        (view::minute(), lanes, known.to_bits(), pending),
+        (view::minute(), lanes, known.to_bits(), pending, s.pane == crate::Focus::Lanes),
     ))
 }
 
@@ -193,19 +193,25 @@ pub fn lanes(s: &Desk, cx: &Cx<Desk>, p: &Pal, max_h: f32) -> El {
         Some(parts) => lanes_of(s, parts, cx, p, max_h),
         None => {
             let note = format!("computing the day of {}…", local_time(s.browser.day_noon(), "%Y-%m-%d"));
-            frame(row().h(3.0 * LANE).px(16.0).center_y().child(text(note).key("lanes-note").font(pal::BODY).color(p.ink2)), p)
+            frame(s, row().h(3.0 * LANE).px(16.0).center_y().child(text(note).key("lanes-note").font(pal::BODY).color(p.ink2)), p)
         }
     }
 }
 
-fn frame(body: El, p: &Pal) -> El {
-    col().key("lanes").w_full().fill(p.track).child(body).child(el().w_full().h(1.0).fill(p.line))
+fn frame(s: &Desk, body: El, p: &Pal) -> El {
+    col()
+        .key("lanes")
+        .w_full()
+        .fill(p.track)
+        .child(view::focus_line("lanes-focus", s.pane == crate::Focus::Lanes, p))
+        .child(body)
+        .child(el().w_full().h(1.0).fill(p.line))
 }
 
 /// The lanes of a day.
 pub fn lanes_of(s: &Desk, parts: &DayParts, cx: &Cx<Desk>, p: &Pal, max_h: f32) -> El {
     let b = &s.browser;
-    let frame = |body: El| frame(body, p);
+    let frame = |body: El| frame(s, body, p);
     let Some((_, lanes)) = &parts.strip else {
         return frame(
             row().h(3.0 * LANE).px(16.0).center_y().child(text("nobody typed in a session this day").key("lanes-note").font(pal::BODY).color(p.ink2)),
@@ -426,12 +432,8 @@ fn session_lane(
         .role("button")
         .label(lane.label.clone())
         .on_press_tx(move |s: &mut Desk, tx| {
-            if s.browser.open_session(&id)
-                && let Some(row) = s.browser.selected()
-            {
-                tx.scroll_into_view(s.browser.session(row).to_string());
-                tx.scroll_to_y(view::PANE, 0.0);
-            }
+            s.pane = crate::Focus::Lanes;
+            s.open_lane(&id, tx);
         })
         .child(label(head, rest, agent, p))
         .child(hover(g.track(format!("track-{}", lane.id), lanes, marks, p), Some(lane.id.clone())))

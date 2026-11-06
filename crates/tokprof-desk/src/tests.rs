@@ -516,8 +516,95 @@ fn window_keys_are_the_browser_s_keys() {
     assert_eq!(key(RuneKey::Escape), Some(Key::Esc));
     assert_eq!(key(RuneKey::Enter), Some(Key::Enter));
     assert_eq!(key(RuneKey::Left), Some(Key::Left), "← steps the day, in the browser's window mode");
-    assert_eq!(key(RuneKey::Tab), None, "Tab moves focus");
+    assert_eq!(key(RuneKey::Tab), None, "Tab moves the keyboard between the panes, not the browser");
     assert_eq!(key(RuneKey::Command('c')), None, "⌘C copies the selected text");
     let ctrl_c = KeyEvent { key: RuneKey::Text("c".into()), mods: rune::Mods { ctrl: true, ..rune::Mods::default() } };
     assert_eq!(key_of(&ctrl_c), Some(Key::Interrupt));
+}
+
+fn shift_tab(rt: &mut Runtime<Desk>) {
+    rt.key(KeyEvent { key: RuneKey::Tab, mods: rune::Mods { shift: true, ..rune::Mods::default() } });
+    settle(rt);
+}
+
+#[test]
+fn tab_moves_the_keyboard_between_the_panes_and_esc_brings_it_back() {
+    let mut rt = runtime(desk_of(30), (1400.0, 900.0));
+    assert_eq!(rt.state.pane, Focus::List, "the list has the keyboard to start with");
+    press(&mut rt, RuneKey::Tab);
+    assert_eq!(rt.state.pane, Focus::Inspector, "Tab: lanes, list, inspector");
+    press(&mut rt, RuneKey::Text("j".into()));
+    press(&mut rt, RuneKey::Down);
+    assert_eq!(rt.state.browser.selected(), Some(0), "the list's keys are the list's");
+    press(&mut rt, RuneKey::Tab);
+    assert_eq!(rt.state.pane, Focus::Lanes, "and round again");
+    shift_tab(&mut rt);
+    assert_eq!(rt.state.pane, Focus::Inspector, "Shift+Tab back");
+    press(&mut rt, RuneKey::Escape);
+    assert_eq!((rt.state.pane, rt.shell_request), (Focus::List, None), "esc gives the keyboard back to the list");
+    press(&mut rt, RuneKey::Down);
+    assert_eq!(rt.state.browser.selected(), Some(1), "and ↓ moves in the list again");
+
+    // A click gives the pane it lands in the keyboard.
+    click(&mut rt, "tab-Tools");
+    assert_eq!((rt.state.pane, rt.state.tab), (Focus::Inspector, inspector::Tab::Tools));
+    click(&mut rt, "id4");
+    assert_eq!(rt.state.pane, Focus::List);
+}
+
+#[test]
+fn the_lanes_step_to_the_lane_above_below_first_and_last() {
+    let to = |at, step| lane_to(3, at, step);
+    assert_eq!(to(Some(1), LaneStep::Down), Some(2));
+    assert_eq!(to(Some(2), LaneStep::Down), Some(2), "the last stays");
+    assert_eq!(to(Some(1), LaneStep::Up), Some(0));
+    assert_eq!(to(Some(0), LaneStep::Up), Some(0), "the first stays");
+    assert_eq!(to(Some(1), LaneStep::First), Some(0));
+    assert_eq!(to(Some(0), LaneStep::Last), Some(2));
+    assert_eq!(to(None, LaneStep::Down), Some(0), "from a session without a lane that day, the first");
+    assert_eq!(lane_to(0, None, LaneStep::Down), None, "no lanes, nowhere to go");
+    let step = |k: RuneKey| lane_step(&KeyEvent::from(k));
+    assert_eq!((step(RuneKey::Text("j".into())), step(RuneKey::Text("k".into()))), (Some(LaneStep::Down), Some(LaneStep::Up)));
+    assert_eq!((step(RuneKey::Home), step(RuneKey::End), step(RuneKey::Left)), (Some(LaneStep::First), Some(LaneStep::Last), None), "← steps the day");
+
+    // Without a day yet, the lanes keep the keys that move through them.
+    let mut rt = runtime(desk_of(30), (1400.0, 900.0));
+    rt.update(|s, _| s.pane = Focus::Lanes);
+    press(&mut rt, RuneKey::Down);
+    assert_eq!(rt.state.browser.selected(), Some(0), "↓ with the lanes' keyboard leaves the list alone");
+}
+
+#[test]
+fn the_inspector_s_keys_switch_tabs_and_move_the_cursor_through_rows() {
+    let (catalog, select) = fixture();
+    let mut browser = Browser::start(catalog, Pricing::defaults(), select, false, Arc::new(|| {}), frontend()).unwrap();
+    browser.settle();
+    let mut rt = runtime(Desk::new(browser, false), (1400.0, 900.0));
+    press(&mut rt, RuneKey::Tab);
+    press(&mut rt, RuneKey::Text("7".into()));
+    assert_eq!(rt.state.tab, inspector::Tab::Tools, "7 shows the seventh tab");
+    let rows = rt.state.tab_rows.get();
+    assert!(rows >= 2, "the fixture's tools: {rows}");
+    press(&mut rt, RuneKey::Down);
+    press(&mut rt, RuneKey::Text("j".into()));
+    assert_eq!(rt.state.cursor, 2.min(rows - 1), "↓ and j move the cursor");
+    assert!(rt.presented(&format!("row-{}", rt.state.cursor)).is_some(), "its row is on the screen");
+    press(&mut rt, RuneKey::End);
+    assert_eq!(rt.state.cursor, rows - 1, "End to the last row");
+    press(&mut rt, RuneKey::Text("k".into()));
+    assert_eq!(rt.state.cursor, rows - 2);
+    press(&mut rt, RuneKey::Home);
+    assert_eq!(rt.state.cursor, 0, "Home to the first");
+    press(&mut rt, RuneKey::Right);
+    assert_eq!((rt.state.tab, rt.state.cursor), (inspector::Tab::Context, 0), "→ the next tab, from its first row");
+    press(&mut rt, RuneKey::Text("h".into()));
+    assert_eq!(rt.state.tab, inspector::Tab::Tools, "h the tab before");
+    press(&mut rt, RuneKey::Left);
+    press(&mut rt, RuneKey::Left);
+    assert_eq!(rt.state.tab, inspector::Tab::Waits);
+    assert_eq!(rt.state.browser.selected(), Some(0), "the session stays selected");
+    press(&mut rt, RuneKey::Text("1".into()));
+    assert_eq!((rt.state.tab, rt.state.tab_rows.get()), (inspector::Tab::Summary, 0), "Summary has no rows to move through");
+    press(&mut rt, RuneKey::Down);
+    assert_eq!(rt.state.cursor, 0, "↓ scrolls it instead");
 }

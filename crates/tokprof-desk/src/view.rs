@@ -108,6 +108,12 @@ pub fn dot(c: Color, size: f32) -> El {
     el().w(size).h(size).radius(size / 2.0).fill(c)
 }
 
+/// The line along the top of a pane that marks it as the one with the keyboard; the same room,
+/// empty, on the others.
+pub fn focus_line(key: &'static str, on: bool, p: &Pal) -> El {
+    el().key(key).w_full().h(2.0).fill(if on { p.accent } else { Color::TRANSPARENT })
+}
+
 /// The window's own title bar: the room for the window's buttons, the day's name with the steps
 /// to the days before and after, Today, the day's summary, the status, the lanes' zoom, the
 /// filter and the live mark. Dragging it where it has no control moves the window.
@@ -261,7 +267,15 @@ fn list_pane(s: &Desk, p: &Pal) -> El {
         .center_y()
         .child(text(title).key("list-title").font(pal::SMALL_STRONG).color(p.ink2).single_line().truncate().grow(1.0).min_w(0.0))
         .child(segments("sort", sorts.collect(), p));
-    col().key("list-pane").w(LIST_WIDTH).h_full().min_h(0.0).child(head).child(el().w_full().h(1.0).fill(p.line)).child(list)
+    col()
+        .key("list-pane")
+        .w(LIST_WIDTH)
+        .h_full()
+        .min_h(0.0)
+        .child(focus_line("list-focus", s.pane == crate::Focus::List, p))
+        .child(head)
+        .child(el().w_full().h(1.0).fill(p.line))
+        .child(list)
 }
 
 /// The time a cache stays warm, as the list counts it down: `24:47`, `1:02:03` past an hour.
@@ -329,6 +343,7 @@ fn list_row(s: &Desk, i: usize) -> El {
         .help_when_truncated(format!("{name}\n{}", c.project))
         .on_press_tx(move |s: &mut Desk, tx| {
             s.select_session(&press);
+            s.pane = crate::Focus::List;
             tx.scroll_to_y(PANE, 0.0);
         })
         .on_double_press(move |s: &mut Desk| {

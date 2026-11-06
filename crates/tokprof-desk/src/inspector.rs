@@ -72,15 +72,32 @@ pub fn version(s: &Desk, cx: &Cx<Desk>, dark: bool) -> u64 {
         Pane::Empty(n) => n.to_string(),
     };
     view::hash_of((
-        b.xray().map(|x| x as *const XRay as usize),
-        pending,
-        s.tab,
-        dark,
-        selected,
-        b.zoomed(),
-        cx.layout_size(TRACK).map(|sz| sz[0].to_bits()),
-        view::minute(),
+        (b.xray().map(|x| x as *const XRay as usize), pending, s.tab, dark, selected),
+        (b.zoomed(), cx.layout_size(TRACK).map(|sz| sz[0].to_bits()), view::minute(), keyboard(s), s.cursor),
     ))
+}
+
+/// Whether the inspector has the keyboard: as the pane that has it, or full size.
+pub fn keyboard(s: &Desk) -> bool {
+    s.pane == crate::Focus::Inspector || s.browser.zoomed()
+}
+
+thread_local! {
+    /// The rows of the tab being drawn: how many are numbered so far, and the one the cursor is
+    /// on while the inspector has the keyboard.
+    static ROWS: std::cell::Cell<(usize, Option<usize>)> = const { std::cell::Cell::new((0, None)) };
+}
+
+/// Numbers a row of the tab being drawn (`row-0`, `row-1`, …), marks the cursor's, and lets a
+/// click put the cursor on it.
+fn numbered(line: El, p: &Pal) -> El {
+    let (n, cursor) = ROWS.get();
+    ROWS.set((n + 1, cursor));
+    let line = line.key(format!("row-{n}")).radius(5.0).on_press(move |s: &mut Desk| {
+        s.pane = crate::Focus::Inspector;
+        s.cursor = n;
+    });
+    if cursor == Some(n) { line.fill(p.sel) } else { line.hover(p.hover) }
 }
 
 pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
@@ -96,14 +113,15 @@ pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
             .label(t.name())
             .hover(p.hover)
             .on_press_tx(move |s: &mut Desk, tx| {
-                s.tab = t;
-                tx.scroll_to_y(view::PANE, 0.0);
+                s.show_tab(t, tx);
+                s.pane = crate::Focus::Inspector;
             })
             .child(spacer().grow(1.0))
             .child(text(t.name()).font(pal::HEAD).color(if on { p.ink } else { p.ink2 }).single_line())
             .child(spacer().grow(1.0))
             .child(el().w_full().h(2.0).radius(1.0).fill(if on { p.accent } else { Color::TRANSPARENT }))
     }));
+    ROWS.set((0, keyboard(s).then_some(s.cursor)));
     let body = match s.browser.xray() {
         Some(x) => match s.tab {
             Tab::Summary => summary(s, x, cx, p),
@@ -122,6 +140,8 @@ pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
             Pane::Empty(n) => vec![note(n, p)],
         },
     };
+    // Summary's ways are rows of a box, not of a list the cursor moves through.
+    s.tab_rows.set(if s.tab == Tab::Summary { 0 } else { ROWS.get().0 });
     let offset = s.pane_offset.clone();
     let pane = col()
         .key(view::PANE)
@@ -132,7 +152,16 @@ pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
         .on_scroll_offset(move |at| offset.set(at.offset[1]))
         .on_layout(|s: &mut Desk, r| s.pane_height = r[3])
         .child(col().key("pane-body").w_full().px(18.0).pt(14.0).pb(26.0).gap(14.0).children(body));
-    col().key("inspector").grow(1.0).h_full().min_w(0.0).min_h(0.0).child(tabs).child(el().w_full().h(1.0).fill(p.line)).child(pane)
+    col()
+        .key("inspector")
+        .grow(1.0)
+        .h_full()
+        .min_w(0.0)
+        .min_h(0.0)
+        .child(view::focus_line("inspector-focus", keyboard(s) && !s.browser.zoomed(), p))
+        .child(tabs)
+        .child(el().w_full().h(1.0).fill(p.line))
+        .child(pane)
 }
 
 fn note(s: impl Into<String>, p: &Pal) -> El {
@@ -178,7 +207,7 @@ fn bar_rows(rows: &[(String, f64, String, String)], color: Color, p: &Pal) -> El
         if !note.is_empty() {
             line = line.child(text(note.clone()).font(pal::SMALL).color(p.ink3).single_line().truncate().w(150.0));
         }
-        line
+        numbered(line, p)
     }))
 }
 
@@ -202,7 +231,7 @@ fn table(cols: &[Column], rows: Vec<Vec<(String, Option<Color>)>>, p: &Pal) -> E
             let font = if c.2 { pal::BODY_NUM } else { pal::BODY };
             cell(t, c, color.unwrap_or(p.ink), font)
         }));
-        out = out.child(line).child(el().w_full().h(1.0).fill(p.row_line));
+        out = out.child(numbered(line, p)).child(el().w_full().h(1.0).fill(p.row_line));
     }
     out
 }

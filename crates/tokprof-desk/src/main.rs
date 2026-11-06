@@ -111,6 +111,30 @@ pub struct Desk {
     /// The minute of the last poll: the lanes' now line and the inspector's times move at a new
     /// one.
     pub minute: i64,
+    /// The pane that has the keyboard.
+    pub pane: Focus,
+    /// The row of the inspector's tab the cursor is on, and how many rows the tab has, as the
+    /// inspector last drew it.
+    pub cursor: usize,
+    pub tab_rows: Cell<usize>,
+}
+
+/// The panes that take the keyboard, in the order Tab moves through them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Focus {
+    Lanes,
+    List,
+    Inspector,
+}
+
+impl Focus {
+    const ORDER: [Focus; 3] = [Focus::Lanes, Focus::List, Focus::Inspector];
+
+    /// The next pane, or the one before.
+    fn step(self, back: bool) -> Focus {
+        let at = Focus::ORDER.iter().position(|&f| f == self).unwrap_or(1);
+        Focus::ORDER[if back { (at + 2) % 3 } else { (at + 1) % 3 }]
+    }
 }
 
 impl Desk {
@@ -137,7 +161,106 @@ impl Desk {
             status: (String::new(), Instant::now()),
             separator_on_top: false,
             minute: 0,
+            pane: Focus::List,
+            cursor: 0,
+            tab_rows: Cell::new(0),
         }
+    }
+
+    /// Shows tab `t` from its top, with the cursor on its first row.
+    pub fn show_tab(&mut self, t: Tab, tx: &mut Tx) {
+        self.tab = t;
+        self.cursor = 0;
+        tx.scroll_to_y(view::PANE, 0.0);
+    }
+
+    /// Selects the session of a lane, as a click on the lane does: in the list, scrolled to, and
+    /// in the inspector from its top.
+    pub fn open_lane(&mut self, id: &str, tx: &mut Tx) {
+        if self.browser.open_session(id)
+            && let Some(row) = self.browser.selected()
+        {
+            self.cursor = 0;
+            tx.scroll_into_view(self.browser.session(row).to_string());
+            tx.scroll_into_view(format!("lane-{id}"));
+            tx.scroll_to_y(view::PANE, 0.0);
+        }
+    }
+
+    /// The lanes of the day shown whose sessions are listed, in their order.
+    fn listed_lanes(&self) -> Vec<String> {
+        let Some((_, lanes)) = self.browser.day_parts().and_then(|p| p.strip.as_ref()) else { return Vec::new() };
+        lanes.lanes.iter().filter(|l| self.browser.row_of(&l.id).is_some()).map(|l| l.id.clone()).collect()
+    }
+
+    /// The keys of the lanes while they have the keyboard: the lane above or below, the first or
+    /// the last; the rest go on to the browser.
+    fn lanes_key(&mut self, e: &KeyEvent, tx: &mut Tx) -> bool {
+        let lanes = self.listed_lanes();
+        let selected = self.browser.selected();
+        let at = selected.and_then(|r| lanes.iter().position(|id| self.browser.row_of(id) == Some(r)));
+        let Some(step) = lane_step(e) else { return false };
+        // The keys that move through the lanes stay with them, lanes or none.
+        if let Some(to) = lane_to(lanes.len(), at, step) {
+            let id = lanes[to].clone();
+            self.open_lane(&id, tx);
+        }
+        true
+    }
+
+    /// The keys of the inspector while it has the keyboard: the tab before or after or of a
+    /// digit, and the cursor through the tab's rows, or the inspector scrolled where the tab has
+    /// none; the rest go on to the browser.
+    fn inspector_key(&mut self, e: &KeyEvent, tx: &mut Tx) -> bool {
+        let at = Tab::ALL.iter().position(|&t| t == self.tab).unwrap_or(0);
+        let text = match &e.key {
+            RuneKey::Text(t) if plain(e) => Some(t.as_str()),
+            _ => None,
+        };
+        match (&e.key, text) {
+            (RuneKey::Left, _) | (_, Some("h")) => {
+                self.show_tab(Tab::ALL[at.saturating_sub(1)], tx);
+                return true;
+            }
+            (RuneKey::Right, _) | (_, Some("l")) => {
+                self.show_tab(Tab::ALL[(at + 1).min(Tab::ALL.len() - 1)], tx);
+                return true;
+            }
+            (_, Some(d)) if d.len() == 1 && ("1"..="9").contains(&d) => {
+                self.show_tab(Tab::ALL[d.parse::<usize>().unwrap_or(1) - 1], tx);
+                return true;
+            }
+            _ => {}
+        }
+        let rows = self.tab_rows.get();
+        let step: Option<isize> = match (&e.key, text) {
+            (RuneKey::Up, _) | (_, Some("k")) => Some(-1),
+            (RuneKey::Down, _) | (_, Some("j")) => Some(1),
+            (RuneKey::PageUp, _) => Some(-10),
+            (RuneKey::PageDown, _) => Some(10),
+            (RuneKey::Home, _) | (_, Some("g")) => Some(isize::MIN / 2),
+            (RuneKey::End, _) | (_, Some("G")) => Some(isize::MAX / 2),
+            _ => None,
+        };
+        if rows > 0
+            && let Some(step) = step
+        {
+            self.cursor = (self.cursor as isize).saturating_add(step).clamp(0, rows as isize - 1) as usize;
+            tx.scroll_into_view(format!("row-{}", self.cursor));
+            return true;
+        }
+        // A tab without rows scrolls: a line, a page, or to its ends.
+        match step {
+            Some(-1) => tx.scroll_to_y(view::PANE, (self.pane_offset.get() - 20.0).max(0.0)),
+            Some(1) => tx.scroll_to_y(view::PANE, self.pane_offset.get() + 20.0),
+            Some(-10) => tx.scroll_page(view::PANE, -1),
+            Some(10) => tx.scroll_page(view::PANE, 1),
+            Some(s) if s < 0 => tx.scroll_to_y(view::PANE, 0.0),
+            Some(_) => tx.scroll_page(view::PANE, 1000),
+            None if text == Some(" ") => tx.scroll_page(view::PANE, 1),
+            None => return false,
+        }
+        true
     }
 
     /// The slot of the list that row `row` sits in.
@@ -169,6 +292,7 @@ impl Desk {
     pub fn select_session(&mut self, session: &str) {
         if let Some(row) = self.browser.row_of(session) {
             self.browser.select_row(row);
+            self.cursor = 0;
         }
     }
 
@@ -288,18 +412,42 @@ fn key_of(e: &KeyEvent) -> Option<Key> {
     })
 }
 
-/// How a key scrolls the full-size inspector, in points: a line, or a page.
-fn pane_scroll(e: &KeyEvent) -> Option<i32> {
-    match &e.key {
-        RuneKey::Up => Some(-1),
-        RuneKey::Down => Some(1),
-        RuneKey::Text(t) if t == "k" && !e.mods.cmd => Some(-1),
-        RuneKey::Text(t) if t == "j" && !e.mods.cmd => Some(1),
-        RuneKey::PageUp => Some(i32::MIN),
-        RuneKey::PageDown => Some(i32::MAX),
-        RuneKey::Text(t) if t == " " && !e.mods.cmd => Some(i32::MAX),
-        _ => None,
-    }
+/// A key without Command, Control or Option.
+fn plain(e: &KeyEvent) -> bool {
+    !(e.mods.cmd || e.mods.ctrl || e.mods.alt)
+}
+
+/// How a key moves through the lanes: a lane up or down, or to the first or the last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LaneStep {
+    Up,
+    Down,
+    First,
+    Last,
+}
+
+fn lane_step(e: &KeyEvent) -> Option<LaneStep> {
+    Some(match &e.key {
+        RuneKey::Up => LaneStep::Up,
+        RuneKey::Down => LaneStep::Down,
+        RuneKey::Text(t) if t == "k" && plain(e) => LaneStep::Up,
+        RuneKey::Text(t) if t == "j" && plain(e) => LaneStep::Down,
+        RuneKey::Home => LaneStep::First,
+        RuneKey::End => LaneStep::Last,
+        _ => return None,
+    })
+}
+
+/// The lane a step goes to among `count`, from the selected session's lane `at` (none when its
+/// session has no lane that day, which goes to the first).
+fn lane_to(count: usize, at: Option<usize>, step: LaneStep) -> Option<usize> {
+    let last = count.checked_sub(1)?;
+    Some(match (step, at) {
+        (LaneStep::First, _) | (_, None) => 0,
+        (LaneStep::Last, _) => last,
+        (LaneStep::Up, Some(i)) => i.saturating_sub(1),
+        (LaneStep::Down, Some(i)) => (i + 1).min(last),
+    })
 }
 
 fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
@@ -311,17 +459,30 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
         tx.close_window();
         return true;
     }
-    // The full-size inspector scrolls in its own viewport, which the wheel moves too.
-    if s.browser.zoomed()
-        && !s.browser.editing()
-        && let Some(lines) = pane_scroll(e)
-    {
-        match lines {
-            i32::MIN => tx.scroll_page(view::PANE, -1),
-            i32::MAX => tx.scroll_page(view::PANE, 1),
-            n => tx.scroll_to_y(view::PANE, (s.pane_offset.get() + n as f32 * 20.0).max(0.0)),
+    // The pane with the keyboard takes its keys first; a filter being typed takes them all.
+    if !s.browser.editing() && plain(e) {
+        let zoomed = s.browser.zoomed();
+        match e.key {
+            RuneKey::Tab if !zoomed => {
+                s.pane = s.pane.step(e.mods.shift);
+                return true;
+            }
+            RuneKey::Escape if !zoomed && s.pane != Focus::List => {
+                s.pane = Focus::List;
+                return true;
+            }
+            _ => {}
         }
-        return true;
+        // The full-size inspector has the keyboard, whichever pane had it.
+        let pane = if zoomed { Focus::Inspector } else { s.pane };
+        let taken = match pane {
+            Focus::Inspector => s.inspector_key(e, tx),
+            Focus::Lanes => s.lanes_key(e, tx),
+            Focus::List => false,
+        };
+        if taken {
+            return true;
+        }
     }
     let Some(key) = key_of(e) else { return false };
     let (selected, zoomed) = (s.browser.selected(), s.browser.zoomed());
@@ -340,6 +501,7 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
         tx.scroll_into_view(s.browser.session(row).to_string());
     }
     if (s.browser.selected(), s.browser.zoomed()) != (selected, zoomed) {
+        s.cursor = 0;
         tx.scroll_to_y(view::PANE, 0.0);
     }
     true
@@ -419,6 +581,9 @@ fn main() -> Result<()> {
     let desk = desk(&cli, tokprof_sources::catalog(), rune::is_headless(), Arc::new(wake))?;
     let spec = AppSpec {
         min_size: Some((960.0, 640.0)),
+        // The system's font, as a Mac app's text is; Inter where there is none.
+        families: ("system-ui, Inter", "ui-monospace"),
+        scenes: SCENES,
         setup: Some(setup),
         poll: Some(poll),
         on_key: Some(on_key),
@@ -427,6 +592,19 @@ fn main() -> Result<()> {
     App::new(spec).chrome(CHROME).init(move || desk).run();
     Ok(())
 }
+
+/// A named state a frame without a window can start from (`--scene`).
+type Scene = (&'static str, fn(&mut Desk));
+
+/// The scenes: a pane with the keyboard.
+const SCENES: &[Scene] = &[
+    ("lanes-keyboard", |s| s.pane = Focus::Lanes),
+    ("inspector-keyboard", |s| {
+        s.pane = Focus::Inspector;
+        s.tab = Tab::Tools;
+        s.cursor = 2;
+    }),
+];
 
 /// `AppSpec` wants a state it can make; the window starts from the one `main` made instead.
 fn placeholder() -> Desk {
