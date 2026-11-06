@@ -161,3 +161,27 @@ fn a_client_filter_picks_the_latest_session_of_that_client() {
     assert_eq!(listed, [ide]);
     std::fs::remove_dir_all(d).unwrap();
 }
+
+#[test]
+fn the_xray_holds_the_stacks_tokprof_flame_writes() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/projects");
+    let c = catalog(&fixtures);
+    let select = Query { agents: c.agents(), ..Query::default() };
+    let row = xray::rows(&c, &select, 10).into_iter().next().expect("the fixture's session");
+    assert!(!row.subagents.is_empty(), "the fixture has a subagent");
+    let x = xray::xray(&c, &row.file, &Pricing::defaults(), 0).unwrap();
+    let measure = tokprof_core::profile::Measure::Cost;
+    let mut lines: Vec<String> = x
+        .stacks
+        .iter()
+        .filter(|(stack, v)| measure.of(v) > 0 && !stack.is_empty())
+        .map(|(stack, v)| format!("{} {}", stack.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(";"), measure.of(v)))
+        .collect();
+    lines.sort();
+    let d = dir("stacks");
+    xray::export(&c, &row, &Pricing::defaults(), &d.join("x.folded")).unwrap();
+    let written = std::fs::read_to_string(d.join("x.folded")).unwrap();
+    assert!(!lines.is_empty());
+    assert_eq!(lines, written.lines().collect::<Vec<_>>());
+    std::fs::remove_dir_all(d).unwrap();
+}

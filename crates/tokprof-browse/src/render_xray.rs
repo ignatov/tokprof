@@ -634,6 +634,7 @@ pub(crate) mod tests {
             rhythm: None,
             busy: Default::default(),
             points: Vec::new(),
+            stacks: Default::default(),
         }
     }
 

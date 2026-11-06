@@ -18,10 +18,10 @@ use crate::forecast::{CacheState, cache_state, conversation, long_ttl, pace};
 use crate::labels::display_path;
 use crate::model::{BlockKind, ChainKind, CompactionTrigger, Session, TypedMessage, Usage};
 use crate::pricing::{Price, Pricing};
-use crate::profile::Values;
+use crate::profile::{Stacks, Values};
 use crate::query::Query;
 pub use crate::query::id_starts_with;
-use crate::report::{Spend, Work};
+use crate::report::{DEFAULT_STACK, Profile, Spend, Work, dims};
 use crate::setup::{self, MeanStart, SetupSpend, SetupView, Start};
 use crate::source::{AgentId, SessionRef};
 use crate::tools::{BlockEntry, ToolShare, ToolTable};
@@ -115,6 +115,8 @@ struct Totals {
     file: usize,
     tools: ToolTable,
     setup: SetupSpend,
+    /// The stacks of `tokprof flame`'s default stack.
+    profile: Profile,
 }
 
 /// The setup block of a session: what it cost, what the main conversation and the subagents
@@ -200,6 +202,7 @@ impl Sink for Totals {
     fn fact(&mut self, f: &Fact) {
         self.tools.fact(f);
         self.setup.add(f);
+        self.profile.fact(f);
         let v = Values { tokens: f.tokens, usd: f.usd.unwrap_or(0.0), avoidable: f.avoidable_usd };
         let add = |a: &mut Values| {
             a.tokens += v.tokens;
@@ -261,6 +264,9 @@ pub struct XRay {
     /// The main conversation's requests in time order, its advisor calls included; requests
     /// without a time are left out.
     pub points: Vec<RequestPoint>,
+    /// What each stack of `tokprof flame`'s default stack spent, the stacks that
+    /// `tokprof flame --session` writes for the session.
+    pub stacks: Stacks,
 }
 
 /// What one typed message cost: the requests from it to the next typed message, and the
@@ -334,6 +340,7 @@ pub fn xray(catalog: &Catalog, file: &SessionRef, pricing: &Pricing, now_ms: i64
     files.extend(catalog.subagents(file));
     let sessions: Vec<Session> = files.par_iter().map(|f| catalog.parse(f)).collect::<Result<_>>()?;
     let mut totals = Totals::default();
+    totals.profile.stack = Some(dims(DEFAULT_STACK));
     for s in &sessions {
         analysis::analyze(s, pricing, &Filter::default(), &mut totals);
     }
@@ -387,6 +394,7 @@ pub fn xray(catalog: &Catalog, file: &SessionRef, pricing: &Pricing, now_ms: i64
         points: points_of(&totals.rows),
         rhythm: crate::rhythm::SessionRhythm::of(main, now_ms, &crate::rhythm::local_offset),
         busy: crate::busy::Busy::of(main, &sessions[1..]),
+        stacks: totals.profile.stacks,
     })
 }
 
