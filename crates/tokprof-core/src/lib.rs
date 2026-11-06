@@ -19,6 +19,7 @@ pub mod handoff;
 pub mod jfr;
 pub mod labels;
 pub mod model;
+pub mod overview;
 pub mod pauses;
 pub mod pool;
 pub mod pricing;

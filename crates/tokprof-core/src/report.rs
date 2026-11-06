@@ -255,6 +255,18 @@ pub struct ModelTotals {
     pub by_component: [Values; 5],
 }
 
+impl ModelTotals {
+    /// What the model's requests cost, over the components.
+    pub fn usd(&self) -> f64 {
+        self.by_component.iter().map(|v| v.usd).sum()
+    }
+
+    /// The model's tokens, over the components.
+    pub fn tokens(&self) -> f64 {
+        self.by_component.iter().map(|v| v.tokens).sum()
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct SessionTotals {
     ours: f64,
@@ -290,6 +302,19 @@ pub struct ModelSpend {
 }
 
 impl ModelSpend {
+    /// The models, most expensive first, as the summary's table lists them.
+    pub fn by_cost(&self) -> Vec<(&(AgentId, String), &ModelTotals)> {
+        let mut models: Vec<_> = self.models.iter().collect();
+        models.sort_by(|a, b| b.1.usd().total_cmp(&a.1.usd()).then(a.0.cmp(b.0)));
+        models
+    }
+
+    /// What the priced models cost, summed in the order of `by_cost`: the summary's `Total
+    /// priced`.
+    pub fn priced_usd(&self) -> f64 {
+        self.by_cost().iter().filter(|(_, m)| m.priced).map(|(_, m)| m.usd()).fold(0.0, |a, b| a + b)
+    }
+
     pub fn merge(&mut self, o: ModelSpend) {
         for (k, v) in o.models {
             let m = self.models.entry(k).or_default();
@@ -508,6 +533,12 @@ pub struct Collector {
 impl Collector {
     pub fn new(stack: Option<Vec<Dim>>, components: Option<Vec<Component>>) -> Collector {
         Collector { profile: Profile { stack, components, ..Profile::default() }, ..Collector::default() }
+    }
+
+    /// The premium of the misses the cause table lists, expected rebuilds left out: the
+    /// summary's `avoidable on cache misses`.
+    pub fn avoidable_usd(&self) -> f64 {
+        self.misses.iter().filter(|m| !m.cause.expected()).filter_map(|m| m.premium_usd).sum()
     }
 
     pub fn merge(&mut self, o: Collector) {

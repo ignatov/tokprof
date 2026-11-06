@@ -18,7 +18,7 @@ use tokprof_core::profile::Measure;
 use tokprof_core::query::Query;
 use tokprof_core::report::{self, Collector, Dim};
 use tokprof_core::rhythm::{self, Timeline, View};
-use tokprof_core::scan::{OnUnreadable, scan};
+use tokprof_core::scan::{OnUnreadable, report_logs, scan};
 use tokprof_core::share::{self, Share};
 use tokprof_core::source::{AgentId, SessionRef};
 use tokprof_core::{bench, fmt, handoff, xray};
@@ -399,9 +399,8 @@ fn main() -> Result<()> {
     }
     if let Command::Pauses = &command {
         let started = Instant::now();
-        let mut files = catalog.discover(&agents);
         // A session's subagent logs go with it.
-        files.retain(|f| select.holds(f));
+        let files = report_logs(&catalog, &select);
         if files.is_empty() {
             bail!("no session logs found for {}", cli.agent.join(", "));
         }
@@ -458,9 +457,8 @@ fn main() -> Result<()> {
     }
     if let Command::Share { output, survey, mcp_names, dollars, .. } = &command {
         let started = Instant::now();
-        let mut files = catalog.discover(&agents);
         // A session's subagent logs go with it.
-        files.retain(|f| select.holds(f));
+        let files = report_logs(&catalog, &select);
         if files.is_empty() {
             bail!("no session logs found for {}", cli.agent.join(", "));
         }
@@ -593,9 +591,8 @@ fn main() -> Result<()> {
     };
 
     let started = Instant::now();
-    let mut files = catalog.discover(&agents);
     // A session's subagent logs go with it.
-    files.retain(|f| select.holds(f));
+    let files = report_logs(&catalog, &select);
     if files.is_empty() {
         bail!("no session logs found for {}", cli.agent.join(", "));
     }

@@ -212,6 +212,12 @@ impl AgentPauses {
         rows.into_iter().filter(|r| r.count > 0).collect()
     }
 
+    /// The cold returns' count, what their first requests cost, and how much of it was avoidable,
+    /// summed over `return_rows`.
+    pub fn return_totals(&self) -> (usize, f64, f64) {
+        self.return_rows().iter().fold((0, 0.0, 0.0), |(n, u, p), r| (n + r.count, u + r.usd, p + r.premium_usd))
+    }
+
     /// How many cold returns each starter started, in `Starter::ALL` order.
     pub fn starters(&self) -> [usize; 4] {
         Starter::ALL.map(|s| self.returns.iter().filter(|r| r.starter == s).count())

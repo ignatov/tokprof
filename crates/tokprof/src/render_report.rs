@@ -12,7 +12,7 @@ use tokprof_core::fmt::{self, clip_end, table, tokens, usd};
 use tokprof_core::pauses::{Pauses, SHORT_FOLLOW};
 use tokprof_core::pricing::{Price, Pricing};
 use tokprof_core::profile::Values;
-use tokprof_core::report::{Collector, ModelTotals, Spend, TriggerSpend, Work};
+use tokprof_core::report::{Collector, Spend, TriggerSpend, Work};
 use tokprof_core::setup::SetupSpend;
 use tokprof_core::source::AgentId;
 use tokprof_core::tools::{RowOrder, ToolTable};
@@ -30,31 +30,23 @@ pub fn summary(c: &Collector, window: &Filter, price_file: &Path) -> String {
             .chain(["total".to_string()])
             .collect::<Vec<_>>(),
     ];
-    let mut total = 0.0;
     let mut unpriced: Vec<(String, f64)> = Vec::new();
-    let mut models: Vec<_> = c.spend.models.iter().collect();
-    models.sort_by(|a, b| {
-        let cost = |m: &ModelTotals| m.by_component.iter().map(|v| v.usd).sum::<f64>();
-        cost(b.1).total_cmp(&cost(a.1)).then(a.0.cmp(b.0))
-    });
-    for ((agent, model), m) in models {
-        let sum: f64 = m.by_component.iter().map(|v| v.usd).sum();
+    for ((agent, model), m) in c.spend.by_cost() {
         let cell = |v: &Values| if m.priced { usd(v.usd) } else { tokens(v.tokens) };
         let mut row =
             vec![agent.name().to_string(), model.clone(), m.requests.to_string(), format!("{:.0}%", 100.0 * m.with_prompt as f64 / m.requests.max(1) as f64)];
         row.extend(m.by_component.iter().map(cell));
-        row.push(if m.priced { usd(sum) } else { format!("{} tok", tokens(m.by_component.iter().map(|v| v.tokens).sum())) });
+        row.push(if m.priced { usd(m.usd()) } else { format!("{} tok", tokens(m.tokens())) });
         rows.push(row);
-        if m.priced {
-            total += sum;
-        } else {
-            unpriced.push((model.clone(), m.by_component.iter().map(|v| v.tokens).sum::<f64>()));
+        if !m.priced {
+            unpriced.push((model.clone(), m.tokens()));
         }
     }
     let _ = writeln!(out, "Spend by model (API-equivalent USD; token counts where no price is known)\n");
     out.push_str(&table(&rows, 2));
+    let total = c.spend.priced_usd();
     // The premium of the misses the cause table lists, so expected rebuilds are left out of both.
-    let avoidable: f64 = c.misses.iter().filter(|m| !m.cause.expected()).filter_map(|m| m.premium_usd).sum();
+    let avoidable = c.avoidable_usd();
     let _ = writeln!(out, "\nTotal priced: {}   avoidable on cache misses: {} ({:.1}%)", usd(total), usd(avoidable), 100.0 * avoidable / total.max(1e-9));
     if !unpriced.is_empty() {
         let list = unpriced.iter().map(|(m, t)| format!("{m} ({} tokens)", tokens(*t))).collect::<Vec<_>>().join(", ");
@@ -152,7 +144,7 @@ pub fn pauses(p: &Pauses) -> String {
                 ]);
             }
             out.push_str(&table(&rows, 1));
-            let (n, first, premium) = returns.iter().fold((0, 0.0, 0.0), |(n, u, p), r| (n + r.count, u + r.usd, p + r.premium_usd));
+            let (n, first, premium) = a.return_totals();
             let _ =
                 writeln!(out, "\n{}: {} in first requests, {} of it avoidable.", fmt::count(n as u64, "cold return", "cold returns"), usd(first), usd(premium));
             let [typed, background, tool, other] = a.starters().map(|n| n as u64);

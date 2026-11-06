@@ -12,4 +12,5 @@ pub mod render_rhythm;
 pub mod render_sessions;
 pub mod render_tools;
 pub mod render_xray;
+pub mod reports;
 pub mod watch;

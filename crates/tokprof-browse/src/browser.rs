@@ -461,9 +461,10 @@ impl<T> Browser<T> {
     }
 
     /// Shows the day of `date` full size, as `d` and the arrows reach it; in the window's mode,
-    /// beside the list.
+    /// beside the list, where the date of the latest action is that day, as Today shows it.
     pub fn show_day(&mut self, date: i64) {
-        self.day = Some(Some(date));
+        let latest = self.days.get(&None).map(|d| d.date);
+        self.day = Some(if self.beside && latest == Some(date) { None } else { Some(date) });
         self.zoom = !self.beside;
         self.scroll = 0;
     }
@@ -490,6 +491,21 @@ impl<T> Browser<T> {
             self.filter.clear();
             self.refilter();
         }
+    }
+
+    /// Sets the filter to `text`, as typing it and ⏎ would; in the window's mode the day follows
+    /// the session it leaves selected.
+    pub fn set_filter(&mut self, text: &str) {
+        self.editing = false;
+        self.filter = text.to_string();
+        self.refilter();
+        self.follow_selection();
+    }
+
+    /// Counts the changes of the log directories the browser took in, for work that is done
+    /// again after them.
+    pub fn changes(&self) -> u32 {
+        self.changes
     }
 
     /// Shows the day of the latest action again, as Today does.
