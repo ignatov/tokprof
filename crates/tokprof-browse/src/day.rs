@@ -34,13 +34,14 @@ pub struct Day {
 }
 
 /// The logs a day view reads: main logs last written at or after `from` and created before
-/// `to`, whose last line with a time is at or after `from`.
-pub fn logs_around(catalog: &Catalog, select: &Query, window: (i64, i64)) -> Vec<SessionRef> {
-    catalog
-        .discover(&select.agents)
-        .into_iter()
-        .filter(|f| !f.subagent && select.holds(f) && around(f.modified_ms(), f.created_ms, || catalog.last_active(f), window))
-        .collect()
+/// `to`, whose last line with a time is at or after `from`. They are found in the log
+/// directories, or among `known`, the main logs a caller that follows the directories knows.
+pub fn logs_around(catalog: &Catalog, select: &Query, window: (i64, i64), known: Option<&[SessionRef]>) -> Vec<SessionRef> {
+    let logs = match known {
+        Some(known) => known.to_vec(),
+        None => catalog.discover(&select.agents),
+    };
+    logs.into_iter().filter(|f| !f.subagent && select.holds(f) && around(f.modified_ms(), f.created_ms, || catalog.last_active(f), window)).collect()
 }
 
 /// Whether a log is read for a window: last written at or after its start, created before its
@@ -62,7 +63,8 @@ pub fn window(date: Option<i64>, now_ms: i64, offset: Offset) -> (i64, i64) {
 }
 
 /// The day view of a date, or of the day of the latest action, with its strip in `layout` over the
-/// 24 hours from `axis_hour` on the day's date, by default from the hour the day starts in.
+/// 24 hours from `axis_hour` on the day's date, by default from the hour the day starts in. The
+/// logs are found among `known` when it is given (see `logs_around`).
 #[allow(clippy::too_many_arguments)]
 pub fn build(
     catalog: &Catalog,
@@ -73,11 +75,12 @@ pub fn build(
     layout: rhythm::Layout,
     axis_hour: Option<i64>,
     style: &Style,
+    known: Option<&[SessionRef]>,
 ) -> Result<Day> {
     let started = Instant::now();
     let offset: Offset = &rhythm::local_offset;
     let (from, to) = window(date, now_ms, offset);
-    let files = logs_around(catalog, select, (from, to));
+    let files = logs_around(catalog, select, (from, to), known);
     let filter = Filter { since_ms: Some(from), until_ms: Some(to), client: select.client.clone() };
     let temp = temp_folders();
     let ((timelines, mut cold), stats) = scan(

@@ -185,6 +185,10 @@ struct DayText<T> {
 /// hour the strip starts at once a first day set it.
 type DayJob = (Option<i64>, u32, (u16, u16), Option<i64>);
 
+/// A day job, with the main logs the browser knows when it follows the log directories, which the
+/// day reads instead of listing the directories again.
+type DayAsk = (DayJob, Option<Vec<SessionRef>>);
+
 /// A listed session and what is known about it.
 struct Entry<T> {
     row: SessionRow,
@@ -254,7 +258,10 @@ pub struct Browser<T> {
     day_pending: Option<DayJob>,
     /// When the current day may be computed again, as for X-rays.
     day_after: Instant,
-    day_tx: Sender<DayJob>,
+    day_tx: Sender<DayAsk>,
+    /// The list holds every main log the day may read: the log directories are followed, and
+    /// no filter leaves a session out.
+    knows_all: bool,
     /// The size of the pane the day is drawn in, when it was last drawn.
     pane: (u16, u16),
     /// The local hour the first day shown starts its strip at; later days start theirs there too.
@@ -301,20 +308,20 @@ impl<T> Browser<T> {
         let pricing = Arc::new(pricing);
 
         // Days, one at a time, as X-rays are.
-        let (day_tx, day_rx) = mpsc::channel::<DayJob>();
+        let (day_tx, day_rx) = mpsc::channel::<DayAsk>();
         {
             let (catalog, pricing, notify, select, layout) = (catalog.clone(), pricing.clone(), notify.clone(), select.clone(), frontend.day_layout);
             std::thread::spawn(move || {
                 // A pool of its own, so that a day does not wait behind the costing of every session.
                 let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().ok();
-                while let Ok(mut job) = day_rx.recv() {
+                while let Ok(mut ask) = day_rx.recv() {
                     while let Ok(newer) = day_rx.try_recv() {
-                        job = newer;
+                        ask = newer;
                     }
-                    let (key, changes, size, axis) = job;
+                    let ((key, changes, size, axis), known) = ask;
                     let started = Instant::now();
                     let style = tokprof_core::fmt::Style::with_color(true);
-                    let build = || crate::day::build(&catalog, &select, &pricing, key, now_ms(), layout(size), axis, &style);
+                    let build = || crate::day::build(&catalog, &select, &pricing, key, now_ms(), layout(size), axis, &style, known.as_deref());
                     let built = match &pool {
                         Some(pool) => pool.install(build),
                         None => build(),
@@ -356,8 +363,12 @@ impl<T> Browser<T> {
         }
 
         let mut browser = Browser::new(catalog, rows, pricing, frontend, notes, notify, xray_tx, day_tx);
-        if let Err(e) = following {
-            browser.status = format!("not following the logs: {e:#}");
+        match following {
+            Err(e) => browser.status = format!("not following the logs: {e:#}"),
+            Ok(()) => {
+                let unfiltered = select.project.is_none() && select.session.is_none() && select.client.is_none();
+                browser.knows_all = follow && unfiltered && select.since_ms.is_none() && select.until_ms.is_none();
+            }
         }
         // Costs of every session, in the background.
         browser.request_glances();
@@ -384,7 +395,7 @@ impl<T> Browser<T> {
         notes: Receiver<Note>,
         notify: Notify,
         xray_tx: Sender<(usize, u32, SessionRef)>,
-        day_tx: Sender<DayJob>,
+        day_tx: Sender<DayAsk>,
     ) -> Browser<T> {
         let by_path = rows.iter().enumerate().map(|(i, r)| (r.file.path().to_path_buf(), i)).collect();
         let mut browser = Browser {
@@ -413,6 +424,7 @@ impl<T> Browser<T> {
             day_pending: None,
             day_after: Instant::now(),
             day_tx,
+            knows_all: false,
             pane: (0, 0),
             day_axis: None,
             costs: true,
@@ -773,7 +785,18 @@ impl<T> Browser<T> {
         }
         let job = (key, self.changes, size, self.day_axis);
         self.day_pending = Some(job);
-        let _ = self.day_tx.send(job);
+        let _ = self.day_tx.send((job, self.known_logs()));
+    }
+
+    /// The main logs of the listed sessions and of those a filter hides, when they are every main
+    /// log the day may read, largest first as the log directories list them.
+    fn known_logs(&self) -> Option<Vec<SessionRef>> {
+        if !self.knows_all {
+            return None;
+        }
+        let mut logs: Vec<SessionRef> = self.entries.iter().filter(|e| !e.gone).map(|e| e.row.file.clone()).collect();
+        logs.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.path().cmp(b.path())));
+        Some(logs)
     }
 
     /// Steps the shown day by `delta` days, never past the day of the latest action.
