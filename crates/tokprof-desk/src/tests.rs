@@ -1690,3 +1690,27 @@ fn the_day_cursor_keeps_its_date_when_the_report_comes_back_with_fewer_dates() {
     press(&mut rt, RuneKey::Left);
     assert_eq!(rt.state.reports.day, Some(last - 11), "and moves from there");
 }
+
+#[test]
+fn the_palette_in_reports_shows_day_for_what_works_on_day() {
+    let (desk, _) = reports_desk(3);
+    let mut rt = runtime(desk, (1400.0, 900.0));
+    command(&mut rt, '2');
+    let run = |rt: &mut Runtime<Desk>, query: &str| {
+        command(rt, 'k');
+        typed(rt, query);
+        press(rt, RuneKey::Enter);
+    };
+    run(&mut rt, "filter the");
+    assert_eq!(rt.state.reports.mode, reports::Mode::Day, "the filter is typed where it shows");
+    assert!(rt.state.browser.editing());
+    press(&mut rt, RuneKey::Escape);
+    command(&mut rt, '2');
+    run(&mut rt, "full-size");
+    assert_eq!((rt.state.reports.mode, rt.state.browser.zoomed()), (reports::Mode::Day, true));
+    // What does not work on Day stays in Reports.
+    press(&mut rt, RuneKey::Escape);
+    command(&mut rt, '2');
+    run(&mut rt, "reports: the last 7");
+    assert_eq!((rt.state.reports.mode, rt.state.reports.days), (reports::Mode::Reports, 7));
+}

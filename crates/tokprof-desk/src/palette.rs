@@ -177,6 +177,26 @@ impl Action {
         }
     }
 
+    /// Whether the action works on what Day shows (the list, the lanes, the inspector), so that
+    /// from Reports it shows Day first.
+    pub fn in_day(self) -> bool {
+        !matches!(
+            self,
+            Action::Settings
+                | Action::KeyHelp
+                | Action::DayView
+                | Action::Reports
+                | Action::Period7
+                | Action::Period30
+                | Action::Period90
+                | Action::Handoff
+                | Action::Jfr
+                | Action::Html
+                | Action::CloseWindow
+                | Action::Quit
+        )
+    }
+
     /// Whether the action does something in the window as it is.
     fn offered(self, s: &Desk) -> bool {
         let zoomed = s.browser.zoomed();
@@ -554,8 +574,8 @@ impl Desk {
     /// Does what an entry says, with the palette closed.
     pub fn run(&mut self, pick: Pick, tx: &mut Tx) {
         self.palette = None;
-        // A session, a tab or a day is shown in Day.
-        if !matches!(pick, Pick::Act(_)) {
+        // A session, a tab, a day and what works on them are shown in Day.
+        if !matches!(pick, Pick::Act(a) if !a.in_day()) {
             crate::reports::show(self, Mode::Day);
         }
         match pick {
