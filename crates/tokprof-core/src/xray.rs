@@ -141,7 +141,17 @@ struct RequestRow {
     ts_ms: i64,
     usd: f64,
     tokens: f64,
+    /// The prompt's size: what the request sent, cached or not.
+    prompt: u64,
     activity: &'static str,
+}
+
+/// A request of the main conversation, as the window's request track draws it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RequestPoint {
+    pub ts_ms: i64,
+    pub prompt_tokens: u64,
+    pub usd: f64,
 }
 
 impl Sink for Totals {
@@ -160,6 +170,7 @@ impl Sink for Totals {
             ts_ms: r.ts_ms,
             usd: r.price.map_or(0.0, |p| p.cost(&r.usage)),
             tokens: (r.usage.prompt() + r.usage.output) as f64,
+            prompt: r.usage.prompt(),
             activity: r.activity,
         });
         self.requests += 1;
@@ -247,6 +258,9 @@ pub struct XRay {
     pub rhythm: Option<crate::rhythm::SessionRhythm>,
     /// Where the agent's time went while it was busy, and its slow requests (see agent-time).
     pub busy: crate::busy::Busy,
+    /// The main conversation's requests in time order, its advisor calls included; requests
+    /// without a time are left out.
+    pub points: Vec<RequestPoint>,
 }
 
 /// What one typed message cost: the requests from it to the next typed message, and the
@@ -370,9 +384,18 @@ pub fn xray(catalog: &Catalog, file: &SessionRef, pricing: &Pricing, now_ms: i64
         setup,
         misses: totals.misses,
         work: totals.work,
+        points: points_of(&totals.rows),
         rhythm: crate::rhythm::SessionRhythm::of(main, now_ms, &crate::rhythm::local_offset),
         busy: crate::busy::Busy::of(main, &sessions[1..]),
     })
+}
+
+/// The main conversation's requests that have a time, in time order.
+fn points_of(rows: &[RequestRow]) -> Vec<RequestPoint> {
+    let mut points: Vec<RequestPoint> =
+        rows.iter().filter(|r| r.main && r.ts_ms > 0).map(|r| RequestPoint { ts_ms: r.ts_ms, prompt_tokens: r.prompt, usd: r.usd }).collect();
+    points.sort_by_key(|p| p.ts_ms);
+    points
 }
 
 /// Tool calls by tool and target: the calls in the messages the requests produced, so each call
@@ -626,13 +649,17 @@ fn newest_rows(files: &[SessionRef], limit: usize, build: impl Fn(&[SessionRef])
 }
 
 /// A session's cost with its subagents, and what its next request would cost.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Glance {
     pub cost: f64,
     pub next_warm: Option<f64>,
     pub next_cold: Option<f64>,
     /// When the main conversation's cache goes cold, in epoch ms.
     pub cold_at_ms: i64,
+    /// When the main conversation sent its latest request, in epoch ms; 0 without one.
+    pub last_ms: i64,
+    /// The session's title, when its log names one.
+    pub title: Option<String>,
 }
 
 impl Glance {
@@ -660,7 +687,9 @@ pub fn glance(catalog: &Catalog, row: &SessionRow, pricing: &Pricing, now_ms: i6
         g.next_warm = cache.next_warm_usd;
         g.next_cold = cache.next_cold_usd;
         g.cold_at_ms = live.ts_ms + cache.ttl_ms;
+        g.last_ms = live.ts_ms;
     }
+    g.title = main.and_then(|s| s.title);
     g
 }
 
@@ -706,7 +735,19 @@ mod tests {
     use super::*;
 
     fn row(file: usize, chain: &str, main: bool, ts_ms: i64, usd: f64, activity: &'static str) -> RequestRow {
-        RequestRow { file, chain: chain.into(), main, ts_ms, usd, tokens: 1.0, activity }
+        RequestRow { file, chain: chain.into(), main, ts_ms, usd, tokens: 1.0, prompt: ts_ms as u64 * 10, activity }
+    }
+
+    #[test]
+    fn the_points_are_the_main_requests_with_a_time_in_time_order() {
+        let rows = [
+            row(1, "main", true, 20, 2.0, "reading"),
+            row(2, "subagent: survey", false, 15, 4.0, "web"),
+            row(1, "main", true, 5, 1.0, "prompt"),
+            row(1, "main", true, 0, 9.0, "prompt"),
+        ];
+        let points = points_of(&rows);
+        assert_eq!(points, [RequestPoint { ts_ms: 5, prompt_tokens: 50, usd: 1.0 }, RequestPoint { ts_ms: 20, prompt_tokens: 200, usd: 2.0 }]);
     }
 
     #[test]

@@ -557,7 +557,7 @@ fn clip(s: &str, width: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tokprof_core::forecast::CacheState;
     use tokprof_core::xray::TrailingCompaction;
@@ -605,7 +605,8 @@ mod tests {
         assert!(auto.contains(&format!("cache     compacted at {when} (auto) · the next request re-builds ~55.8k")), "{auto}");
     }
 
-    fn xray(prompts: Vec<tokprof_core::xray::PromptSpend>) -> XRay {
+    /// An X-ray of a session `s` in `~/p` with these prompts and nothing else.
+    pub(crate) fn xray(prompts: Vec<tokprof_core::xray::PromptSpend>) -> XRay {
         XRay {
             agent: tokprof_core::source::AgentId::new(tokprof_core::source::AgentInfo::named("claude")),
             project: "~/p".into(),
@@ -632,6 +633,7 @@ mod tests {
             misses: Vec::new(),
             rhythm: None,
             busy: Default::default(),
+            points: Vec::new(),
         }
     }
 

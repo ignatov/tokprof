@@ -42,12 +42,31 @@ pub struct Inputs<'a> {
 pub struct Advice {
     pub topic: Topic,
     pub text: String,
+    /// The ways to carry on that the text prices, with what each costs: the next request for a
+    /// resume, the pickup for a handoff, the compaction call for `/compact`. Empty for advice on
+    /// anything else.
+    pub ways: Vec<(Way, f64)>,
 }
 
 impl Advice {
     fn new(topic: Topic, text: String) -> Advice {
-        Advice { topic, text }
+        Advice { topic, text, ways: Vec::new() }
     }
+
+    fn priced(topic: Topic, text: String, ways: impl IntoIterator<Item = (Way, Option<f64>)>) -> Advice {
+        Advice { topic, text, ways: ways.into_iter().filter_map(|(w, usd)| usd.map(|u| (w, u))).collect() }
+    }
+}
+
+/// A way to carry on with a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Way {
+    /// Send the next request in it.
+    Resume,
+    /// Start a new session that refers to it (`tokprof handoff`).
+    Handoff,
+    /// Run `/compact` in it.
+    Compact,
 }
 
 /// What a piece of advice is about.
@@ -138,43 +157,51 @@ pub fn advise(i: &Inputs) -> Vec<Advice> {
                 line += &format!(", then {} per request", usd(per));
             }
             line.push('.');
-            out.push(Advice::new(Topic::CarryOn, line));
+            out.push(Advice::priced(Topic::CarryOn, line, [(Way::Resume, i.cache.next_cold_usd)]));
             if let (Some(p), Some(pickup)) = (price, pickup) {
                 if i.cache.rebuild_usd.is_some_and(|r| pickup < r) {
-                    out.push(Advice::new(
+                    out.push(Advice::priced(
                         Topic::CarryOn,
                         format!(
                             "A new session that refers to this one is cheaper: ≈ {} to pick up the work. `{handoff}` prints the line to start it with.",
                             usd(pickup)
                         ),
+                        [(Way::Handoff, Some(pickup))],
                     ));
                 } else {
-                    out.push(Advice::new(Topic::CarryOn, format!("A new session that refers to this one costs about as much (≈ {}).", usd(pickup))));
+                    out.push(Advice::priced(
+                        Topic::CarryOn,
+                        format!("A new session that refers to this one costs about as much (≈ {}).", usd(pickup)),
+                        [(Way::Handoff, Some(pickup))],
+                    ));
                 }
                 let after = i.after_compaction.map_or(setup + 2.0 * SUMMARY_TOKENS, |t| t as f64);
                 // The compaction call shares the conversation's cache, so on a cold cache it
                 // writes the whole context again before it summarizes it.
                 let compact = prompt * write / 1e6 + SUMMARY_TOKENS * p.output / 1e6;
-                out.push(Advice::new(
+                out.push(Advice::priced(
                     Topic::CarryOn,
                     format!("/compact costs about as much as resuming (≈ {} once), then ~{} per request.", usd(compact), tokens(after)),
+                    [(Way::Compact, Some(compact))],
                 ));
             }
         } else {
             let left = human_duration((i.cache.ttl_ms - i.cache.idle_ms) as f64 / 1000.0);
             let mut line = format!("Cache warm for {left}: keep going now");
             // While warm, the compaction call reads the context at the cache rate.
-            if let Some(p) = price {
-                line += &format!(", or /compact before a break (≈ {} now)", usd(prompt * p.read / 1e6 + SUMMARY_TOKENS * p.output / 1e6));
+            let compact = price.map(|p| prompt * p.read / 1e6 + SUMMARY_TOKENS * p.output / 1e6);
+            if let Some(c) = compact {
+                line += &format!(", or /compact before a break (≈ {} now)", usd(c));
             }
             line.push('.');
-            out.push(Advice::new(Topic::CarryOn, line));
+            out.push(Advice::priced(Topic::CarryOn, line, [(Way::Resume, i.cache.next_warm_usd), (Way::Compact, compact)]));
             if let Some(r) = i.cache.rebuild_usd {
                 out.push(Advice::new(Topic::CarryOn, format!("Once it is cold, resuming writes the whole {} context again (+{}).", tokens(prompt), usd(r))));
                 if let Some(pickup) = pickup.filter(|u| *u < r) {
-                    out.push(Advice::new(
+                    out.push(Advice::priced(
                         Topic::CarryOn,
                         format!("Then a new session that refers to this one is cheaper: ≈ {} to pick up the work (`{handoff}`).", usd(pickup)),
+                        [(Way::Handoff, Some(pickup))],
                     ));
                 }
             }
@@ -382,6 +409,27 @@ mod tests {
         price_at: &'a dyn Fn(u64) -> Option<Price>,
         edit: impl FnOnce(&mut Inputs<'a>),
     ) -> Vec<String> {
+        let lines: Vec<String> = priced_items(s, live, cache, price_at, edit).into_iter().map(|a| a.text).collect();
+        for line in &lines {
+            assert!(crate::fmt::wrap(line, WIDTH).len() <= 2, "more than two lines: {line}");
+        }
+        lines
+    }
+
+    /// The ways each piece of advice prices, at Opus prices.
+    fn ways(s: &Session, live: &LiveContext, cache: &CacheState) -> Vec<Vec<(Way, f64)>> {
+        let pricing = crate::pricing::Pricing::defaults();
+        let opus = |n| pricing.get("claude-opus-5-5", n, crate::TEST_NOW_MS);
+        priced_items(s, live, cache, &opus, |_| {}).into_iter().map(|a| a.ways).collect()
+    }
+
+    fn priced_items<'a>(
+        s: &'a Session,
+        live: &'a LiveContext,
+        cache: &'a CacheState,
+        price_at: &'a dyn Fn(u64) -> Option<Price>,
+        edit: impl FnOnce(&mut Inputs<'a>),
+    ) -> Vec<Advice> {
         let mut i = Inputs {
             session: s,
             instruction_files: crate::testing::instruction_files(),
@@ -399,11 +447,22 @@ mod tests {
             first_prompt: Some(40_000),
         };
         edit(&mut i);
-        let lines: Vec<String> = advise(&i).into_iter().map(|a| a.text).collect();
-        for line in &lines {
-            assert!(crate::fmt::wrap(line, WIDTH).len() <= 2, "more than two lines: {line}");
-        }
-        lines
+        advise(&i)
+    }
+
+    #[test]
+    fn the_ways_to_carry_on_keep_their_prices() {
+        let (s, live) = full();
+        let cold = ways(&s, &live, &cold_cache(Some(7.4)));
+        let first: Vec<Way> = cold.iter().take(3).map(|w| w[0].0).collect();
+        assert_eq!(first, [Way::Resume, Way::Handoff, Way::Compact]);
+        assert_eq!(cold[0][0].1, 7.7, "resuming costs the next cold request");
+        assert!((cold[1][0].1 - 0.45).abs() < 0.005 && (cold[2][0].1 - 7.80).abs() < 0.005, "{cold:?}");
+        assert!(cold[3..].iter().all(Vec::is_empty), "only carry-on advice prices ways");
+        let warm = ways(&s, &live, &warm_cache(Some(7.4)));
+        assert_eq!(warm[0].iter().map(|w| w.0).collect::<Vec<_>>(), [Way::Resume, Way::Compact]);
+        assert_eq!(warm[0][0].1, 0.3, "resuming while warm costs the next warm request");
+        assert!(warm[1].is_empty() && warm[2][0].0 == Way::Handoff, "{warm:?}");
     }
 
     /// 950.0k tokens: tool schemas, Bash output and a pasted prompt.

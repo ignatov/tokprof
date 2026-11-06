@@ -26,13 +26,18 @@ use tokprof_core::pricing::Pricing;
 use tokprof_core::query::Query;
 use tokprof_core::rhythm;
 use tokprof_core::source::SessionRef;
-use tokprof_core::xray::{self, Glance, SessionRow};
+use tokprof_core::xray::{self, Glance, SessionRow, XRay};
 
 use crate::render_rhythm::DayParts;
 use crate::watch::{self, Change};
 
+/// The least a day shown beside the list waits before it is computed again after the logs
+/// changed.
+const BESIDE_DAY_PAUSE: Duration = Duration::from_secs(20);
+
+/// The order of the list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Sort {
+pub enum Sort {
     Time,
     Cost,
     /// What the next request would cost now.
@@ -40,7 +45,9 @@ enum Sort {
 }
 
 impl Sort {
-    fn name(self) -> &'static str {
+    pub const ALL: [Sort; 3] = [Sort::Time, Sort::Cost, Sort::Next];
+
+    pub fn name(self) -> &'static str {
         match self {
             Sort::Time => "time",
             Sort::Cost => "cost",
@@ -122,13 +129,21 @@ pub struct Cells<'a> {
     pub usd: Option<f64>,
     /// The next-request cell, and whether the cache is cold.
     pub next: Option<(String, bool)>,
+    /// The session's title, once its glance found one.
+    pub title: Option<&'a str>,
+    /// The last activity, in epoch ms.
+    pub active_ms: i64,
+    /// While the cache is warm, when it goes cold, in epoch ms.
+    pub warm_until: Option<i64>,
+    /// What the next request costs now.
+    pub next_usd: Option<f64>,
 }
 
 enum Note {
     /// A session's glance, the version of its logs it was computed from, and how long it took.
     Glance(usize, u32, Glance, Duration),
-    /// The same for an X-ray.
-    Report(usize, u32, String, Duration),
+    /// The same for an X-ray: its text, and the X-ray itself unless it failed.
+    Report(usize, u32, String, Option<Arc<XRay>>, Duration),
     Change(Change),
     Status(String),
     /// A day view: the day asked for (`None` for the day of the latest action), the date it shows,
@@ -183,6 +198,8 @@ struct Entry<T> {
     /// costing took, so that it takes at most half of a core.
     glance_after: Instant,
     report: Option<T>,
+    /// The X-ray the report was drawn from, for a screen that draws it itself.
+    xray: Option<Arc<XRay>>,
     reported: u32,
     /// The session's main log is gone.
     gone: bool,
@@ -190,7 +207,14 @@ struct Entry<T> {
 
 impl<T> Entry<T> {
     fn new(row: SessionRow) -> Entry<T> {
-        Entry { row, version: 1, glance: None, glanced: 0, glancing: false, glance_after: Instant::now(), report: None, reported: 0, gone: false }
+        Entry { row, version: 1, glance: None, glanced: 0, glancing: false, glance_after: Instant::now(), report: None, xray: None, reported: 0, gone: false }
+    }
+
+    /// Whether this is the entry of the session with this id: the id its row names, or the one
+    /// its log's file name gives, which the day's lanes may name it by.
+    fn is(&self, session: &str) -> bool {
+        let r = &self.row;
+        r.session_id == session || r.file.session_id == session || r.file.main_id == session
     }
 }
 
@@ -239,6 +263,9 @@ pub struct Browser<T> {
     costs: bool,
     /// Counts the times the list was put in place again after the logs changed.
     relisted: u32,
+    /// The screen shows a day beside the list at all times, as the window does (see
+    /// `keep_day_beside`).
+    beside: bool,
 }
 
 impl<T> Browser<T> {
@@ -312,10 +339,14 @@ impl<T> Browser<T> {
                     }
                     let (i, version, file) = job;
                     let started = Instant::now();
-                    let text = xray::xray(&catalog, &file, &pricing, now_ms())
-                        .map(|x| crate::render_xray::text(&x, &tokprof_core::fmt::Style::with_color(true), &crate::paths::profile_dir(), catalog.home()))
-                        .unwrap_or_else(|e| format!("error: {e:#}"));
-                    if !notify.send(Note::Report(i, version, text, started.elapsed())) {
+                    let (text, data) = match xray::xray(&catalog, &file, &pricing, now_ms()) {
+                        Ok(x) => {
+                            let style = tokprof_core::fmt::Style::with_color(true);
+                            (crate::render_xray::text(&x, &style, &crate::paths::profile_dir(), catalog.home()), Some(Arc::new(x)))
+                        }
+                        Err(e) => (format!("error: {e:#}"), None),
+                    };
+                    if !notify.send(Note::Report(i, version, text, data, started.elapsed())) {
                         return;
                     }
                 }
@@ -384,6 +415,7 @@ impl<T> Browser<T> {
             day_axis: None,
             costs: true,
             relisted: 0,
+            beside: false,
         };
         browser.refilter();
         browser
@@ -428,10 +460,59 @@ impl<T> Browser<T> {
         self.absorb();
     }
 
-    /// Shows the day of `date` full size, as `d` and the arrows reach it.
+    /// Shows the day of `date` full size, as `d` and the arrows reach it; in the window's mode,
+    /// beside the list.
     pub fn show_day(&mut self, date: i64) {
         self.day = Some(Some(date));
-        self.zoom = true;
+        self.zoom = !self.beside;
+        self.scroll = 0;
+    }
+
+    /// Puts the browser in the window's mode: a day is shown beside the list at all times, the
+    /// day of the latest action to start with. Selecting a session shows its day, ← and → (and
+    /// `h`, `l`, `[`, `]`) step the day instead of opening and closing the X-ray, `d` shows the
+    /// selected session's day, ⏎ shows the X-ray full size and esc ends that.
+    pub fn keep_day_beside(&mut self) {
+        self.beside = true;
+        self.day = Some(None);
+        self.zoom = false;
+    }
+
+    /// Steps the day by `delta` days, as the buttons beside its name do.
+    pub fn step_day_by(&mut self, delta: i64) {
+        self.step_day(delta);
+    }
+
+    /// Shows the day of the latest action again, as Today does.
+    pub fn show_latest_day(&mut self) {
+        if self.day.is_some() {
+            self.day = Some(None);
+            self.scroll = 0;
+        }
+    }
+
+    /// Whether the day shown is the day of the latest action.
+    pub fn day_is_latest(&self) -> bool {
+        self.day == Some(None)
+    }
+
+    /// The noon of the date the day shown shows, or will once it is computed.
+    pub fn day_noon(&self) -> i64 {
+        self.shown_day().1
+    }
+
+    /// In the window's mode, shows the day of the selected session unless the day shown has its
+    /// lane: the local date of its last activity five hours earlier, since a day runs from the
+    /// middle of one night to the middle of the next.
+    fn follow_selection(&mut self) {
+        let Some(i) = self.selected_entry().filter(|_| self.beside) else { return };
+        let shown = self.day_parts().and_then(|p| p.strip.as_ref()).is_some_and(|(_, lanes)| lanes.lanes.iter().any(|l| self.entries[i].is(&l.id)));
+        if shown {
+            return;
+        }
+        let date = rhythm::date_of(self.entries[i].row.active_ms - 5 * 3_600_000, &rhythm::local_offset);
+        let latest = self.days.get(&None).map(|d| d.date);
+        self.day = Some(if latest == Some(date) { None } else { Some(date) });
         self.scroll = 0;
     }
 
@@ -474,9 +555,10 @@ impl<T> Browser<T> {
                     e.glancing = false;
                     e.glance_after = Instant::now() + took;
                 }
-                Note::Report(i, version, text, took) => {
+                Note::Report(i, version, text, data, took) => {
                     let e = &mut self.entries[i];
                     e.report = Some((self.frontend.show)(text));
+                    e.xray = data;
                     e.reported = version;
                     self.report_after = Instant::now() + took;
                 }
@@ -492,7 +574,10 @@ impl<T> Browser<T> {
                     if self.day_pending.is_some_and(|p| (p.0, p.1, p.2) == (key, changes, size)) {
                         self.day_pending = None;
                     }
-                    self.day_after = Instant::now() + took;
+                    // Beside the list, the day is on the screen all the time and reads every log of
+                    // the day, so it waits longer: the lanes need no second-by-second freshness.
+                    let pause = if self.beside { (took * 4).max(BESIDE_DAY_PAUSE) } else { took };
+                    self.day_after = Instant::now() + pause;
                 }
             }
         }
@@ -698,8 +783,8 @@ impl<T> Browser<T> {
     fn keys(&self, now: i64) -> Vec<f64> {
         let key = |e: &Entry<T>| match self.sort {
             Sort::Time => e.row.active_ms as f64,
-            Sort::Cost => e.glance.map_or(-1.0, |g| g.cost),
-            Sort::Next => e.glance.and_then(|g| g.next(now)).map_or(-1.0, |(usd, _)| usd),
+            Sort::Cost => e.glance.as_ref().map_or(-1.0, |g| g.cost),
+            Sort::Next => e.glance.as_ref().and_then(|g| g.next(now)).map_or(-1.0, |(usd, _)| usd),
         };
         self.entries.iter().map(key).collect()
     }
@@ -728,6 +813,46 @@ impl<T> Browser<T> {
 
     /// Handles a key; returns false to quit.
     pub fn on_key(&mut self, key: Key, view: Viewport) -> bool {
+        let before = self.selected_entry().map(|i| self.entries[i].row.session_id.clone());
+        let go_on = match self.beside_key(key) {
+            Some(go_on) => go_on,
+            None => self.key(key, view),
+        };
+        if self.selected_entry().map(|i| &self.entries[i].row.session_id) != before.as_ref() {
+            self.follow_selection();
+        }
+        go_on
+    }
+
+    /// The keys that mean something else in the window's mode, where the day is always beside
+    /// the list; `None` for the others and outside that mode.
+    fn beside_key(&mut self, key: Key) -> Option<bool> {
+        if !self.beside || self.editing || key == Key::Interrupt {
+            return None;
+        }
+        match key {
+            Key::Left | Key::Char('h') | Key::Char('[') => self.step_day(-1),
+            Key::Right | Key::Char('l') | Key::Char(']') => self.step_day(1),
+            Key::Char('d') => {
+                // The selected session's day, even after the arrows went elsewhere.
+                self.day = Some(None);
+                self.follow_selection();
+            }
+            Key::Enter => self.zoom = true,
+            Key::Backspace => self.zoom = false,
+            Key::Esc if self.zoom => self.zoom = false,
+            Key::Esc if !self.filter.is_empty() => {
+                self.filter.clear();
+                self.refilter();
+            }
+            Key::Esc => return Some(false),
+            _ => return None,
+        }
+        Some(true)
+    }
+
+    /// What a key does outside the window's mode, and in it for the keys that mean the same.
+    fn key(&mut self, key: Key, view: Viewport) -> bool {
         if key == Key::Interrupt {
             return false;
         }
@@ -852,7 +977,7 @@ impl<T> Browser<T> {
     /// The cells of row `row` of the list at `now`.
     pub fn cells(&self, row: usize, now: i64) -> Cells<'_> {
         let r = &self.entries[self.visible[row]].row;
-        let g = self.entries[self.visible[row]].glance;
+        let g = self.entries[self.visible[row]].glance.as_ref();
         Cells {
             time: local_time(r.active_ms, "%m-%d %H:%M"),
             agent: r.file.agent.name(),
@@ -860,7 +985,11 @@ impl<T> Browser<T> {
             project: &r.project,
             cost: g.map_or_else(|| "…".to_string(), |g| usd(g.cost)),
             usd: g.map(|g| g.cost),
-            next: g.as_ref().and_then(|g| crate::render_sessions::next_cell(g, now)),
+            next: g.and_then(|g| crate::render_sessions::next_cell(g, now)),
+            title: g.and_then(|g| g.title.as_deref()),
+            active_ms: r.active_ms,
+            warm_until: g.and_then(|g| g.next(now)).filter(|(_, cold)| !cold).and(g.map(|g| g.cold_at_ms)),
+            next_usd: g.and_then(|g| g.next(now)).map(|(usd, _)| usd),
         }
     }
 
@@ -873,10 +1002,41 @@ impl<T> Browser<T> {
     /// The row of the session with this id: the id its row names, or the one its log's file name
     /// gives, which the day's lanes may name it by.
     pub fn row_of(&self, session: &str) -> Option<usize> {
-        self.visible.iter().position(|&i| {
-            let r = &self.entries[i].row;
-            r.session_id == session || r.file.session_id == session || r.file.main_id == session
-        })
+        self.visible.iter().position(|&i| self.entries[i].is(session))
+    }
+
+    /// When the session with this id sent its main conversation's latest request and when its
+    /// cache goes or went cold, in epoch ms, once its glance knows; listed or not.
+    pub fn cache_life(&self, session: &str) -> Option<(i64, i64)> {
+        let g = self.entries.iter().find(|e| !e.gone && e.is(session))?.glance.as_ref()?;
+        (g.last_ms > 0 && g.cold_at_ms != i64::MAX).then_some((g.last_ms, g.cold_at_ms))
+    }
+
+    /// When the session of row `row` was last active, in epoch ms.
+    pub fn active_ms(&self, row: usize) -> i64 {
+        self.entries[self.visible[row]].row.active_ms
+    }
+
+    /// The total of the costs known of the listed sessions, and how many are still being costed.
+    pub fn known_total(&self) -> (f64, usize) {
+        let known = self.visible.iter().filter_map(|&i| self.entries[i].glance.as_ref().map(|g| g.cost)).sum();
+        (known, self.visible.iter().filter(|&&i| self.entries[i].glance.is_none()).count())
+    }
+
+    /// The list's order.
+    pub fn sort_order(&self) -> Sort {
+        self.sort
+    }
+
+    /// Orders the list by `sort`, as `s` does until it gets there; the selection stays.
+    pub fn sort_by(&mut self, sort: Sort) {
+        self.sort = sort;
+        self.sort();
+    }
+
+    /// The X-ray of the selected session as computed last, for a screen that draws it itself.
+    pub fn xray(&self) -> Option<&XRay> {
+        self.selected_entry().and_then(|i| self.entries[i].xray.as_deref())
     }
 
     /// Selects row `row`, as a click on it does; its X-ray shows from its top.
@@ -884,6 +1044,7 @@ impl<T> Browser<T> {
         if row < self.visible.len() {
             self.select(Some(row));
             self.scroll = 0;
+            self.follow_selection();
         }
     }
 
@@ -894,7 +1055,7 @@ impl<T> Browser<T> {
 
     /// The dearest of the costs known of the listed sessions.
     pub fn dearest(&self) -> Option<f64> {
-        self.visible.iter().filter_map(|&i| self.entries[i].glance.map(|g| g.cost)).max_by(f64::total_cmp)
+        self.visible.iter().filter_map(|&i| self.entries[i].glance.as_ref().map(|g| g.cost)).max_by(f64::total_cmp)
     }
 
     /// The selected row of the list.
@@ -960,7 +1121,7 @@ impl<T> Browser<T> {
     /// The list's title, like ` 756 sessions · $2,065 · by time · costing 396… · next = one more
     /// request `, where the amount is the total of the costs known so far.
     pub fn list_title(&self, now: i64) -> String {
-        let known: f64 = self.visible.iter().filter_map(|&i| self.entries[i].glance.map(|g| g.cost)).sum();
+        let known: f64 = self.visible.iter().filter_map(|&i| self.entries[i].glance.as_ref().map(|g| g.cost)).sum();
         let pending = self.visible.iter().filter(|&&i| self.entries[i].glance.is_none()).count();
         format!(
             " {} sessions · {} · by {}{}{} · next = one more request ",
@@ -1028,7 +1189,9 @@ impl<T> Browser<T> {
     /// its lane in the day does. Returns whether it is listed.
     pub fn open_session(&mut self, session: &str) -> bool {
         let Some(row) = self.row_of(session) else { return false };
-        self.day = None;
+        if !self.beside {
+            self.day = None;
+        }
         self.zoom = false;
         self.select_row(row);
         true
@@ -1224,7 +1387,7 @@ mod tests {
         }
         a.absorb();
         assert_eq!(a.visible, by_cost, "costs that arrive in cost order fill in their cells and move no row");
-        assert_eq!(a.entries[29].glance.map(|g| g.cost), Some(29.0));
+        assert_eq!(a.entries[29].glance.as_ref().map(|g| g.cost), Some(29.0));
     }
 
     #[test]
@@ -1317,7 +1480,7 @@ mod tests {
         let now = now_ms();
         for (i, e) in a.entries.iter_mut().enumerate() {
             let (warm, cold, cold_at) = if i == 7 { (0.1, 5.0, now + 60_000) } else { (1.0, 1.0, i64::MAX) };
-            e.glance = Some(xray::Glance { cost: 10.0, next_warm: Some(warm), next_cold: Some(cold), cold_at_ms: cold_at });
+            e.glance = Some(xray::Glance { cost: 10.0, next_warm: Some(warm), next_cold: Some(cold), cold_at_ms: cold_at, ..Default::default() });
         }
         press(&mut a, Key::Char('s'));
         press(&mut a, Key::Char('s'));
@@ -1346,7 +1509,7 @@ mod tests {
         press(&mut a, Key::Esc);
         assert!(a.filter.is_empty() && a.visible.len() == 3);
 
-        let glance = |cost, next| xray::Glance { cost, next_warm: Some(next), next_cold: Some(next), cold_at_ms: i64::MAX };
+        let glance = |cost, next| xray::Glance { cost, next_warm: Some(next), next_cold: Some(next), cold_at_ms: i64::MAX, ..Default::default() };
         for (e, g) in a.entries.iter_mut().zip([Some(glance(1.0, 9.0)), Some(glance(5.0, 0.1)), None]) {
             e.glance = g;
         }
@@ -1384,11 +1547,11 @@ mod tests {
     fn the_next_cold_cache_is_the_first_of_the_listed_sessions() {
         let mut a = app(&["~/src/a", "~/src/b", "~/src/c", "~/src/d"]);
         let now = 1_000_000;
-        let glance = |cold_at_ms| Some(xray::Glance { cost: 10.0, next_warm: Some(0.1), next_cold: Some(2.0), cold_at_ms });
+        let glance = |cold_at_ms| Some(xray::Glance { cost: 10.0, next_warm: Some(0.1), next_cold: Some(2.0), cold_at_ms, ..Default::default() });
         a.entries[0].glance = glance(now + 300_000);
         a.entries[1].glance = glance(now + 60_000);
         a.entries[2].glance = glance(now - 1);
-        a.entries[3].glance = Some(xray::Glance { cost: 10.0, next_warm: None, next_cold: None, cold_at_ms: now + 10_000 });
+        a.entries[3].glance = Some(xray::Glance { cost: 10.0, next_warm: None, next_cold: None, cold_at_ms: now + 10_000, ..Default::default() });
         assert_eq!(a.next_cold(now), Some(now + 60_000), "a cache already cold and a session without a forecast change no cell");
         let row = a.visible.iter().position(|&i| i == 1).unwrap();
         assert_eq!(a.cells(row, now + 59_999).next, Some(("$0.10   1%".to_string(), false)), "warm until then");
@@ -1527,5 +1690,122 @@ mod tests {
         press(&mut a, Key::Char(']'));
         a.request_day();
         assert_eq!(a.day_pending, Some((None, 2, FULL, Some(4))), "the current day is, since logs changed");
+    }
+
+    /// Seconds after the epoch at `hour` local time on `date`.
+    fn at(date: i64, hour: i64) -> u64 {
+        ((rhythm::midnight(date, &rhythm::local_offset) + hour * 3_600_000) / 1000) as u64
+    }
+
+    #[test]
+    fn the_window_s_mode_keeps_a_day_beside_the_list_and_the_arrows_step_it() {
+        let mut a = thirty();
+        a.keep_day_beside();
+        assert_eq!(a.day, Some(None), "the latest day from the start");
+        assert!(!a.zoom, "beside the list, not over it");
+        a.set_pane(FULL);
+        day_note(&mut a, None, 100, 0, "latest");
+        assert!(a.day_is_latest());
+        press(&mut a, Key::Left);
+        assert_eq!(a.day, Some(Some(99)), "← steps the day, not out of the X-ray");
+        assert!(!a.day_is_latest());
+        press(&mut a, Key::Right);
+        assert_eq!(a.day, Some(None));
+        for (back, on) in [(Key::Char('h'), Key::Char('l')), (Key::Char('['), Key::Char(']'))] {
+            press(&mut a, back);
+            assert_eq!(a.day, Some(Some(99)), "{back:?} steps back");
+            press(&mut a, on);
+            assert_eq!(a.day, Some(None), "{on:?} steps on");
+        }
+        a.step_day_by(-3);
+        assert_eq!(a.day, Some(Some(97)), "the buttons step the day too");
+        a.show_latest_day();
+        assert!(a.day_is_latest(), "Today goes back to the latest day");
+        press(&mut a, Key::Enter);
+        assert!(a.zoom, "⏎ shows the X-ray full size");
+        press(&mut a, Key::Char('j'));
+        assert_eq!(a.selected(), Some(0), "full size, j scrolls instead of moving");
+        assert!(press(&mut a, Key::Esc) && !a.zoom, "esc ends full size");
+        assert_eq!(a.day, Some(None), "and the day stays");
+        press(&mut a, Key::Char('/'));
+        press(&mut a, Key::Char('q'));
+        assert_eq!(a.filter(), "q", "q is typed into a filter");
+        press(&mut a, Key::Enter);
+        assert!(!a.zoom, "⏎ ends typing the filter");
+        assert!(press(&mut a, Key::Esc) && a.filter().is_empty(), "esc clears the filter first");
+        assert!(!press(&mut a, Key::Esc), "then quits");
+    }
+
+    #[test]
+    fn selecting_a_session_shows_its_day() {
+        let (now, offset) = (today(), &rhythm::local_offset);
+        let latest = rhythm::date_of(now_ms(), offset);
+        // Session 0 was active this afternoon, session 1 two days ago at 16:00, session 2 three
+        // days ago at 01:00, which belongs to the day before by the five-hour rule.
+        let mut a = app_of(vec![row(0, "~/a", at(now, 13)), row(1, "~/b", at(now - 2, 16)), row(2, "~/c", at(now - 3, 1))]);
+        a.keep_day_beside();
+        a.set_pane(FULL);
+        day_note(&mut a, None, latest, 0, "latest");
+        press(&mut a, Key::Char('j'));
+        assert_eq!(a.day, Some(Some(now - 2)), "the day of its last activity");
+        a.select_row(2);
+        assert_eq!(a.day, Some(Some(now - 4)), "a night's work belongs to the day before");
+        press(&mut a, Key::Left);
+        assert_eq!(a.day, Some(Some(now - 5)));
+        press(&mut a, Key::Char('d'));
+        assert_eq!(a.day, Some(Some(now - 4)), "d shows the selected session's day again");
+        press(&mut a, Key::Char('g'));
+        assert_eq!(a.day, Some(None), "the latest day for a session of it");
+        assert!(a.open_session("id1") && a.day == Some(Some(now - 2)) && a.selected() == Some(1), "a lane's click keeps the day beside");
+    }
+
+    #[test]
+    fn the_terminal_keeps_its_keys() {
+        let mut a = thirty();
+        press(&mut a, Key::Right);
+        assert!(a.zoom && a.day.is_none(), "→ opens the X-ray full screen");
+        press(&mut a, Key::Left);
+        assert!(!a.zoom);
+        a.select_row(5);
+        assert_eq!(a.day, None, "a selection shows no day");
+    }
+
+    #[test]
+    fn the_glance_gives_the_row_its_title_and_the_lane_its_cache_life() {
+        let mut a = app(&["~/a", "~/b"]);
+        let (last, cold_at) = (1_000_000, 4_600_000);
+        a.entries[0].glance = Some(xray::Glance {
+            cost: 1.0,
+            next_warm: Some(0.1),
+            next_cold: Some(2.0),
+            cold_at_ms: cold_at,
+            last_ms: last,
+            title: Some("Fix the export".into()),
+        });
+        a.entries[1].glance = Some(xray::Glance { cost: 2.0, cold_at_ms: i64::MAX, ..Default::default() });
+        assert_eq!(a.cache_life("id0"), Some((last, cold_at)));
+        assert_eq!(a.cache_life("id1"), None, "no request, no cache");
+        assert_eq!(a.cache_life("nobody"), None);
+        let row = a.row_of("id0").unwrap();
+        let warm = a.cells(row, cold_at - 1);
+        assert_eq!((warm.title, warm.warm_until, warm.next_usd), (Some("Fix the export"), Some(cold_at), Some(0.1)));
+        let cold = a.cells(row, cold_at);
+        assert_eq!((cold.warm_until, cold.next_usd), (None, Some(2.0)), "cold: no countdown, the cold cost");
+        assert_eq!(a.cells(a.row_of("id1").unwrap(), 0).title, None);
+    }
+
+    #[test]
+    fn the_x_ray_arrives_with_its_text() {
+        let mut a = app(&["~/a"]);
+        assert!(a.xray().is_none());
+        let version = a.entries[0].version;
+        let x = Arc::new(crate::render_xray::tests::xray(Vec::new()));
+        a.notify.tx.send(Note::Report(0, version, "text".into(), Some(x), Duration::ZERO)).unwrap();
+        a.absorb();
+        assert_eq!(a.xray().map(|x| x.project.as_str()), Some("~/p"));
+        assert!(matches!(a.report(), Pane::Text(t) if t == "text"), "the terminal keeps the text");
+        a.notify.tx.send(Note::Report(0, version + 1, "error: gone".into(), None, Duration::ZERO)).unwrap();
+        a.absorb();
+        assert!(a.xray().is_none(), "a failed X-ray has no data");
     }
 }

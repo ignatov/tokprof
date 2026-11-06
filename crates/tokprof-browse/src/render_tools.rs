@@ -30,9 +30,37 @@ fn count_int(n: u64, one: &str, many: &str) -> String {
     format!("{} {}", fmt::int(n), if n == 1 { one } else { many })
 }
 
+/// The tool table as cells: the header and a row per tool, each with its hint (the header's is
+/// `hint`), how many rows did not fit, and the spend line under the table.
+pub struct ToolCells {
+    pub rows: Vec<Vec<String>>,
+    pub hints: Vec<String>,
+    pub more: usize,
+    pub spend: String,
+}
+
 /// The tool table's rows, `<n> more` and the total line; with `failures`, the `failed` and
 /// `after` columns too.
 pub fn tool_rows(t: &ToolTable, order: RowOrder, limit: usize, failures: bool) -> String {
+    let cells = tool_cells(t, order, limit, failures);
+    // The hint is text, so it goes after the aligned columns, which the empty failures cells of a
+    // row would otherwise cut short.
+    let mut out = String::new();
+    let lines = table(&cells.rows, 1);
+    let width = lines.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+    for (line, h) in lines.lines().zip(&cells.hints) {
+        let pad = width - line.chars().count();
+        let _ = writeln!(out, "{}", format!("{line}{}  {h}", " ".repeat(pad)).trim_end());
+    }
+    if cells.more > 0 {
+        let _ = writeln!(out, "{} more", cells.more);
+    }
+    let _ = writeln!(out, "{}", cells.spend);
+    out
+}
+
+/// The cells of the tool table, as `tool_rows` lays them out.
+pub fn tool_cells(t: &ToolTable, order: RowOrder, limit: usize, failures: bool) -> ToolCells {
     let priced = t.spend.usd > 0.0;
     let amount = |v: &Values| if priced { usd(v.usd) } else { format!("{} tok", tokens(v.tokens)) };
     let size = |v: Option<f64>| v.map_or("–".to_string(), tokens);
@@ -42,7 +70,7 @@ pub fn tool_rows(t: &ToolTable, order: RowOrder, limit: usize, failures: bool) -
         header.extend(["failed", "after"]);
     }
     let mut table_rows = vec![header.into_iter().map(str::to_string).collect::<Vec<_>>()];
-    let mut hints = vec!["hint"];
+    let mut hints = vec!["hint".to_string()];
     for (key, r) in rows.iter().take(limit) {
         let name = match &key.1 {
             Some(head) => format!("{} {head}", key.0),
@@ -63,19 +91,7 @@ pub fn tool_rows(t: &ToolTable, order: RowOrder, limit: usize, failures: bool) -
             row.push(if r.failed > 0 { amount(&r.after) } else { String::new() });
         }
         table_rows.push(row);
-        hints.push(hint(key, r).unwrap_or(""));
-    }
-    // The hint is text, so it goes after the aligned columns, which the empty failures cells of a
-    // row would otherwise cut short.
-    let mut out = String::new();
-    let lines = table(&table_rows, 1);
-    let width = lines.lines().map(|l| l.chars().count()).max().unwrap_or(0);
-    for (line, h) in lines.lines().zip(hints) {
-        let pad = width - line.chars().count();
-        let _ = writeln!(out, "{}", format!("{line}{}  {h}", " ".repeat(pad)).trim_end());
-    }
-    if rows.len() > limit {
-        let _ = writeln!(out, "{} more", rows.len() - limit);
+        hints.push(hint(key, r).unwrap_or("").to_string());
     }
     let mut rent = Values::default();
     let mut trips = Values::default();
@@ -83,12 +99,11 @@ pub fn tool_rows(t: &ToolTable, order: RowOrder, limit: usize, failures: bool) -
         rent.add(r.rent);
         trips.add(r.trips);
     }
-    let _ = writeln!(
-        out,
+    let spend = format!(
         "spend {} · rent of these tools {} · trips of these tools {} (two views of the same money; do not add them)",
         amount(&t.spend),
         amount(&rent),
         amount(&trips)
     );
-    out
+    ToolCells { rows: table_rows, hints, more: rows.len().saturating_sub(limit), spend }
 }

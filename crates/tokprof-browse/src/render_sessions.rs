@@ -15,7 +15,6 @@ pub fn sessions(rows: &[SessionRow], glances: &[Option<Glance>], cost: bool, sty
         style.dim(&format!("{:<16}  {:<6}  {:<18}  {:>8}  {:>9}  {:<12}  project", "active", "agent", "session", "size", cost_head, next_head))
     );
     for (r, g) in rows.iter().zip(glances) {
-        let g = *g;
         let extra = if r.subagents.is_empty() { String::new() } else { style.dim(&format!("  +{}", count(r.subagents.len() as u64, "subagent", "subagents"))) };
         let next = g
             .as_ref()
@@ -28,7 +27,7 @@ pub fn sessions(rows: &[SessionRow], glances: &[Option<Glance>], cost: bool, sty
             r.file.agent.name(),
             r.id,
             format!("{:.1} MB", r.bytes as f64 / 1e6),
-            g.map_or(String::new(), |g| usd(g.cost)),
+            g.as_ref().map_or(String::new(), |g| usd(g.cost)),
             r.project
         );
     }
