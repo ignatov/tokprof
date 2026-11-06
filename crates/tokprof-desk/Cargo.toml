@@ -1,11 +1,12 @@
-# The window is a workspace of its own: the root workspace, its CI and its release builds neither
-# fetch nor build Rune while Rune is pre-release. Its version is its own for the same reason.
+# The window is a workspace of its own: the root workspace and the checks of every push neither
+# fetch nor build Rune while Rune is pre-release; only the release's macOS jobs build it, as the
+# Mac app. Its version follows tokprof's, and the release checks the tag against both.
 [workspace]
 
 [package]
 name = "tokprof-desk"
 description = "The session browser of tokprof in a native window"
-version = "0.1.0"
+version = "0.1.5"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ignatov/tokprof"
