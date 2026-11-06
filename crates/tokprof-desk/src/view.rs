@@ -24,7 +24,7 @@ pub const DAY_PANE: (u16, u16) = (200, 400);
 const COST_WIDTH: f32 = 72.0;
 const NEXT_WIDTH: f32 = 92.0;
 
-const MONO: TextStyle = TextStyle::new(12.0, 400.0).family(Family::SystemMono).lh(LINE);
+pub const MONO: TextStyle = TextStyle::new(12.0, 400.0).family(Family::SystemMono).lh(LINE);
 const MONO_BOLD: TextStyle = TextStyle::new(12.0, 600.0).family(Family::SystemMono).lh(LINE);
 const TITLE: TextStyle = TextStyle::new(12.0, 500.0);
 
@@ -73,7 +73,8 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     if !s.browser.zoomed() {
         body = body.child(list_pane(s, &t)).child(el().w(1.0).h_full().fill(t.separator));
     }
-    col().w_full().h_full().fill(t.bg).child(body.child(right_pane(s, &t, dark))).child(el().w_full().h(1.0).fill(t.separator)).child(footer(s, &t, dark))
+    let right = right_pane(s, cx, &t, dark);
+    col().w_full().h_full().fill(t.bg).child(body.child(right)).child(el().w_full().h(1.0).fill(t.separator)).child(footer(s, &t, dark))
 }
 
 fn title_bar(key: &'static str, title: String, t: &Theme) -> El {
@@ -174,19 +175,18 @@ fn pane_text(pane: Pane<'_, Styled>, dark: bool, t: &Theme) -> El {
     }
 }
 
-fn right_pane(s: &Desk, t: &Theme, dark: bool) -> El {
-    let (title, body) = match s.browser.showing_day() {
-        true => (s.browser.day_title(), pane_text(s.browser.day_pane(), dark, t)),
-        false => (s.browser.report_title(), pane_text(s.browser.report(), dark, t)),
+fn right_pane(s: &Desk, cx: &mut Cx<Desk>, t: &Theme, dark: bool) -> El {
+    // The day is as wide as the pane, its strip fitted to it; the X-ray keeps its lines whole and
+    // scrolls sideways when the pane is narrower.
+    let (title, body, sideways) = match (s.browser.showing_day(), s.browser.day_parts()) {
+        (true, Some(parts)) => (s.browser.day_title(), crate::day::day_view(s, parts, cx, t, dark), false),
+        (true, None) => (s.browser.day_title(), pane_text(s.browser.day_pane(), dark, t), false),
+        (false, _) => (s.browser.report_title(), pane_text(s.browser.report(), dark, t), true),
     };
     let offset = s.pane_offset.clone();
-    let scroll = col()
-        .key(PANE)
-        .w_full()
-        .grow(1.0)
-        .min_h(0.0)
-        .min_w(0.0)
-        .scroll_xy()
+    let scroll = col().key(PANE).w_full().grow(1.0).min_h(0.0).min_w(0.0);
+    let scroll = if sideways { scroll.scroll_xy() } else { scroll.scroll(ScrollSpec { stick_bottom: false }) };
+    let scroll = scroll
         .on_scroll_offset(move |at| offset.set(at.offset[1]))
         .on_layout(|s: &mut Desk, r| s.pane_height = r[3])
         .child(col().px(12.0).pb(12.0).child(body));

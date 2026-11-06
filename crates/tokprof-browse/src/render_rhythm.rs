@@ -20,7 +20,7 @@ fn date_name(date: i64) -> String {
 pub fn day(
     view: &View,
     date: i64,
-    (from, to): (i64, i64),
+    window: (i64, i64),
     offset: Offset,
     returns: &[ColdReturn],
     priced: bool,
@@ -28,30 +28,66 @@ pub fn day(
     axis: Option<i64>,
     style: &fmt::Style,
 ) -> String {
-    let mut out = String::from("tokprof · day\n");
+    day_parts(view, date, window, offset, returns, priced, layout, axis, style).text()
+}
+
+/// A day view in three parts, for a screen that draws the strip itself: the text above the strip,
+/// the strip with its lanes, and the text below it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DayParts {
+    pub above: String,
+    /// `None` on a day without a message, whose text is all above.
+    pub strip: Option<(rhythm::Strip, rhythm::StripLanes)>,
+    pub below: String,
+}
+
+impl DayParts {
+    /// The day view as `tokprof day` prints it.
+    pub fn text(&self) -> String {
+        let mut out = self.above.clone();
+        for line in self.strip.iter().flat_map(|(s, _)| &s.lines) {
+            let _ = writeln!(out, "{line}");
+        }
+        out.push_str(&self.below);
+        out
+    }
+}
+
+/// `day` in its parts.
+#[allow(clippy::too_many_arguments)]
+pub fn day_parts(
+    view: &View,
+    date: i64,
+    (from, to): (i64, i64),
+    offset: Offset,
+    returns: &[ColdReturn],
+    priced: bool,
+    layout: rhythm::Layout,
+    axis: Option<i64>,
+    style: &fmt::Style,
+) -> DayParts {
+    let mut above = String::from("tokprof · day\n");
     let end = if to == i64::MAX { "now".to_string() } else { local_time(to, "%a %Y-%m-%d %H:%M") };
-    let _ = writeln!(out, "day       {} → {end}", local_time(from, "%a %Y-%m-%d %H:%M"));
-    let _ = writeln!(out, "{}", view.days.line(date, offset));
+    let _ = writeln!(above, "day       {} → {end}", local_time(from, "%a %Y-%m-%d %H:%M"));
+    let _ = writeln!(above, "{}", view.days.line(date, offset));
     if let Some(line) = rhythm::left_out_line(view.left_out((from, to))) {
-        let _ = writeln!(out, "{line}");
+        let _ = writeln!(above, "{line}");
     }
     let summary = view.summary((from, to));
-    let Some(strip) = view.strip(&summary, (from, to), layout, axis, style, offset) else {
-        let _ = writeln!(out, "\nNo messages on {}.", date_name(date));
-        return out;
-    };
-    out.push('\n');
-    for line in &strip.lines {
-        let _ = writeln!(out, "{line}");
+    let strip = view.strip(&summary, (from, to), layout, axis, style, offset).zip(view.strip_lanes(&summary, (from, to), axis, offset));
+    if strip.is_none() {
+        let _ = writeln!(above, "\nNo messages on {}.", date_name(date));
+        return DayParts { above, strip, below: String::new() };
     }
-    out.push('\n');
+    above.push('\n');
+    let mut below = String::from("\n");
     for line in summary.lines() {
-        let _ = writeln!(out, "{line}");
+        let _ = writeln!(below, "{line}");
     }
-    let _ = writeln!(out, "{}", cache_line(returns, priced));
+    let _ = writeln!(below, "{}", cache_line(returns, priced));
     let advice = summary.advice(&rhythm::Returns::of(returns, priced), &view.instruction_files((from, to)));
-    advice_lines(&mut out, advice.iter().map(String::as_str), style);
-    out
+    advice_lines(&mut below, advice.iter().map(String::as_str), style);
+    DayParts { above, strip, below }
 }
 
 /// The `cache` line of a day.
@@ -145,6 +181,32 @@ mod tests {
         assert!(lines[cache + 1..].iter().all(|l| l.chars().count() <= 12 + 82), "{text}");
         let joined = lines[step..].iter().map(|l| l.trim_start()).collect::<Vec<_>>().join(" ");
         assert!(joined.contains("after turns of a median 3.0m: you led it step by step. "), "{joined}");
+    }
+
+    #[test]
+    fn the_parts_of_a_day_join_into_its_text() {
+        let view = session(3, 4);
+        let date = NOV2 / 86_400_000;
+        let parts =
+            day_parts(&view, date, view.days.bounds(date, &|_| 0), &|_| 0, &returns(), true, rhythm::Layout::TERMINAL, None, &fmt::Style::with_color(true));
+        let (strip, lanes) = parts.strip.as_ref().expect("the day has a strip");
+        assert!(parts.above.starts_with("tokprof · day\nday       ") && parts.above.ends_with("\n\n"), "the lines above, then a blank line: {:?}", parts.above);
+        assert!(parts.below.starts_with("\nsittings  "), "a blank line, then the rhythm lines: {:?}", parts.below);
+        let text = format!("{}{}\n{}", parts.above, strip.lines.join("\n"), parts.below);
+        assert_eq!(text, day_of_colored(&view, &returns()), "above, the strip and below make the day's text");
+        assert_eq!(parts.text(), text);
+        assert_eq!(lanes.lanes.len(), 1, "one lane, as in the strip");
+        assert!(!parts.above.contains('█') && !parts.below.contains('█'), "the strip is in neither part");
+
+        let empty = View::new(Vec::new(), 0, &|_| 0);
+        let parts = day_parts(&empty, date, empty.days.bounds(date, &|_| 0), &|_| 0, &[], true, rhythm::Layout::TERMINAL, None, &fmt::Style::with_color(false));
+        assert_eq!((parts.strip.is_none(), parts.below.as_str()), (true, ""), "a day without a message is all above");
+        assert!(parts.above.ends_with("\nNo messages on 2026-11-02.\n"));
+    }
+
+    fn day_of_colored(view: &View, returns: &[ColdReturn]) -> String {
+        let date = NOV2 / 86_400_000;
+        day(view, date, view.days.bounds(date, &|_| 0), &|_| 0, returns, true, rhythm::Layout::TERMINAL, None, &fmt::Style::with_color(true))
     }
 
     #[test]

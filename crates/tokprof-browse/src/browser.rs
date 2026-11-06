@@ -28,6 +28,7 @@ use tokprof_core::rhythm;
 use tokprof_core::source::SessionRef;
 use tokprof_core::xray::{self, Glance, SessionRow};
 
+use crate::render_rhythm::DayParts;
 use crate::watch::{self, Change};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,8 +133,8 @@ enum Note {
     Status(String),
     /// A day view: the day asked for (`None` for the day of the latest action), the date it shows,
     /// the count of log changes and the screen size it was computed for, the local hour its strip
-    /// starts at, its text, and how long it took.
-    Day(Option<i64>, i64, u32, (u16, u16), i64, String, Duration),
+    /// starts at, its text and its parts, and how long it took.
+    Day(Option<i64>, i64, u32, (u16, u16), i64, String, Option<Arc<DayParts>>, Duration),
 }
 
 /// Sends what the background work found, and wakes the screen.
@@ -157,6 +158,9 @@ struct DayText<T> {
     /// The local date it shows.
     date: i64,
     text: T,
+    /// The text above the strip, the strip and its lanes, and the text below; none for a day
+    /// that failed.
+    parts: Option<Arc<DayParts>>,
     /// The count of log changes it was computed after, and the screen size it was laid out for.
     changes: u32,
     size: (u16, u16),
@@ -286,11 +290,11 @@ impl<T> Browser<T> {
                         Some(pool) => pool.install(build),
                         None => build(),
                     };
-                    let (date, hour, text) = match built {
-                        Ok(day) => (day.date, day.axis_hour, day.text),
-                        Err(e) => (key.unwrap_or_else(|| rhythm::date_of(now_ms(), &rhythm::local_offset)), axis.unwrap_or(0), format!("error: {e:#}")),
+                    let (date, hour, text, parts) = match built {
+                        Ok(day) => (day.date, day.axis_hour, day.text, Some(Arc::new(day.parts))),
+                        Err(e) => (key.unwrap_or_else(|| rhythm::date_of(now_ms(), &rhythm::local_offset)), axis.unwrap_or(0), format!("error: {e:#}"), None),
                     };
-                    if !notify.send(Note::Day(key, date, changes, size, hour, text, started.elapsed())) {
+                    if !notify.send(Note::Day(key, date, changes, size, hour, text, parts, started.elapsed())) {
                         return;
                     }
                 }
@@ -481,9 +485,9 @@ impl<T> Browser<T> {
                     listed |= self.apply(change);
                 }
                 Note::Status(s) => self.status = s,
-                Note::Day(key, date, changes, size, hour, text, took) => {
+                Note::Day(key, date, changes, size, hour, text, parts, took) => {
                     let text = (self.frontend.show)(text);
-                    self.days.insert(key, DayText { date, text, changes, size });
+                    self.days.insert(key, DayText { date, text, parts, changes, size });
                     self.day_axis.get_or_insert(hour);
                     if self.day_pending.is_some_and(|p| (p.0, p.1, p.2) == (key, changes, size)) {
                         self.day_pending = None;
@@ -866,8 +870,13 @@ impl<T> Browser<T> {
     }
 
     /// The row of the session with this id.
+    /// The row of the session with this id: the id its row names, or the one its log's file name
+    /// gives, which the day's lanes may name it by.
     pub fn row_of(&self, session: &str) -> Option<usize> {
-        self.visible.iter().position(|&i| self.entries[i].row.session_id == session)
+        self.visible.iter().position(|&i| {
+            let r = &self.entries[i].row;
+            r.session_id == session || r.file.session_id == session || r.file.main_id == session
+        })
     }
 
     /// Selects row `row`, as a click on it does; its X-ray shows from its top.
@@ -1007,6 +1016,22 @@ impl<T> Browser<T> {
         let (shown, noon) = self.shown_day();
         let updating = if shown.is_some() && self.day_pending.is_some_and(|p| Some(p.0) == self.day) { " · updating…" } else { "" };
         format!(" day · {}{updating} ", local_time(noon, "%a %Y-%m-%d"))
+    }
+
+    /// The parts of the day shown, once it is computed: the text above its strip, the strip with
+    /// its lanes, and the text below.
+    pub fn day_parts(&self) -> Option<&DayParts> {
+        self.shown_day().0.and_then(|d| d.parts.as_deref())
+    }
+
+    /// Selects the session with this id and goes back to the list with its X-ray, as a click on
+    /// its lane in the day does. Returns whether it is listed.
+    pub fn open_session(&mut self, session: &str) -> bool {
+        let Some(row) = self.row_of(session) else { return false };
+        self.day = None;
+        self.zoom = false;
+        self.select_row(row);
+        true
     }
 
     /// What the day pane shows.
@@ -1238,6 +1263,12 @@ mod tests {
         a.zoom_in();
         assert!(a.zoomed());
         assert_eq!(a.row_of("nope"), None);
+
+        a.show_day(100);
+        assert!(a.showing_day() && a.zoomed());
+        assert!(a.open_session("id9"), "a click on a lane of the day");
+        assert_eq!((a.showing_day(), a.zoomed(), a.selected_entry()), (false, false, Some(9)), "goes back to the list with that session selected");
+        assert!(!a.open_session("nope"));
     }
 
     #[test]
@@ -1372,7 +1403,7 @@ mod tests {
 
     /// The day view the worker would send for `key`, showing `date`.
     fn day_note(app: &mut Browser<String>, key: Option<i64>, date: i64, changes: u32, text: &str) {
-        app.notify.tx.send(Note::Day(key, date, changes, app.pane, 4, text.to_string(), Duration::ZERO)).unwrap();
+        app.notify.tx.send(Note::Day(key, date, changes, app.pane, 4, text.to_string(), None, Duration::ZERO)).unwrap();
         app.absorb();
     }
 

@@ -3,6 +3,7 @@
 //! this draws them with Rune and passes the window's keys and clicks on.
 
 mod ansi;
+mod day;
 mod view;
 
 use std::cell::Cell;
@@ -77,6 +78,8 @@ pub struct Desk {
     pub next_cold: Option<i64>,
     /// The browser's count of lists put in place again, as the last poll saw it.
     pub relisted: u32,
+    /// Where the pointer rests over the day's strip.
+    pub pointer: Option<day::Pointer>,
 }
 
 impl Desk {
@@ -93,6 +96,7 @@ impl Desk {
             pane_height: 0.0,
             next_cold: None,
             relisted,
+            pointer: None,
         }
     }
 

@@ -23,6 +23,8 @@ pub struct Day {
     /// The local date of the day shown, as days since 1970-01-01.
     pub date: i64,
     pub text: String,
+    /// The same text above the strip, the strip with its lanes, and the text below it.
+    pub parts: crate::render_rhythm::DayParts,
     /// The line about the logs read.
     pub read: String,
     /// The warnings about logs that could not be read.
@@ -112,8 +114,8 @@ pub fn build(
     let priced = cold.agents.values().any(|a| a.priced);
     let hour = axis_hour.unwrap_or_else(|| (bounds.0 + offset(bounds.0)).rem_euclid(24 * HOUR_MS) / HOUR_MS);
     let axis = axis_at(bounds.0, hour, offset);
-    let text = crate::render_rhythm::day(&view, date, bounds, offset, &returns, priced, layout, Some(axis), style);
-    Ok(Day { date, text, read, warnings: crate::reading::warnings(&stats.unreadable), axis_hour: hour })
+    let parts = crate::render_rhythm::day_parts(&view, date, bounds, offset, &returns, priced, layout, Some(axis), style);
+    Ok(Day { date, text: parts.text(), parts, read, warnings: crate::reading::warnings(&stats.unreadable), axis_hour: hour })
 }
 
 /// The instant at a local hour that is nearest to `start`: the axis a strip starts at.

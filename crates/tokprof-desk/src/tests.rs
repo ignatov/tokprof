@@ -218,6 +218,80 @@ fn the_x_ray_is_the_renderer_s_text_selectable_and_scrolls_full_size() {
     assert!(!rt.state.browser.zoomed() && rt.shell_request.is_none(), "esc goes back to the list");
 }
 
+thread_local! {
+    /// The day the test view draws: a day computed from logs needs logs written on that day.
+    static DAY: std::cell::RefCell<Option<tokprof_browse::render_rhythm::DayParts>> = const { std::cell::RefCell::new(None) };
+}
+
+fn day_only(s: &Desk, cx: &mut rune::Cx<Desk>) -> rune::El {
+    let t = rune::tok::theme(true);
+    DAY.with(|d| rune::col().w_full().h_full().px(12.0).child(day::day_view(s, d.borrow().as_ref().unwrap(), cx, &t, true)))
+}
+
+/// A day from 04:00 local with one session that worked from 14:00 to 14:30 and got a message at
+/// 14:40, while the user sat from 13:55 to 14:45.
+fn synthetic_day() -> tokprof_browse::render_rhythm::DayParts {
+    use tokprof_core::rhythm::{Mark, StripLane, StripLanes};
+    const HOUR: i64 = 3_600_000;
+    let begin = parse_date("2026-11-03").unwrap() + 4 * HOUR;
+    let at = |h: i64, m: i64| begin + (h - 4) * HOUR + m * 60_000;
+    let lanes = StripLanes {
+        begin,
+        end: begin + 24 * HOUR,
+        hours: (0..24).map(|k| (begin + k * HOUR, (k + 4) % 24)).collect(),
+        you: vec![(at(13, 55), at(14, 45))],
+        lanes: vec![StripLane {
+            id: "id3".into(),
+            label: "id3 Инфографика прерываний".into(),
+            marks: vec![(at(14, 0), at(14, 30), Mark::Work), (at(14, 40), at(14, 40), Mark::Message)],
+        }],
+    };
+    let strip = tokprof_core::rhythm::Strip { lines: vec!["(the strip in characters)".into()] };
+    tokprof_browse::render_rhythm::DayParts { above: "tokprof · day\nday       …\n\n".into(), strip: Some((strip, lanes)), below: "\nsittings  1\n".into() }
+}
+
+#[test]
+fn the_day_strip_draws_the_log_s_times_names_them_under_the_pointer_and_opens_a_lane() {
+    let parts = synthetic_day();
+    let lanes = parts.strip.clone().unwrap().1;
+    DAY.with(|d| *d.borrow_mut() = Some(parts));
+    let mut rt = Runtime::new(desk_of(10), day_only, (1400.0, 900.0), Env::new(true, 1.0));
+    settle(&mut rt);
+    let lane = lanes.lanes[0].clone();
+    let track = rt.presented(&format!("track-{}", lane.id)).unwrap().0;
+    let hours = rt.presented(day::HOURS).unwrap().0;
+    assert_eq!((track[0], track[2]), (hours[0], hours[2]), "every lane's track lines up with the hours row");
+    assert!(track[0] >= day::LABEL_WIDTH, "after the labels");
+
+    // Each piece of work is a bar from its start to its end, at least a point wide.
+    let (a, b, _) = *lane.marks.iter().find(|m| m.2 == rhythm::Mark::Work).expect("the session worked");
+    let (x, w) = day::bar(a, b, lanes.begin, track[2]);
+    let bars: Vec<[f32; 4]> = rt.elements().iter().filter(|e| e.key.as_deref() == Some("work")).map(|e| e.rect).collect();
+    assert!(bars.iter().any(|r| (r[0] - (track[0] + x)).abs() < 0.5 && r[2] >= w - 0.5 && r[2] >= 1.0), "a bar at {x} wide {w}: {bars:?}");
+
+    // The pointer over it names the time, the session and the work.
+    let mid = track[0] + x + w / 2.0;
+    rt.pointer_move(mid, track[1] + day::LANE / 2.0);
+    settle(&mut rt);
+    let line = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("pointer-text")).and_then(|e| e.text).unwrap();
+    assert!(line.ends_with(&format!(" · {} · agent working", lane.label.trim_end())), "{line}");
+    assert_eq!(line.len() - line.trim_start_matches(|c: char| c.is_ascii_digit() || c == ':').len(), 5, "it starts with the time, HH:MM: {line}");
+
+    // The message is a mark at its moment, and the you lane shows the sitting.
+    let message = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("message")).unwrap().rect;
+    let x = day::x_of(lane.marks[1].0, lanes.begin, track[2]);
+    assert!((message[0] + message[2] / 2.0 - (track[0] + x)).abs() < 0.5, "at 14:40: {message:?}");
+    assert!(rt.presented("track-you").is_some() && rt.elements().iter().any(|e| e.key.as_deref() == Some("present")));
+    assert!(rt.elements().iter().any(|e| e.key.as_deref() == Some("legend")));
+
+    // A click on the lane selects its session in the list.
+    rt.state.browser.show_day(0);
+    click(&mut rt, &format!("lane-{}", lane.id));
+    assert!(!rt.state.browser.showing_day() && !rt.state.browser.zoomed(), "back to the list with the X-ray");
+    assert_eq!(rt.state.browser.selected(), rt.state.browser.row_of("id3"));
+    assert_eq!(rt.state.browser.selected(), Some(3));
+}
+
 #[test]
 fn bars_are_shares_of_the_dearest_session() {
     assert_eq!(view::bar_share(Some(30.0), Some(120.0)), Some(0.25), "a quarter as long as the dearest");

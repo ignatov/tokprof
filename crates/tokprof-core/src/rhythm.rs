@@ -795,6 +795,13 @@ impl View {
         let pairs: Vec<(&Timeline, &Lane)> = self.kept().collect();
         Strip::of(&pairs, summary, window, &self.days, layout, axis, style, offset)
     }
+
+    /// The lanes of the strip of a day, for a screen that draws them as shapes: what `strip` lays
+    /// out in columns.
+    pub fn strip_lanes(&self, summary: &Summary, window: (i64, i64), axis: Option<i64>, offset: Offset) -> Option<StripLanes> {
+        let pairs: Vec<(&Timeline, &Lane)> = self.kept().collect();
+        StripLanes::of(&pairs, summary, window, &self.days, axis, offset)
+    }
 }
 
 /// The rhythm of one session, for the X-ray's `rhythm` line.
@@ -920,6 +927,119 @@ fn paint(cells: &[Cell], style: &fmt::Style) -> String {
     out
 }
 
+/// What a lane of the day strip shows, from the least to the most telling: the marks of
+/// [`Strip`], for a screen that draws them as shapes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Mark {
+    Wait,
+    Work,
+    Question,
+    Message,
+    Interrupt,
+    /// The user sat at the agents, in the `you` lane.
+    Present,
+}
+
+impl Mark {
+    fn cell(self) -> Cell {
+        match self {
+            Mark::Wait => Cell::Wait,
+            Mark::Work => Cell::Work,
+            Mark::Question => Cell::Question,
+            Mark::Message => Cell::Message,
+            Mark::Interrupt => Cell::Interrupt,
+            Mark::Present => Cell::Present,
+        }
+    }
+
+    /// What the mark means, as the legend says it.
+    pub fn name(self) -> &'static str {
+        Cell::LEGEND.iter().find(|(c, _)| *c == self.cell()).map_or("", |(_, what)| what)
+    }
+}
+
+/// A session's lane of the day strip.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StripLane {
+    pub id: String,
+    /// The first 6 characters of the id and the session's title, which the strip cuts to its
+    /// labels' width.
+    pub label: String,
+    /// Its spans in epoch ms, cut to the day, each with its mark; a moment starts and ends at once.
+    pub marks: Vec<(i64, i64, Mark)>,
+}
+
+/// The day strip before it is laid out: the 24 hours it covers, the user's sittings, and a lane
+/// per session with actions in the day, the most actions first.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StripLanes {
+    pub begin: i64,
+    pub end: i64,
+    /// Each whole hour from `begin`, with its local hour.
+    pub hours: Vec<(i64, i64)>,
+    pub you: Vec<(i64, i64)>,
+    pub lanes: Vec<StripLane>,
+}
+
+impl StripLanes {
+    /// The lanes of a day `[from, to)`, or `None` when the user did not act in it. `lanes` pairs
+    /// each timeline with its lane. The strip covers 24 hours from `axis`, by default the whole
+    /// hour at or before `from`.
+    pub fn of(lanes: &[(&Timeline, &Lane)], summary: &Summary, (from, to): (i64, i64), days: &Days, axis: Option<i64>, offset: Offset) -> Option<StripLanes> {
+        summary.sittings.first()?;
+        let local = |ts: i64| ts + offset(ts);
+        let begin = axis.unwrap_or_else(|| from - local(from).rem_euclid(HOUR));
+        let end = begin + DAY;
+        let cut = |a: i64, b: i64| {
+            let (a, b) = (a.max(from), b.min(to));
+            (b >= a).then_some((a, b))
+        };
+        let hours = (0..DAY / HOUR).map(|k| begin + k * HOUR).map(|h| (h, local(h).rem_euclid(DAY) / HOUR)).collect();
+        let you = summary.sittings.iter().filter_map(|&(a, b)| cut(a, b)).collect();
+        let mut shown: Vec<(&Timeline, &Lane, usize)> =
+            lanes.iter().map(|(t, l)| (*t, *l, l.actions.iter().filter(|(ts, _)| *ts >= from && *ts < to).count())).filter(|(_, _, n)| *n > 0).collect();
+        shown.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.id.cmp(&b.0.id)));
+        let lanes = shown
+            .iter()
+            .map(|(t, l, _)| {
+                let mut marks = Vec::new();
+                let mut mark = |span: Option<(i64, i64)>, m: Mark| marks.extend(span.map(|(a, b)| (a, b, m)));
+                for &(end, msg) in &l.answers {
+                    if days.day_of(end) == days.day_of(msg) {
+                        mark(cut(end, msg), Mark::Wait);
+                    }
+                }
+                for &(a, b) in &l.work {
+                    mark(cut(a, b), Mark::Work);
+                }
+                for &(ask, _) in &l.questions {
+                    mark(cut(ask, ask), Mark::Question);
+                }
+                for &(ts, e) in &l.actions {
+                    if e == Event::Interrupt {
+                        mark(cut(ts, ts), Mark::Interrupt);
+                    } else if e.is_message() {
+                        mark(cut(ts, ts), Mark::Message);
+                    }
+                }
+                let id: String = t.id.chars().take(6).collect();
+                StripLane { id: t.id.clone(), label: format!("{id} {}", t.title.as_deref().unwrap_or("")), marks }
+            })
+            .collect();
+        Some(StripLanes { begin, end, hours, you, lanes })
+    }
+
+    /// The most telling mark of lane `lane` at `ts`, or of the `you` lane for `None`: a span
+    /// shows where it runs, and a moment `slack` ms either side of it.
+    pub fn at(&self, lane: Option<usize>, ts: i64, slack: i64) -> Option<Mark> {
+        let covers = |a: i64, b: i64| if a == b { (ts - a).abs() <= slack } else { a <= ts && ts <= b };
+        match lane {
+            None => self.you.iter().any(|&(a, b)| covers(a, b)).then_some(Mark::Present),
+            Some(i) => self.lanes.get(i)?.marks.iter().filter(|&&(a, b, _)| covers(a, b)).map(|&(_, _, m)| m).max(),
+        }
+    }
+}
+
 /// The day as a strip: an hours row, the user's sittings and a lane per session.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Strip {
@@ -934,7 +1054,7 @@ impl Strip {
     pub fn of(
         lanes: &[(&Timeline, &Lane)],
         summary: &Summary,
-        (from, to): (i64, i64),
+        window: (i64, i64),
         days: &Days,
         layout: Layout,
         axis: Option<i64>,
@@ -942,19 +1062,14 @@ impl Strip {
         offset: Offset,
     ) -> Option<Strip> {
         let (label_width, columns) = (layout.label, layout.columns);
-        summary.sittings.first()?;
-        let local = |ts: i64| ts + offset(ts);
-        let begin = axis.unwrap_or_else(|| from - local(from).rem_euclid(HOUR));
-        let end = begin + DAY;
+        let plan = StripLanes::of(lanes, summary, window, days, axis, offset)?;
+        let begin = plan.begin;
         let minutes = COLUMN_MINUTES.iter().copied().find(|m| DAY / (m * MINUTE) <= columns).unwrap_or(60);
         let col = minutes * MINUTE;
         let n = (DAY / col) as usize;
         let at = |ts: i64| ((ts - begin).div_euclid(col)).clamp(0, n as i64 - 1) as usize;
+        // The spans are cut to the day already; a column shows the most telling mark in it.
         let span = |row: &mut [Cell], a: i64, b: i64, c: Cell| {
-            let (a, b) = (a.max(from), b.min(to));
-            if b < a {
-                return;
-            }
             for cell in &mut row[at(a)..=at(b)] {
                 if c > *cell {
                     *cell = c;
@@ -963,70 +1078,45 @@ impl Strip {
         };
         let mut hours = vec![' '; n];
         let mut last_label: Option<usize> = None;
-        let mut h = begin;
-        while h < end {
+        for &(h, hour) in &plan.hours {
             let c = at(h);
             if last_label.is_none_or(|l| c >= l + 3) && c + 2 <= n {
-                let label = format!("{:02}", local(h).rem_euclid(DAY) / HOUR);
+                let label = format!("{hour:02}");
                 for (k, ch) in label.chars().enumerate() {
                     hours[c + k] = ch;
                 }
                 last_label = Some(c);
             }
-            h += HOUR;
         }
         let mut lines = vec![format!("{:w$} {}", "", hours.iter().collect::<String>().trim_end(), w = label_width)];
         // A row of dim marks in the first column of each hour, between spaced lanes.
         let mut ticks = vec![' '; n];
-        let mut h = begin;
-        while h < end {
+        for &(h, _) in &plan.hours {
             ticks[at(h)] = '·';
-            h += HOUR;
         }
         let ticks = format!("{:w$} {}", "", style.dim(ticks.iter().collect::<String>().trim_end()), w = label_width);
         let mut you = vec![Cell::Empty; n];
-        for &(a, b) in &summary.sittings {
+        for &(a, b) in &plan.you {
             span(&mut you, a, b, Cell::Present);
         }
         lines.push(format!("{:w$} {}", "you", paint(&you, style), w = label_width));
-        let mut shown: Vec<(&Timeline, &Lane, usize)> =
-            lanes.iter().map(|(t, l)| (*t, *l, l.actions.iter().filter(|(ts, _)| *ts >= from && *ts < to).count())).filter(|(_, _, n)| *n > 0).collect();
-        shown.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.id.cmp(&b.0.id)));
         // Lanes fill the rows, the most active first; the last row counts the rest.
-        let fit = if shown.len() <= layout.rows { shown.len() } else { layout.rows.saturating_sub(1).max(1) };
-        let spaced = layout.space && fit == shown.len() && 2 * fit <= layout.rows;
-        for (t, l, _) in shown.iter().take(fit) {
+        let shown = plan.lanes.len();
+        let fit = if shown <= layout.rows { shown } else { layout.rows.saturating_sub(1).max(1) };
+        let spaced = layout.space && fit == shown && 2 * fit <= layout.rows;
+        for lane in plan.lanes.iter().take(fit) {
             let mut row = vec![Cell::Empty; n];
-            for &(end, msg) in &l.answers {
-                if days.day_of(end) == days.day_of(msg) {
-                    span(&mut row, end, msg, Cell::Wait);
-                }
+            for &(a, b, mark) in &lane.marks {
+                span(&mut row, a, b, mark.cell());
             }
-            for &(a, b) in &l.work {
-                span(&mut row, a, b, Cell::Work);
-            }
-            for &(ask, _) in &l.questions {
-                span(&mut row, ask, ask, Cell::Question);
-            }
-            for &(ts, e) in &l.actions {
-                let c = if e == Event::Interrupt {
-                    Cell::Interrupt
-                } else if e.is_message() {
-                    Cell::Message
-                } else {
-                    continue;
-                };
-                span(&mut row, ts, ts, c);
-            }
-            let id: String = t.id.chars().take(6).collect();
-            let label = fmt::clip_end(&format!("{id} {}", t.title.as_deref().unwrap_or("")), label_width);
+            let label = fmt::clip_end(&lane.label, label_width);
             lines.push(format!("{label:label_width$} {}", paint(&row, style)));
             if spaced {
                 lines.push(ticks.clone());
             }
         }
-        if shown.len() > fit {
-            lines.push(fmt::count((shown.len() - fit) as u64, "more session", "more sessions"));
+        if shown > fit {
+            lines.push(fmt::count((shown - fit) as u64, "more session", "more sessions"));
         }
         lines.push(Strip::legend(style));
         Some(Strip { lines })
@@ -1454,6 +1544,35 @@ mod tests {
             lines.last().unwrap(),
             "█ agent working   ░ waiting for your answer   * your message   ? its question   ! you stopped it   ▓ you were there"
         );
+    }
+
+    #[test]
+    fn strip_lanes_keep_the_times_of_the_log() {
+        let lanes = [lane("b0000000", "fewer", &[(t(12, 0), Typed)]), marked()];
+        let pairs: Vec<(&Timeline, &Lane)> = lanes.iter().map(|(t, l)| (t, l)).collect();
+        let refs: Vec<&Lane> = lanes.iter().map(|(_, l)| l).collect();
+        let day = night().bounds(nov2(), &off);
+        let s = Summary::of(&refs, day, &night());
+        let plan = StripLanes::of(&pairs, &s, day, &night(), None, &off).unwrap();
+        assert_eq!((plan.begin, plan.end), (t(5, 0), t(29, 0)), "24 hours from the whole hour at or before the day's start");
+        assert_eq!(plan.hours.len(), 24);
+        assert_eq!((plan.hours[0], plan.hours[19]), ((t(5, 0), 5), (t(24, 0), 0)), "each hour with its local hour");
+        let ids: Vec<&str> = plan.lanes.iter().map(|l| l.id.as_str()).collect();
+        assert_eq!(ids, ["ecad11b9-0000", "b0000000"], "the most actions first");
+        assert_eq!(plan.lanes[0].label, "ecad11 Инфографика прерываний", "the label before the strip cuts it");
+        let marks = &plan.lanes[0].marks;
+        assert!(marks.contains(&(t(8, 20), t(8, 50), Mark::Work)), "work at the times of the log: {marks:?}");
+        assert!(marks.contains(&(t(10, 20), t(10, 20), Mark::Interrupt)), "a moment starts and ends at once");
+        assert!(marks.contains(&(t(9, 31), t(9, 31), Mark::Question)));
+        assert_eq!(plan.at(Some(0), t(8, 35), 0), Some(Mark::Work));
+        assert_eq!(plan.at(Some(0), t(8, 20) + 30_000, 60_000), Some(Mark::Message), "a message wins over the work at its moment");
+        assert_eq!(plan.at(Some(0), t(9, 15), 0), Some(Mark::Wait), "waiting for the answer to the turn that ended at 08:50");
+        assert_eq!(plan.at(Some(0), t(20, 0), 0), None);
+        let (sat, _) = plan.you[0];
+        assert_eq!(plan.at(None, sat, 0), Some(Mark::Present), "the you lane: {:?}", plan.you);
+        assert_eq!(plan.at(Some(9), t(8, 21), 0), None, "a lane that is not there");
+        assert_eq!(Mark::Wait.name(), "waiting for your answer");
+        assert_eq!(Mark::Present.name(), "you were there");
     }
 
     #[test]
