@@ -262,6 +262,18 @@ The X-ray shows:
 
 Under `time`, the `rhythm` line counts the session's turns as [Your day with the agents](#your-day-with-the-agents) defines them: `rhythm    34 turns, 2.1h of work · the agent's turn median 3.5m · your answer median 4.0m · 12 it started itself · 2 interrupts`. A session that a program ran has no such line.
 
+### The same in a window
+
+`tokprof-desk` shows what `tokprof ui` shows in a native window on macOS, with the same keys and the mouse: a click selects a session, a double click shows its X-ray full size, and the X-ray's text can be selected and copied. Each cost has a bar as long as its share of the dearest session. The day view draws its strip at the times of the log rather than in 10-minute columns, and the line under the strip names the time under the pointer and what the lane shows there.
+
+```sh
+cargo install --path crates/tokprof-desk --root ~/.local
+tokprof-desk
+tokprof-desk --snap out.png       # one frame without a window
+```
+
+It is built with [Rune](https://github.com/anomalyco/rune), which is pre-release, so it is not in the release archives. [crates/tokprof-desk](crates/tokprof-desk/README.md) says more.
+
 ## Reports over all sessions
 
 ```sh
@@ -732,7 +744,9 @@ tokprof is a Cargo workspace. The CLI is one package; the rest is a library that
 | `crates/tokprof-logio` | Reading logs without knowing any agent: compressed files, lines, JSON helpers. |
 | `sources/claude-code`, `sources/codex` | One crate per log source: where its logs are and how to read them. |
 | `crates/tokprof-sources` | The catalog of every source, a cargo feature each. |
+| `crates/tokprof-browse` | The session browser without its screen: the list, its costs, X-rays and days and their texts, the log watcher, and the keys. `tokprof ui` and `tokprof-desk` draw it. |
 | `crates/tokprof` | The `tokprof` binary: the command line, the text reports and `tokprof ui`. |
+| `crates/tokprof-desk` | The `tokprof-desk` window, in a workspace of its own so that the rest never fetches Rune. |
 
 Spend of the last week, and the X-ray of the latest session, as `crates/tokprof-sources` documents it:
 

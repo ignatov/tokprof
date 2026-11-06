@@ -25,6 +25,14 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo install --path crates/tokprof --root ~/.local    # the binary the author runs
 ```
 
+The window, `crates/tokprof-desk`, is a workspace of its own that the root excludes, so that the root and CI never fetch Rune. When a change touches it or `tokprof-browse`, check it in its folder too:
+
+```sh
+cd crates/tokprof-desk
+cargo fmt && cargo test && cargo clippy --all-targets -- -D warnings
+cargo install --path . --root ~/.local                # the window the author runs
+```
+
 CI runs the tests on Windows too, where a path prints with `\`, so a test must not expect `/` in a printed path.
 
 ## Releases
@@ -33,7 +41,7 @@ A release is a tag; the `release` skill has the steps.
 
 ## Layout
 
-The framework is in `crates/`: `tokprof-core` (the library), `tokprof-logio` (neutral log reading), `tokprof-sources` (the registry) and `tokprof` (the CLI). Every agent's log source is its own crate under `sources/`. Only a source may name its agent, its tools or its log fields; `crates/tokprof/tests/architecture.rs` fails otherwise, and it also checks the dependency edges.
+The framework is in `crates/`: `tokprof-core` (the library), `tokprof-logio` (neutral log reading), `tokprof-sources` (the registry), `tokprof-browse` (the session browser without its screen), `tokprof` (the CLI, and `tokprof ui` in the terminal) and `tokprof-desk` (the same browser in a Rune window). Every agent's log source is its own crate under `sources/`. Only a source may name its agent, its tools or its log fields; `crates/tokprof/tests/architecture.rs` fails otherwise, and it also checks the dependency edges.
 
 A new log source:
 1. `sources/<name>/` with `Cargo.toml`, `src/lib.rs` (its `LogSource` and `Decoder`), `tests/fixtures/` with synthetic logs, and `tests/conformance.rs`, which runs `tokprof_core::testkit::conform` over the fixtures.
