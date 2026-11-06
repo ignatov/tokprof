@@ -75,7 +75,7 @@ pub fn version(s: &Desk, cx: &Cx<Desk>, theme: &str) -> u64 {
         Pane::Empty(n) => n.to_string(),
     };
     view::hash_of((
-        (b.xray().map(|x| x as *const XRay as usize), pending, s.tab, theme, selected),
+        (s.xray_key(), pending, s.tab, theme, selected),
         (
             b.zoomed(),
             cx.layout_size(TRACK).map(|sz| sz[0].to_bits()),

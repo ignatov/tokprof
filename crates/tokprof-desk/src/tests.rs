@@ -1748,3 +1748,20 @@ fn backspace_on_flame_at_the_top_leaves_full_size() {
     press(&mut rt, RuneKey::Backspace);
     assert!(!rt.state.browser.zoomed(), "⌫ at the top of the graph goes back, as the key help says");
 }
+
+#[test]
+fn a_click_on_a_frame_finds_it_by_its_path_in_the_tree_of_now() {
+    let (mut rt, _, _) = flame_desk();
+    let tree = rt.state.flame_tree().unwrap();
+    let main = tree.nodes[0].children[0];
+    rt.state.flame_click(&tree.path(main));
+    assert_eq!(rt.state.flame.root, tree.path(main), "the frame drawn there");
+    // A frame the tree no longer has, as after a new X-ray: the click does nothing.
+    let before = (rt.state.flame.root.clone(), rt.state.flame.cursor.clone());
+    let gone = vec![("no such frame".to_string(), tokprof_core::profile::Tint::Structure)];
+    rt.state.flame_click(&gone);
+    rt.state.flame_crumb(&gone);
+    assert_eq!((rt.state.flame.root.clone(), rt.state.flame.cursor.clone()), before);
+    // The tree is built once for an X-ray and kept while it is the one shown.
+    assert!(Rc::ptr_eq(&tree, &rt.state.flame_tree().unwrap()));
+}

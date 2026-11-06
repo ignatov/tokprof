@@ -1091,6 +1091,12 @@ impl<T> Browser<T> {
         self.selected_entry().and_then(|i| self.entries[i].xray.as_deref())
     }
 
+    /// The same X-ray, shared: a screen that keys what it built from it by the X-ray can hold
+    /// this, so that no later X-ray takes its place in memory and its key.
+    pub fn xray_shared(&self) -> Option<Arc<XRay>> {
+        self.selected_entry().and_then(|i| self.entries[i].xray.clone())
+    }
+
     /// Selects row `row`, as a click on it does; its X-ray shows from its top.
     pub fn select_row(&mut self, row: usize) {
         if row < self.visible.len() {

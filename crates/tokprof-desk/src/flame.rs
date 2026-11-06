@@ -214,7 +214,7 @@ pub struct State {
 
 /// The tree of an X-ray, and the X-ray it was built from.
 #[derive(Default)]
-pub struct Memo(Option<(usize, String, u64, Rc<Tree>)>);
+pub struct Memo(Option<(std::sync::Arc<XRay>, Rc<Tree>)>);
 
 /// How a key moves the cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -244,16 +244,16 @@ pub fn step(tree: &Tree, root: usize, width: f32, at: usize, m: Move) -> Option<
 impl Desk {
     /// The frame tree of the X-ray shown, built once per X-ray.
     pub fn flame_tree(&self) -> Option<Rc<Tree>> {
-        let x = self.browser.xray()?;
-        let id = x as *const XRay as usize;
+        let x = self.browser.xray_shared()?;
         let mut memo = self.flame_memo.borrow_mut();
-        if let Some((at, session, requests, tree)) = &memo.0
-            && (*at, session.as_str(), *requests) == (id, x.id.as_str(), x.requests)
+        // The memo holds the X-ray it was built from, so a new one is another allocation.
+        if let Some((built, tree)) = &memo.0
+            && std::sync::Arc::ptr_eq(built, &x)
         {
             return Some(tree.clone());
         }
         let tree = Rc::new(Tree::of(&x.stacks, x.priced));
-        memo.0 = Some((id, x.id.clone(), x.requests, tree.clone()));
+        memo.0 = Some((x, tree.clone()));
         Some(tree)
     }
 
@@ -285,9 +285,12 @@ impl Desk {
         self.flame.cursor = tree.path(cursor);
     }
 
-    /// A click on frame `i`: it becomes the root, or, when it is the root, its parent does.
-    pub fn flame_click(&mut self, i: usize) {
+    /// A click on the frame at `path`: it becomes the root, or, when it is the root, its parent
+    /// does. The path is the frame's in the tree that was drawn; a tree that no longer has it
+    /// ignores the click.
+    pub fn flame_click(&mut self, path: &[Step]) {
         let Some(tree) = self.flame_tree() else { return };
+        let Some(i) = tree.find(path) else { return };
         let (root, _) = self.flame_at(&tree);
         self.pane = crate::Focus::Inspector;
         match tree.nodes[i].parent {
@@ -298,8 +301,9 @@ impl Desk {
 
     /// A click on a crumb: frame `i` above the shown root becomes the root, with the cursor where
     /// the root was.
-    pub fn flame_crumb(&mut self, i: usize) {
+    pub fn flame_crumb(&mut self, path: &[Step]) {
         let Some(tree) = self.flame_tree() else { return };
+        let Some(i) = tree.find(path) else { return };
         let (root, _) = self.flame_at(&tree);
         self.pane = crate::Focus::Inspector;
         self.flame_set(&tree, i, root);
@@ -478,7 +482,14 @@ fn crumbs(tree: &Tree, root: usize, p: &Pal) -> El {
             .role("button")
             .label(tree.nodes[i].name.clone())
             .child(label);
-        out = out.child(if on { crumb } else { crumb.hover(p.hover).on_press(move |s: &mut Desk| s.flame_crumb(i)) });
+        out = out.child(if on {
+            crumb
+        } else {
+            crumb.hover(p.hover).on_press({
+                let path = tree.path(i);
+                move |s: &mut Desk| s.flame_crumb(&path)
+            })
+        });
     }
     let n = &tree.nodes[root];
     let share = 100.0 * n.value as f64 / tree.total().max(1) as f64;
@@ -492,6 +503,7 @@ fn bar(tree: &Tree, b: &Bar, cursor: bool, p: &Pal) -> El {
     let fill = fill(n.tint, p);
     let i = b.node;
     let path = tree.path(i);
+    let pressed = path.clone();
     let mut out = row()
         .key(format!("frame-{i}"))
         .absolute(b.x, b.y)
@@ -511,7 +523,7 @@ fn bar(tree: &Tree, b: &Bar, cursor: bool, p: &Pal) -> El {
             }
             s.flame.hover = Some(path.clone());
         })
-        .on_press(move |s: &mut Desk| s.flame_click(i));
+        .on_press(move |s: &mut Desk| s.flame_click(&pressed));
     if cursor {
         out = out.outline(2.0, 1.0, p.accent);
     }

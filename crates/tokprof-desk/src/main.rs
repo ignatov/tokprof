@@ -215,6 +215,9 @@ pub struct Desk {
     /// graph was last laid out in.
     pub flame: flame::State,
     pub flame_memo: RefCell<flame::Memo>,
+    /// The X-ray the inspector was last drawn from, held so that its address, the inspector's
+    /// key, is not taken by a later X-ray.
+    pub xray_seen: RefCell<Option<Arc<tokprof_core::xray::XRay>>>,
     pub flame_w: f32,
     /// Day or Reports, and the state of Reports.
     pub reports: reports::State,
@@ -274,6 +277,7 @@ impl Desk {
             tab_rows: Cell::new(0),
             flame: flame::State::default(),
             flame_memo: RefCell::default(),
+            xray_seen: RefCell::default(),
             flame_w: 0.0,
             reports: reports::State::new(tokprof_browse::reports::Reports::detached()),
         }
@@ -284,6 +288,15 @@ impl Desk {
         self.settings = settings::Settings::read(&prefs);
         self.prefs = prefs;
         self
+    }
+
+    /// What identifies the X-ray shown, for a memo's version: its address, while the desk holds
+    /// it, so that no later X-ray can have the same.
+    pub fn xray_key(&self) -> Option<usize> {
+        let x = self.browser.xray_shared();
+        let key = x.as_ref().map(|x| Arc::as_ptr(x) as usize);
+        *self.xray_seen.borrow_mut() = x;
+        key
     }
 
     /// Shows tab `t` from its top, with the cursor on its first row.
