@@ -41,7 +41,7 @@ The palette SHALL offer four groups. `Actions`: what the window does from a key,
 - **THEN** `Clear the filter` is not offered; and `Full-size inspector` is offered only while the inspector is not full size, `Back to the list` only while it is
 
 ### Requirement: Palette matching
-An entry SHALL match when every typed letter, ignoring case and spaces, is in its name in order; a session also matches by its project, a day by its date. Matches rank by tightness: a letter at the start, at a word's start or right after the one before ranks higher, and a gap lower. Groups go in the order of their best match, entries by rank; loose matches are left out while tighter ones exist. Matched letters are drawn in the accent. A query shows at most 100 sessions and 30 days.
+An entry SHALL match when every typed letter, ignoring case and spaces, is in its name in order; a session also matches by its project, a day by its date, a day only in runs of letters that each start a word, the words in a row. Matches rank by tightness: a letter at the start, at a word's start or next to the one before ranks higher. Groups go in the order of their best match, entries by rank; loose matches are left out while tighter ones exist. Matched letters are in the accent.
 
 #### Scenario: A prefix first
 - **WHEN** the user types `to`
@@ -58,6 +58,14 @@ An entry SHALL match when every typed letter, ignoring case and spaces, is in it
 #### Scenario: Word starts
 - **WHEN** the user types `nd`
 - **THEN** `Next day` ranks above entries where `n` and `d` are inside a word
+
+#### Scenario: Days by chance
+- **WHEN** the user types `to` and the list has sessions of Thursday 8 October
+- **THEN** `Today` is shown and `Thu 8 Oct 2026`, whose `T` and `O` start words two apart, is not, while `8oct` shows it
+
+#### Scenario: At most
+- **WHEN** a query matches more than 100 sessions or 30 days
+- **THEN** the palette shows the 100 and the 30 that rank highest
 
 #### Scenario: Nothing typed
 - **WHEN** the query is empty
