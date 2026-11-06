@@ -6,6 +6,7 @@ use std::time::Instant;
 use rune::prefs::{Prefs, PrefsError};
 use rune::{Color, El, Key as RuneKey, KeyEvent, ScrollSpec, Tx, col, el, row, spacer, text};
 
+use crate::overlay::{self, PILL};
 use crate::pal::{self, Pal};
 use crate::themes::{self, Theme};
 use crate::{Desk, plain};
@@ -139,8 +140,12 @@ pub struct Panel {
 }
 
 impl Desk {
-    /// Opens the settings panel, or closes it.
+    /// Opens the settings panel, or closes it; it does not open over another card.
     pub fn toggle_settings(&mut self) {
+        // One card at a time.
+        if self.palette.is_some() || self.help {
+            return;
+        }
         self.panel = match self.panel {
             Some(_) => None,
             None => Some(Panel::default()),
@@ -241,8 +246,6 @@ const CARD_W: f32 = 760.0;
 const CARD_PAD: f32 = 24.0;
 const GROUP_PAD: f32 = 14.0;
 const GAP: f32 = 12.0;
-/// A pill, as Rex rounds its buttons and keys.
-const PILL: f32 = 999.0;
 
 /// The settings panel over the window: a rounded card over the window dimmed and blurred; a
 /// click outside the card closes it.
@@ -296,39 +299,21 @@ pub fn panel(s: &Desk, panel: Panel, p: &Pal, height: f32) -> El {
         .py(14.0)
         .gap(14.0)
         .center_y()
-        .child(hint(&["Tab"], "section", p))
-        .child(hint(&["←", "→", "↑", "↓"], "choose", p))
-        .child(hint(&["⏎"], "done", p))
+        .child(overlay::hint(&["Tab"], "section", p))
+        .child(overlay::hint(&["←", "→", "↑", "↓"], "choose", p))
+        .child(overlay::hint(&["⏎"], "done", p))
         .child(spacer().grow(1.0))
         .child(done);
-    let card = col()
-        .key("settings")
-        .w(CARD_W)
+    let card = overlay::card("settings", "Settings", CARD_W, 22.0, p)
         .h(card_h)
-        .radius(22.0)
-        .fill(p.panel)
-        .border(1.0, p.row_line)
-        .shadow(24.0, 64.0, Color::BLACK.alpha(0.28))
-        .clip_rounded(22.0)
-        .role("dialog")
-        .label("Settings")
-        // A click on the card stays on it; one outside it closes the panel. Rune's modal would
-        // take Tab itself, so the scrim stands in for it.
-        .on_press(|_: &mut Desk| {})
         .child(head)
         .child(el().w_full().h(1.0).fill(p.row_line))
         .child(body)
         .child(el().w_full().h(1.0).fill(p.row_line))
         .child(foot);
-    el().key("settings-scrim")
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h_full()
-        .fill(p.bg.alpha(0.35))
-        .backdrop_blur(10.0)
-        .center()
-        .on_press(|s: &mut Desk| s.panel = None)
-        .child(card)
+    // A click outside the card closes the panel; Rune's modal would take Tab itself, so the scrim
+    // stands in for it.
+    overlay::scrim("settings-scrim", p, |s| s.panel = None).center().child(card)
 }
 
 /// A part of the panel: its title over a soft group, ringed in the accent while it has the
@@ -338,22 +323,6 @@ fn section(part: Part, title: &'static str, content: El, keyboard: Part, p: &Pal
     let group = col().key(part.key()).w_full().padding(GROUP_PAD).radius(16.0).fill(p.bar).child(content);
     let group = if on { group.outline(2.0, 2.0, p.accent) } else { group };
     col().w_full().gap(10.0).child(text(title).font(pal::HEAD).color(if on { p.accent } else { p.ink2 }).single_line()).child(group)
-}
-
-/// Keys and what they do, as the panel's foot names them.
-fn hint(keys: &[&'static str], what: &'static str, p: &Pal) -> El {
-    let caps = keys.iter().map(|k| {
-        row()
-            .h(20.0)
-            .min_w(20.0)
-            .px(6.0)
-            .center()
-            .radius(5.0)
-            .fill(p.bar)
-            .border(1.0, p.row_line)
-            .child(text(*k).font(pal::SMALL_STRONG).color(p.ink2).single_line())
-    });
-    row().gap(3.0).center_y().children(caps).child(text(what).font(pal::SMALL).color(p.ink3).single_line().pl(4.0))
 }
 
 /// The three appearances as tiles with a small window in each: the system's shows the light

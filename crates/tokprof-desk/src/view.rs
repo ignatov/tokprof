@@ -52,9 +52,15 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
         let body = row().key("body").w_full().grow(1.0).min_h(0.0).child(list_pane(s, &p)).child(el().w(1.0).h_full().fill(p.line)).child(inspector(cx));
         root = root.child(lanes).child(body);
     }
+    let height = if s.window_h > 0.0 { s.window_h } else { 900.0 };
     if let Some(panel) = s.panel {
-        let height = if s.window_h > 0.0 { s.window_h } else { 900.0 };
         root = root.child(crate::settings::panel(s, panel, &p, height));
+    }
+    if let Some(palette) = &s.palette {
+        root = root.child(crate::palette::view(s, palette, &p));
+    }
+    if s.help {
+        root = root.child(crate::keys::view(&p, height));
     }
     root
 }

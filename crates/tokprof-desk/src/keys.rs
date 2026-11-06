@@ -1,0 +1,191 @@
+//! The key help: every key of the window, grouped by where it works, over the window as a card.
+//! The groups are written from the code that handles the keys, `on_key` and the keys of the
+//! panes, the settings, the palette and the browser, and the tests hold them to it.
+
+use rune::{El, Key as RuneKey, KeyEvent, ScrollSpec, Tx, col, el, row, spacer, text};
+
+use crate::Desk;
+use crate::overlay::{self, PILL};
+use crate::pal::{self, Pal};
+
+/// A row of the key help: the keys, any of which does it, and what it does.
+pub struct Keys {
+    pub keys: &'static [&'static str],
+    pub what: &'static str,
+}
+
+const fn k(keys: &'static [&'static str], what: &'static str) -> Keys {
+    Keys { keys, what }
+}
+
+/// The groups of the key help, in the order the card draws them in its two columns.
+pub const GROUPS: &[(&str, &[Keys])] = &[
+    (
+        "Anywhere",
+        &[
+            k(&["⌘K"], "command palette"),
+            k(&["⌘,"], "settings"),
+            k(&["?"], "this key help"),
+            k(&["Tab", "⇧Tab"], "keyboard to the next, previous pane"),
+            k(&["⏎"], "inspector full size"),
+            k(&["esc", "⌫"], "back from full size"),
+            k(&["[", "]"], "day before, day after"),
+            k(&["d"], "the selected session's day"),
+            k(&["/"], "filter by project, agent or id"),
+            k(&["s"], "sort by time, cost, next request"),
+            k(&["r"], "sort again"),
+            k(&["c"], "copy the handoff line"),
+            k(&["f"], "write the JFR for IntelliJ"),
+            k(&["o"], "write the HTML flame graph, open it"),
+            k(&["⌘W"], "close the window"),
+            k(&["q", "⌘Q", "Ctrl+C"], "quit"),
+        ],
+    ),
+    (
+        "Lanes",
+        &[
+            k(&["↑", "↓", "k", "j"], "the lane above, below"),
+            k(&["Home", "End"], "the first, the last lane"),
+            k(&["←", "→", "h", "l"], "day before, day after"),
+            k(&["esc"], "keyboard back to the list"),
+        ],
+    ),
+    (
+        "Palette",
+        &[
+            k(&["↑", "↓"], "highlight before, after"),
+            k(&["Ctrl+P", "Ctrl+N"], "highlight before, after"),
+            k(&["⏎"], "run it"),
+            k(&["⌫"], "delete a letter"),
+            k(&["esc", "⌘K"], "close"),
+        ],
+    ),
+    (
+        "List",
+        &[
+            k(&["↑", "↓", "k", "j"], "session above, below"),
+            k(&["PgUp", "PgDn"], "a page up, down"),
+            k(&["Home", "End", "g", "G"], "the first, the last session"),
+            k(&["←", "→", "h", "l"], "day before, day after"),
+            k(&["esc"], "clear the filter, or quit"),
+            k(&["⏎"], "while typing a filter: keep it"),
+            k(&["esc"], "while typing a filter: clear it"),
+        ],
+    ),
+    (
+        "Inspector",
+        &[
+            k(&["←", "→", "h", "l"], "tab before, after"),
+            k(&["1–9"], "the tab of that place"),
+            k(&["↑", "↓", "k", "j"], "row above, below, or scroll"),
+            k(&["PgUp", "PgDn"], "ten rows up, down"),
+            k(&["Home", "End", "g", "G"], "the first, the last row"),
+            k(&["Space"], "a page down"),
+            k(&["esc"], "keyboard back to the list"),
+        ],
+    ),
+    (
+        "Settings",
+        &[
+            k(&["Tab", "⇧Tab"], "next, previous section"),
+            k(&["←", "→", "h", "l"], "appearance or theme before, after"),
+            k(&["↑", "↓", "k", "j"], "theme above, below"),
+            k(&["Home", "End"], "the first, the last theme"),
+            k(&["esc", "⏎", "⌘,"], "close"),
+        ],
+    ),
+];
+
+/// The groups in the left column; the rest go in the right one.
+const LEFT: usize = 3;
+
+/// The card's width and the width of a column of groups in it.
+const CARD_W: f32 = 860.0;
+const COLUMN_W: f32 = (CARD_W - 2.0 * 24.0 - 18.0) / 2.0;
+/// The room between two groups of a column.
+const GROUP_GAP: f32 = 14.0;
+
+/// The key of the card's scrolling body.
+pub const BODY: &str = "keys-body";
+
+impl Desk {
+    /// Opens the key help unless another card is open.
+    pub fn open_help(&mut self) {
+        if self.panel.is_none() && self.palette.is_none() {
+            self.help = true;
+        }
+    }
+
+    /// The keys of the open key help: esc and `?` close it, the page keys scroll it, and no key
+    /// goes on.
+    pub fn help_key(&mut self, e: &KeyEvent, tx: &mut Tx) -> bool {
+        match &e.key {
+            RuneKey::Escape => self.help = false,
+            RuneKey::Text(t) if t == "?" && !e.mods.cmd && !e.mods.ctrl => self.help = false,
+            RuneKey::PageUp | RuneKey::Up => tx.scroll_page(BODY, -1),
+            RuneKey::PageDown | RuneKey::Down => tx.scroll_page(BODY, 1),
+            RuneKey::Text(t) if t == " " && crate::plain(e) => tx.scroll_page(BODY, 1),
+            _ => {}
+        }
+        true
+    }
+}
+
+/// The key help over the window: a card of the groups in two columns.
+pub fn view(p: &Pal, height: f32) -> El {
+    let column = |groups: &[(&'static str, &'static [Keys])]| col().w(COLUMN_W).gap(GROUP_GAP).children(groups.iter().map(|(name, keys)| group(name, keys, p)));
+    let badge = row().h(26.0).px(12.0).center_y().radius(PILL).fill(p.bar).child(text("? or esc to close").font(pal::SMALL_STRONG).color(p.ink2).single_line());
+    let head = row()
+        .w_full()
+        .px(24.0)
+        .pt(20.0)
+        .pb(16.0)
+        .center_y()
+        .child(text("Keys").key("keys-title").font(pal::TITLE).color(p.ink).single_line())
+        .child(spacer().grow(1.0))
+        .child(badge);
+    let body = col()
+        .key(BODY)
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .scroll(ScrollSpec { stick_bottom: false })
+        .child(row().w_full().px(24.0).py(14.0).gap(18.0).child(column(&GROUPS[..LEFT])).child(column(&GROUPS[LEFT..])));
+    let card = overlay::card("keys", "Keys", CARD_W, 20.0, p)
+        .h(card_height().min(height - 80.0).max(320.0))
+        .child(head)
+        .child(el().w_full().h(1.0).fill(p.row_line))
+        .child(body);
+    overlay::scrim("keys-scrim", p, |s| s.help = false).center().child(card)
+}
+
+/// The height the card needs to show every group without scrolling: its head and line, and the
+/// taller column.
+fn card_height() -> f32 {
+    let group_h = |keys: &[Keys]| 16.0 + 10.0 + 20.0 + keys.len() as f32 * ROW_H;
+    let column_h = |groups: &[(&str, &[Keys])]| groups.iter().map(|(_, keys)| group_h(keys)).sum::<f32>() + GROUP_GAP * (groups.len() as f32 - 1.0);
+    let body = column_h(&GROUPS[..LEFT]).max(column_h(&GROUPS[LEFT..])) + 28.0;
+    20.0 + 16.0 + 26.0 + 1.0 + body
+}
+
+/// The height of a row of keys.
+const ROW_H: f32 = 22.0;
+
+/// A group of keys: its name over a soft group of rows, the keycaps left and what they do right.
+fn group(name: &'static str, keys: &'static [Keys], p: &Pal) -> El {
+    let rows = keys.iter().map(|k| {
+        row()
+            .w_full()
+            .h(ROW_H)
+            .gap(12.0)
+            .center_y()
+            .child(row().w(140.0).gap(3.0).center_y().children(k.keys.iter().map(|c| overlay::keycap_on(c, p.panel, p))))
+            .child(text(k.what).font(pal::BODY).color(p.ink).single_line().truncate().grow(1.0).shrink().min_w(0.0))
+    });
+    col()
+        .key(format!("keys-{}", name.to_lowercase()))
+        .w_full()
+        .gap(10.0)
+        .child(text(name).font(pal::HEAD).color(p.ink2).single_line())
+        .child(col().w_full().px(14.0).py(10.0).radius(16.0).fill(p.bar).children(rows))
+}

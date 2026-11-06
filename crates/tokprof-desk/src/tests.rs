@@ -816,3 +816,299 @@ fn a_click_outside_the_card_closes_the_panel_and_reaches_nothing_behind_it() {
     assert!(rt.state.panel.is_none(), "the panel closed");
     assert_eq!(rt.state.browser.selected(), selected, "the row under the scrim was not selected");
 }
+
+fn ctrl(rt: &mut Runtime<Desk>, c: &str) {
+    rt.key(KeyEvent { key: RuneKey::Text(c.into()), mods: rune::Mods { ctrl: true, ..rune::Mods::default() } });
+    settle(rt);
+}
+
+/// The palette's entries for what is typed in it now.
+fn listed(rt: &Runtime<Desk>) -> Vec<palette::Entry> {
+    palette::entries(&rt.state, &rt.state.palette.as_ref().expect("the palette is open").query)
+}
+
+#[test]
+fn command_k_opens_the_palette_and_keys_stay_with_it() {
+    let mut rt = runtime(desk_of(5), (1400.0, 900.0));
+    let selected = rt.state.browser.selected();
+    command(&mut rt, 'k');
+    settle(&mut rt);
+    assert!(rt.presented("palette").is_some(), "the palette is open");
+    assert_eq!(rt.state.palette.as_ref().unwrap().at, 0, "its first entry highlighted");
+    typed(&mut rt, "qj");
+    assert_eq!(rt.shell_request, None, "q does not quit behind the palette");
+    assert_eq!(rt.state.browser.selected(), selected, "j does not move the list");
+    assert_eq!(rt.state.palette.as_ref().unwrap().query, "qj");
+    assert_eq!(text_in(&rt, "palette-query", "palette-text"), "qj", "the field shows what is typed");
+    press(&mut rt, RuneKey::Backspace);
+    assert_eq!(rt.state.palette.as_ref().unwrap().query, "q");
+    press(&mut rt, RuneKey::Escape);
+    assert!(rt.state.palette.is_none() && rt.presented("palette").is_none(), "esc closes it");
+    assert_eq!(rt.shell_request, None);
+    command(&mut rt, 'k');
+    command(&mut rt, 'k');
+    assert!(rt.state.palette.is_none(), "⌘K again closes it");
+    command(&mut rt, 'k');
+    command(&mut rt, 'q');
+    assert_eq!(rt.shell_request, Some(Shell::Quit), "⌘Q still quits");
+}
+
+#[test]
+fn typing_filters_and_ranks_and_enter_runs_the_first_match() {
+    let mut rt = runtime(desk_of(5), (1400.0, 900.0));
+    command(&mut rt, 'k');
+    typed(&mut rt, "cache");
+    let list = listed(&rt);
+    assert_eq!(list[0].pick, palette::Pick::Tab(Tab::Cache), "{:?}", list.iter().map(|e| &e.title).collect::<Vec<_>>());
+    assert_eq!(text_in(&rt, "pick-0", "pick-title"), "Cache");
+    assert!(rt.presented("palette-group-tabs").is_some(), "under its heading");
+    press(&mut rt, RuneKey::Enter);
+    assert!(rt.state.palette.is_none(), "⏎ closes the palette");
+    assert_eq!(rt.state.tab, Tab::Cache, "and shows the tab");
+
+    command(&mut rt, 'k');
+    typed(&mut rt, "to");
+    let titles: Vec<String> = listed(&rt).into_iter().map(|e| e.title).collect();
+    let at = |t: &str| titles.iter().position(|x| x == t);
+    assert!(at("Tools").is_some() && at("Today").is_some(), "{titles:?}");
+    assert!(at("Copy the handoff line").is_none_or(|h| h > at("Tools").unwrap() && h > at("Today").unwrap()), "{titles:?}");
+
+    typed(&mut rt, "zzzz");
+    assert!(rt.presented("palette-empty").is_some(), "nothing matches");
+    press(&mut rt, RuneKey::Enter);
+    assert!(rt.state.palette.is_some(), "⏎ with nothing matched does nothing");
+}
+
+#[test]
+fn arrows_and_control_keys_move_the_highlight_and_enter_runs_it() {
+    let mut rt = runtime(desk_of(5), (1400.0, 900.0));
+    command(&mut rt, 'k');
+    typed(&mut rt, "sort");
+    let list = listed(&rt);
+    assert_eq!(list[2].title, "Sort by Cost", "{:?}", list.iter().map(|e| &e.title).collect::<Vec<_>>());
+    press(&mut rt, RuneKey::Down);
+    ctrl(&mut rt, "n");
+    ctrl(&mut rt, "p");
+    press(&mut rt, RuneKey::Down);
+    assert_eq!(rt.state.palette.as_ref().unwrap().at, 2);
+    press(&mut rt, RuneKey::Enter);
+    assert_eq!(rt.state.browser.sort_order(), tokprof_browse::browser::Sort::Cost, "the third entry ran");
+    assert!(rt.state.palette.is_none());
+
+    command(&mut rt, 'k');
+    typed(&mut rt, "sort");
+    let last = listed(&rt).len() - 1;
+    for _ in 0..last + 3 {
+        press(&mut rt, RuneKey::Down);
+    }
+    assert_eq!(rt.state.palette.as_ref().unwrap().at, last, "↓ stays on the last entry");
+    press(&mut rt, RuneKey::Up);
+    assert_eq!(rt.state.palette.as_ref().unwrap().at, last - 1);
+}
+
+#[test]
+fn picking_a_session_selects_it_scrolls_to_it_and_shows_its_summary() {
+    let mut rt = runtime(desk_of(60), (1400.0, 900.0));
+    rt.update(|s, tx| s.show_tab(Tab::Tools, tx));
+    settle(&mut rt);
+    command(&mut rt, 'k');
+    typed(&mut rt, "air");
+    let list = listed(&rt);
+    let at = list.iter().position(|e| e.pick == palette::Pick::Session("id58".into())).expect("id58 is in ~/src/air");
+    for _ in 0..at {
+        press(&mut rt, RuneKey::Down);
+    }
+    assert!(rt.presented(&palette::row_key(at)).is_some(), "the highlight is scrolled into view");
+    press(&mut rt, RuneKey::Enter);
+    settle(&mut rt);
+    assert_eq!(rt.state.browser.selected(), rt.state.browser.row_of("id58"));
+    assert!(rt.presented("id58").is_some_and(|(r, _)| r[1] < 900.0), "the list scrolled to it");
+    assert_eq!(rt.state.tab, Tab::Summary);
+
+    // From the full-size inspector, the list is drawn again.
+    press(&mut rt, RuneKey::Enter);
+    assert!(rt.state.browser.zoomed());
+    command(&mut rt, 'k');
+    typed(&mut rt, "air");
+    press(&mut rt, RuneKey::Enter);
+    settle(&mut rt);
+    assert!(!rt.state.browser.zoomed() && rt.presented("list-pane").is_some());
+    assert_eq!(rt.state.browser.selected(), rt.state.browser.row_of("id1"), "the most recent of ~/src/air first");
+}
+
+#[test]
+fn picking_a_day_shows_it_in_the_lanes() {
+    let mut rt = runtime(desk_of(5), (1400.0, 900.0));
+    let selected = rt.state.browser.selected();
+    command(&mut rt, 'k');
+    typed(&mut rt, "1970");
+    let list = listed(&rt);
+    let date = rhythm::date_of(10_000_000, &rhythm::local_offset);
+    assert_eq!(list[0].pick, palette::Pick::Day(Some(date)), "{:?}", list.iter().map(|e| &e.title).collect::<Vec<_>>());
+    assert_eq!(list[0].right, "5 sessions, $0.00");
+    press(&mut rt, RuneKey::Enter);
+    assert_eq!(rhythm::date_of(rt.state.browser.day_noon(), &rhythm::local_offset), date);
+    assert_eq!(rt.state.browser.selected(), selected, "the selection stays");
+}
+
+#[test]
+fn the_entries_with_nothing_typed_and_their_limits() {
+    let desk = desk_of(150);
+    let list = palette::entries(&desk, "");
+    let groups: Vec<palette::Group> = list.iter().map(|e| e.group).collect();
+    let mut order = groups.clone();
+    order.dedup();
+    use palette::Group::*;
+    assert_eq!(order, vec![Actions, Tabs, Sessions, Days]);
+    assert_eq!(groups.iter().filter(|&&g| g == Sessions).count(), palette::RECENT_SESSIONS);
+    let sessions: Vec<&palette::Pick> = list.iter().filter(|e| e.group == Sessions).map(|e| &e.pick).collect();
+    assert_eq!(sessions[0], &palette::Pick::Session("id0".into()), "the most recent first");
+    assert_eq!(list.iter().find(|e| e.group == Days).unwrap().title, "Today");
+    assert!(!list.iter().any(|e| e.title == "Clear the filter" || e.title == "Back to the list"), "no filter, not full size");
+    let matched = palette::entries(&desk, "src");
+    assert_eq!(matched.iter().filter(|e| e.group == Sessions).count(), palette::MATCHED_SESSIONS);
+}
+
+#[test]
+fn a_click_on_a_row_runs_it_and_a_click_outside_closes_the_palette() {
+    let mut rt = runtime(desk_of(5), (1400.0, 900.0));
+    command(&mut rt, 'k');
+    typed(&mut rt, "work");
+    settle(&mut rt);
+    click(&mut rt, &palette::row_key(0));
+    settle(&mut rt);
+    assert_eq!(rt.state.tab, Tab::Work);
+    assert!(rt.state.palette.is_none());
+
+    let selected = rt.state.browser.selected();
+    command(&mut rt, 'k');
+    settle(&mut rt);
+    let (x, y) = rt.find("id3").expect("the row is on the screen");
+    rt.pointer_down(x, y);
+    rt.pointer_up(x, y);
+    settle(&mut rt);
+    assert!(rt.state.palette.is_none(), "the palette closed");
+    assert_eq!(rt.state.browser.selected(), selected, "the row under the scrim was not selected");
+}
+
+#[test]
+fn one_card_at_a_time() {
+    let mut rt = runtime(desk_of(3), (1400.0, 900.0));
+    command(&mut rt, 'k');
+    command(&mut rt, ',');
+    assert!(rt.state.palette.is_some() && rt.state.panel.is_none(), "⌘, does nothing over the palette");
+    typed(&mut rt, "?");
+    assert!(!rt.state.help, "? is typed into the query");
+    press(&mut rt, RuneKey::Escape);
+    command(&mut rt, ',');
+    command(&mut rt, 'k');
+    assert!(rt.state.panel.is_some() && rt.state.palette.is_none(), "⌘K does nothing over the settings");
+    command(&mut rt, ',');
+    // The palette's Settings… closes it and opens the panel.
+    command(&mut rt, 'k');
+    typed(&mut rt, "settings");
+    press(&mut rt, RuneKey::Enter);
+    assert!(rt.state.panel.is_some() && rt.state.palette.is_none());
+}
+
+#[test]
+fn a_filter_being_typed_is_kept_when_the_palette_opens() {
+    let mut rt = runtime(desk_of(6), (1400.0, 900.0));
+    typed(&mut rt, "/air");
+    command(&mut rt, 'k');
+    assert!(!rt.state.browser.editing() && rt.state.browser.filter() == "air");
+    assert!(rt.state.palette.is_some());
+    typed(&mut rt, "clear");
+    press(&mut rt, RuneKey::Enter);
+    assert!(rt.state.browser.filter().is_empty(), "Clear the filter is offered while one is set");
+}
+
+#[test]
+fn question_mark_opens_the_key_help_and_closes_it() {
+    let mut rt = runtime(desk_of(5), (1400.0, 900.0));
+    let selected = rt.state.browser.selected();
+    typed(&mut rt, "?");
+    assert!(rt.state.help && rt.presented("keys").is_some(), "? opens the key help");
+    typed(&mut rt, "jq");
+    assert_eq!((rt.state.browser.selected(), rt.shell_request), (selected, None), "keys stay with it");
+    command(&mut rt, 'k');
+    assert!(rt.state.palette.is_none(), "no palette over it");
+    typed(&mut rt, "?");
+    assert!(!rt.state.help && rt.presented("keys").is_none(), "? closes it");
+    typed(&mut rt, "?");
+    press(&mut rt, RuneKey::Escape);
+    assert!(!rt.state.help, "esc closes it");
+    assert_eq!(rt.shell_request, None, "and does not quit");
+
+    typed(&mut rt, "/a?");
+    assert!(!rt.state.help && rt.state.browser.filter() == "a?", "? is typed into a filter");
+    press(&mut rt, RuneKey::Escape);
+
+    // The palette's Key help opens it too.
+    command(&mut rt, 'k');
+    typed(&mut rt, "key help");
+    press(&mut rt, RuneKey::Enter);
+    assert!(rt.state.help);
+    for name in ["Anywhere", "List", "Lanes", "Inspector", "Settings", "Palette"] {
+        assert!(texts(&rt).iter().any(|t| t == name), "{name}");
+    }
+}
+
+/// Every key the key help names.
+fn helped() -> Vec<&'static str> {
+    keys::GROUPS.iter().flat_map(|(_, rows)| rows.iter().flat_map(|r| r.keys.iter().copied())).collect()
+}
+
+#[test]
+fn the_key_help_names_the_keys_the_window_handles() {
+    let named = helped();
+    for k in [
+        "⌘K", "⌘,", "?", "Tab", "⇧Tab", "⏎", "esc", "⌫", "[", "]", "d", "/", "s", "r", "c", "f", "o", "q", "⌘Q", "⌘W", "Ctrl+C", "↑", "↓", "←", "→", "j", "k",
+        "h", "l", "g", "G", "PgUp", "PgDn", "Home", "End", "1–9", "Space", "Ctrl+P", "Ctrl+N",
+    ] {
+        assert!(named.contains(&k), "the key help names {k}");
+    }
+    // Every character the browser does something with is named; c, f and o copy and write
+    // files, so they are only named above.
+    let fingerprint = |b: &Book| (b.selected(), b.zoomed(), b.editing(), b.sort_order(), b.day_noon(), b.day_is_latest(), b.status().to_string());
+    for c in (' '..='~').filter(|c| !"cfo".contains(*c)) {
+        let mut desk = desk_of(3);
+        desk.browser.select_row(1);
+        let view = desk.viewport();
+        let before = fingerprint(&desk.browser);
+        let go_on = desk.browser.on_key(Key::Char(c), view);
+        if !go_on || fingerprint(&desk.browser) != before {
+            assert!(
+                named.contains(&c.to_string().as_str()) || (c == ' ' && named.contains(&"Space")),
+                "the browser handles {c:?}, the key help does not name it"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_palette_and_keys_scenes_open_their_cards() {
+    for (scene, key) in [("palette", "palette"), ("keys", "keys")] {
+        let mut desk = desk_of(3);
+        let (_, open) = SCENES.iter().find(|(name, _)| *name == scene).unwrap();
+        open(&mut desk);
+        let rt = runtime(desk, (1400.0, 900.0));
+        assert!(rt.presented(key).is_some(), "{scene}");
+    }
+    let mut desk = desk_of(3);
+    SCENES.iter().find(|(name, _)| *name == "palette").unwrap().1(&mut desk);
+    assert_eq!(desk.palette.unwrap().query, "to");
+}
+
+#[test]
+fn a_short_group_goes_above_a_long_one_as_good_and_loose_matches_are_left_out() {
+    let rows = (0..40).map(|i| row(i, if i == 0 { "tools-app" } else { "~/src/tolerant" }, 10_000 - i as u64)).collect();
+    let desk = Desk::new(Browser::detached(Arc::new(Catalog::new(Vec::new(), PathBuf::new())), rows, Pricing::defaults(), frontend()), false);
+    let list = palette::entries(&desk, "to");
+    assert_eq!(list[0].pick, palette::Pick::Tab(Tab::Tools), "Tools and tools-app match as well; the tabs go first");
+    assert_eq!(list[1].pick, palette::Pick::Session("id0".into()));
+    assert!(!list.iter().any(|e| e.title == "Copy the handoff line"), "t and o far apart");
+    let titles: Vec<&str> = list.iter().map(|e| e.title.as_str()).collect();
+    let at = |t: &str| titles.iter().position(|x| *x == t).unwrap_or_else(|| panic!("{t} in {titles:?}"));
+    assert!(at("Today") < at("Keyboard to the list"), "{titles:?}");
+}

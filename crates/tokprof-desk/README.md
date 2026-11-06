@@ -11,6 +11,9 @@ The session browser of tokprof in a native window laid out as a profiler, drawn 
 - It follows the agents' log directories as `tokprof ui` does: new sessions join the list and the lanes, sessions that grow are costed again, and the rows on the screen stay where they are.
 - **Settings** (`Settings…` in the app menu, ⌘,) open a panel over the window with the choice Rex offers: `Appearance` (`As in system`, `Light` or `Dark`), a `Light theme` and a `Dark theme`, Merino Light and Merino Dark by default. The appearances are tiles with a small window in each, and the themes grids of cards, each a picture of the theme's background with a prompt and dots of its colors; a pick applies at once. Tab moves between the three, ← → pick the appearance, ← → ↑ ↓, Home and End move through a grid, and the panel's foot names these keys; esc, ⏎, ⌘, again, `Done` or a click outside close the panel. The choices are kept in `~/Library/Application Support/io.github.ignatov.tokprof/prefs.json` (`appearance`, `light_theme`, `dark_theme`). The window's close, minimize and zoom buttons keep the system's appearance.
 
+- **The command palette** (`Command Palette…` in the app menu, ⌘K) opens a card near the top of the window with a query field. What is typed picks, ignoring case, the entries whose names hold its letters in order, the tightest first (at the start, at word starts, in a run), with the matched letters in the accent: `Actions` (what the window does from a key, each with its key), `Tabs`, `Sessions` (title, project and cost; a pick selects the session and shows its Summary) and `Days` (`Today` and the days of the listed sessions, named as the list names them; a pick shows the day in the lanes). With nothing typed it shows the actions and tabs, the 20 most recent sessions, `Today` and the 14 newest days. ↑ ↓ (Ctrl+P, Ctrl+N) move, ⏎ or a click runs an entry, esc, ⌘K or a click outside close it, and no other key reaches the window behind it.
+- **The key help** (`?`, where no filter is being typed) lists every key of the window as keycaps, grouped by where it works: `Anywhere`, `Lanes`, `Palette`, `List`, `Inspector` and `Settings`. esc or `?` close it. Only one of the settings, the palette and the key help is open at a time.
+
 ## Install
 
 The window is a Mac app, `tokprof.app`: name `tokprof`, bundle identifier `io.github.ignatov.tokprof`, an icon of its own, signed ad hoc. Releases from v0.1.5 carry it for Apple silicon and Intel; the [README](../../README.md#the-mac-app) says how to install one and open it the first time. From a clone, on macOS only:
@@ -40,6 +43,8 @@ tokprof-desk --snap keys.png --scene inspector-keyboard # the inspector with the
 tokprof-desk --snap out.png --size 960x640 --theme light
 tokprof-desk --snap ink.png --colors ink-meridian       # another theme, whatever --theme says
 tokprof-desk --snap settings.png --scene settings       # the settings panel open
+tokprof-desk --snap palette.png --scene palette         # the command palette open, with `to` typed
+tokprof-desk --snap keys.png --scene keys               # the key help open
 ```
 
 A frame without a window neither reads nor writes the saved settings: `--theme` sets its appearance and `--colors` its theme, else Merino Light or Merino Dark. Without a window it follows no logs: it waits up to 20 s for the X-ray of the newest session and for the day, then 0.5 s more for costs, as `tokprof ui --dump` waits. `--tree` writes every element with its text and place. The size is in points, 1400x900 by default; the window is no smaller than 960x640.
@@ -57,6 +62,9 @@ The sessions, their costs, X-rays and days come from `crates/tokprof-browse`, wh
 | `src/pal.rs` | The window's colors from a theme's roles, and the type |
 | `src/themes.rs` | The color themes, read from `themes/themes.json` |
 | `src/settings.rs` | The appearance and the themes, where they are kept, and the settings panel |
+| `src/palette.rs` | The command palette: its entries, the fuzzy matcher, its keys and what a pick runs |
+| `src/keys.rs` | The key help: the window's keys by where they work, and its card |
+| `src/overlay.rs` | What the cards over the window share: the scrim, the card, keycaps |
 | `src/ansi.rs` | The day's text without its color codes |
 | `src/tests.rs` | The window driven headless through Rune's `Runtime` |
 

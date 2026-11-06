@@ -5,7 +5,10 @@
 mod ansi;
 mod day;
 mod inspector;
+mod keys;
+mod overlay;
 mod pal;
+mod palette;
 mod settings;
 mod themes;
 mod view;
@@ -191,8 +194,10 @@ pub struct Desk {
     /// window, memory without one.
     pub settings: settings::Settings,
     pub prefs: rune::prefs::Prefs,
-    /// The settings panel, while it is open.
+    /// The settings panel, the command palette and the key help, while one is open.
     pub panel: Option<settings::Panel>,
+    pub palette: Option<palette::Palette>,
+    pub help: bool,
     /// The first slot on the screen is a day's separator, as the last poll found the list.
     pub separator_on_top: bool,
     /// The minute of the last poll: the lanes' now line and the inspector's times move at a new
@@ -235,6 +240,8 @@ impl Desk {
             settings: settings::Settings::read(&prefs),
             prefs,
             panel: None,
+            palette: None,
+            help: false,
             browser_status: String::new(),
             browser,
             theme: Cell::new(themes::default(true)),
@@ -555,14 +562,24 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
         tx.quit();
         return true;
     }
-    // ⌘, opens and closes the settings, as its menu item does where the menu does not take it
-    // first; while they are open, every other key is theirs.
+    // ⌘K and ⌘, open and close the palette and the settings, as their menu items do where the
+    // menu does not take them first; while a card is open, every other key is its own.
+    if e.is_command('k') {
+        s.toggle_palette();
+        return true;
+    }
     if e.is_command(',') {
         s.toggle_settings();
         return true;
     }
     if s.panel.is_some() {
         return s.settings_key(e, tx);
+    }
+    if s.palette.is_some() {
+        return s.palette_key(e, tx);
+    }
+    if s.help {
+        return s.help_key(e, tx);
     }
     if e.is_command('w') {
         tx.close_window();
@@ -593,12 +610,26 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
             return true;
         }
     }
+    // `?` opens the key help, where it is not typed into a filter.
+    if !s.browser.editing() && matches!(&e.key, RuneKey::Text(t) if t == "?") && !e.mods.cmd && !e.mods.ctrl {
+        s.open_help();
+        return true;
+    }
     let Some(key) = key_of(e) else { return false };
+    if !browser_key(s, key, tx) {
+        tx.quit();
+    }
+    true
+}
+
+/// Passes a key to the browser, and keeps the list and the inspector in step with what it did:
+/// the list where it was after a full-size view, the selected row on the screen, and the
+/// inspector from its top for another session. Returns false where the browser quits.
+fn browser_key(s: &mut Desk, key: Key, tx: &mut Tx) -> bool {
     let (selected, zoomed) = (s.browser.selected(), s.browser.zoomed());
     let view = s.viewport();
     if !s.browser.on_key(key, view) {
-        tx.quit();
-        return true;
+        return false;
     }
     // The list is drawn again after a full-size view, where it was.
     if zoomed && !s.browser.zoomed() {
@@ -739,17 +770,24 @@ fn main() -> Result<()> {
         Ok(chord) => settings.key_equivalent(chord),
         Err(_) => settings,
     };
-    App::new(spec).chrome(CHROME).menu_item(settings).init(move || desk).run();
+    let palette = rune::MenuItem::new("Command Palette…", |s: &mut Desk, _| s.toggle_palette()).id("palette");
+    let palette = match "cmd+k".parse::<rune::Shortcut>() {
+        Ok(chord) => palette.key_equivalent(chord),
+        Err(_) => palette,
+    };
+    App::new(spec).chrome(CHROME).menu_item(palette).menu_item(settings).init(move || desk).run();
     Ok(())
 }
 
 /// A named state a frame without a window can start from (`--scene`).
 type Scene = (&'static str, fn(&mut Desk));
 
-/// The scenes: a pane with the keyboard, a filter being typed that matches nothing, and the
-/// settings open.
+/// The scenes: a pane with the keyboard, a filter being typed that matches nothing, the settings
+/// open, the palette open with a query, and the key help.
 const SCENES: &[Scene] = &[
     ("settings", |s| s.panel = Some(settings::Panel::default())),
+    ("palette", |s| s.palette = Some(palette::Palette { query: "to".into(), at: 0 })),
+    ("keys", |s| s.help = true),
     ("lanes-keyboard", |s| s.pane = Focus::Lanes),
     ("inspector-keyboard", |s| {
         s.pane = Focus::Inspector;
