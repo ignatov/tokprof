@@ -1,8 +1,8 @@
-# Builds tokprof for macOS, Linux and Windows. Each binary that runs on its runner writes a
-# share file over the fixture logs, and the files must hold the same numbers. A pushed tag
-# vX.Y.Z also publishes a GitHub release with the archives, their SHA256SUMS and a build
-# provenance attestation per archive. A run by hand (Actions → Release → Run workflow) only
-# keeps the archives as artifacts of the run.
+# Builds tokprof for macOS, Linux and Windows, and the Mac app tokprof.app on the macOS jobs.
+# Each binary that runs on its runner writes a share file over the fixture logs, and the files
+# must hold the same numbers. A pushed tag vX.Y.Z also publishes a GitHub release with the
+# archives, their SHA256SUMS and a build provenance attestation per archive. A run by hand
+# (Actions → Release → Run workflow) only keeps the archives as artifacts of the run.
 name: Release
 
 on:
@@ -51,7 +51,8 @@ jobs:
           - target: aarch64-pc-windows-msvc
             os: windows-11-arm
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # The macOS jobs also build the app, with Rune's 200 crates.
+    timeout-minutes: 45
     env:
       TARGET: ${{ matrix.target }}
       # The release profile keeps line tables for the author's own builds. They are most of a
@@ -69,6 +70,12 @@ jobs:
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tokprof") | .version' | tr -d '\r')
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
             echo "::error::The tag $GITHUB_REF_NAME does not match the version $version in Cargo.toml"
+            exit 1
+          fi
+          # The app's workspace is its own; --no-deps reads its manifest without fetching Rune.
+          desk=$(cargo metadata --no-deps --format-version 1 --manifest-path crates/tokprof-desk/Cargo.toml | jq -r '.packages[] | select(.name == "tokprof-desk") | .version' | tr -d '\r')
+          if [ "v$desk" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::The tag $GITHUB_REF_NAME does not match the version $desk in crates/tokprof-desk/Cargo.toml"
             exit 1
           fi
       - name: Install Rust
@@ -94,6 +101,22 @@ jobs:
           else
             # COPYFILE_DISABLE keeps macOS tar from adding ._ metadata files.
             COPYFILE_DISABLE=1 tar -czf "dist/tokprof-$TARGET.tar.gz" -C stage tokprof README.md LICENSE
+          fi
+      # The Mac app, signed ad hoc, zipped into dist/ beside the archive, so the same artifact
+      # carries both.
+      - name: Build the app
+        if: runner.os == 'macOS'
+        run: crates/tokprof-desk/bundle.sh "$TARGET"
+      - name: Check the app
+        if: runner.os == 'macOS'
+        run: |
+          app="crates/tokprof-desk/target/$TARGET/bundle/tokprof.app"
+          file "$app/Contents/MacOS/tokprof-desk"
+          codesign --verify --strict --verbose=1 "$app"
+          plutil -p "$app/Contents/Info.plist" | grep -E 'CFBundle(Identifier|ShortVersionString)'
+          # As the CLI, the Intel binary cannot run here and is only inspected.
+          if [ "$TARGET" = aarch64-apple-darwin ]; then
+            "$app/Contents/MacOS/tokprof-desk" --version
           fi
       - uses: actions/upload-artifact@v7
         with:
@@ -184,6 +207,8 @@ jobs:
             git log --no-merges --reverse --format='- %s' "${previous:+$previous..}$GITHUB_REF_NAME" | grep -v '^- Archive ' || true
             echo
             echo "Archives for macOS, Linux and Windows are below, with their checksums in SHA256SUMS. See [Install](https://github.com/${GITHUB_REPOSITORY}#install)."
+            echo
+            echo "The Mac app is \`tokprof-desk-aarch64-apple-darwin.zip\` (Apple silicon) or \`tokprof-desk-x86_64-apple-darwin.zip\` (Intel): unzip it and move \`tokprof.app\` to Applications. It is signed ad hoc, so open it the first time with Open Anyway in System Settings, Privacy & Security, or run \`xattr -dr com.apple.quarantine /Applications/tokprof.app\`. See [The app](https://github.com/${GITHUB_REPOSITORY}#the-same-in-a-window)."
           } > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
       - name: Create the release

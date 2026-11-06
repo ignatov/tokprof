@@ -65,6 +65,79 @@ struct Cli {
     /// waits, prompts, tools, context, cache).
     #[arg(long)]
     tab: Option<String>,
+    /// Stay in the terminal until the window closes, instead of starting it on its own.
+    #[arg(long)]
+    wait: bool,
+}
+
+/// Where the window runs when the command starts.
+#[derive(Debug, PartialEq, Eq)]
+enum Start {
+    /// In this process: a frame without a window, `--wait`, or a start without a terminal, as
+    /// Launch Services and the detached process start it.
+    Here,
+    /// The app bundle the binary is in, opened through Launch Services.
+    Bundle(PathBuf),
+    /// This binary again, as a process of its own.
+    Detached,
+}
+
+/// How a start goes: from a terminal, the window starts on its own and the terminal comes back.
+fn start_of(exe: &std::path::Path, headless: bool, wait: bool, terminal: bool) -> Start {
+    if headless || wait || !terminal {
+        return Start::Here;
+    }
+    match bundle_of(exe) {
+        Some(app) => Start::Bundle(app),
+        None => Start::Detached,
+    }
+}
+
+/// The app bundle an executable is in, as `<name>.app/Contents/MacOS/<executable>`.
+fn bundle_of(exe: &std::path::Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    (macos.file_name()? == "MacOS" && contents.file_name()? == "Contents" && app.extension()? == "app").then(|| app.to_path_buf())
+}
+
+/// Where the window started on its own writes what it prints.
+fn log_path() -> PathBuf {
+    std::env::var_os("HOME").map_or_else(std::env::temp_dir, PathBuf::from).join("Library/Logs/tokprof-desk.log")
+}
+
+/// Starts the window on its own with these arguments, and returns.
+fn start_apart(start: &Start, exe: &std::path::Path, args: &[String]) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    match start {
+        Start::Bundle(app) => {
+            let status = Command::new("/usr/bin/open").arg("-a").arg(app).arg("--args").args(args).status()?;
+            if !status.success() {
+                bail!("could not open {}: {status}", app.display());
+            }
+        }
+        Start::Detached => {
+            let path = log_path();
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let log = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+            let mut child = Command::new(exe);
+            child.args(args).stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
+            // A session of its own: the terminal closing does not end it.
+            // SAFETY: setsid is async-signal-safe, and nothing else runs between fork and exec.
+            unsafe {
+                child.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
+            }
+            child.spawn()?;
+        }
+        Start::Here => {}
+    }
+    Ok(())
 }
 
 pub type Book = Browser<Styled>;
@@ -543,18 +616,7 @@ fn query(cli: &Cli, agents: Vec<AgentId>) -> Result<Query> {
 /// the day, the one `--day` names or the latest, as `tokprof ui --dump` waits.
 fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk> {
     let catalog = Arc::new(catalog);
-    let agents = match cli.agent.is_empty() {
-        true => catalog.agents(),
-        false => cli.agent.iter().map(|a| catalog.agent(a)).collect::<Result<Vec<_>>>()?,
-    };
-    let select = query(cli, agents)?;
-    let pricing = paths::pricing(cli.prices.as_deref())?;
-    let tab = match cli.tab.as_deref() {
-        Some(name) => {
-            Tab::named(name).ok_or_else(|| anyhow::anyhow!("--tab takes one of: summary, requests, spend, work, waits, prompts, tools, context, cache"))?
-        }
-        None => Tab::Summary,
-    };
+    let (select, pricing, tab) = checked(cli, &catalog)?;
     let browser = Browser::start(catalog, pricing, select, !headless, wake, frontend())?;
     let mut desk = Desk::new(browser, !headless);
     desk.tab = tab;
@@ -569,6 +631,33 @@ fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk>
     Ok(desk)
 }
 
+/// What the flags select, the prices and the tab, checked as the window will use them.
+fn checked(cli: &Cli, catalog: &Catalog) -> Result<(Query, tokprof_core::pricing::Pricing, Tab)> {
+    let agents = match cli.agent.is_empty() {
+        true => catalog.agents(),
+        false => cli.agent.iter().map(|a| catalog.agent(a)).collect::<Result<Vec<_>>>()?,
+    };
+    let select = query(cli, agents)?;
+    let pricing = paths::pricing(cli.prices.as_deref())?;
+    let tab = match cli.tab.as_deref() {
+        Some(name) => {
+            Tab::named(name).ok_or_else(|| anyhow::anyhow!("--tab takes one of: summary, requests, spend, work, waits, prompts, tools, context, cache"))?
+        }
+        None => Tab::Summary,
+    };
+    Ok((select, pricing, tab))
+}
+
+/// What a start from a terminal checks before the window starts on its own, so that its errors
+/// show there: the flags, and that there are session logs.
+fn check_before_start(cli: &Cli, catalog: &Catalog) -> Result<()> {
+    let (select, _, _) = checked(cli, catalog)?;
+    if tokprof_core::xray::rows(catalog, &select, 1).is_empty() {
+        bail!("no session logs found");
+    }
+    Ok(())
+}
+
 /// The window's own title bar: the traffic lights where the bar's height centers them, and only
 /// the bar's empty parts move the window.
 const CHROME: Chrome = Chrome { full_size_content: true, traffic_lights: Some((18.0, 16.0)), drag_regions: true };
@@ -578,6 +667,13 @@ fn main() -> Result<()> {
     check_size(&args)?;
     // Rune takes its own flags; the rest are ours.
     let cli = Cli::try_parse_from(std::iter::once("tokprof-desk".to_string()).chain(rune::extra_args().iter().cloned())).unwrap_or_else(|e| e.exit());
+    // From a terminal the window starts on its own, after the checks, and the terminal comes back.
+    let exe = std::env::current_exe().and_then(|e| e.canonicalize())?;
+    let start = start_of(&exe, rune::is_headless(), cli.wait, std::io::IsTerminal::is_terminal(&std::io::stdin()));
+    if start != Start::Here {
+        check_before_start(&cli, &tokprof_sources::catalog())?;
+        return start_apart(&start, &exe, &args);
+    }
     let desk = desk(&cli, tokprof_sources::catalog(), rune::is_headless(), Arc::new(wake))?;
     let spec = AppSpec {
         min_size: Some((960.0, 640.0)),

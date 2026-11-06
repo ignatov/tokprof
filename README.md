@@ -104,6 +104,20 @@ On another Mac or on Linux, put its target in place of `aarch64-apple-darwin`. O
 
 The Linux binaries need glibc 2.35 or later: Ubuntu 22.04, Debian 12 or newer. The binaries are not notarized, so macOS refuses to run one that a browser downloaded and marked as quarantined. `curl` sets no such mark; `xattr -d com.apple.quarantine ~/.local/bin/tokprof` lifts it. `SHA256SUMS` in each release holds the checksums of the archives. Each archive also has a build provenance attestation: `gh attestation verify tokprof-<target>.tar.gz -R ignatov/tokprof` (`.zip` on Windows) checks that the release workflow of this repository built it from the tagged commit.
 
+### The Mac app
+
+The window of [The same in a window](#the-same-in-a-window) comes as a Mac app, `tokprof.app`, in every release from v0.1.5: `tokprof-desk-aarch64-apple-darwin.zip` for Apple silicon, `tokprof-desk-x86_64-apple-darwin.zip` for Intel. Unzip it and move `tokprof.app` to Applications. It is signed ad hoc, not notarized, so macOS refuses to open it the first time: open it once with Open Anyway in System Settings, Privacy & Security, or lift the browser's quarantine mark:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/tokprof.app
+```
+
+To start it from a terminal as well, link its binary into your `PATH`; `tokprof-desk` then opens the app and gives the terminal back:
+
+```sh
+ln -sf /Applications/tokprof.app/Contents/MacOS/tokprof-desk ~/.local/bin/tokprof-desk
+```
+
 To build from source, tokprof needs a recent stable Rust; its dependencies need 1.89 or later.
 
 ```sh
@@ -266,13 +280,16 @@ Under `time`, the `rhythm` line counts the session's turns as [Your day with the
 
 `tokprof-desk` shows what `tokprof ui` shows in a native window on macOS, laid out as a profiler. The day's lanes run along the top at the times of the log: your sittings, and per session its work, its waits for you, and a tail as long as its cache stays warm, up to a line at now. Below them are the sessions, with a countdown while a cache is warm and the next request's cost in red once it is cold, and an inspector of the selected session: its requests on a time axis up to now, the next request, the ways to continue with the cheapest marked, and tabs for the X-ray's blocks. It takes the keys of `tokprof ui` (← and → step the day) and the mouse, and Tab moves the keyboard between the lanes, the list and the inspector, whose tabs and rows the arrows then move through.
 
+It is a Mac app, `tokprof.app`, with its own name and icon in the Dock: install it from a release as [The Mac app](#the-mac-app) says, or build it from a clone:
+
 ```sh
-cargo install --path crates/tokprof-desk --root ~/.local
-tokprof-desk
+crates/tokprof-desk/bundle.sh                                     # builds crates/tokprof-desk/target/<target>/bundle/tokprof.app
+tokprof-desk                      # opens the app and gives the terminal back
+tokprof-desk --wait               # keeps the window in this terminal until it closes
 tokprof-desk --snap out.png       # one frame without a window
 ```
 
-It is built with [Rune](https://github.com/anomalyco/rune), which is pre-release, so it is not in the release archives. [crates/tokprof-desk](crates/tokprof-desk/README.md) says more.
+It is built with [Rune](https://github.com/anomalyco/rune), which is pre-release, and only for macOS. [crates/tokprof-desk](crates/tokprof-desk/README.md) says more.
 
 ## Reports over all sessions
 

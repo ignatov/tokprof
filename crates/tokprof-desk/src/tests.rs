@@ -608,3 +608,27 @@ fn the_inspector_s_keys_switch_tabs_and_move_the_cursor_through_rows() {
     press(&mut rt, RuneKey::Down);
     assert_eq!(rt.state.cursor, 0, "↓ scrolls it instead");
 }
+
+#[test]
+fn a_start_from_a_terminal_hands_the_window_over_and_any_other_runs_here() {
+    let plain = Path::new("/Users/me/.local/bin/tokprof-desk");
+    let bundled = Path::new("/Applications/tokprof.app/Contents/MacOS/tokprof-desk");
+    assert_eq!(start_of(bundled, false, false, true), Start::Bundle(PathBuf::from("/Applications/tokprof.app")), "a bundle opens through Launch Services");
+    assert_eq!(start_of(plain, false, false, true), Start::Detached, "a bare binary starts itself apart");
+    assert_eq!(start_of(bundled, false, false, false), Start::Here, "Launch Services and the detached process start it without a terminal");
+    assert_eq!(start_of(plain, true, false, true), Start::Here, "a frame without a window stays");
+    assert_eq!(start_of(plain, false, true, true), Start::Here, "--wait stays");
+    assert_eq!(bundle_of(Path::new("/x/tokprof.app/Contents/Resources/tokprof-desk")), None);
+    assert_eq!(bundle_of(Path::new("/x/Contents/MacOS/tokprof-desk")), None, "not in a .app");
+    assert!(Cli::parse_from(["tokprof-desk", "--wait"]).wait);
+}
+
+#[test]
+fn a_start_from_a_terminal_fails_there_without_logs() {
+    let (catalog, dir) = empty_catalog("start");
+    let err = check_before_start(&Cli::parse_from(["tokprof-desk"]), &catalog).err().map(|e| e.to_string());
+    assert_eq!(err.as_deref(), Some("no session logs found"));
+    let (catalog, _) = fixture();
+    assert!(check_before_start(&Cli::parse_from(["tokprof-desk"]), &catalog).is_ok(), "the fixture has a session");
+    let _ = std::fs::remove_dir_all(dir);
+}

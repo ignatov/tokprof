@@ -12,13 +12,20 @@ The session browser of tokprof in a native window laid out as a profiler, drawn 
 
 ## Install
 
-macOS only for now: Rune is pre-release, so the window is in no release archive and in no CI job.
+The window is a Mac app, `tokprof.app`: name `tokprof`, bundle identifier `io.github.ignatov.tokprof`, an icon of its own, signed ad hoc. Releases from v0.1.5 carry it for Apple silicon and Intel; the [README](../../README.md#the-mac-app) says how to install one and open it the first time. From a clone, on macOS only:
 
 ```sh
-cargo install --path crates/tokprof-desk --root ~/.local
-tokprof-desk                               # every session
+crates/tokprof-desk/bundle.sh             # builds, signs ad hoc, checks and zips the app for this Mac
+ditto crates/tokprof-desk/target/aarch64-apple-darwin/bundle/tokprof.app ~/Applications/tokprof.app
+ln -sf ~/Applications/tokprof.app/Contents/MacOS/tokprof-desk ~/.local/bin/tokprof-desk
+tokprof-desk                               # opens the app, every session, and gives the terminal back
 tokprof-desk --project tokprof --since 7d  # the filters of tokprof ui
+tokprof-desk --wait                        # stays in the terminal until the window closes
 ```
+
+Started from a terminal, `tokprof-desk` checks its flags and that there are session logs, so its errors show there, then opens its bundle through Launch Services, or, when it is not in one, starts itself apart, writing to `~/Library/Logs/tokprof-desk.log`. A start without a terminal (Finder, the Dock, Spotlight, `open -a tokprof`) runs the window right away.
+
+`app/icon.svg` is the icon's source; `app/icon.sh` renders it to `app/AppIcon.icns`, which is committed. `app/Info.plist` is the bundle's template, with the package's version written in by `bundle.sh`. The release workflow runs `bundle.sh` on its macOS jobs.
 
 ## A frame without a window
 

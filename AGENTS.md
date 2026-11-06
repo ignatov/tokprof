@@ -25,13 +25,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo install --path crates/tokprof --root ~/.local    # the binary the author runs
 ```
 
-The window, `crates/tokprof-desk`, is a workspace of its own that the root excludes, so that the root and CI never fetch Rune. When a change touches it or `tokprof-browse`, check it in its folder too:
+The window, `crates/tokprof-desk`, is a workspace of its own that the root excludes, so that the root and the checks of every push never fetch Rune; only the release's macOS jobs build it, as the Mac app. When a change touches it or `tokprof-browse`, check it in its folder too:
 
 ```sh
 cd crates/tokprof-desk
 cargo fmt && cargo test && cargo clippy --all-targets -- -D warnings
-cargo install --path . --root ~/.local                # the window the author runs
+./bundle.sh && ditto target/aarch64-apple-darwin/bundle/tokprof.app ~/Applications/tokprof.app   # the app the author runs
 ```
+
+A release bumps the version of `tokprof-desk` with the version of `tokprof`: the release workflow refuses a tag that differs from either.
 
 CI runs the tests on Windows too, where a path prints with `\`, so a test must not expect `/` in a printed path.
 
