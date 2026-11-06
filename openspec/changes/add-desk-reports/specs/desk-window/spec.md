@@ -87,7 +87,7 @@ The model card SHALL hold the summary table's rows in its order: agent, model, r
 - **THEN** its part of the card reads `No cold returns.`
 
 ### Requirement: Keys in Reports
-In Reports, Tab and Shift+Tab SHALL move the keyboard through the period, by day, by project, by origin, by model, cold returns and largest context, ringed in the accent and scrolled into view. ← and → pick the period or move the day cursor; ↑ ↓ (`k`, `j`), Home and End move a row cursor; ⏎ opens the cursor's day or project as a click does. ⌘Q, ⌘W and ⌘, act as in Day; the other keys do nothing.
+In Reports, Tab and Shift+Tab SHALL move the keyboard through the period, by day, by project, by origin, by model, cold returns and largest context, ringed in the accent and scrolled into view. ← and → pick the period or move the day cursor; ↑ ↓ (`k`, `j`), Home and End move a row cursor; ⏎ opens the cursor's day or project as a click does. ⌘Q, ⌘W, ⌘,, ⌘K, `?`, Ctrl+C, ⌘1 and ⌘2 act as in Day; esc shows Day; the other keys do nothing.
 
 #### Scenario: A day by keys
 - **WHEN** by day has the keyboard, and the user presses ← twice and ⏎
@@ -133,7 +133,7 @@ In Day, the window SHALL show, under the bar, the lanes of the shown day across 
 - **THEN** the lanes scroll under an hours row that stays on top, and the list and the inspector keep their place
 
 ### Requirement: Quitting the window
-⌘Q, ⌘W and closing the window SHALL quit `tokprof-desk`. In Day, `q` quits too, and esc when the inspector is not full size and no filter is set; in Reports, `q` does nothing and esc goes back to Day. While a filter is being typed, `q` and esc act as session-browser's Quit says, and ⌘Q still quits.
+⌘Q, ⌘W, Ctrl+C and closing the window SHALL quit `tokprof-desk`. In Day, `q` quits too, and esc when the inspector is not full size and no filter is set; in Reports, `q` does nothing and esc goes back to Day. While a filter is being typed, `q` and esc act as session-browser's Quit says, and ⌘Q still quits.
 
 #### Scenario: Closing the window
 - **WHEN** the user closes the window

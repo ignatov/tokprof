@@ -619,6 +619,11 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
             s.open_help();
             return true;
         }
+        // Ctrl+C quits from anywhere, as the key help says.
+        if key_of(e) == Some(Key::Interrupt) {
+            tx.quit();
+            return true;
+        }
         return reports::on_key(s, e, tx);
     }
     // The pane with the keyboard takes its keys first; a filter being typed takes them all.

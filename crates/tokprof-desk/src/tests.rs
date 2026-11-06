@@ -1692,6 +1692,16 @@ fn the_day_cursor_keeps_its_date_when_the_report_comes_back_with_fewer_dates() {
 }
 
 #[test]
+fn ctrl_c_quits_in_reports() {
+    let (desk, _) = reports_desk(3);
+    let mut rt = runtime(desk, (1400.0, 900.0));
+    command(&mut rt, '2');
+    rt.key(KeyEvent { key: RuneKey::Text("c".into()), mods: rune::Mods { ctrl: true, ..rune::Mods::default() } });
+    rt.frame(1.0 / 60.0);
+    assert!(rt.shell_request.is_some(), "Ctrl+C quits, as Anywhere says");
+}
+
+#[test]
 fn the_palette_in_reports_shows_day_for_what_works_on_day() {
     let (desk, _) = reports_desk(3);
     let mut rt = runtime(desk, (1400.0, 900.0));
