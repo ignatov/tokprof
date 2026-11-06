@@ -55,14 +55,20 @@ struct Stream {
 /// The topmost thread above a parent thread, as the source's thread index knows it.
 pub(crate) type RootOf = Arc<dyn Fn(&str) -> String + Send + Sync>;
 
+/// The names Codex shows for threads, by thread id, as `session_index.jsonl` holds them now: a
+/// thread renamed after its rollout was read shows its new name in the next snapshot.
+pub(crate) type Names = Arc<dyn Fn() -> Arc<HashMap<String, String>> + Send + Sync>;
+
 /// Reads a Codex rollout, one line at a time.
 #[derive(Clone)]
 pub(crate) struct Parser {
     session: Session,
     home: PathBuf,
     root_of: RootOf,
-    /// The names Codex shows for threads, by thread id.
-    names: Arc<HashMap<String, String>>,
+    names: Names,
+    /// The rollout's thread counts under the thread at the top of its parents, whose name it
+    /// shows.
+    rooted: bool,
     /// The conversation so far, as message indices.
     history: Vec<usize>,
     /// Items at the end of `history` that the response in flight produced.
@@ -105,12 +111,13 @@ pub(crate) struct Parser {
 }
 
 impl Parser {
-    pub(crate) fn new(agent: AgentId, id: String, home: PathBuf, root_of: RootOf, names: Arc<HashMap<String, String>>) -> Parser {
+    pub(crate) fn new(agent: AgentId, id: String, home: PathBuf, root_of: RootOf, names: Names) -> Parser {
         Parser {
             session: Session::new(agent, id),
             home,
             root_of,
             names,
+            rooted: false,
             history: Vec::new(),
             trailing_outputs: 0,
             tools_by_call: HashMap::new(),
@@ -244,7 +251,7 @@ impl Parser {
             // The thread's requests count under its session, however deep the thread is.
             if let Some(parent) = str_at(payload, "parent_thread_id") {
                 self.session.id = (self.root_of)(parent);
-                self.session.title = self.names.get(&self.session.id).cloned();
+                self.rooted = true;
             }
         }
         if self.shape.is_none() {
@@ -475,10 +482,13 @@ impl Parser {
                 let origin = name.replacen("subagent", "agent", 1);
                 requests.iter_mut().for_each(|r| r.origin = Some(Origin::parse(&origin)));
                 let name = self.session.task.as_ref().map_or(name, |task| format!("subagent: {task}"));
+                if self.rooted {
+                    self.session.title = (self.names)().get(&self.session.id).cloned();
+                }
                 (name, ChainKind::Subagent)
             }
             None => {
-                self.session.title = self.names.get(&self.session.id).cloned();
+                self.session.title = (self.names)().get(&self.session.id).cloned();
                 ("main".to_string(), ChainKind::Main)
             }
         };
@@ -710,7 +720,7 @@ mod tests {
     use super::*;
 
     fn parser(id: &str) -> Parser {
-        Parser::new(crate::Codex::agent(), id.into(), PathBuf::from("/h"), Arc::new(|parent: &str| parent.to_string()), Arc::default())
+        Parser::new(crate::Codex::agent(), id.into(), PathBuf::from("/h"), Arc::new(|parent: &str| parent.to_string()), Arc::new(Arc::default))
     }
 
     #[test]

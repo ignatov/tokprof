@@ -16,8 +16,8 @@ use anyhow::Result;
 use serde_json::Value;
 use tokprof_core::labels::display_path;
 use tokprof_core::source::{
-    Activity, AgentId, AgentInfo, Capabilities, Claim, Decoder, Detail, Harness, Head, Locator, LogSource, OwnCost, Pickup, PublicNames, Records, SessionRef,
-    Touched,
+    Activity, AgentId, AgentInfo, Capabilities, Claim, Decoder, Detail, Harness, Head, Locator, LogSource, OwnCost, Pickup, PublicNames, ReadOn, Records,
+    SessionRef, Touched,
 };
 use tokprof_logio::{file_times, parse_ts_ms, str_at, walk};
 
@@ -574,9 +574,13 @@ impl LogSource for ClaudeCode {
         let path = s.path();
         let mut p = Parser::new(self.agent.clone(), stem(path), s.subagent, self.home.clone());
         if s.subagent {
-            p.agent = read_meta(&path.with_extension("meta.json"));
+            let file = path.with_extension("meta.json");
+            p.agent = read_meta(&file);
+            p.meta_file = Some(file);
         } else {
-            p.metas = read_metas(&path.with_extension("").join("subagents"));
+            let dir = path.with_extension("").join("subagents");
+            p.metas = read_metas(&dir);
+            p.metas_dir = Some(dir);
         }
         Box::new(p)
     }
@@ -614,6 +618,11 @@ struct Lines(PathBuf);
 impl Records for Lines {
     fn for_each(&mut self, f: &mut dyn FnMut(&str)) -> Result<()> {
         tokprof_logio::for_each_line(&self.0, f)
+    }
+
+    fn for_each_from(&mut self, from: u64, check: &[u8], f: &mut dyn FnMut(&str)) -> Result<Option<ReadOn>> {
+        let read = tokprof_logio::for_each_line_from(&self.0, from, check, f)?;
+        Ok(read.map(|r| ReadOn { end: r.end, check: r.check, open: r.open }))
     }
 }
 

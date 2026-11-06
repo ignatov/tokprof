@@ -275,6 +275,8 @@ impl<T> Browser<T> {
     pub fn start(catalog: Arc<Catalog>, pricing: Pricing, select: Query, follow: bool, wake: Wake, frontend: Frontend<T>) -> Result<Browser<T>> {
         let (notes_tx, notes) = mpsc::channel();
         let notify = Notify { tx: notes_tx, wake };
+        // Sessions that grow are read again and again: only what was appended is read.
+        catalog.keep_logs();
         // The log directories are watched from before the sessions are listed, so that no change
         // is missed.
         let following = match follow {

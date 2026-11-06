@@ -38,6 +38,62 @@ pub fn for_each_line(path: &Path, mut f: impl FnMut(&str)) -> Result<()> {
     }
 }
 
+/// What `for_each_line_from` read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadOn {
+    /// The byte after the newline of the last line handed over: where the next read goes on.
+    pub end: u64,
+    /// Up to `CHECK` bytes before `end`, which the next read checks the file still holds.
+    pub check: Vec<u8>,
+    /// The file goes on after `end` with a last line without a newline that is a whole JSON
+    /// value: `for_each_line` would hand it over, and a reader that goes on from `end` misses it.
+    pub open: bool,
+}
+
+/// How many bytes before where a read stopped the next read checks.
+pub const CHECK: usize = 256;
+
+/// Calls `f` for the lines of a plain JSONL file from byte `from` on that end with a newline,
+/// as `for_each_line` hands them over, for a reader that follows a file as it grows. `from` is
+/// where an earlier read ended, and `check` the bytes before it that the read returned; `None`
+/// means the file no longer holds them there, as after it was written anew, or that it is
+/// compressed and cannot be read from the middle. A last line without a newline is left for the
+/// next read.
+pub fn for_each_line_from(path: &Path, from: u64, check: &[u8], mut f: impl FnMut(&str)) -> Result<Option<ReadOn>> {
+    if path.extension().is_some_and(|e| e == "zst") {
+        return Ok(None);
+    }
+    let Some(start) = from.checked_sub(check.len() as u64) else { return Ok(None) };
+    let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut held = vec![0u8; check.len()];
+    if file.read_exact(&mut held).is_err() || held != check {
+        return Ok(None);
+    }
+    let mut reader = BufReader::with_capacity(1 << 20, file);
+    let mut buf = Vec::new();
+    let mut end = from;
+    // The bytes before `end`, for the next check.
+    let mut last = check.to_vec();
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf)? == 0 {
+            return Ok(Some(ReadOn { end, check: last, open: false }));
+        }
+        if buf.last() != Some(&b'\n') {
+            let open = serde_json::from_str::<Value>(&String::from_utf8_lossy(&buf)).is_ok();
+            return Ok(Some(ReadOn { end, check: last, open }));
+        }
+        end += buf.len() as u64;
+        last.extend_from_slice(&buf[buf.len().saturating_sub(CHECK)..]);
+        last.drain(..last.len().saturating_sub(CHECK));
+        match std::str::from_utf8(&buf) {
+            Ok(s) => f(s),
+            Err(_) => f(&String::from_utf8_lossy(&buf)),
+        }
+    }
+}
+
 /// Calls `f` for the lines of a plain JSONL file from the last to the first, without their
 /// newlines, until `f` breaks. It reads blocks from the end of the file, so finding something
 /// near the end costs no more than reading that far back. Empty lines are skipped, a last line
@@ -213,6 +269,40 @@ mod tests {
         assert_eq!(back("gaps", b"a\n\n\nb\n", 3, 99), ["b", "a"], "empty lines are skipped");
         assert_eq!(back("stop", b"a\nb\nc\n", 2, 1), ["c"], "it stops when told to");
         assert_eq!(back("utf8", "é\nя\n".as_bytes(), 2, 99), ["я", "é"], "a block may split a character");
+    }
+
+    #[test]
+    fn a_growing_file_is_read_on_from_where_a_read_stopped() {
+        let path = std::env::temp_dir().join(format!("tokprof-logio-{}-on.jsonl", std::process::id()));
+        let read = |from: u64, check: &[u8]| {
+            let mut lines = Vec::new();
+            let on = for_each_line_from(&path, from, check, |l| lines.push(l.to_string())).unwrap();
+            (lines, on)
+        };
+        std::fs::write(&path, "{\"a\":1}\n{\"b\":").unwrap();
+        let (lines, on) = read(0, b"");
+        let on = on.unwrap();
+        assert_eq!(
+            (lines, on.end, on.check.as_slice(), on.open),
+            (vec!["{\"a\":1}\n".to_string()], 8, b"{\"a\":1}\n".as_slice(), false),
+            "a line being written is left"
+        );
+
+        std::fs::write(&path, "{\"a\":1}\n{\"b\":2}\n{\"c\":3}").unwrap();
+        let (lines, next) = read(on.end, &on.check);
+        let next = next.unwrap();
+        assert_eq!((lines, next.end, next.open), (vec!["{\"b\":2}\n".to_string()], 16, true), "a whole value without a newline is named");
+
+        std::fs::write(&path, "{\"x\":1}\n{\"b\":2}\n{\"c\":3}\n").unwrap();
+        assert_eq!(read(on.end, &on.check).1, None, "a file written anew");
+        assert_eq!(read(99, b"").1.map(|r| r.end), Some(99), "nothing past the end");
+        assert_eq!(for_each_line_from(Path::new("/x/rollout-1.jsonl.zst"), 0, b"", |_| {}).unwrap(), None, "compressed");
+
+        let long = format!("{{\"y\":\"{}\"}}\n", "y".repeat(1000));
+        std::fs::write(&path, &long).unwrap();
+        let on = read(0, b"").1.unwrap();
+        assert_eq!((on.end as usize, on.check.len()), (long.len(), CHECK), "the check keeps the last bytes");
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

@@ -116,10 +116,15 @@ pub(crate) struct Parser {
     session: Session,
     home: PathBuf,
     subagent_file: bool,
-    /// For a subagent transcript: what its meta file says.
+    /// For a subagent transcript: what its meta file says, and the file, which is read again
+    /// when it said nothing, as when it was not written yet.
     pub(crate) agent: Option<AgentMeta>,
-    /// For a main transcript: what its subagents' meta files say, by agent id.
+    pub(crate) meta_file: Option<PathBuf>,
+    /// For a main transcript: what its subagents' meta files say, by agent id, and their
+    /// directory, where the file of an agent started later is read when it is asked about. So a
+    /// parser that is kept and fed a growing transcript gives what a new one gives.
     pub(crate) metas: HashMap<String, AgentMeta>,
+    pub(crate) metas_dir: Option<PathBuf>,
     /// Tool calls that started a subagent, with what their response was attributed to.
     launched_by: HashMap<String, String>,
     agent_origins: HashMap<String, Option<String>>,
@@ -177,7 +182,9 @@ impl Parser {
             home,
             subagent_file,
             agent: None,
+            meta_file: None,
             metas: HashMap::new(),
+            metas_dir: None,
             launched_by: HashMap::new(),
             agent_origins: HashMap::new(),
             turn: None,
@@ -473,11 +480,11 @@ impl Parser {
             if !id.chars().all(|c| c.is_ascii_alphanumeric()) {
                 return None;
             }
-            let meta = self.metas.get(id).cloned();
-            let origin = meta.and_then(|m| {
-                let launcher = m.tool_use_id.as_ref().and_then(|t| self.launched_by.get(t).cloned());
-                launcher.or_else(|| m.agent_type.map(|ty| format!("agent:{ty}")))
-            });
+            let meta = self.metas.get(id).cloned().or_else(|| crate::read_meta(&self.metas_dir.as_ref()?.join(format!("agent-{id}.meta.json"))));
+            // Without a meta file yet, it is looked for again next time.
+            let meta = meta?;
+            let launcher = meta.tool_use_id.as_ref().and_then(|t| self.launched_by.get(t).cloned());
+            let origin = launcher.or_else(|| meta.agent_type.map(|ty| format!("agent:{ty}")));
             self.agent_origins.insert(id.to_string(), origin);
         }
         self.agent_origins.get(id).cloned().flatten()
@@ -781,6 +788,11 @@ impl Parser {
     }
 
     pub(crate) fn into_session(mut self) -> Session {
+        if self.agent.is_none()
+            && let Some(file) = &self.meta_file
+        {
+            self.agent = crate::read_meta(file);
+        }
         self.finish_assistant();
         let placeholder = Session::new(self.session.agent.clone(), String::new());
         let mut session = std::mem::replace(&mut self.session, placeholder);

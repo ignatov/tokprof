@@ -312,10 +312,32 @@ pub trait Records {
     /// Calls `f` with each complete record. A record still being written is left out; invalid
     /// UTF-8 is replaced.
     fn for_each(&mut self, f: &mut dyn FnMut(&str)) -> Result<()>;
+    /// For a log that grows at its end: calls `f` with each complete record from byte `from` on,
+    /// where an earlier read stopped, after checking that the log still holds the `check` bytes
+    /// that read returned just before `from`. A record still being written is left for the next
+    /// read. `None` when the log cannot be read on this way, or was written anew; the reader
+    /// reads it whole then. Reading on from `0` with no check reads the whole log.
+    fn for_each_from(&mut self, _from: u64, _check: &[u8], _f: &mut dyn FnMut(&str)) -> Result<Option<ReadOn>> {
+        Ok(None)
+    }
 }
 
-/// Turns the records of one log into a session.
-pub trait Decoder {
+/// Where a read of a growing log stopped (see `Records::for_each_from`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadOn {
+    /// The byte after the last record read, where the next read goes on.
+    pub end: u64,
+    /// A few bytes before `end`, which the next read checks are still there.
+    pub check: Vec<u8>,
+    /// The log goes on after `end` with a last record that `for_each` would hand over though it
+    /// is not ended yet: reading on from `end` would miss it.
+    pub open: bool,
+}
+
+/// Turns the records of one log into a session. A decoder fed the records of a log in parts,
+/// with snapshots between them, gives what it gives fed them at once (`testkit::conform` checks
+/// it); a reader that follows a growing log keeps its decoder and feeds it what was appended.
+pub trait Decoder: Send {
     /// Takes one record. A record the decoder cannot read is skipped.
     fn feed(&mut self, record: &str);
     /// The session the records so far give, leaving the decoder as it is.

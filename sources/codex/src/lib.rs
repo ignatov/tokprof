@@ -17,8 +17,8 @@ use anyhow::Result;
 use serde_json::Value;
 use tokprof_core::labels::display_path;
 use tokprof_core::source::{
-    Activity, AgentId, AgentInfo, Capabilities, Claim, Decoder, Detail, Harness, Head, Locator, LogSource, OwnCost, Pickup, PublicNames, Records, SessionRef,
-    Touched,
+    Activity, AgentId, AgentInfo, Capabilities, Claim, Decoder, Detail, Harness, Head, Locator, LogSource, OwnCost, Pickup, PublicNames, ReadOn, Records,
+    SessionRef, Touched,
 };
 use tokprof_logio::{file_times, str_at, walk};
 
@@ -98,8 +98,11 @@ pub struct Codex {
     /// The thread of every rollout, read once from their first lines on first use.
     threads: OnceLock<Arc<RwLock<Threads>>>,
     /// The names of `session_index.jsonl`, with the file's size when it was read.
-    names: RwLock<(u64, Arc<HashMap<String, String>>)>,
+    names: Arc<NamesRead>,
 }
+
+/// The names of `session_index.jsonl` as last read, with the file's size then.
+type NamesRead = RwLock<(u64, Arc<HashMap<String, String>>)>;
 
 impl Codex {
     /// The rollouts under `$CODEX_HOME`, by default `~/.codex`.
@@ -110,7 +113,7 @@ impl Codex {
 
     /// The rollouts under `base`, laid out as `$CODEX_HOME` is.
     pub fn at(base: PathBuf, home: &Path) -> Codex {
-        Codex { base, home: home.to_path_buf(), agent: Codex::agent(), threads: OnceLock::new(), names: RwLock::new((u64::MAX, Arc::default())) }
+        Codex { base, home: home.to_path_buf(), agent: Codex::agent(), threads: OnceLock::new(), names: Arc::new(RwLock::new((u64::MAX, Arc::default()))) }
     }
 
     pub fn agent() -> AgentId {
@@ -198,22 +201,10 @@ impl Codex {
         }
     }
 
-    /// The names Codex shows for threads, from `session_index.jsonl`; the file is read again when
-    /// it changes size.
-    fn thread_names(&self) -> Arc<HashMap<String, String>> {
-        let path = self.base.join("session_index.jsonl");
-        let len = std::fs::metadata(&path).map_or(0, |m| m.len());
-        if self.names.read().expect("thread names").0 != len {
-            let mut map = HashMap::new();
-            for line in std::fs::read_to_string(&path).unwrap_or_default().lines() {
-                let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-                if let (Some(id), Some(name)) = (str_at(&v, "id"), str_at(&v, "thread_name").map(str::trim).filter(|n| !n.is_empty())) {
-                    map.insert(id.to_string(), name.to_string());
-                }
-            }
-            *self.names.write().expect("thread names") = (len, Arc::new(map));
-        }
-        self.names.read().expect("thread names").1.clone()
+    /// The names Codex shows for threads, from `session_index.jsonl`, as a decoder asks for them.
+    fn thread_names(&self) -> decoder::Names {
+        let (path, names) = (self.base.join("session_index.jsonl"), self.names.clone());
+        Arc::new(move || read_names(&path, &names))
     }
 
     fn reference(&self, path: &Path, meta: &Metadata) -> SessionRef {
@@ -344,12 +335,35 @@ impl LogSource for Codex {
     }
 }
 
+/// The names of `session_index.jsonl`, kept in `names` with the file's size; the file is read
+/// again when it changes size.
+fn read_names(path: &Path, names: &NamesRead) -> Arc<HashMap<String, String>> {
+    let len = std::fs::metadata(path).map_or(0, |m| m.len());
+    if names.read().expect("thread names").0 != len {
+        let mut map = HashMap::new();
+        for line in std::fs::read_to_string(path).unwrap_or_default().lines() {
+            let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+            if let (Some(id), Some(name)) = (str_at(&v, "id"), str_at(&v, "thread_name").map(str::trim).filter(|n| !n.is_empty())) {
+                map.insert(id.to_string(), name.to_string());
+            }
+        }
+        *names.write().expect("thread names") = (len, Arc::new(map));
+    }
+    names.read().expect("thread names").1.clone()
+}
+
 /// The lines of a rollout.
 struct Lines(PathBuf);
 
 impl Records for Lines {
     fn for_each(&mut self, f: &mut dyn FnMut(&str)) -> Result<()> {
         tokprof_logio::for_each_line(&self.0, f)
+    }
+
+    /// A compressed rollout is read whole.
+    fn for_each_from(&mut self, from: u64, check: &[u8], f: &mut dyn FnMut(&str)) -> Result<Option<ReadOn>> {
+        let read = tokprof_logio::for_each_line_from(&self.0, from, check, f)?;
+        Ok(read.map(|r| ReadOn { end: r.end, check: r.check, open: r.open }))
     }
 }
 

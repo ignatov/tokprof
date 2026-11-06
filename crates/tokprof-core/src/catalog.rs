@@ -2,9 +2,11 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Result, bail};
 
+use crate::kept::Kept;
 use crate::model::Session;
 use crate::source::{Activity, AgentId, Claim, Head, LogSource, SessionRef, Touched};
 
@@ -12,11 +14,20 @@ pub struct Catalog {
     sources: Vec<Box<dyn LogSource>>,
     /// The home directory, which paths are shown relative to.
     home: PathBuf,
+    /// The logs read so far, once `keep_logs` was called.
+    kept: OnceLock<Kept>,
 }
 
 impl Catalog {
     pub fn new(sources: Vec<Box<dyn LogSource>>, home: PathBuf) -> Catalog {
-        Catalog { sources, home }
+        Catalog { sources, home, kept: OnceLock::new() }
+    }
+
+    /// From now on, keeps the recent logs it reads, so that reading one again reads only what
+    /// was appended since, for a reader that runs for long and reads growing logs again and
+    /// again. What `parse` gives stays the same (see `kept`).
+    pub fn keep_logs(&self) {
+        self.kept.get_or_init(Kept::default);
     }
 
     pub fn home(&self) -> &Path {
@@ -99,9 +110,10 @@ impl Catalog {
 
     pub fn parse(&self, s: &SessionRef) -> Result<Session> {
         let source = self.source(s);
-        let mut decoder = source.decoder(s);
-        source.open(s)?.for_each(&mut |record| decoder.feed(record))?;
-        Ok(decoder.finish())
+        match self.kept.get() {
+            Some(kept) => kept.parse(source, s),
+            None => crate::kept::read_whole(source, s),
+        }
     }
 
     pub fn head(&self, s: &SessionRef) -> Head {
