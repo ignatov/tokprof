@@ -49,7 +49,7 @@ impl Report {
 }
 
 /// How far the worker is: the period it reads, and the logs read of all it reads.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Progress {
     pub days: u32,
     pub done: usize,

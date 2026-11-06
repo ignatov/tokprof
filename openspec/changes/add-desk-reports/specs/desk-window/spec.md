@@ -13,6 +13,10 @@ The bar SHALL hold a `Day | Reports` switch left of the day's name, and ⌘1 sho
 - **WHEN** Reports is shown and the user clicks `Day`, presses ⌘1 or presses esc
 - **THEN** the window shows the lanes, the list and the inspector as they were
 
+#### Scenario: From the palette and the key help
+- **WHEN** the user picks `Reports: the last 7 days` in the command palette
+- **THEN** Reports shows the last 7 days; the palette also offers `Reports`, `Day` and the other periods, and the key help lists ⌘1, ⌘2 and the keys of Reports
+
 ### Requirement: Report period
 Reports SHALL show pills `7 days`, `30 days` and `90 days`, `30 days` to start with. A period of N days counts the requests from N × 24 hours before its computation started, as `tokprof summary --since <N>d` run then, with the window's `--agent`, `--project`, `--session`, `--client` and `--until` filters. A `--since` later than the period's start is kept instead.
 
@@ -103,7 +107,7 @@ In Reports, Tab and Shift+Tab SHALL move the keyboard through the period, by day
 ## MODIFIED Requirements
 
 ### Requirement: Day controls
-The bar SHALL hold the shown day's name with buttons to the day before and after, a Today button, the day's summary (when it started, its sittings and its sessions), the lanes' zoom (`Fit` or `24 h`), the filter, and a `Live` mark while the window follows the logs. In Reports the day's name, its buttons, Today, the summary and the zoom are not shown.
+The bar SHALL hold the shown day's name with buttons to the day before and after, a Today button, the day's summary (when it started, its sittings and its sessions), the lanes' zoom (`Fit` or `24 h`), the filter, and a `Live` mark while the window follows the logs. In Reports the day's name, its buttons, Today, the summary, the zoom and the filter, which filters the list, are not shown.
 
 #### Scenario: Other days
 - **WHEN** the user clicks the button before the day's name
@@ -115,7 +119,7 @@ The bar SHALL hold the shown day's name with buttons to the day before and after
 
 #### Scenario: In Reports
 - **WHEN** Reports is shown
-- **THEN** the bar holds the switch, the filter, the status and `Live`, and no day controls
+- **THEN** the bar holds the switch, the status and `Live`, and no day controls and no filter
 
 ### Requirement: Window layout
 In Day, the window SHALL show, under the bar, the lanes of the shown day across its whole width, at most 45% of its height, and under them the list of sessions in a pane 380 points wide and the inspector of the selected session in the rest. Every text is in the system font; numbers that line up in columns use tabular figures.

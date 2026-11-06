@@ -11,6 +11,7 @@ use tokprof_core::rhythm;
 use crate::inspector::Tab;
 use crate::overlay;
 use crate::pal::{self, Pal};
+use crate::reports::Mode;
 use crate::{Desk, Focus};
 
 /// The open palette: what is typed, and the place of the highlighted entry.
@@ -56,6 +57,11 @@ pub enum Pick {
 pub enum Action {
     Settings,
     KeyHelp,
+    DayView,
+    Reports,
+    Period7,
+    Period30,
+    Period90,
     Handoff,
     Jfr,
     Html,
@@ -80,9 +86,14 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 23] = [
+    pub const ALL: [Action; 28] = [
         Action::Settings,
         Action::KeyHelp,
+        Action::DayView,
+        Action::Reports,
+        Action::Period7,
+        Action::Period30,
+        Action::Period90,
         Action::Handoff,
         Action::Jfr,
         Action::Html,
@@ -110,6 +121,11 @@ impl Action {
         match self {
             Action::Settings => "Settings…",
             Action::KeyHelp => "Key help",
+            Action::DayView => "Day",
+            Action::Reports => "Reports",
+            Action::Period7 => "Reports: the last 7 days",
+            Action::Period30 => "Reports: the last 30 days",
+            Action::Period90 => "Reports: the last 90 days",
             Action::Handoff => "Copy the handoff line",
             Action::Jfr => "Write the JFR for IntelliJ",
             Action::Html => "Write the HTML flame graph and open it",
@@ -139,6 +155,9 @@ impl Action {
         match self {
             Action::Settings => &["⌘,"],
             Action::KeyHelp => &["?"],
+            Action::DayView => &["⌘1"],
+            Action::Reports => &["⌘2"],
+            Action::Period7 | Action::Period30 | Action::Period90 => &[],
             Action::Handoff => &["c"],
             Action::Jfr => &["f"],
             Action::Html => &["o"],
@@ -166,6 +185,8 @@ impl Action {
             // The full-size inspector has the keyboard.
             Action::FullSize | Action::ToLanes | Action::ToList | Action::ToInspector => !zoomed,
             Action::BackToList => zoomed,
+            Action::DayView => s.reports.mode == Mode::Reports,
+            Action::Reports => s.reports.mode == Mode::Day,
             _ => true,
         }
     }
@@ -508,6 +529,10 @@ impl Desk {
     /// Does what an entry says, with the palette closed.
     pub fn run(&mut self, pick: Pick, tx: &mut Tx) {
         self.palette = None;
+        // A session, a tab or a day is shown in Day.
+        if !matches!(pick, Pick::Act(_)) {
+            crate::reports::show(self, Mode::Day);
+        }
         match pick {
             Pick::Session(id) => {
                 let zoomed = self.browser.zoomed();
@@ -537,6 +562,17 @@ impl Desk {
         match a {
             Action::Settings => self.toggle_settings(),
             Action::KeyHelp => self.open_help(),
+            Action::DayView => crate::reports::show(self, Mode::Day),
+            Action::Reports => crate::reports::show(self, Mode::Reports),
+            Action::Period7 | Action::Period30 | Action::Period90 => {
+                crate::reports::show(self, Mode::Reports);
+                let days = match a {
+                    Action::Period7 => 7,
+                    Action::Period30 => 30,
+                    _ => 90,
+                };
+                crate::reports::pick_period(self, days, tx);
+            }
             Action::Handoff => self.browser_key(key('c'), tx),
             Action::Jfr => self.browser_key(key('f'), tx),
             Action::Html => self.browser_key(key('o'), tx),

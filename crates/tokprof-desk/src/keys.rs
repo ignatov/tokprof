@@ -25,6 +25,7 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
         &[
             k(&["⌘K"], "command palette"),
             k(&["⌘,"], "settings"),
+            k(&["⌘1", "⌘2"], "Day, Reports"),
             k(&["?"], "this key help"),
             k(&["Tab", "⇧Tab"], "keyboard to the next, previous pane"),
             k(&["⏎"], "inspector full size"),
@@ -82,6 +83,18 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
             k(&["Home", "End", "g", "G"], "the first, the last row"),
             k(&["Space"], "a page down"),
             k(&["esc"], "keyboard back to the list"),
+        ],
+    ),
+    (
+        "Reports",
+        &[
+            k(&["Tab", "⇧Tab"], "next, previous card"),
+            k(&["←", "→", "h", "l"], "period, or day before, after"),
+            k(&["↑", "↓", "k", "j"], "row above, below"),
+            k(&["PgUp", "PgDn"], "ten rows up, down"),
+            k(&["Home", "End", "g", "G"], "the first, the last"),
+            k(&["⏎"], "open the day or the project"),
+            k(&["esc", "⌘1"], "back to Day"),
         ],
     ),
     (

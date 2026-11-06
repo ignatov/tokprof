@@ -10,6 +10,7 @@ mod keys;
 mod overlay;
 mod pal;
 mod palette;
+mod reports;
 mod settings;
 mod themes;
 mod view;
@@ -215,6 +216,8 @@ pub struct Desk {
     pub flame: flame::State,
     pub flame_memo: RefCell<flame::Memo>,
     pub flame_w: f32,
+    /// Day or Reports, and the state of Reports.
+    pub reports: reports::State,
 }
 
 /// The panes that take the keyboard, in the order Tab moves through them.
@@ -272,6 +275,7 @@ impl Desk {
             flame: flame::State::default(),
             flame_memo: RefCell::default(),
             flame_w: 0.0,
+            reports: reports::State::new(tokprof_browse::reports::Reports::detached()),
         }
     }
 
@@ -489,15 +493,17 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
         tx.wake_after(at.saturating_duration_since(Instant::now()).max(Duration::from_millis(1)));
     }
     // A countdown on the screen moves every second; the parts that show time move every minute.
+    // Reports shows neither.
+    let day = s.reports.mode == reports::Mode::Day;
     let (top, page) = (s.browser.top(), s.viewport().page + 2);
-    let counting = (top..(top + page).min(s.browser.len())).any(|r| s.browser.cells(r, now).warm_until.is_some());
+    let counting = day && (top..(top + page).min(s.browser.len())).any(|r| s.browser.cells(r, now).warm_until.is_some());
     if counting {
         tx.wake_after(Duration::from_millis((1000 - now.rem_euclid(1000)) as u64 + 5));
-    } else {
+    } else if day {
         tx.wake_after(Duration::from_millis((60_000 - now.rem_euclid(60_000)) as u64 + 5));
     }
     let minute = now / 60_000;
-    let turned = s.minute != minute;
+    let turned = day && s.minute != minute;
     s.minute = minute;
     if s.browser.status() != s.browser_status {
         s.browser_status = s.browser.status().to_string();
@@ -506,7 +512,8 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
     if s.status_shown() {
         tx.wake_after(Duration::from_secs(view::STATUS_SECS).saturating_sub(s.status.1.elapsed()) + Duration::from_millis(5));
     }
-    arrived || cooled || counting || turned
+    let reported = reports::poll(s, tx);
+    arrived || cooled || counting || turned || reported
 }
 
 /// The browser's key for a key of the window, when it takes one.
@@ -601,6 +608,18 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
     if e.is_command('w') {
         tx.close_window();
         return true;
+    }
+    // ⌘1 shows Day and ⌘2 Reports; Reports takes every other key.
+    if reports::switch_key(s, e) {
+        return true;
+    }
+    if s.reports.mode == reports::Mode::Reports {
+        // `?` opens the key help there too.
+        if matches!(&e.key, RuneKey::Text(t) if t == "?") && !e.mods.cmd && !e.mods.ctrl {
+            s.open_help();
+            return true;
+        }
+        return reports::on_key(s, e, tx);
     }
     // The pane with the keyboard takes its keys first; a filter being typed takes them all.
     if !s.browser.editing() && plain(e) {
@@ -703,9 +722,11 @@ fn query(cli: &Cli, agents: Vec<AgentId>) -> Result<Query> {
 fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk> {
     let catalog = Arc::new(catalog);
     let (select, pricing, tab) = checked(cli, &catalog)?;
+    let reports = tokprof_browse::reports::Reports::start(catalog.clone(), pricing.clone(), select.clone(), wake.clone());
     let browser = Browser::start(catalog, pricing, select, !headless, wake, frontend())?;
     let mut desk = Desk::new(browser, !headless);
     desk.tab = tab;
+    desk.reports.data = reports;
     if headless {
         if let Some(t) = colors(cli)? {
             desk.settings = settings::Settings::of_theme(t);
@@ -801,11 +822,17 @@ fn main() -> Result<()> {
 type Scene = (&'static str, fn(&mut Desk));
 
 /// The scenes: a pane with the keyboard, the flame graph zoomed two levels in, a filter being typed
-/// that matches nothing, the settings open, the palette open with a query, and the key help.
+/// that matches nothing, the settings open, the palette open with a query, the key help, and Reports on the last 30
+/// days, waited for.
 const SCENES: &[Scene] = &[
     ("settings", |s| s.panel = Some(settings::Panel::default())),
     ("palette", |s| s.palette = Some(palette::Palette { query: "to".into(), at: 0 })),
     ("keys", |s| s.help = true),
+    ("reports", |s| {
+        reports::show(s, reports::Mode::Reports);
+        let (days, changes) = (s.reports.days, s.browser.changes());
+        s.reports.data.settle(days, changes, Duration::from_secs(120));
+    }),
     ("lanes-keyboard", |s| s.pane = Focus::Lanes),
     ("inspector-keyboard", |s| {
         s.pane = Focus::Inspector;

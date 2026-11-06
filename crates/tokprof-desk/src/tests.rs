@@ -360,8 +360,9 @@ fn nothing_of_the_window_s_own_lies_under_the_traffic_lights() {
             assert!(e.key.as_deref().is_some_and(|k| holders.contains(&k)) || e.parent.is_none(), "{:?} at {:?} is under the traffic lights", e.key, e.rect);
         }
     }
-    let back = rt.presented("day-back").unwrap().0;
-    assert_eq!(back[0], 78.0 + 16.0, "the day's controls start right of the buttons");
+    let switch = rt.presented("mode").unwrap().0;
+    assert_eq!(switch[0], 78.0 + 16.0, "the switch starts right of the buttons");
+    assert!(rt.presented("day-back").unwrap().0[0] > switch[0] + switch[2], "the day's controls after it");
 }
 
 #[test]
@@ -1064,7 +1065,7 @@ fn the_key_help_names_the_keys_the_window_handles() {
     let named = helped();
     for k in [
         "⌘K", "⌘,", "?", "Tab", "⇧Tab", "⏎", "esc", "⌫", "[", "]", "d", "/", "s", "r", "c", "f", "o", "q", "⌘Q", "⌘W", "Ctrl+C", "↑", "↓", "←", "→", "j", "k",
-        "h", "l", "g", "G", "PgUp", "PgDn", "Home", "End", "1–9", "Space", "Ctrl+P", "Ctrl+N",
+        "h", "l", "g", "G", "PgUp", "PgDn", "Home", "End", "1–9", "Space", "Ctrl+P", "Ctrl+N", "⌘1", "⌘2",
     ] {
         assert!(named.contains(&k), "the key help names {k}");
     }
@@ -1245,4 +1246,260 @@ fn a_click_on_the_shown_root_zooms_out_one_level() {
     click(&mut rt, &format!("frame-{turn}"));
     settle(&mut rt);
     assert_eq!(rt.state.flame.root, tree.path(main));
+}
+
+/// The fixture's report, kept as the 30-day report of a desk of `n` sessions, over a window of
+/// five days that ends after the fixture's last request; and its dates.
+fn reports_desk(n: usize) -> (Desk, Vec<i64>) {
+    let (catalog, select) = fixture();
+    let o = tokprof_core::overview::collect(&catalog, &select, &Pricing::defaults(), |_, _| {}).unwrap();
+    let last = *o.spread.days.keys().last().expect("the fixture has requests");
+    let offset = &rhythm::local_offset;
+    let window = (rhythm::midnight(last - 4, offset), rhythm::midnight(last + 1, offset));
+    let mut desk = desk_of(n);
+    desk.reports.data.put(30, o, window, 0);
+    (desk, (last - 4..=last).collect())
+}
+
+/// The text of the element keyed `key`.
+fn text_of(rt: &Runtime<Desk>, key: &str) -> String {
+    rt.elements().into_iter().find(|e| e.key.as_deref() == Some(key)).and_then(|e| e.text).unwrap_or_default()
+}
+
+fn reports_of(rt: &Runtime<Desk>) -> &tokprof_core::overview::Overview {
+    rt.state.reports.report().and_then(|r| r.overview.as_deref().ok()).expect("the report")
+}
+
+#[test]
+fn the_switch_and_its_keys_show_reports_and_back() {
+    let (desk, _) = reports_desk(3);
+    let mut rt = runtime(desk, (1400.0, 900.0));
+    assert_eq!(rt.state.reports.mode, reports::Mode::Day, "the window starts in Day");
+    assert!(rt.presented("day-name").is_some() && rt.presented(reports::PANE).is_none());
+    click(&mut rt, "mode-reports");
+    settle(&mut rt);
+    assert_eq!(rt.state.reports.mode, reports::Mode::Reports);
+    assert!(rt.presented(reports::PANE).is_some(), "the report under the bar");
+    for gone in ["lanes", view::LIST, "inspector", "day-name", "today", "zoom", "filter"] {
+        assert!(rt.presented(gone).is_none(), "{gone} is not shown in Reports");
+    }
+    assert!(rt.presented("mode").is_some(), "the switch stays");
+    command(&mut rt, '1');
+    settle(&mut rt);
+    assert_eq!(rt.state.reports.mode, reports::Mode::Day);
+    assert!(rt.presented("lanes").is_some());
+    command(&mut rt, '2');
+    settle(&mut rt);
+    assert_eq!(rt.state.reports.mode, reports::Mode::Reports);
+    // q and the browser's keys do nothing there; esc goes back to Day.
+    typed(&mut rt, "qsd/");
+    assert_eq!(rt.shell_request, None, "q does not quit from Reports");
+    assert!(!rt.state.browser.editing() && rt.state.reports.mode == reports::Mode::Reports);
+    press(&mut rt, RuneKey::Escape);
+    assert_eq!(rt.state.reports.mode, reports::Mode::Day);
+    assert_eq!(rt.shell_request, None, "esc in Reports goes back to Day, not out");
+}
+
+#[test]
+fn the_cards_show_the_numbers_of_the_summary_and_the_pauses() {
+    let (desk, dates) = reports_desk(3);
+    let mut rt = runtime(desk, (1400.0, 2400.0));
+    command(&mut rt, '2');
+    settle(&mut rt);
+    let o = reports_of(&rt);
+    let (spend, (avoidable, share), (returns, premium)) = (o.spend_usd(), o.avoidable(), o.cold_returns());
+    assert_eq!(text_in(&rt, "kpi-spend", "value"), tokprof_core::fmt::usd(spend));
+    assert_eq!(text_in(&rt, "kpi-avoidable", "value"), tokprof_core::fmt::usd(avoidable));
+    assert_eq!(text_in(&rt, "kpi-avoidable", "sub"), format!("{share:.1}% of spend"));
+    assert_eq!(text_in(&rt, "kpi-returns", "value"), returns.to_string());
+    assert!(text_in(&rt, "kpi-returns", "sub").starts_with(&format!("{} avoidable", tokprof_core::fmt::usd(premium))));
+    assert_eq!(text_in(&rt, "kpi-requests", "value"), tokprof_core::fmt::int(o.requests()));
+    assert_eq!(text_in(&rt, "kpi-sessions", "value"), o.sessions().to_string());
+    // A column for every date of the window, those without requests too.
+    for d in &dates {
+        assert!(rt.presented(&format!("day-{d}")).is_some(), "a column for {d}");
+    }
+    // The projects, most expensive first, with their amounts.
+    let projects = o.spread.projects();
+    assert_eq!(text_in(&rt, "rep-projects-0", "label"), projects[0].0);
+    assert_eq!(text_in(&rt, "rep-projects-0", "amount"), tokprof_core::fmt::usd(projects[0].1.usd));
+    let shown = texts(&rt);
+    for (agent, a) in &o.pauses.agents {
+        for row in reports::size_cells(a) {
+            assert!(row.iter().all(|c| shown.contains(c)), "{agent:?}'s {row:?} on the screen");
+        }
+    }
+}
+
+#[test]
+fn the_pills_pick_a_period_and_one_not_read_yet_says_so() {
+    let (desk, _) = reports_desk(3);
+    let mut rt = runtime(desk, (1400.0, 900.0));
+    command(&mut rt, '2');
+    settle(&mut rt);
+    assert_eq!(rt.state.reports.days, 30, "30 days to start with");
+    assert!(rt.presented("kpi-spend").is_some());
+    click(&mut rt, "period-7");
+    settle(&mut rt);
+    assert_eq!(rt.state.reports.days, 7);
+    assert_eq!(text_of(&rt, "rep-progress"), "computing the last 7 days…");
+    assert!(rt.presented("kpi-spend").is_none());
+    // The period by keys: it has the keyboard to start with.
+    press(&mut rt, RuneKey::Right);
+    assert_eq!(rt.state.reports.days, 30);
+    assert!(rt.presented("kpi-spend").is_some(), "the 30 days were kept");
+    press(&mut rt, RuneKey::End);
+    assert_eq!(rt.state.reports.days, 90);
+    press(&mut rt, RuneKey::Left);
+    press(&mut rt, RuneKey::Left);
+    assert_eq!(rt.state.reports.days, 7);
+}
+
+#[test]
+fn a_click_on_a_day_opens_it_in_day() {
+    let (desk, dates) = reports_desk(3);
+    let mut rt = runtime(desk, (1400.0, 900.0));
+    command(&mut rt, '2');
+    settle(&mut rt);
+    click(&mut rt, &format!("day-{}", dates[1]));
+    settle(&mut rt);
+    assert_eq!(rt.state.reports.mode, reports::Mode::Day);
+    assert_eq!(rhythm::date_of(rt.state.browser.day_noon(), &rhythm::local_offset), dates[1]);
+}
+
+#[test]
+fn a_click_on_a_project_filters_the_list_to_it() {
+    let (desk, _) = reports_desk(3);
+    let mut rt = runtime(desk, (1400.0, 900.0));
+    command(&mut rt, '2');
+    settle(&mut rt);
+    let project = reports_of(&rt).spread.projects()[0].0.to_string();
+    click(&mut rt, "rep-projects-0");
+    settle(&mut rt);
+    assert_eq!(rt.state.reports.mode, reports::Mode::Day);
+    assert_eq!(rt.state.browser.filter(), project);
+    assert_eq!(text_in(&rt, "filter", "filter-text"), project, "the filter field shows it");
+}
+
+#[test]
+fn keys_move_through_the_cards_days_and_rows_and_enter_drills_down() {
+    let (desk, dates) = reports_desk(30);
+    let mut rt = runtime(desk, (1400.0, 900.0));
+    command(&mut rt, '2');
+    settle(&mut rt);
+    assert_eq!(rt.state.reports.part, reports::Part::Period);
+    press(&mut rt, RuneKey::Tab);
+    assert_eq!(rt.state.reports.part, reports::Part::Days);
+    let readout = |rt: &Runtime<Desk>| text_of(rt, "rep-readout-head");
+    let last = tokprof_core::fmt::local_time(rhythm::midnight(dates[4], &rhythm::local_offset) + 12 * 3_600_000, "%a %-d %b");
+    assert!(readout(&rt).starts_with(&last), "the cursor starts on the last day: {}", readout(&rt));
+    press(&mut rt, RuneKey::Left);
+    press(&mut rt, RuneKey::Text("h".into()));
+    press(&mut rt, RuneKey::Enter);
+    assert_eq!(rt.state.reports.mode, reports::Mode::Day);
+    assert_eq!(rhythm::date_of(rt.state.browser.day_noon(), &rhythm::local_offset), dates[2], "two days before the last");
+    // Back in Reports, Tab twice from the days reaches the projects; ↓ and ⏎ open the second.
+    command(&mut rt, '2');
+    settle(&mut rt);
+    press(&mut rt, RuneKey::Tab);
+    assert_eq!(rt.state.reports.part, reports::Part::Projects);
+    shift_tab(&mut rt);
+    assert_eq!(rt.state.reports.part, reports::Part::Days);
+    press(&mut rt, RuneKey::Tab);
+    let projects: Vec<String> = reports_of(&rt).spread.projects().iter().map(|(p, _)| p.to_string()).collect();
+    press(&mut rt, RuneKey::Down);
+    let want = projects.get(1).unwrap_or(&projects[0]).clone();
+    assert_eq!(rt.state.reports.row, usize::from(projects.len() > 1));
+    press(&mut rt, RuneKey::Enter);
+    assert_eq!((rt.state.reports.mode, rt.state.browser.filter().to_string()), (reports::Mode::Day, want));
+    // Reports keeps its part; Shift+Tab from the period goes round to the last card.
+    command(&mut rt, '2');
+    settle(&mut rt);
+    assert_eq!(rt.state.reports.part, reports::Part::Projects);
+    for _ in 0..3 {
+        shift_tab(&mut rt);
+    }
+    assert_eq!(rt.state.reports.part, reports::Part::Sizes);
+}
+
+#[test]
+fn reports_ask_for_nothing_while_day_is_shown() {
+    let (catalog, select) = fixture();
+    let mut desk = desk_of(3);
+    desk.reports.data = tokprof_browse::reports::Reports::start(catalog, Pricing::defaults(), select, Arc::new(|| {}));
+    let mut rt = runtime(desk, (1400.0, 900.0));
+    assert!(rt.state.reports.data.progress().is_none() && rt.state.reports.report().is_none(), "Day reads nothing for reports");
+    command(&mut rt, '2');
+    settle(&mut rt);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while rt.state.reports.report().is_none() {
+        assert!(Instant::now() < deadline, "the report did not arrive");
+        std::thread::sleep(Duration::from_millis(20));
+        rt.frame(1.0 / 60.0);
+    }
+    settle(&mut rt);
+    assert!(rt.presented("kpi-spend").is_some(), "the cards replace the progress");
+}
+
+#[test]
+fn the_pointer_over_a_day_names_its_numbers_under_the_chart() {
+    let (desk, dates) = reports_desk(3);
+    let mut rt = runtime(desk, (1400.0, 900.0));
+    command(&mut rt, '2');
+    settle(&mut rt);
+    let head = text_of(&rt, "rep-readout-head");
+    assert!(head.starts_with("5 days · "), "the period's numbers without a day: {head}");
+    let o = reports_of(&rt);
+    let (date, day) = o.spread.days.iter().next_back().map(|(d, s)| (*d, *s)).unwrap();
+    assert_eq!(date, dates[4]);
+    let (x, y) = rt.find(&format!("day-{date}")).unwrap();
+    rt.pointer_move(x, y);
+    settle(&mut rt);
+    assert_eq!(rt.state.reports.hover, Some(date));
+    let noon = rhythm::midnight(date, &rhythm::local_offset) + 12 * 3_600_000;
+    let want = format!(
+        "{} · {} · {} request",
+        tokprof_core::fmt::local_time(noon, "%a %-d %b"),
+        tokprof_core::fmt::usd(day.usd()),
+        tokprof_core::fmt::int(day.requests)
+    );
+    assert!(text_of(&rt, "rep-readout-head").starts_with(&want), "{} against {want}", text_of(&rt, "rep-readout-head"));
+    rt.pointer_leave();
+    settle(&mut rt);
+    assert_eq!(rt.state.reports.hover, None);
+}
+
+/// Opens the palette, types `query`, and runs the entry `pick` with the arrows and ⏎.
+fn run_from_palette(rt: &mut Runtime<Desk>, query: &str, pick: palette::Pick) {
+    command(rt, 'k');
+    typed(rt, query);
+    let at = listed(rt).iter().position(|e| e.pick == pick).unwrap_or_else(|| panic!("{pick:?} for {query:?}"));
+    for _ in 0..at {
+        press(rt, RuneKey::Down);
+    }
+    press(rt, RuneKey::Enter);
+}
+
+#[test]
+fn the_palette_switches_to_reports_and_picks_a_period() {
+    let (desk, _) = reports_desk(3);
+    let mut rt = runtime(desk, (1400.0, 900.0));
+    let act = |a| palette::Pick::Act(a);
+    let offered = |rt: &Runtime<Desk>, a| palette::entries(&rt.state, "").iter().any(|e| e.pick == palette::Pick::Act(a));
+    assert!(offered(&rt, palette::Action::Reports) && !offered(&rt, palette::Action::DayView), "Day is offered only from Reports");
+    run_from_palette(&mut rt, "last 7", act(palette::Action::Period7));
+    assert_eq!((rt.state.reports.mode, rt.state.reports.days), (reports::Mode::Reports, 7));
+    assert!(offered(&rt, palette::Action::DayView));
+    run_from_palette(&mut rt, "day", act(palette::Action::DayView));
+    assert_eq!(rt.state.reports.mode, reports::Mode::Day);
+    // A day picked from Reports is shown in Day.
+    run_from_palette(&mut rt, "reports", act(palette::Action::Reports));
+    assert_eq!(rt.state.reports.mode, reports::Mode::Reports);
+    run_from_palette(&mut rt, "today", palette::Pick::Day(None));
+    assert_eq!(rt.state.reports.mode, reports::Mode::Day);
+    // `?` opens the key help from Reports too.
+    command(&mut rt, '2');
+    settle(&mut rt);
+    press(&mut rt, RuneKey::Text("?".into()));
+    assert!(rt.state.help);
 }

@@ -43,7 +43,9 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     // list's countdowns tick every second, so the view runs every second while one is on the
     // screen and builds the two again only when they changed.
     let inspector = |cx: &Cx<Desk>| rune::memo("inspector", crate::inspector::version(s, cx, &theme.id), || crate::inspector::inspector(s, cx, &p));
-    if s.browser.zoomed() {
+    if s.reports.mode == crate::reports::Mode::Reports {
+        root = root.child(crate::reports::view(s, cx, &p));
+    } else if s.browser.zoomed() {
         root = root.child(inspector(cx));
     } else {
         let height = if s.window_h > 0.0 { s.window_h } else { 900.0 };
@@ -141,11 +143,17 @@ fn bar(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
         .pr(14.0)
         .gap(10.0)
         .center_y()
-        .child(button("day-back", "‹", true, p).on_press(|s: &mut Desk| s.browser.step_day_by(-1)))
-        .child(text(local_time(b.day_noon(), "%A, %-d %B")).key("day-name").font(pal::DAY).color(p.ink).single_line())
-        .child(button("day-on", "›", !latest, p).on_press(|s: &mut Desk| s.browser.step_day_by(1)))
-        .child(button("today", "Today", !latest, p).on_press(|s: &mut Desk| s.browser.show_latest_day()));
-    if let Some(summary) = crate::day::summary(s) {
+        .child(crate::reports::switch(s, p));
+    // Reports has no day: the bar keeps the switch, the status and the live mark.
+    let day = s.reports.mode == crate::reports::Mode::Day;
+    if day {
+        bar = bar
+            .child(button("day-back", "‹", true, p).on_press(|s: &mut Desk| s.browser.step_day_by(-1)))
+            .child(text(local_time(b.day_noon(), "%A, %-d %B")).key("day-name").font(pal::DAY).color(p.ink).single_line())
+            .child(button("day-on", "›", !latest, p).on_press(|s: &mut Desk| s.browser.step_day_by(1)))
+            .child(button("today", "Today", !latest, p).on_press(|s: &mut Desk| s.browser.show_latest_day()));
+    }
+    if let Some(summary) = crate::day::summary(s).filter(|_| day) {
         bar = bar.child(text(summary).key("day-summary").font(pal::BODY).color(p.ink2).single_line().truncate().shrink().min_w(0.0));
     }
     bar = bar.child(spacer().grow(1.0));
@@ -160,7 +168,9 @@ fn bar(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
         ],
         p,
     );
-    bar = bar.child(zoom).child(filter_field(s, p));
+    if day {
+        bar = bar.child(zoom).child(filter_field(s, p));
+    }
     if s.live {
         bar = bar
             .child(row().key("live").gap(5.0).center_y().child(dot(p.warm_dot, 7.0)).child(text("Live").font(pal::SMALL_STRONG).color(p.warm).single_line()));
