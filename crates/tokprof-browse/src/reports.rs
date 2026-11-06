@@ -101,10 +101,17 @@ impl Reports {
         {
             let shared = shared.clone();
             std::thread::spawn(move || {
+                let mut last: Option<Job> = None;
                 while let Ok(mut job) = rx.recv() {
                     while let Ok(newer) = rx.try_recv() {
                         job = newer;
                     }
+                    // A period asked for again while it was read, after the same changes, was
+                    // just sent: reading it twice in a row would only cost the time.
+                    if last == Some(job) {
+                        continue;
+                    }
+                    last = Some(job);
                     let started = Instant::now();
                     let now = now_ms();
                     let query = period_query(&select, job.0, now);
@@ -159,7 +166,9 @@ impl Reports {
         let mut arrived = false;
         while let Ok(d) = self.notes.try_recv() {
             arrived = true;
-            if self.pending.is_some_and(|p| p.0 == d.job.0) {
+            // Only the report asked for ends the wait: an older one of the same period, read
+            // before the logs changed again, leaves it reading.
+            if self.pending == Some(d.job) {
                 self.pending = None;
             }
             let report = Report {
@@ -231,6 +240,23 @@ impl Reports {
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn only_the_report_asked_for_ends_the_wait() {
+        let (tx, notes) = mpsc::channel();
+        let (jobs, _queue) = mpsc::channel();
+        let mut r = Reports { jobs: Some(jobs), notes, kept: HashMap::new(), pending: Some((7, 2)), shared: Arc::default() };
+        let done = |job: Job| Done { job, overview: Err("empty".into()), window: (0, 1), took: Duration::ZERO };
+        tx.send(done((30, 2))).unwrap();
+        assert!(r.tick(7, 2), "the 30 days arrived");
+        assert!(r.reading(7) && r.get(30).is_some(), "another period leaves 7 days reading");
+        tx.send(done((7, 1))).unwrap();
+        r.tick(7, 2);
+        assert!(r.reading(7) && r.get(7).is_some_and(|x| x.changes == 1), "a report from before the last change leaves it reading");
+        tx.send(done((7, 2))).unwrap();
+        r.tick(7, 2);
+        assert!(!r.reading(7) && r.progress().is_none(), "the report asked for ends it");
+    }
 
     #[test]
     fn a_period_starts_its_days_back_unless_the_filter_starts_later() {
