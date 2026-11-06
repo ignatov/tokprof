@@ -75,8 +75,9 @@ pub struct State {
     /// The period, in days.
     pub days: u32,
     pub part: Part,
-    /// The day chart's cursor, as an index into the period's dates; none for the last date.
-    pub day: Option<usize>,
+    /// The day chart's cursor, as a local date; none, or a date the report no longer has, for
+    /// the last date. A date stays the same day when the report is read again with other dates.
+    pub day: Option<i64>,
     /// The row cursor of the part with the keyboard.
     pub row: usize,
     /// The date under the pointer in the day chart.
@@ -237,10 +238,10 @@ pub fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
         Part::Days => {
             let Some(dates) = r.report().map(dates) else { return true };
             let last = dates.len().saturating_sub(1);
+            let at = day_at(&dates, r.day);
             if let Some(step) = step.filter(|_| across || matches!(e.key, RuneKey::Home | RuneKey::End)) {
-                let at = r.day.unwrap_or(last) as isize;
-                r.day = Some(at.saturating_add(step).clamp(0, last as isize) as usize);
-            } else if enter && let Some(&date) = dates.get(r.day.unwrap_or(last)) {
+                r.day = dates.get((at as isize).saturating_add(step).clamp(0, last as isize) as usize).copied();
+            } else if enter && let Some(&date) = dates.get(at) {
                 open_day(s, date, tx);
             }
         }
@@ -467,6 +468,12 @@ fn axis_step(max: f64) -> f64 {
     [1.0, 2.0, 5.0, 10.0].into_iter().map(|m| m * power).find(|s| *s >= raw).unwrap_or(10.0 * power)
 }
 
+/// The place of the day cursor among `dates`: its date's, or the last date's when it has none or
+/// a date `dates` does not hold.
+pub fn day_at(dates: &[i64], day: Option<i64>) -> usize {
+    day.and_then(|d| dates.iter().position(|&x| x == d)).unwrap_or(dates.len().saturating_sub(1))
+}
+
 /// The spend by day: a column per date with its components stacked, the axis, the dates under
 /// them, and a line that names the day under the pointer or the cursor.
 fn day_chart(s: &Desk, report: &Report, o: &Overview, p: &Pal) -> El {
@@ -476,7 +483,7 @@ fn day_chart(s: &Desk, report: &Report, o: &Overview, p: &Pal) -> El {
     let max = spends.iter().map(DaySpend::usd).fold(0.0, f64::max);
     let step = axis_step(max);
     let top = (max / step).ceil().max(1.0) * step;
-    let cursor = (r.part == Part::Days).then(|| r.day.unwrap_or(dates.len() - 1));
+    let cursor = (r.part == Part::Days).then(|| day_at(&dates, r.day));
     let marked = r.hover.and_then(|h| dates.iter().position(|&d| d == h)).or(cursor);
     // The axis's labels on the left, and the plot with its lines and the columns over them.
     // The plot has room above and under its lines for the labels centered on them.

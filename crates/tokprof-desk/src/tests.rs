@@ -1657,3 +1657,36 @@ fn dark_themes_lower_the_large_marks_and_keep_the_text_colors() {
     let light = pal::pal(crate::themes::default(false));
     assert_eq!(light.work, crate::themes::default(false).color("success"), "light themes keep their marks");
 }
+
+#[test]
+fn the_day_cursor_keeps_its_date_when_the_report_comes_back_with_fewer_dates() {
+    let (catalog, select) = fixture();
+    let o = || tokprof_core::overview::collect(&catalog, &select, &Pricing::defaults(), |_, _| {}).unwrap();
+    let last = *o().spread.days.keys().last().expect("the fixture has requests");
+    let offset = &rhythm::local_offset;
+    let span = |from: i64, to: i64| (rhythm::midnight(from, offset), rhythm::midnight(to + 1, offset));
+    let mut desk = desk_of(3);
+    desk.reports.data.put(30, o(), span(last - 30, last), 0);
+    let mut rt = runtime(desk, (1400.0, 900.0));
+    command(&mut rt, '2');
+    press(&mut rt, RuneKey::Tab);
+    assert_eq!(rt.state.reports.part, reports::Part::Days);
+    press(&mut rt, RuneKey::End);
+    assert_eq!(rt.state.reports.day, Some(last), "31 dates, the cursor on the last");
+
+    // Read again over a window one date shorter, as across a change of the clocks: no panic, and
+    // the cursor stays on its date, now the 30th.
+    rt.update(|s, _| s.reports.data.put(30, o(), span(last - 29, last), 1));
+    press(&mut rt, RuneKey::Down);
+    let dates = reports::dates(rt.state.reports.report().unwrap());
+    assert_eq!((dates.len(), reports::day_at(&dates, rt.state.reports.day)), (30, 29));
+    press(&mut rt, RuneKey::Left);
+    assert_eq!(rt.state.reports.day, Some(last - 1));
+    // A window that has lost the cursor's date: the cursor falls back to the last date.
+    rt.update(|s, _| s.reports.data.put(30, o(), span(last - 40, last - 10), 2));
+    settle(&mut rt);
+    let dates = reports::dates(rt.state.reports.report().unwrap());
+    assert_eq!(reports::day_at(&dates, rt.state.reports.day), dates.len() - 1);
+    press(&mut rt, RuneKey::Left);
+    assert_eq!(rt.state.reports.day, Some(last - 11), "and moves from there");
+}
