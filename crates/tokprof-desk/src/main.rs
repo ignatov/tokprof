@@ -3,6 +3,7 @@
 //! `tokprof ui`; this draws them with Rune and passes the window's keys and clicks on.
 
 mod ansi;
+mod changes;
 mod day;
 mod flame;
 mod inspector;
@@ -856,8 +857,8 @@ fn main() -> Result<()> {
 type Scene = (&'static str, fn(&mut Desk));
 
 /// The scenes: a pane with the keyboard, the flame graph zoomed two levels in, a filter being typed
-/// that matches nothing, the settings open, the palette open with a query, the key help, and Reports on the last 30
-/// days, waited for.
+/// that matches nothing, the settings open, the palette open with a query, the key help, and Reports on
+/// the last 30 days, waited for, also with the sessions of its first saving open.
 const SCENES: &[Scene] = &[
     ("settings", |s| s.panel = Some(settings::Panel::default())),
     ("palette", |s| s.palette = Some(palette::Palette { query: "to".into(), at: 0 })),
@@ -866,6 +867,16 @@ const SCENES: &[Scene] = &[
         reports::show(s, reports::Mode::Reports);
         let (days, changes) = (s.reports.days, s.browser.changes());
         s.reports.data.settle(days, changes, Duration::from_secs(120));
+    }),
+    ("reports-advice", |s| {
+        reports::show(s, reports::Mode::Reports);
+        let (days, changes) = (s.reports.days, s.browser.changes());
+        s.reports.data.settle(days, changes, Duration::from_secs(120));
+        // The first cause that opens, open, with the keyboard on it.
+        let first = s.reports.changes().and_then(|c| c.saved.iter().find(|r| c.sessions_of(&r.name).is_some_and(|l| !l.is_empty())).map(|r| r.name.clone()));
+        if let Some(name) = first {
+            changes::toggle(s, reports::Part::Saved, &name);
+        }
     }),
     ("lanes-keyboard", |s| s.pane = Focus::Lanes),
     ("inspector-keyboard", |s| {

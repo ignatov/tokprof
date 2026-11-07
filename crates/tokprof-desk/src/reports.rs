@@ -11,6 +11,7 @@ use tokprof_core::overview::{DaySpend, Overview};
 use tokprof_core::pauses::AgentPauses;
 use tokprof_core::report::Spend;
 use tokprof_core::rhythm;
+use tokprof_core::savings::Changes;
 
 use crate::overlay::{PILL, R_GROUP, R_MARK, R_ROW, R_TILE};
 use crate::pal::{self, Pal};
@@ -38,6 +39,9 @@ pub enum Mode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Part {
     Period,
+    Saved,
+    Ways,
+    Habits,
     Days,
     Projects,
     Origins,
@@ -47,11 +51,15 @@ pub enum Part {
 }
 
 impl Part {
-    pub const ORDER: [Part; 7] = [Part::Period, Part::Days, Part::Projects, Part::Origins, Part::Models, Part::Returns, Part::Sizes];
+    pub const ORDER: [Part; 10] =
+        [Part::Period, Part::Saved, Part::Ways, Part::Habits, Part::Days, Part::Projects, Part::Origins, Part::Models, Part::Returns, Part::Sizes];
 
     pub fn key(self) -> &'static str {
         match self {
             Part::Period => "rep-period",
+            Part::Saved => "rep-saved",
+            Part::Ways => "rep-ways",
+            Part::Habits => "rep-habits",
             Part::Days => "rep-days",
             Part::Projects => "rep-projects",
             Part::Origins => "rep-origins",
@@ -83,13 +91,15 @@ pub struct State {
     /// The date under the pointer in the day chart.
     pub hover: Option<i64>,
     pub data: Reports,
+    /// The row of what to change whose sessions are open under it.
+    pub open: Option<(Part, String)>,
     /// The worker's progress as the last poll saw it.
     seen: Option<Progress>,
 }
 
 impl State {
     pub fn new(data: Reports) -> State {
-        State { mode: Mode::Day, days: DEFAULT_PERIOD, part: Part::Period, day: None, row: 0, hover: None, data, seen: None }
+        State { mode: Mode::Day, days: DEFAULT_PERIOD, part: Part::Period, day: None, row: 0, hover: None, data, open: None, seen: None }
     }
 
     /// The report of the period shown, once read.
@@ -99,6 +109,11 @@ impl State {
 
     fn overview(&self) -> Option<&Overview> {
         self.report().and_then(|r| r.overview.as_deref().ok())
+    }
+
+    /// What to change in the period shown, once read.
+    pub fn changes(&self) -> Option<&Changes> {
+        self.overview().map(|o| &o.changes)
     }
 }
 
@@ -132,6 +147,7 @@ pub fn pick_period(s: &mut Desk, days: u32, tx: &mut Tx) {
         s.reports.days = days;
         s.reports.day = None;
         s.reports.hover = None;
+        s.reports.open = None;
         if s.reports.part != Part::Period {
             s.reports.row = 0;
         }
@@ -183,7 +199,7 @@ fn rows_of(o: &Overview, part: Part) -> usize {
     let listed = |n: usize| n.min(TOP) + usize::from(n > TOP);
     match part {
         Part::Period => PERIODS.len(),
-        Part::Days => 0,
+        Part::Days | Part::Saved | Part::Ways | Part::Habits => 0,
         Part::Projects => listed(o.spread.projects.len()),
         Part::Origins => listed(o.collector.work.by_origin.len()),
         Part::Models => o.collector.spend.models.len(),
@@ -245,6 +261,18 @@ pub fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
                 open_day(s, date, tx);
             }
         }
+        part @ (Part::Saved | Part::Ways | Part::Habits) => {
+            let rows = crate::changes::line_count(s, part);
+            if let Some(step) = step.filter(|_| !across)
+                && rows > 0
+            {
+                let r = &mut s.reports;
+                r.row = (r.row as isize).saturating_add(step).clamp(0, rows as isize - 1) as usize;
+                tx.scroll_into_view(format!("{}-{}", part.key(), r.row));
+            } else if enter {
+                crate::changes::enter(s, part, tx);
+            }
+        }
         part => {
             let Some(o) = r.overview() else { return true };
             let rows = rows_of(o, part);
@@ -282,7 +310,8 @@ pub fn view(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
     let r = &s.reports;
     let report = r.report();
     let identity = report.map(|x| (x.arrived, x.overview.as_ref().map(|o| std::sync::Arc::as_ptr(o) as usize).ok()));
-    let version = view::hash_of((r.days, r.part, r.day, r.row, r.hover, identity, r.data.reading(r.days), r.seen, &s.theme.get().id, cx.system_dark()));
+    let version =
+        view::hash_of((r.days, r.part, r.day, r.row, r.hover, &r.open, identity, r.data.reading(r.days), r.seen, &s.theme.get().id, cx.system_dark()));
     // The memo takes its id as its key, so the viewport is outside it, keyed for the scrolls.
     col().key(PANE).w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(rune::memo("reports-body", version, || body(s, p)))
 }
@@ -296,6 +325,7 @@ fn body(s: &Desk, p: &Pal) -> El {
         Some(report @ Report { overview: Ok(o), .. }) => {
             cards = cards
                 .child(card(None, "Key numbers", None, key_numbers(o, p), r, p))
+                .child(crate::changes::cards(s, &o.changes, p))
                 .child(card(Some(Part::Days), "Spend by day", Some("a click opens the day".into()), day_chart(s, report, o, p), r, p))
                 .child(
                     row()
@@ -402,7 +432,7 @@ fn note(t: String, p: &Pal) -> El {
 
 /// A card: its title and an aside over a soft group, ringed in the accent while its part has the
 /// keyboard, as the settings panel draws its parts.
-fn card(part: Option<Part>, title: &str, aside: Option<String>, content: El, r: &crate::reports::State, p: &Pal) -> El {
+pub fn card(part: Option<Part>, title: &str, aside: Option<String>, content: El, r: &crate::reports::State, p: &Pal) -> El {
     let on = part.is_some_and(|x| x == r.part);
     let mut group = col().w_full().min_w(0.0).padding(14.0).radius(R_GROUP).fill(p.bar).child(content);
     if let Some(part) = part {
@@ -604,7 +634,7 @@ fn readout(day: Option<(i64, DaySpend)>, all: &[DaySpend], p: &Pal) -> El {
 }
 
 /// Marks the row `i` of a part when its cursor is on it, and keys it for the keys to scroll to.
-fn cursor_row(line: El, part: Part, i: usize, s: &Desk, p: &Pal) -> El {
+pub fn cursor_row(line: El, part: Part, i: usize, s: &Desk, p: &Pal) -> El {
     let r = &s.reports;
     let line = line.key(format!("{}-{i}", part.key())).radius(R_ROW);
     if r.part == part && r.row == i { line.fill(p.sel) } else { line.hover(p.hover) }

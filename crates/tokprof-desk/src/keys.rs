@@ -115,7 +115,7 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
             k(&["↑", "↓", "k", "j"], "row above, below"),
             k(&["PgUp", "PgDn"], "ten rows up, down"),
             k(&["Home", "End", "g", "G"], "the first, the last"),
-            k(&["⏎"], "open the day or the project"),
+            k(&["⏎"], "open the day, the project, a row's sessions or a session"),
             k(&["esc", "⌘1"], "back to Day"),
         ],
     ),

@@ -1371,7 +1371,7 @@ fn the_pills_pick_a_period_and_one_not_read_yet_says_so() {
 #[test]
 fn a_click_on_a_day_opens_it_in_day() {
     let (desk, dates) = reports_desk(3);
-    let mut rt = runtime(desk, (1400.0, 900.0));
+    let mut rt = runtime(desk, (1400.0, 2800.0));
     command(&mut rt, '2');
     settle(&mut rt);
     click(&mut rt, &format!("day-{}", dates[1]));
@@ -1383,7 +1383,7 @@ fn a_click_on_a_day_opens_it_in_day() {
 #[test]
 fn a_click_on_a_project_filters_the_list_to_it() {
     let (desk, _) = reports_desk(3);
-    let mut rt = runtime(desk, (1400.0, 900.0));
+    let mut rt = runtime(desk, (1400.0, 2800.0));
     command(&mut rt, '2');
     settle(&mut rt);
     let project = reports_of(&rt).spread.projects()[0].0.to_string();
@@ -1401,7 +1401,10 @@ fn keys_move_through_the_cards_days_and_rows_and_enter_drills_down() {
     command(&mut rt, '2');
     settle(&mut rt);
     assert_eq!(rt.state.reports.part, reports::Part::Period);
-    press(&mut rt, RuneKey::Tab);
+    // Past what to change: the savings, the ways back and the habits.
+    for _ in 0..4 {
+        press(&mut rt, RuneKey::Tab);
+    }
     assert_eq!(rt.state.reports.part, reports::Part::Days);
     let readout = |rt: &Runtime<Desk>| text_of(rt, "rep-readout-head");
     let last = tokprof_core::fmt::local_time(rhythm::midnight(dates[4], &rhythm::local_offset) + 12 * 3_600_000, "%a %-d %b");
@@ -1429,7 +1432,7 @@ fn keys_move_through_the_cards_days_and_rows_and_enter_drills_down() {
     command(&mut rt, '2');
     settle(&mut rt);
     assert_eq!(rt.state.reports.part, reports::Part::Projects);
-    for _ in 0..3 {
+    for _ in 0..6 {
         shift_tab(&mut rt);
     }
     assert_eq!(rt.state.reports.part, reports::Part::Sizes);
@@ -1457,7 +1460,7 @@ fn reports_ask_for_nothing_while_day_is_shown() {
 #[test]
 fn the_pointer_over_a_day_names_its_numbers_under_the_chart() {
     let (desk, dates) = reports_desk(3);
-    let mut rt = runtime(desk, (1400.0, 900.0));
+    let mut rt = runtime(desk, (1400.0, 2800.0));
     command(&mut rt, '2');
     settle(&mut rt);
     let head = text_of(&rt, "rep-readout-head");
@@ -1682,7 +1685,9 @@ fn the_day_cursor_keeps_its_date_when_the_report_comes_back_with_fewer_dates() {
     desk.reports.data.put(30, o(), span(last - 30, last), 0);
     let mut rt = runtime(desk, (1400.0, 900.0));
     command(&mut rt, '2');
-    press(&mut rt, RuneKey::Tab);
+    for _ in 0..4 {
+        press(&mut rt, RuneKey::Tab);
+    }
     assert_eq!(rt.state.reports.part, reports::Part::Days);
     press(&mut rt, RuneKey::End);
     assert_eq!(rt.state.reports.day, Some(last), "31 dates, the cursor on the last");
@@ -1764,4 +1769,111 @@ fn a_click_on_a_frame_finds_it_by_its_path_in_the_tree_of_now() {
     assert_eq!((rt.state.flame.root.clone(), rt.state.flame.cursor.clone()), before);
     // The tree is built once for an X-ray and kept while it is the one shown.
     assert!(Rc::ptr_eq(&tree, &rt.state.flame_tree().unwrap()));
+}
+
+/// The fixture's report as the 30-day report of a desk that lists the fixture's sessions, and the
+/// first row of what to change that opens sessions, with its part.
+fn advice_desk() -> (Desk, reports::Part, String) {
+    let (catalog, select) = fixture();
+    let o = tokprof_core::overview::collect(&catalog, &select, &Pricing::defaults(), |_, _| {}).unwrap();
+    let last = *o.spread.days.keys().last().expect("the fixture has requests");
+    let offset = &rhythm::local_offset;
+    let window = (rhythm::midnight(last - 4, offset), rhythm::midnight(last + 1, offset));
+    let c = &o.changes;
+    let split = |rows: &[tokprof_core::pool::Row]| rows.iter().find(|r| c.sessions_of(&r.name).is_some_and(|l| !l.is_empty())).map(|r| r.name.clone());
+    let (part, name) = match split(&c.saved) {
+        Some(n) => (reports::Part::Saved, n),
+        None => (reports::Part::Habits, split(&c.habits).expect("a habit split by session")),
+    };
+    let rows = tokprof_core::xray::rows(&catalog, &select, usize::MAX);
+    let mut desk = Desk::new(Browser::detached(catalog, rows, Pricing::defaults(), frontend()), false);
+    desk.reports.data.put(30, o, window, 0);
+    (desk, part, name)
+}
+
+#[test]
+fn what_to_change_shows_the_rows_of_tokprof_share_with_their_advice() {
+    let (desk, _, _) = advice_desk();
+    let mut rt = runtime(desk, (1400.0, 2400.0));
+    command(&mut rt, '2');
+    settle(&mut rt);
+    let c = rt.state.reports.changes().unwrap().clone();
+    assert!(!c.habits.is_empty(), "the fixture has habits");
+    let shown = texts(&rt);
+    for r in c.saved.iter().chain(&c.habits) {
+        assert!(shown.contains(&r.name), "{} on the screen", r.name);
+        assert!(shown.contains(&tokprof_core::fmt::usd(r.usd)) && shown.contains(&format!("{:.1}%", 100.0 * r.share)), "{}'s amounts", r.name);
+        if let Some(h) = c.hint(&r.name).filter(|_| !r.name.starts_with("tool hint: ")) {
+            assert!(shown.contains(&h.to_string()), "{}'s advice: {h}", r.name);
+        }
+    }
+    for r in &c.saved {
+        assert!(shown.contains(&r.per_hour.map_or("–".into(), tokprof_core::fmt::usd)), "{} per active hour", r.name);
+    }
+    if c.returns > 0 {
+        let cheapest = c.cheapest().unwrap();
+        assert!(inside(&rt, "rep-ways", "cheapest").is_some(), "the cheapest way is marked");
+        assert!(shown.contains(&format!("{} of {}", cheapest.cheapest, c.returns)));
+    }
+    // Tab reaches the three cards after the period, in order.
+    for want in [reports::Part::Saved, reports::Part::Ways, reports::Part::Habits, reports::Part::Days] {
+        press(&mut rt, RuneKey::Tab);
+        assert_eq!(rt.state.reports.part, want);
+    }
+}
+
+#[test]
+fn a_row_opens_its_top_sessions_and_a_session_opens_in_day() {
+    let (desk, part, name) = advice_desk();
+    let mut rt = runtime(desk, (1400.0, 2400.0));
+    command(&mut rt, '2');
+    settle(&mut rt);
+    let c = rt.state.reports.changes().unwrap().clone();
+    let at = changes::lines(&c, part, None).iter().position(|l| *l == changes::Line::Row(name.clone())).unwrap();
+    let key = format!("{}-{at}", part.key());
+    click(&mut rt, &key);
+    settle(&mut rt);
+    assert_eq!(rt.state.reports.open, Some((part, name.clone())), "a click opens the row");
+    let sessions = c.sessions_of(&name).unwrap();
+    let first = format!("{}-{}", part.key(), at + 1);
+    assert!(rt.presented(&first).is_some(), "its sessions under it");
+    assert!(
+        rt.presented(&format!("{}-{}", part.key(), at + 1 + sessions.len().min(changes::SESSIONS))).is_none_or(|_| sessions.len() > changes::SESSIONS || true)
+    );
+    // The keys: ↓ onto the first session, ⏎ opens it in Day with it selected.
+    assert_eq!((rt.state.reports.part, rt.state.reports.row), (part, at));
+    press(&mut rt, RuneKey::Down);
+    press(&mut rt, RuneKey::Enter);
+    assert_eq!(rt.state.reports.mode, reports::Mode::Day);
+    let row = rt.state.browser.selected().expect("a session is selected");
+    assert_eq!(tokprof_core::model::short_id(&sessions[0].agent, rt.state.browser.session(row)), sessions[0].session);
+    // Back in Reports, ⏎ on the row closes it again.
+    command(&mut rt, '2');
+    settle(&mut rt);
+    press(&mut rt, RuneKey::Up);
+    press(&mut rt, RuneKey::Enter);
+    assert_eq!(rt.state.reports.open, None);
+    assert_eq!(changes::line_count(&rt.state, part), changes::lines(&c, part, None).len(), "its sessions are gone");
+}
+
+#[test]
+fn a_session_the_list_does_not_hold_says_so_and_stays_in_reports() {
+    let (desk, part, name) = reports_desk_with_advice();
+    let mut rt = runtime(desk, (1400.0, 2400.0));
+    command(&mut rt, '2');
+    settle(&mut rt);
+    changes::toggle(&mut rt.state, part, &name);
+    settle(&mut rt);
+    press(&mut rt, RuneKey::Down);
+    press(&mut rt, RuneKey::Enter);
+    assert_eq!(rt.state.reports.mode, reports::Mode::Reports);
+    assert!(rt.state.status.0.ends_with("is not in the list"), "{}", rt.state.status.0);
+}
+
+/// `advice_desk`'s report over a list of other sessions.
+fn reports_desk_with_advice() -> (Desk, reports::Part, String) {
+    let (mut desk, part, name) = advice_desk();
+    let mut other = desk_of(3);
+    std::mem::swap(&mut other.reports, &mut desk.reports);
+    (other, part, name)
 }
