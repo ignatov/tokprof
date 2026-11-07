@@ -131,6 +131,9 @@ pub struct MenuBar {
     nudges: Nudges,
     /// The running app, where picks go; none in a frame without a window and in tests.
     pub handle: Option<AppHandle<Desk>>,
+    /// The second of the last update while it counted down: the frames of that second skip the
+    /// pass over the list, since the next second wakes it anyway.
+    counted_at: Option<i64>,
     #[cfg(target_os = "macos")]
     item: Option<native::Item>,
 }
@@ -154,14 +157,21 @@ pub fn poll(s: &mut Desk, now: i64, tx: &mut Tx) {
         {
             s.menu_bar.item = None;
         }
+        s.menu_bar.counted_at = None;
+        return;
+    }
+    let next_second = Duration::from_millis((1000 - now.rem_euclid(1000)) as u64 + 5);
+    if s.menu_bar.shown() && s.menu_bar.counted_at == Some(now / 1000) {
+        tx.wake_after(next_second);
         return;
     }
     let warm = warm_sessions(&s.browser, now);
     let counted = counted(&warm, now);
     let soon = soonest(&counted);
     let nudge = s.menu_bar.nudges.due(soon, now);
+    s.menu_bar.counted_at = soon.map(|_| now / 1000);
     if soon.is_some() {
-        tx.wake_after(Duration::from_millis((1000 - now.rem_euclid(1000)) as u64 + 5));
+        tx.wake_after(next_second);
     }
     #[cfg(target_os = "macos")]
     {
