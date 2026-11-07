@@ -18,6 +18,7 @@
 - [x] 3.2 Keys and clicks: ↑↓ over rows and sessions, ⏎ and a click open and close a row and open a session in Day; a session not listed says so in the bar. The key help's Reports group names ⏎'s new meaning.
 - [x] 3.3 The scene `reports-advice`.
 - [x] 3.4 Runtime tests: the rows, amounts and advice on the screen, Tab through the cards, a row opening its sessions and a session opening in Day, a session not listed; the old Reports tests updated for the new Tab order and the taller page.
+- [x] 3.5 Fix from code review 2: opening a session from a card sent the key `d` to the browser, which a filter being typed took. It now asks the browser for the selected session's day directly; `a_session_opened_from_what_to_change_leaves_a_filter_being_typed_alone` tests it.
 
 ## 4. Check and document
 

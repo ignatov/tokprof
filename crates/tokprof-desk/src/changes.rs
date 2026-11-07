@@ -4,16 +4,16 @@
 //! split by session opens its top sessions under it, and a session opens in Day.
 
 use rune::{Color, El, Tx, col, el, row, spacer, text};
-use tokprof_browse::browser::{Key, now_ms};
+use tokprof_browse::browser::now_ms;
 use tokprof_core::fmt::{int, usd};
 use tokprof_core::pool::Row;
 use tokprof_core::rhythm::RETURNS_HINT;
 use tokprof_core::savings::{Changes, SessionCost};
 
+use crate::Desk;
 use crate::overlay::{R_MARK, R_ROW};
 use crate::pal::{self, Pal};
 use crate::reports::{self, Mode, Part};
-use crate::{Desk, browser_key};
 
 /// The sessions a row opens.
 pub const SESSIONS: usize = 5;
@@ -78,7 +78,8 @@ pub fn open_session(s: &mut Desk, x: &SessionCost, tx: &mut Tx) {
     let id = s.browser.session(row).to_string();
     reports::show(s, Mode::Day);
     s.open_lane(&id, tx);
-    browser_key(s, Key::Char('d'), tx);
+    // Not the key `d`, which a filter being typed would take.
+    s.browser.show_selected_day();
 }
 
 /// What ⏎ does on the cursor's line of a part.

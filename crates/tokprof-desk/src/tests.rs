@@ -1868,6 +1868,26 @@ fn a_row_opens_its_top_sessions_and_a_session_opens_in_day() {
 }
 
 #[test]
+fn a_session_opened_from_what_to_change_leaves_a_filter_being_typed_alone() {
+    let (desk, part, name) = advice_desk();
+    let mut rt = runtime(desk, (1400.0, 2400.0));
+    // A filter is being typed in Day, empty so far, when ⌘2 goes to Reports.
+    typed(&mut rt, "/");
+    assert!(rt.state.browser.editing());
+    command(&mut rt, '2');
+    settle(&mut rt);
+    let sessions = rt.state.reports.changes().unwrap().sessions_of(&name).unwrap().to_vec();
+    changes::toggle(&mut rt.state, part, &name);
+    settle(&mut rt);
+    press(&mut rt, RuneKey::Down);
+    press(&mut rt, RuneKey::Enter);
+    assert_eq!(rt.state.reports.mode, reports::Mode::Day);
+    assert_eq!(rt.state.browser.filter(), "", "no `d` typed into the filter");
+    let row = rt.state.browser.selected().expect("a session is selected");
+    assert_eq!(tokprof_core::model::short_id(&sessions[0].agent, rt.state.browser.session(row)), sessions[0].session);
+}
+
+#[test]
 fn a_session_the_list_does_not_hold_says_so_and_stays_in_reports() {
     let (desk, part, name) = reports_desk_with_advice();
     let mut rt = runtime(desk, (1400.0, 2400.0));

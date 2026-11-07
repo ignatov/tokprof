@@ -493,6 +493,15 @@ impl<T> Browser<T> {
         self.zoom = false;
     }
 
+    /// In the window's mode, shows the selected session's day, even after the arrows went
+    /// elsewhere, as `d` does; also while a filter is being typed, which it leaves as it is.
+    pub fn show_selected_day(&mut self) {
+        if self.beside {
+            self.day = Some(None);
+            self.follow_selection();
+        }
+    }
+
     /// Steps the day by `delta` days, as the buttons beside its name do.
     pub fn step_day_by(&mut self, delta: i64) {
         self.step_day(delta);
@@ -885,11 +894,7 @@ impl<T> Browser<T> {
         match key {
             Key::Left | Key::Char('h') | Key::Char('[') => self.step_day(-1),
             Key::Right | Key::Char('l') | Key::Char(']') => self.step_day(1),
-            Key::Char('d') => {
-                // The selected session's day, even after the arrows went elsewhere.
-                self.day = Some(None);
-                self.follow_selection();
-            }
+            Key::Char('d') => self.show_selected_day(),
             Key::Enter => self.zoom = true,
             Key::Backspace => self.zoom = false,
             Key::Esc if self.zoom => self.zoom = false,
