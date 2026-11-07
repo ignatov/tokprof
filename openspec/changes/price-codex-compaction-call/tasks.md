@@ -32,16 +32,16 @@ Every group ends with `cargo test --workspace` green, in a state that can be com
 
 ## 5. Check on the real logs
 
-- [ ] 5.1 Run `tokprof --agent codex --since 30d misses` and the Claude Code one. Verify: `compaction call` has 171 misses and about $264; `unknown (server side?)` has 3 and about $1; the other causes and the total avoidable of `summary` equal the baseline of 1.1. Record the cause tables.
-- [ ] 5.2 Run `tokprof scan 01a0eec6`, the Codex session with the most compaction calls. Verify: its cache miss advice names `compaction call` with the new hint. Record the line.
-- [ ] 5.3 Run `tokprof --agent codex --since 30d bench` and the Claude Code one. Verify: the Codex saving of heartbeats then compaction falls from $13.85 by $3–17; /compact first stays near $45.85; the Claude Code output equals the baseline. Record the Codex table and lines.
-- [ ] 5.4 Time `tokprof summary` over all logs 3 times. Verify: the median is within 2% of the baseline.
+- [x] 5.1 Run `tokprof --agent codex --since 30d misses` and the Claude Code one. Verify: `compaction call` has 171 misses and about $264; `unknown (server side?)` has 3 and about $1; the other causes and the total avoidable of `summary` equal the baseline of 1.1. Record the cause tables.
+- [x] 5.2 Run `tokprof scan 01a0eec6`, the Codex session with the most compaction calls. Verify: its cache miss advice names `compaction call` with the new hint. Record the line.
+- [x] 5.3 Run `tokprof --agent codex --since 30d bench` and the Claude Code one. Verify: the Codex saving of heartbeats then compaction falls from $13.85 by $3–17; /compact first stays near $45.85; the Claude Code output equals the baseline. Record the Codex table and lines.
+- [x] 5.4 Time `tokprof summary` over all logs 3 times. Verify: the median is within 2% of the baseline.
 
 ## 6. A fresh reference run
 
-- [ ] 6.1 Make `docs/bench.txt`, `docs/bench.svg` and `docs/bench-dark.svg` again with `tokprof bench --svg docs/bench.svg` over all logs, with the date in the first line of `docs/bench.txt`. Verify: the files are written; render a square-viewBox copy of the light chart and look at it.
-- [ ] 6.2 Update the README's bench numbers to the new run: the chart's alt text, the table and the bullets under it. Verify: every number in that section appears in `docs/bench.txt`.
-- [ ] 6.3 Update the numbers that return-bench quotes from the reference run. They go in this change's MODIFIED blocks for "The report states its assumptions" and "Chart labels". Add MODIFIED blocks, each copied whole from the main spec, for those of the other six requirements whose quoted numbers changed:
+- [x] 6.1 Make `docs/bench.txt`, `docs/bench.svg` and `docs/bench-dark.svg` again with `tokprof bench --svg docs/bench.svg` over all logs, with the date in the first line of `docs/bench.txt`. Verify: the files are written; render a square-viewBox copy of the light chart and look at it.
+- [x] 6.2 Update the README's bench numbers to the new run: the chart's alt text, the table and the bullets under it. Verify: every number in that section appears in `docs/bench.txt`.
+- [x] 6.3 Update the numbers that return-bench quotes from the reference run. They go in this change's MODIFIED blocks for "The report states its assumptions" and "Chart labels". Add MODIFIED blocks, each copied whole from the main spec, for those of the other six requirements whose quoted numbers changed:
   - The base the alternatives start from
   - Per-agent table
   - What the alternatives would have saved
@@ -66,11 +66,13 @@ The baseline was taken on 2026-11-07 at 14:00 with a release build of 8b1f183. T
 
 | check | baseline | after |
 |---|---|---|
-| Codex misses, 30d | unknown (server side?) 174, 38.9M, $265; idle > TTL 49, 4.4M, $29.12; params changed 3, 406.8k, $0.98; model switch 3, 209.5k, $0.77 | |
-| Claude Code misses, 30d | idle > TTL 230, 99.0M, $773; history edited 66, 29.2M, $228; images removed 8, 3.6M, $28.22; unknown (server side?) 5, 972.8k, $7.93; tools changed 1, 49.9k, $0.39 | |
-| summary, 30d | avoidable on cache misses $1,333 (11.3%) of $11,842 | |
-| Codex bench, 30d: table | 16 returns, median 180.5k. resume as is $1.43, $3.40, $4.08, $65.31; /compact first $1.88, $2.55, $2.87, $45.85; handoff note $0.61, $1.28, $1.59, $25.44; heartbeats, then resume $2.05, $4.03, $4.71, $75.31; heartbeats, then compaction $1.52, $2.61, $3.22, $51.46 | |
-| Codex bench, 30d: heartbeats then compaction | kept 8 of 16 warm and compacted 8, for $21.40 of pings and compactions, saved $13.85 of $65.31 (21%); breaks that were not returns: another 122 pings and 8 compactions for $9.16, then it saves $4.69 (7%) | |
-| Codex bench, 30d: /compact first | cheaper than resuming from request 3 on ($19.46 over all) | |
-| Claude Code bench, 30d | 206 returns, median 480.3k. resume as is $3.85, $4.94, $8.11, $1,672; /compact first $4.39, $4.85, $6.29, $1,295; handoff note $0.73, $1.18, $2.62, $540; heartbeats, then resume $2.01, $3.10, $6.28, $1,294; heartbeats, then compaction $0.79, $1.62, $4.06, $836; it saved $836 of $1,672 (50%), and $693 (41%) with the other breaks | |
-| summary over all logs, 3 runs | 49.3 s, 35.6 s, 26.1 s: median 35.6 s, with a load average of 27 from other work on the machine | |
+| Codex misses, 30d | unknown (server side?) 174, 38.9M, $265; idle > TTL 49, 4.4M, $29.12; params changed 3, 406.8k, $0.98; model switch 3, 209.5k, $0.77 | compaction call 171, 38.7M, $264; idle > TTL 49, 4.4M, $29.12; params changed 3, 406.8k, $0.98; model switch 3, 209.5k, $0.77; unknown (server side?) 3, 213.4k, $0.51 |
+| Claude Code misses, 30d | idle > TTL 230, 99.0M, $773; history edited 66, 29.2M, $228; images removed 8, 3.6M, $28.22; unknown (server side?) 5, 972.8k, $7.93; tools changed 1, 49.9k, $0.39 | the same, run beside the baseline binary at 14:20 |
+| summary, 30d | avoidable on cache misses $1,333 (11.3%) of $11,842 | $1,333 with both binaries at 14:25, of $11,858 by then (11.2%) |
+| Codex bench, 30d: table | 16 returns, median 180.5k. resume as is $1.43, $3.40, $4.08, $65.31; /compact first $1.88, $2.55, $2.87, $45.85; handoff note $0.61, $1.28, $1.59, $25.44; heartbeats, then resume $2.05, $4.03, $4.71, $75.31; heartbeats, then compaction $1.52, $2.61, $3.22, $51.46 | the same but heartbeats, then compaction $2.35, $3.45, $4.05, $64.81 |
+| Codex bench, 30d: heartbeats then compaction | kept 8 of 16 warm and compacted 8, for $21.40 of pings and compactions, saved $13.85 of $65.31 (21%); breaks that were not returns: another 122 pings and 8 compactions for $9.16, then it saves $4.69 (7%) | for $34.75 of pings and compactions, saved $0.50 of $65.31 (1%), $13.35 less; breaks that were not returns: 122 pings and 8 compactions for $14.75, then it costs $14.25 more than resuming |
+| Codex bench, 30d: /compact first | cheaper than resuming from request 3 on ($19.46 over all) | the same, $45.85 over all |
+| Claude Code bench, 30d | 206 returns, median 480.3k. resume as is $3.85, $4.94, $8.11, $1,672; /compact first $4.39, $4.85, $6.29, $1,295; handoff note $0.73, $1.18, $2.62, $540; heartbeats, then resume $2.01, $3.10, $6.28, $1,294; heartbeats, then compaction $0.79, $1.62, $4.06, $836; it saved $836 of $1,672 (50%), and $693 (41%) with the other breaks | the same, run beside the baseline binary at 14:18 |
+| summary over all logs, 3 runs | 49.3 s, 35.6 s, 26.1 s: median 35.6 s, with a load average of 27 from other work on the machine | base and new in turn, twice: wall 26.7, 34.1, 34.5 s against 33.4, 31.8, 31.0 s, then 35.4, 37.7, 45.8 s against 41.5, 30.7, 47.8 s, at load averages of 15 to 26; CPU in the second round 61.1, 64.0, 64.0 s against 64.1, 54.0, 66.2 s: medians 64.0 and 64.1 s (+0.2%). The wall times vary by 20% with the load, so the CPU medians are the measure |
+| X-ray of 01a0eec6, cache miss advice | | Cache misses could have saved $357, mostly compaction call (185×): each call wrote the whole context again; hand off to a new session before the context fills. |
+| Reference run over all logs (docs/bench.txt) | 2026-11-03: Claude Code 218 returns, Codex 204; Codex heartbeats, then compaction $653, saved $159 (20%), and with the other breaks it cost $53.73 more than resuming | 2026-11-07: Claude Code 234 returns (the logs grew), Codex 204; Codex heartbeats, then compaction $730, saved $81.44 (10%), and with the other breaks it costs $257 more; the other Codex ways are unchanged. The chart, rendered square, shows the four notes within its width |

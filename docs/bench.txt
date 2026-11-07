@@ -1,26 +1,26 @@
-$ tokprof bench --svg docs/bench.svg      # 2026-11-03, Claude Code and Codex logs of one developer
+$ tokprof bench --svg docs/bench.svg      # 2026-11-07, Claude Code and Codex logs of one developer
 
 tokprof bench · coming back to a big session after its prompt cache expired
 
-claude 218 returns to contexts of 100k+ tokens (median 488.0k) after a break of 3.2h (median);
-       each followed for up to 60 requests, until the next break or compaction (median 23)
+claude 234 returns to contexts of 100k+ tokens (median 480.3k) after a break of 3.1h (median);
+       each followed for up to 60 requests, until the next break or compaction (median 25)
 
   mean per return              1st request  10 requests  60 requests  all returns
-  resume as is                       $3.96        $5.08        $8.19       $1,786
-  /compact first                     $4.49        $4.95        $6.33       $1,381
-  new session + handoff note         $0.71        $1.17        $2.55         $557
-  heartbeats, then resume            $2.08        $3.19        $6.30       $1,374
-  heartbeats, then compaction        $0.81        $1.65        $4.03         $879
+  resume as is                       $3.87        $4.97        $8.14       $1,905
+  /compact first                     $4.42        $4.88        $6.32       $1,479
+  new session + handoff note         $0.73        $1.19        $2.63         $616
+  heartbeats, then resume            $2.01        $3.11        $6.28       $1,470
+  heartbeats, then compaction        $0.79        $1.63        $4.10         $959
 
-  A handoff note before the break would have saved $1,229 of $1,786 (69%).
-  Per return it saves a median of $4.87 (72%), and it is cheaper in 218 of 218 returns.
-  /compact first costs more up front and is cheaper than resuming from request 8 on ($405 over all).
-  Heartbeats for up to 6h would have kept 134 of 218 returns warm, for $90.23 of pings, and saved $412 of $1,786 (23%).
-  They cost less than a handoff note in 21 of 218 returns.
-  Breaks that were not cold returns would have taken another 1000 pings for $86.60; with them, heartbeats save $325 (18%).
-  Heartbeats for up to 6h, then a compaction, would have kept 133 of 218 returns warm and compacted 85, for $116 of pings and compactions, and saved $907 of $1,786 (51%).
-  Breaks that were not cold returns would have taken another 1000 pings and 133 compactions for $124; with them, it saves $783 (44%).
-  The X-ray's forecast of the first request was within 10% of its logged cost for 199 of 218 returns (91%).
+  A handoff note before the break would have saved $1,289 of $1,905 (68%).
+  Per return it saves a median of $4.76 (71%), and it is cheaper in 234 of 234 returns.
+  /compact first costs more up front and is cheaper than resuming from request 9 on ($426 over all).
+  Heartbeats for up to 6h would have kept 146 of 234 returns warm, for $93.92 of pings, and saved $435 of $1,905 (23%).
+  They cost less than a handoff note in 22 of 234 returns.
+  Breaks that were not cold returns would have taken another 1249 pings for $108; with them, heartbeats save $327 (17%).
+  Heartbeats for up to 6h, then a compaction, would have kept 145 of 234 returns warm and compacted 89, for $121 of pings and compactions, and saved $946 of $1,905 (50%).
+  Breaks that were not cold returns would have taken another 1249 pings and 164 compactions for $155; with them, it saves $791 (42%).
+  The X-ray's forecast of the first request was within 10% of its logged cost for 207 of 234 returns (88%).
 
 codex  204 returns to contexts of 100k+ tokens (median 163.4k) after a break of 2.2h (median);
        each followed for up to 60 requests, until the next break or compaction (median 10)
@@ -30,7 +30,7 @@ codex  204 returns to contexts of 100k+ tokens (median 163.4k) after a break of 
   /compact first                     $1.51        $1.98        $2.77         $564
   new session + handoff note         $0.54        $1.01        $1.80         $366
   heartbeats, then resume            $1.16        $2.43        $4.04         $824
-  heartbeats, then compaction        $0.94        $1.87        $3.20         $653
+  heartbeats, then compaction        $1.32        $2.25        $3.58         $730
 
   A handoff note before the break would have saved $445 of $812 (55%).
   Per return it saves a median of $2.13 (59%), and it is cheaper in 204 of 204 returns.
@@ -38,13 +38,13 @@ codex  204 returns to contexts of 100k+ tokens (median 163.4k) after a break of 
   Heartbeats for up to 6h would have kept 133 of 204 returns warm, for $134 of pings, and cost $12.41 more than resuming.
   They cost less than a handoff note in 12 of 204 returns.
   Breaks that were not cold returns would have taken another 2111 pings for $162; with them, heartbeats cost $174 more than resuming.
-  Heartbeats for up to 6h, then a compaction, would have kept 132 of 204 returns warm and compacted 72, for $162 of pings and compactions, and saved $159 of $812 (20%).
-  Breaks that were not cold returns would have taken another 2111 pings and 148 compactions for $212; with them, it costs $53.73 more than resuming.
+  Heartbeats for up to 6h, then a compaction, would have kept 132 of 204 returns warm and compacted 72, for $239 of pings and compactions, and saved $81.44 of $812 (10%).
+  Breaks that were not cold returns would have taken another 2111 pings and 148 compactions for $339; with them, it costs $257 more than resuming.
   The X-ray's forecast of the first request was within 10% of its logged cost for 196 of 204 returns (96%).
 
-The alternatives start from what a compaction leaves: claude 52.5k (median of 31 compactions), codex 20.8k (median of 791 compactions).
+The alternatives start from what a compaction leaves: claude 55.8k (median of 47 compactions), codex 20.8k (median of 791 compactions).
 A compaction re-writes the cold context and outputs 10.0k tokens; a handoff note is 10.0k tokens written while the cache was warm.
 A heartbeat goes out at 5/6 of the cache lifetime, every 50m on a 1h cache, reads the context and outputs 100 tokens; for Codex this assumes it resets the cache timer as it does in Claude Code.
-Heartbeats, then compaction sends the same pings and, at the next ping time past the window, a compaction that reads the warm context and outputs 10.0k tokens.
+Heartbeats, then compaction sends the same pings and, at the next ping time past the window, a compaction while the cache is warm that outputs 10.0k tokens: it reads the context in Claude Code and writes it again in Codex, whose compaction calls read nothing from the cache.
 wrote docs/bench.svg
 wrote docs/bench-dark.svg
