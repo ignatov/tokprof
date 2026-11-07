@@ -119,6 +119,12 @@ impl AgentInfo {
             public_names: PublicNames::default(),
         }
     }
+
+    /// Where the agent sets its cache lifetimes, as `tokprof whatif` names them; none for an
+    /// agent without such settings.
+    pub fn ttl_line(&self) -> Option<String> {
+        self.ttl_settings.as_ref().map(|(main, sub)| format!("{} settings: {main} and {sub} (\"5m\" or \"1h\").", self.title))
+    }
 }
 
 /// The names that ship with an agent: its built-in tools, slash commands, bundled skills and

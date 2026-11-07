@@ -48,6 +48,10 @@ impl Layout {
 }
 
 /// The offset of local time from UTC at an instant, both in ms.
+/// What to do about cold returns, as the rhythm's advice says it.
+pub const RETURNS_HINT: &str =
+    "Come back before the cache expires, or before a longer break run /compact or start the next session from a handoff (tokprof handoff).";
+
 pub type Offset<'a> = &'a dyn Fn(i64) -> i64;
 
 /// The offset of the machine's time zone at an instant, in ms. Offsets change on the hour, so
@@ -668,10 +672,7 @@ impl Summary {
                 _ => String::new(),
             };
             let n = fmt::count(returns.count as u64, "return", "returns");
-            out.push(format!(
-                "{n} after the cache expired cost {} that a warm cache would have saved{breaks}. Come back before the cache expires, or before a longer break run /compact or start the next session from a handoff (tokprof handoff).",
-                fmt::usd(returns.saved_usd)
-            ));
+            out.push(format!("{n} after the cache expired cost {} that a warm cache would have saved{breaks}. {RETURNS_HINT}", fmt::usd(returns.saved_usd)));
         }
         if let Some(wait) = median(&self.question_answers).filter(|w| *w > ADVICE_QUESTION_MS) {
             let file = if files.is_empty() { "the agent's instructions".to_string() } else { files.join(" or ") };

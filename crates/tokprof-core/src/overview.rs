@@ -1,5 +1,6 @@
 //! A period's report, as the window shows it: what `tokprof summary` and `tokprof pauses` count,
-//! read in one pass, with the spend by day and by project beside them.
+//! read in one pass, with the spend by day and by project beside them, and what to change, as
+//! `tokprof share` counts it in the same pass.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -7,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::Result;
 
 use crate::analysis::{self, Component, Fact, MissEvent, RequestRecord, Sink};
+use crate::bench;
 use crate::catalog::Catalog;
 use crate::model::Session;
 use crate::pauses::Pauses;
@@ -14,7 +16,9 @@ use crate::pricing::Pricing;
 use crate::query::Query;
 use crate::report::{Collector, Spend};
 use crate::rhythm;
+use crate::savings::{self, BySession, Changes};
 use crate::scan::{OnUnreadable, report_logs, scan_counted};
+use crate::share::Share;
 use crate::source::AgentId;
 
 /// What the requests of one local date cost, by component in `Component::ALL` order.
@@ -161,6 +165,8 @@ pub struct Overview {
     pub collector: Collector,
     pub pauses: Pauses,
     pub spread: Spread,
+    /// What to change, as `tokprof share` counts it.
+    pub changes: Changes,
     /// The logs read, and those that could not be.
     pub logs: usize,
     pub unreadable: Vec<String>,
@@ -209,24 +215,39 @@ pub fn collect(catalog: &Catalog, select: &Query, pricing: &Pricing, progress: i
     progress(0, total);
     let done = AtomicUsize::new(0);
     let filter = select.window();
-    type Parts = (Collector, (Pauses, Spread));
-    let ((collector, (mut pauses, spread)), stats) = scan_counted(
+    // The sinks of `tokprof summary`, `pauses` and `share` with the spread and the habits by
+    // session, and the bench's scan of the main sessions, as `tokprof share` reads them.
+    type Parts = ((Collector, (Pauses, (Spread, (Share, BySession)))), bench::Found);
+    let (((collector, (mut pauses, (spread, (share, by_session)))), found), stats) = scan_counted(
         catalog,
         &files,
         select,
         OnUnreadable::Skip,
-        || (Collector::new(None, None), (Pauses::new(filter.clone()), Spread::default())),
-        |t: &mut Parts, s, _| analysis::analyze(s, pricing, &filter, t),
-        |mut a: Parts, b: Parts| {
+        || {
+            (
+                (Collector::new(None, None), (Pauses::new(filter.clone()), (Spread::default(), (Share::new(filter.clone()), BySession::default())))),
+                bench::Found::default(),
+            )
+        },
+        |(t, found): &mut Parts, s, f| {
+            analysis::analyze(s, pricing, &filter, t);
+            if !f.subagent {
+                *found = std::mem::take(found).merge(bench::scan(s, &filter, bench::DEFAULT_REQUESTS, bench::DEFAULT_MIN_CONTEXT));
+            }
+        },
+        |(mut a, fa): Parts, (b, fb): Parts| {
             a.0.merge(b.0);
             a.1.0.merge(b.1.0);
-            a.1.1.merge(b.1.1);
-            a
+            a.1.1.0.merge(b.1.1.0);
+            a.1.1.1.0.merge(b.1.1.1.0);
+            a.1.1.1.1.merge(b.1.1.1.1);
+            (a, fa.merge(fb))
         },
         || progress(done.fetch_add(1, Ordering::Relaxed) + 1, total),
     )?;
     pauses.finish();
-    Ok(Overview { collector, pauses, spread, logs: total, unreadable: stats.unreadable })
+    let changes = savings::changes(&collector, &pauses, &share, found, pricing, &by_session);
+    Ok(Overview { collector, pauses, spread, changes, logs: total, unreadable: stats.unreadable })
 }
 
 #[cfg(test)]

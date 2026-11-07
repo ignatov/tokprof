@@ -28,6 +28,7 @@ pub mod profile;
 pub mod query;
 pub mod report;
 pub mod rhythm;
+pub mod savings;
 pub mod scan;
 pub mod setup;
 pub mod share;

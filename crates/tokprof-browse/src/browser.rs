@@ -1057,6 +1057,14 @@ impl<T> Browser<T> {
         self.visible.iter().position(|&i| self.entries[i].is(session))
     }
 
+    /// The row of the session that `agent` shows by this short id, as the reports name sessions.
+    pub fn row_of_short(&self, agent: &tokprof_core::source::AgentId, short: &str) -> Option<usize> {
+        self.visible.iter().position(|&i| {
+            let r = &self.entries[i].row;
+            r.file.agent == *agent && (r.id == short || tokprof_core::model::short_id(agent, &r.session_id) == short)
+        })
+    }
+
     /// When the session with this id sent its main conversation's latest request and when its
     /// cache goes or went cold, in epoch ms, once its glance knows; listed or not.
     pub fn cache_life(&self, session: &str) -> Option<(i64, i64)> {

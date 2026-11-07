@@ -252,7 +252,7 @@ pub fn advise(i: &Inputs) -> Vec<Advice> {
         out.push(Advice::new(
             Topic::Lookups,
             format!(
-                "Single lookups made {} requests, each re-reading ≈ {} tokens: {}, {:.0}% of the session. Batch independent reads, or explore in a subagent.",
+                "Single lookups made {} requests, each re-reading ≈ {} tokens: {}, {:.0}% of the session. {LOOKUP_HINT}",
                 l.spend.requests,
                 tokens(l.avg_prompt()),
                 usd(l.spend.usd),
@@ -290,11 +290,7 @@ pub fn advise(i: &Inputs) -> Vec<Advice> {
         let effort = i.effort.as_ref().map_or(String::new(), |e| format!(", at effort {e}"));
         out.push(Advice::new(
             Topic::Thinking,
-            format!(
-                "Thinking cost {}, {:.0}% of the session{effort}: use a lower effort for routine steps.",
-                usd(i.thinking_usd),
-                100.0 * i.thinking_usd / i.spend_usd
-            ),
+            format!("Thinking cost {}, {:.0}% of the session{effort}: {THINKING_HINT}.", usd(i.thinking_usd), 100.0 * i.thinking_usd / i.spend_usd),
         ));
     }
 
@@ -310,7 +306,13 @@ pub fn advise(i: &Inputs) -> Vec<Advice> {
     out
 }
 
-fn miss_hint(cause: Cause) -> &'static str {
+/// What to do about single lookups, as the lookups advice says it.
+pub const LOOKUP_HINT: &str = "Batch independent reads, or explore in a subagent.";
+/// What to do about thinking, as the thinking advice says it.
+pub const THINKING_HINT: &str = "use a lower effort for routine steps";
+
+/// What to do about the misses of a cause, as the cache-miss advice says it.
+pub fn miss_hint(cause: Cause) -> &'static str {
     match cause {
         Cause::IdleTtl => "compact or wrap up a big session before a long break",
         Cause::ModelSwitch | Cause::ParamsChanged => "switch model or effort in a new session, not mid-task",

@@ -452,8 +452,8 @@ pub fn whatif(c: &Collector, agents: &[AgentId]) -> String {
     let _ =
         writeln!(out, "\nCheapest: main conversation {} (saves {} over the other), subagents {} (saves {}).", best(0), usd(saving[0]), best(1), usd(saving[1]));
     for agent in agents {
-        if let Some((main, sub)) = &agent.info().ttl_settings {
-            let _ = writeln!(out, "{} settings: {main} and {sub} (\"5m\" or \"1h\").", agent.info().title);
+        if let Some(line) = agent.info().ttl_line() {
+            let _ = writeln!(out, "{line}");
         }
     }
     out
