@@ -35,7 +35,7 @@ One of the lanes, the list and the inspector SHALL have the keyboard at a time, 
 - **THEN** the filter field has the ring, and the list's row does not
 
 ### Requirement: Marks in a theme
-A theme SHALL give the window's background, panels, lines, text and accent, and the colors of its marks: green for work and warm caches, red for cold caches, the now line and stops, yellow for waits and cache writes, blue for cache reads and requests, cyan for output and messages, magenta for questions. On a dark theme, the large filled marks keep about 78% of their color over the background; text keeps the theme's colors.
+A theme SHALL give the window's background, panels, lines, text and accent, and the colors of its marks: green for work and warm caches, red for cold caches, the now line and stops, yellow for waits and cache writes, blue for cache reads and requests, cyan for output and messages, magenta for questions. On a dark theme, the large filled marks keep 60% of their color over the background, as the eye sees it; text keeps the theme's colors.
 
 #### Scenario: A cold cache
 - **WHEN** a listed session's cache is cold
@@ -43,4 +43,30 @@ A theme SHALL give the window's background, panels, lines, text and accent, and 
 
 #### Scenario: Work on a dark theme
 - **WHEN** the window is drawn in a dark theme
-- **THEN** the bars of work, the request bars and the parts of the spend are their colors mixed 58% into the background in linear light, and a warm countdown is the theme's green itself
+- **THEN** the bars of work, the request bars and the parts of the spend are their colors 60% of the way from the background in sRGB, and a warm countdown is the theme's green itself
+
+### Requirement: Window layout
+The window SHALL show, under the bar, the lanes of the shown day across its whole width, at most 45% of its height with what is under them, and under them the list of sessions in a pane 380 points wide and the inspector of the selected session in the rest. Every text is in the system font; numbers that line up in columns use tabular figures.
+
+#### Scenario: A narrow window
+- **WHEN** the window is 960 points wide
+- **THEN** the list keeps its 380 points and the inspector takes the remaining 580, with all ten tabs on one line
+
+#### Scenario: Many lanes
+- **WHEN** the day has more lanes than fit in 45% of the window
+- **THEN** the lanes scroll under an hours row that stays on top, as many whole lanes show as fit, a line under them says how many more there are (`2 more lanes · scroll to see them`), and the list and the inspector keep their place
+
+### Requirement: Keys in the settings
+In the settings panel, Tab and Shift+Tab SHALL move the keyboard between `Appearance` and the theme grids, the window's appearance's grid first, where the keyboard starts, the order kept while it is open. The part with it is ringed in the accent; ← and → pick the appearance; in a grid, ← → go to the card before and after, ↑ ↓ to the card above and below, Home and End to the first and last, each picking the theme it reaches, scrolled into view; ⏎ closes the panel. The foot names these keys.
+
+#### Scenario: The next dark theme
+- **WHEN** `Dark theme` has the keyboard on Merino Dark and the user presses →
+- **THEN** the dark theme after Merino Dark is picked and the window takes it at once
+
+#### Scenario: The card below
+- **WHEN** `Light theme` has the keyboard on its first card and the user presses ↓
+- **THEN** the first card of the grid's next row is picked
+
+#### Scenario: Opening in a dark window
+- **WHEN** the window is dark and the user opens the settings
+- **THEN** `Dark theme` comes right after `Appearance` and has the keyboard, and picking `Light` keeps the grids where they are

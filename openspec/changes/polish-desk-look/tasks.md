@@ -55,3 +55,20 @@ These restore specified behavior, so they need no proposal of their own; they ar
 - [x] 8.7 Flame's tree cache holds the X-ray it was built from (the browser hands out its Arc), so a later X-ray cannot take its address; the inspector's memo holds its X-ray for the same reason.
 - [x] 8.8 The reports worker does not read a period twice in a row: only the report asked for ends the wait, and the worker skips a job it has just answered. Unit test of the wait.
 - [ ] 8.9 Not tonight: X-rays build the flame stacks for every session and are never evicted (review item 9). Build the stacks only for Flame, or keep the X-rays of a few sessions.
+
+## 9. The second design review
+
+From `qa2/design-review-2.md`, 2026-11-07.
+
+- [x] 9.1 The lanes show whole lanes, and a line under them says how many more scroll (regression N1). Unit test of the count.
+- [x] 9.2 All ten tabs stay on one line at 960 points, and show their digits as keycaps while the inspector has the keyboard and there is room (N2, item 24). Unit test.
+- [x] 9.3 A lane's head keeps its own width; a long one is cut to its share, and the title is left out under 60 points (N3, item 8). Unit test.
+- [x] 9.4 Narrow tables drop up to `avg input` and `trips` in Tools, and keep the card's padding (N4). Work's origin column is 270 points from a 900-point card.
+- [x] 9.5 The list's title without the costing count, which follows it, quieter; narrower sort segments (N5).
+- [x] 9.6 Flame's legend swatches at 60% on dark themes (N6). The line under the graph names the frame by its path under the shown root; `add-desk-flame`'s delta and the README say so (item 9).
+- [x] 9.7 Waits' notes under their labels, so there is no dead band on the right (N7).
+- [x] 9.8 The Cache tab with only expected rebuilds shows the empty state with their count and causes (item 13).
+- [x] 9.9 Large marks on dark themes mixed 60% in sRGB (item 14). Test.
+- [x] 9.10 Settings opens on the grid of the window's appearance, right after Appearance, and keeps the order while open. The Dark tile's edge is drawn over its picture (item 21). Test of the order and the keys.
+- [x] 9.11 The key help has one key column per card column, so the descriptions line up (item 23). The Reports group is not touched.
+- [x] 9.12 Frames rendered into `shots/polish2/` and looked at; desk and root checks; `openspec validate --all --strict`.

@@ -20,7 +20,7 @@ It also found faults that change what the window says:
 - **Overlays**: the key help ends with a foot of keycaps like the settings panel's. The key column is as wide as each group's keys, and the two `esc` rows of the list are one. The key help and the palette fade their last row when they scroll.
 - **Flame**: the legend's swatches are the frames' colors, and the keys are keycaps.
 - **Empty states**: one soft group with a line in the ink and a quieter one. It is used for a Cache tab without misses, for a list with nothing matching the filter, and for an inspector with no session.
-- **Dark themes**: work, request bars and the parts of the spend are mixed 58% into the background in linear light (about 78% to the eye), as Flame already does with its frames. The themes' colors and all text colors stay.
+- **Dark themes**: work, request bars and the parts of the spend are mixed 60% of the way from the background in sRGB, as the eye sees it (first 58% in linear light; the second review found that still too bright). The themes' colors and all text colors stay.
 - **Sizes**: the window's size comes from the root's layout. Before the first layout it comes from `--size`, or 1400x900. The lanes' 45% includes the legend and the day's lines under them.
 - **Radii** come from shared constants: card 22, group 16, tile 12, row 8, mark 3, pill.
 - **Palette**: a day matches only by runs of letters that each start a word, the words one after another. Typing `to` no longer lists `Thu 8 Oct` (T…O). Sessions, tabs and actions match as before. This edits the `add-desk-palette` change's delta, which is not archived yet.
@@ -46,8 +46,18 @@ None.
   - Dark themes lower the marks and keep the text colors.
   - The first frame takes its height from `--size`.
 
+## Second review
+
+A second design pass (2026-11-07) found four regressions: lanes cut in half, tabs off the window at 960, an uneven gap after a lane's project, and a narrow table into the card's padding. It also found the items left over. Tasks section 9 fixes them:
+- whole lanes with a count of the rest;
+- tabs that fit, with digit keycaps while the inspector has the keyboard;
+- the settings opening on the window's appearance;
+- Flame naming a frame once;
+- calmer dark marks;
+- the Cache tab with only expected rebuilds;
+- the key help's descriptions aligned.
+
 ## Out of scope
 
 - The themes' colors themselves: the window draws them as Rex does.
-- Opening the settings on the section of the current appearance (review item 21). The panel has no scroll on open to do it with. Only the dark tile's edge is fixed.
-- Digits as keycaps on the inspector's tabs (item 24), and removing Flame's line under the graph (item 9). That line is specified as naming the frame under the pointer or the cursor.
+- The Reports cards and the Reports group of the key help, which another change is editing.

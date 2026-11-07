@@ -33,11 +33,11 @@ The frames of `Flame` SHALL take their colors from the theme by what they stand 
 - **THEN** it is drawn in the green of content
 
 ### Requirement: Flame hover
-The frame under the pointer SHALL lighten, and the line under the graph names its full path, its dollars, its share of the session and its share of its parent. Without a frame under the pointer, the line names the frame with the keyboard cursor.
+The frame under the pointer SHALL lighten, and the line under the graph names its path under the shown root (the breadcrumb above the graph has the rest), its dollars, its share of the session and its share of its parent. Without a frame under the pointer, the line names the frame with the keyboard cursor.
 
 #### Scenario: Hover
 - **WHEN** the pointer rests on a turn frame that cost $1.20 of a $12.00 session and $3.00 of its chain
-- **THEN** the line says the path to it, `$1.20`, `10.0% of the session` and `40.0% of main`, with the chain's name
+- **THEN** the line says its path under the shown root, `$1.20`, `10.0% of the session` and `40.0% of main`, with the chain's name
 
 ### Requirement: Flame zoom
 A click on a frame SHALL show it as the root of the graph, full width, with the cursor on it. A breadcrumb above the graph shows the path from the session to the shown root; a click on a crumb shows that frame as the root. A click on the shown root zooms out one level. The zoom stays while the same session is shown, as long as its path still exists, and the bars glide to their new places.
