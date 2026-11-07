@@ -40,7 +40,8 @@ struct Stream {
     model: String,
     effort: Option<String>,
     compacted: bool,
-    after_assistant: bool,
+    /// The latest response's last item was an assistant message.
+    ended_with_message: bool,
     context_window: Option<u64>,
     /// Conversation items in the previous request's prompt; `None` before the first request
     /// and after a compaction replaced the conversation.
@@ -177,12 +178,7 @@ impl Parser {
                 }
                 self.session.compactions.push(Compaction { ts_ms: ts, kind: CompactionTrigger::Unknown });
             }
-            "response_item" => {
-                if ptype == "message" && str_at(payload, "role") == Some("assistant") {
-                    self.streams.iter_mut().for_each(|s| s.after_assistant = true);
-                }
-                self.push_item(payload, Some(ts));
-            }
+            "response_item" => self.push_item(payload, Some(ts)),
             "token_usage_record" => {
                 let fresh = str_at(payload, "response_id").is_none_or(|id| self.seen.insert(id.to_string()));
                 if let (true, Some(usage)) = (fresh, payload.get("usage")) {
@@ -426,13 +422,19 @@ impl Parser {
         });
         let outputs = &self.history[prompt_len..];
         let calls: Vec<CallClass> = outputs.iter().filter_map(|m| self.call_kinds.get(m)).flatten().copied().collect();
-        let text = outputs.iter().any(|&m| self.session.blocks[self.session.messages[m].blocks.clone()].iter().any(|b| b.kind == BlockKind::Text));
+        let has_text = |m: usize| self.session.blocks[self.session.messages[m].blocks.clone()].iter().any(|b| b.kind == BlockKind::Text);
+        let text = outputs.iter().any(|&m| has_text(m));
+        // Only an assistant message gives a response item text blocks.
+        let ends_with_message = outputs.last().is_some_and(|&m| has_text(m));
         let s = &mut self.streams[stream];
         let trigger = s.pending.trigger().or((s.ended_with_text && !s.requests.is_empty()).then_some(Trigger::Continuation));
         let activity = s.pending.activity();
         s.pending = Pending::default();
         calls.iter().for_each(|&k| s.pending.call(k));
         s.ended_with_text = text && calls.is_empty();
+        // The cause `after assistant message` is about the request after such a response, not the
+        // response itself: its usage line comes after the message it produced.
+        let after_assistant = std::mem::replace(&mut s.ended_with_message, ends_with_message);
         let keep = s.prompt_len.filter(|&prev| prev <= prompt_len).unwrap_or(0);
         let delta = PromptDelta { shape: if s.requests.is_empty() { self.shape } else { None }, keep, tail: self.history[keep..prompt_len].to_vec() };
         let input = u64_at(usage, "input_tokens");
@@ -459,7 +461,7 @@ impl Parser {
             prompt: Some(delta),
             produced,
             compacted_before: s.compacted,
-            after_assistant_message: s.after_assistant,
+            after_assistant_message: after_assistant,
             context_window: s.context_window,
             trigger,
             activity,
@@ -470,7 +472,6 @@ impl Parser {
             ..Request::default()
         });
         s.compacted = false;
-        s.after_assistant = false;
         s.prompt_len = Some(prompt_len);
     }
 
@@ -1041,6 +1042,40 @@ mod tests {
         let result = &s.blocks[s.messages[d2.tail[2]].blocks.clone()][0];
         assert_eq!((result.kind, result.tool.as_deref(), result.target.as_deref()), (BlockKind::ToolResult, Some("exec_command"), Some("ls -la")));
         assert!(reqs[0].produced.is_some());
+    }
+
+    #[test]
+    fn only_the_request_after_a_response_that_ended_with_a_message_follows_an_assistant_message() {
+        use serde_json::json;
+        let item = |payload: Value| json!({"type": "response_item", "payload": payload}).to_string();
+        let message = |role: &str, text: &str| {
+            let kind = if role == "assistant" { "output_text" } else { "input_text" };
+            item(json!({"type": "message", "role": role, "content": [{"type": kind, "text": text}]}))
+        };
+        let usage = |id: &str, input: u64, cached: u64| {
+            json!({"type": "token_usage_record", "payload": {"response_id": id, "usage": {"input_tokens": input, "cached_input_tokens": cached, "output_tokens": 10}}})
+                .to_string()
+        };
+        let mut p = parser("t");
+        for line in [
+            message("user", "fix it"),
+            // r1 says what it does, then calls a tool: the message is not its last item.
+            message("assistant", "I'll run the tests."),
+            item(json!({"type": "function_call", "name": "exec_command", "arguments": "{\"cmd\":\"cargo test\"}", "call_id": "c1"})),
+            usage("r1", 30_000, 0),
+            item(json!({"type": "function_call_output", "call_id": "c1", "output": "ok"})),
+            // r2 ends with its answer, which is logged before r2's own usage line.
+            item(json!({"type": "reasoning", "encrypted_content": "abcd"})),
+            message("assistant", "Fixed."),
+            usage("r2", 31_000, 30_000),
+            message("user", "and the docs"),
+            usage("r3", 32_000, 0),
+        ] {
+            p.line(&line);
+        }
+        let s = p.into_session();
+        let after: Vec<bool> = s.chains[0].requests.iter().map(|r| r.after_assistant_message).collect();
+        assert_eq!(after, [false, false, true]);
     }
 
     #[test]
