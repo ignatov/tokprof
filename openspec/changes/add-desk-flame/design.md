@@ -39,7 +39,7 @@ The leading frames that every stack shares (the agent, the project and the sessi
 
 The graph is a box in a soft group (radius 12, the bar color of the theme) whose width comes from its last layout. Each depth is a row 22 pt high with 2 pt between rows. A frame's x and width are its offset and value scaled to the width plus one gap, less the gap, so neighbours stand 2 pt apart and the last bar ends at the edge. Bars are radius 6 (less for bars under 12 pt), placed absolutely. A frame under 3 pt is not drawn, nor its children; the count covers every frame of the shown root under 3 pt.
 
-A label is drawn in a bar of 28 pt or more: the name, truncated, and the amount after it when a rough measure (6.3 pt a character at 11.5 pt) says both fit.
+A bar has a label when its whole name fits, or at least three characters and the ellipsis do, by a rough measure of 6.3 pt a character at 11.5 pt inside 6 pt of padding; the amount follows only the whole name, with three characters of room between them. A bar's corner is 4 pt, and a quarter of its width on a narrower bar, so a sliver stays a line.
 
 Every bar is keyed by its path in the tree, so a zoom keeps the keys of the frames that stay, and Rune's layout springs move them to their new places; frames that leave fade out.
 
@@ -61,7 +61,7 @@ From the theme's palette only, each a share of its color mixed into the group's 
 | output | terminal cyan, as in `Spend` |
 | uncached | terminal magenta: `Spend` draws it grey, which here is structure |
 
-Hover mixes the bar 30% toward white. The cursor's ring is a 2 pt outline in the accent, 1 pt off the bar, drawn while the inspector has the keyboard.
+Hover mixes the bar 30% toward white. The cursor's ring is a 2 pt border in the accent inside the bar, over the bar's fill mixed 18% toward the accent, drawn while the inspector has the keyboard; inside, it never covers the gap or the frames beside.
 
 ### Keys
 

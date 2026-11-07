@@ -72,3 +72,10 @@ From `qa2/design-review-2.md`, 2026-11-07.
 - [x] 9.10 Settings opens on the grid of the window's appearance, right after Appearance, and keeps the order while open. The Dark tile's edge is drawn over its picture (item 21). Test of the order and the keys.
 - [x] 9.11 The key help has one key column per card column, so the descriptions line up (item 23). The Reports group is not touched.
 - [x] 9.12 Frames rendered into `shots/polish2/` and looked at; desk and root checks; `openspec validate --all --strict`.
+
+## 10. Flame from the author's look
+
+From the author's screenshot, 2026-11-07: the cursor's ring stood off the bar over the frames beside, narrow frames were round blobs, and labels were cut to "c…".
+
+- [x] 10.1 The cursor's ring is a border inside the bar over a fill toward the accent; corners of 4 pt and a quarter of a narrow bar's width; a label only for a whole name or three characters and the ellipsis, the amount only after the whole name. `add-desk-flame`'s design says so.
+- [x] 10.2 Frames rendered on merino-dark and merino-light with the ring forced on and looked at; desk checks.

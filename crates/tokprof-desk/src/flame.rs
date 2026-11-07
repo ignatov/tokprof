@@ -11,7 +11,7 @@ use tokprof_core::profile::{Measure, Stacks, Tint};
 use tokprof_core::xray::XRay;
 
 use crate::Desk;
-use crate::overlay::{self, PILL, R_GROUP, R_MARK, R_ROW};
+use crate::overlay::{self, PILL, R_GROUP, R_MARK};
 use crate::pal::{self, Pal};
 
 /// The key of the graph, whose width the bars are laid out in.
@@ -21,8 +21,13 @@ pub const ROW: f32 = 22.0;
 pub const GAP: f32 = 2.0;
 /// Frames narrower than this are not drawn.
 pub const MIN_W: f32 = 3.0;
-/// A bar this wide or wider gets a label.
-const LABEL_W: f32 = 28.0;
+/// The corner of a bar; a narrow bar rounds less, so that a sliver stays a line, not a dot.
+const R_BAR: f32 = 4.0;
+/// A rough measure of the system font at 11.5 pt: points per character, and a bar's padding.
+const CHAR_W: f32 = 6.3;
+const PAD: f32 = 6.0;
+/// A truncated name keeps at least this many characters, or the bar has no label.
+const MIN_CHARS: usize = 3;
 /// The width the graph is laid out in before its first layout.
 const GUESS_W: f32 = 640.0;
 /// The leading dimensions that fold into the root when every stack shares them.
@@ -531,7 +536,7 @@ fn bar(tree: &Tree, b: &Bar, cursor: bool, p: &Pal) -> El {
         .absolute(b.x, b.y)
         .w(b.w)
         .h(ROW)
-        .radius(R_ROW.min(b.w / 2.0))
+        .radius(R_BAR.min(b.w / 4.0))
         .fill(fill)
         .hover(fill.mix(Color::WHITE, 0.3))
         .center_y()
@@ -546,17 +551,20 @@ fn bar(tree: &Tree, b: &Bar, cursor: bool, p: &Pal) -> El {
             s.flame.hover = Some(path.clone());
         })
         .on_press(move |s: &mut Desk| s.flame_click(&pressed));
+    // The cursor's ring is inside the bar, so that it never covers the gap or the frames beside.
     if cursor {
-        out = out.outline(2.0, 1.0, p.accent);
+        out = out.fill(fill.mix(p.accent.alpha(1.0), 0.18)).border(2.0, p.accent);
     }
-    // A narrow bar has no padding, which would widen it.
-    if b.w >= LABEL_W {
-        out = out.px(6.0).gap(6.0);
-        let amount = tree.amount(n.value);
-        // A rough measure of the system font at 11.5 pt.
-        let fits = |chars: usize| chars as f32 * 6.3 + 12.0 <= b.w;
+    let room = b.w - 2.0 * PAD;
+    let wide = |chars: usize| chars as f32 * CHAR_W <= room;
+    let name = n.name.chars().count();
+    // A name is drawn whole, or cut with at least a few characters left; never as "c…".
+    if wide(name) || wide(MIN_CHARS + 1) {
+        out = out.px(PAD).gap(PAD);
         out = out.child(text(n.name.clone()).key("frame-name").font(pal::SMALL).color(p.ink).single_line().truncate().shrink().min_w(0.0));
-        if fits(n.name.chars().count() + amount.chars().count() + 1) {
+        let amount = tree.amount(n.value);
+        // The value only next to the whole name, with a gap of three characters between them.
+        if wide(name + amount.chars().count() + 3) {
             out = out.child(spacer().grow(1.0)).child(text(amount).key("frame-amount").font(pal::SMALL_NUM).color(p.ink2).single_line());
         }
     }
