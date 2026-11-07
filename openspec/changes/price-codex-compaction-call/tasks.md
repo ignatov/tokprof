@@ -53,8 +53,8 @@ Every group ends with `cargo test --workspace` green, in a state that can be com
 
 ## 7. Finish
 
-- [ ] 7.1 Run `cargo fmt --all`, `cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings`, then `cargo build` in `crates/tokprof-desk`. Verify: all pass.
-- [ ] 7.2 Reinstall the binary with `cargo install --path crates/tokprof --root ~/.local`. Verify: `tokprof --agent codex --since 30d misses` lists `compaction call`.
+- [x] 7.1 Run `cargo fmt --all`, `cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings`, then `cargo build` in `crates/tokprof-desk`. Verify: all pass.
+- [x] 7.2 Reinstall the binary with `cargo install --path crates/tokprof --root ~/.local`. Verify: `tokprof --agent codex --since 30d misses` lists `compaction call`.
 
 ## Workflow follow-up
 
