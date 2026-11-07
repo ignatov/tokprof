@@ -65,7 +65,7 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
         "Settings",
         &[
             k(&["Tab", "⇧Tab"], "next, previous section"),
-            k(&["←", "→", "h", "l"], "appearance or theme before, after"),
+            k(&["←", "→", "h", "l"], "appearance, theme or menu bar Off, On"),
             k(&["↑", "↓", "k", "j"], "theme above, below"),
             k(&["Home", "End"], "the first, the last theme"),
             k(&["esc", "⏎", "⌘,"], "close"),

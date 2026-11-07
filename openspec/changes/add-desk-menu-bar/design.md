@@ -48,7 +48,7 @@ macOS App Nap slows the timers of an app whose windows are all hidden or covered
 
 ### The setting
 
-`menu_bar` in `prefs.json`, `off` by default: tonight nobody can look at the real menu bar, so it ships off until the author has. The settings panel gains a fourth part, `Menu bar countdown`, after `Dark theme`, as two tiles in the look of `Appearance`'s labels; Tab reaches it, ← → pick. The key help's line for ← → in the settings already says it picks a choice.
+`menu_bar` in `prefs.json`, `off` by default: tonight nobody can look at the real menu bar, so it ships off until the author has. The settings panel gains a fourth part, `Menu bar countdown`, last: after both theme grids, whichever order the window's appearance gives them, as an `Off | On` switch like the bar's. Tab reaches it after the second grid, ← → pick. The panel's foot already names ← → as `choose`, and the key help's Settings line for ← → names the countdown too.
 
 ### Constants
 

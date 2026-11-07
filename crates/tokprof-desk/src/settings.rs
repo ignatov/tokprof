@@ -64,11 +64,13 @@ pub struct Settings {
     /// The theme ids for a light and for a dark window.
     pub light_theme: String,
     pub dark_theme: String,
+    /// The cache countdown in the macOS menu bar, off by default.
+    pub menu_bar: bool,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { appearance: Appearance::System, light_theme: themes::DEFAULT_LIGHT.into(), dark_theme: themes::DEFAULT_DARK.into() }
+        Settings { appearance: Appearance::System, light_theme: themes::DEFAULT_LIGHT.into(), dark_theme: themes::DEFAULT_DARK.into(), menu_bar: false }
     }
 }
 
@@ -81,6 +83,7 @@ impl Settings {
             appearance: prefs.get::<String>("appearance").and_then(|n| Appearance::named(&n)).unwrap_or(d.appearance),
             light_theme: theme("light_theme", false).unwrap_or(d.light_theme),
             dark_theme: theme("dark_theme", true).unwrap_or(d.dark_theme),
+            menu_bar: prefs.get::<String>("menu_bar").as_deref() == Some("on"),
         }
     }
 
@@ -121,19 +124,22 @@ pub enum Part {
     Appearance,
     Light,
     Dark,
+    MenuBar,
 }
 
 impl Part {
     /// The parts in the order the panel draws them and Tab moves through them: the appearance,
-    /// then the grid of the appearance the window was in when the panel opened, then the other.
-    pub fn order(dark_first: bool) -> [Part; 3] {
-        if dark_first { [Part::Appearance, Part::Dark, Part::Light] } else { [Part::Appearance, Part::Light, Part::Dark] }
+    /// then the grid of the appearance the window was in when the panel opened, then the other,
+    /// and the menu bar countdown last.
+    pub fn order(dark_first: bool) -> [Part; 4] {
+        if dark_first { [Part::Appearance, Part::Dark, Part::Light, Part::MenuBar] } else { [Part::Appearance, Part::Light, Part::Dark, Part::MenuBar] }
     }
 
     fn step(self, back: bool, dark_first: bool) -> Part {
         let order = Part::order(dark_first);
+        let n = order.len();
         let at = order.iter().position(|&p| p == self).unwrap_or(0);
-        order[if back { (at + 2) % 3 } else { (at + 1) % 3 }]
+        order[if back { (at + n - 1) % n } else { (at + 1) % n }]
     }
 }
 
@@ -187,6 +193,12 @@ impl Desk {
         self.save(if dark { "dark_theme" } else { "light_theme" }, id);
     }
 
+    /// Turns the menu bar countdown on or off; the next poll puts the item in place or takes it.
+    pub fn pick_menu_bar(&mut self, on: bool) {
+        self.settings.menu_bar = on;
+        self.save("menu_bar", if on { "on" } else { "off" });
+    }
+
     /// Saves a setting; the bar says so when the file cannot be written.
     fn save(&mut self, key: &str, value: &str) {
         if let Err(e) = store(&mut self.prefs, key, value) {
@@ -220,6 +232,11 @@ impl Desk {
                 };
                 self.pick_appearance(Appearance::ALL[to]);
             }
+            _ if part == Part::MenuBar => match (&e.key, text) {
+                (RuneKey::Left, _) | (_, Some("h")) => self.pick_menu_bar(false),
+                (RuneKey::Right, _) | (_, Some("l")) => self.pick_menu_bar(true),
+                _ => {}
+            },
             _ => {
                 let dark = part == Part::Dark;
                 let list: Vec<&Theme> = themes::of(dark).collect();
@@ -259,6 +276,7 @@ impl Part {
             Part::Appearance => "part-appearance",
             Part::Light => "part-light",
             Part::Dark => "part-dark",
+            Part::MenuBar => "part-menu-bar",
         }
     }
 }
@@ -304,6 +322,7 @@ pub fn panel(s: &Desk, panel: Panel, p: &Pal, height: f32) -> El {
             Part::Appearance => section(part, "Appearance", appearance_tiles(s, p), keyboard, p),
             Part::Light => section(part, "Light theme", theme_grid(s, false, p), keyboard, p),
             Part::Dark => section(part, "Dark theme", theme_grid(s, true, p), keyboard, p),
+            Part::MenuBar => section(part, "Menu bar countdown", menu_bar_choice(s, p), keyboard, p),
         })),
     );
     let done = row()
@@ -389,6 +408,21 @@ fn appearance_tiles(s: &Desk, p: &Pal) -> El {
             )
     });
     row().w_full().gap(GAP).children(tiles)
+}
+
+/// `Off` and `On` for the menu bar countdown, with what it does beside them.
+fn menu_bar_choice(s: &Desk, p: &Pal) -> El {
+    let on = s.settings.menu_bar;
+    let choice = crate::view::segments(
+        "menu-bar",
+        vec![
+            crate::view::segment("menu-bar-off".into(), "Off", !on, p).on_press(|s: &mut Desk| s.pick_menu_bar(false)),
+            crate::view::segment("menu-bar-on".into(), "On", on, p).on_press(|s: &mut Desk| s.pick_menu_bar(true)),
+        ],
+        p.panel,
+    );
+    let about = "How long the warm caches stay warm, of sessions that cost $1.00 or more to resume cold";
+    row().w_full().gap(GAP).center_y().child(choice).child(text(about).font(pal::SMALL).color(p.ink2).single_line().truncate().shrink().min_w(0.0))
 }
 
 /// A window in a theme, drawn small: its bar, a few lines of text and an accent.
@@ -524,6 +558,16 @@ mod tests {
         assert_eq!(s.appearance, Appearance::Dark);
         assert_eq!(s.theme(false).id, "ink-meridian", "dark whatever the system is");
         assert_eq!(s.light_theme, "merino-light");
+    }
+
+    #[test]
+    fn the_menu_bar_countdown_is_off_unless_saved_on() {
+        let mut prefs = Prefs::memory();
+        assert!(!Settings::read(&prefs).menu_bar, "off by default");
+        prefs.set("menu_bar", "on").unwrap();
+        assert!(Settings::read(&prefs).menu_bar);
+        prefs.set("menu_bar", "yes").unwrap();
+        assert!(!Settings::read(&prefs).menu_bar, "a value it does not know is off");
     }
 
     #[test]

@@ -8,6 +8,7 @@ mod day;
 mod flame;
 mod inspector;
 mod keys;
+mod menubar;
 mod overlay;
 mod pal;
 mod palette;
@@ -222,6 +223,8 @@ pub struct Desk {
     pub flame_w: f32,
     /// Day or Reports, and the state of Reports.
     pub reports: reports::State,
+    /// The cache countdown in the macOS menu bar.
+    pub menu_bar: menubar::MenuBar,
 }
 
 /// The panes that take the keyboard, in the order Tab moves through them.
@@ -281,6 +284,7 @@ impl Desk {
             xray_seen: RefCell::default(),
             flame_w: 0.0,
             reports: reports::State::new(tokprof_browse::reports::Reports::detached()),
+            menu_bar: menubar::MenuBar::default(),
         }
     }
 
@@ -478,7 +482,7 @@ fn setup(_: &mut Desk, waker: Waker) {
 
 /// Before every frame: takes in what the background work sent, and asks to be woken when a
 /// listed cache goes cold, when held-back work is due, every second while a warm row counts down
-/// on the screen, and when the status message is due to go.
+/// on the screen or in the menu bar, and when the status message is due to go.
 fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
     // Where the list is scrolled to, unless the list was put in place since and the browser
     // knows better.
@@ -527,6 +531,8 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
         tx.wake_after(Duration::from_secs(view::STATUS_SECS).saturating_sub(s.status.1.elapsed()) + Duration::from_millis(5));
     }
     let reported = reports::poll(s, tx);
+    // The menu bar counts down whether the window shows or not; it draws nothing in the window.
+    menubar::poll(s, now, tx);
     arrived || cooled || counting || turned || reported
 }
 
@@ -849,7 +855,10 @@ fn main() -> Result<()> {
         Ok(chord) => palette.key_equivalent(chord),
         Err(_) => palette,
     };
-    App::new(spec).chrome(CHROME).menu_item(palette).menu_item(settings).init(move || desk).run();
+    let app = App::new(spec).chrome(CHROME).menu_item(palette).menu_item(settings);
+    // The menu bar's picks reach the window through the running app.
+    desk.menu_bar.handle = Some(app.handle());
+    app.init(move || desk).run();
     Ok(())
 }
 

@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Menu bar countdown setting
-The settings panel SHALL offer `Menu bar countdown`, `Off` or `On`, after `Dark theme`, saved in the settings file as `menu_bar` (`off` or `on`). The default is `Off`; a value it does not know is `Off`. With `On`, the window shows a status item in the macOS menu bar at once; with `Off` it removes it at once. A frame without a window never shows the item. Tab reaches the choice after `Dark theme`, and ← → pick it.
+The settings panel SHALL offer `Menu bar countdown`, `Off` or `On`, last, after both theme grids, saved in the settings file as `menu_bar` (`off` or `on`). The default is `Off`; a value it does not know is `Off`. With `On`, the window shows a status item in the macOS menu bar at once; with `Off` it removes it at once. A frame without a window never shows the item. Tab reaches it after the second grid, and ← → pick it.
 
 #### Scenario: Turning it on
 - **WHEN** the user picks `On` in `Menu bar countdown`

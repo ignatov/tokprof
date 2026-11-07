@@ -1888,3 +1888,50 @@ fn reports_desk_with_advice() -> (Desk, reports::Part, String) {
     std::mem::swap(&mut other.reports, &mut desk.reports);
     (other, part, name)
 }
+
+#[test]
+fn the_menu_bar_countdown_is_picked_in_the_settings_and_a_frame_makes_no_item() {
+    let mut rt = runtime(desk_of(3), (1400.0, 900.0));
+    assert!(!rt.state.settings.menu_bar, "off by default");
+    command(&mut rt, ',');
+    // The keyboard starts in the grid of the window's appearance; the other grid, then the menu
+    // bar countdown, last.
+    let part = |rt: &Runtime<Desk>| rt.state.panel.map(|p| p.resolve(rt.state.theme.get().dark()).0);
+    press(&mut rt, RuneKey::Tab);
+    press(&mut rt, RuneKey::Tab);
+    assert_eq!(part(&rt), Some(settings::Part::MenuBar), "after both grids");
+    press(&mut rt, RuneKey::Right);
+    assert!(rt.state.settings.menu_bar, "→ picks On");
+    assert_eq!(rt.state.prefs.get::<String>("menu_bar").as_deref(), Some("on"));
+    assert!(!rt.state.menu_bar.shown(), "a frame without a window makes no item");
+    press(&mut rt, RuneKey::Left);
+    assert!(!rt.state.settings.menu_bar, "← picks Off");
+    click(&mut rt, "menu-bar-on");
+    assert!(rt.state.settings.menu_bar, "a click picks On");
+    press(&mut rt, RuneKey::Tab);
+    assert_eq!(part(&rt), Some(settings::Part::Appearance), "Tab goes round");
+}
+
+#[test]
+fn a_pick_in_the_menu_bar_selects_the_session_in_day_over_no_card() {
+    let mut rt = runtime(desk_of(5), (1400.0, 900.0));
+    rt.update(|s, _| {
+        reports::show(s, reports::Mode::Reports);
+        s.help = true;
+    });
+    settle(&mut rt);
+    rt.update(|s, tx| menubar::pick(s, menubar::Pick::Session("id3".into()), tx));
+    settle(&mut rt);
+    let s = &rt.state;
+    assert_eq!(s.reports.mode, reports::Mode::Day, "Day, where the session's row is");
+    assert_eq!(s.browser.selected().map(|r| s.browser.session(r).to_string()).as_deref(), Some("id3"));
+    assert!(!s.help && s.panel.is_none() && s.palette.is_none(), "no card over it");
+    rt.update(|s, tx| menubar::pick(s, menubar::Pick::Settings, tx));
+    settle(&mut rt);
+    assert!(rt.state.panel.is_some(), "Settings… opens the panel");
+    rt.update(|s, tx| menubar::pick(s, menubar::Pick::Session("gone".into()), tx));
+    settle(&mut rt);
+    assert!(rt.state.panel.is_some(), "a session no longer listed changes nothing");
+    let s = &rt.state;
+    assert_eq!(s.browser.selected().map(|r| s.browser.session(r).to_string()).as_deref(), Some("id3"));
+}
