@@ -272,8 +272,9 @@ pub struct Request {
     pub produced: Option<usize>,
     /// A compaction happened between the previous request of the chain and this one.
     pub compacted_before: bool,
-    /// The previous request ended with an assistant message (Codex miss signature).
-    pub after_assistant_message: bool,
+    /// The request made a compaction, as the agent's log names it: its response is the summary
+    /// that replaced the conversation.
+    pub compaction_call: bool,
     /// An advisor call: it reads the chain's conversation with another model and is not part
     /// of the chain's cache lineage.
     pub advisor: bool,

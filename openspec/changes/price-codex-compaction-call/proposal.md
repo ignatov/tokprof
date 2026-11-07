@@ -13,7 +13,7 @@ tokprof also prices a warm compaction as a cache read of the context: in the X-r
 ## What Changes
 
 - **A new miss cause, `compaction call`.** It names a miss on the request that made a compaction, as the agent's log names that request. In Codex, that is the request whose response id the `compacted` line gives as `compaction_response_id`. It comes right after `compaction` in the order of causes. It is not an expected rebuild: a call that kept the conversation's prefix would have read it from the cache. So it shows in `tokprof misses` and `summary`, in share files and the pool, and in What to change.
-- **The advice hint for it.** When it is the costliest cause, the X-ray's cache miss advice ends with "each compaction wrote the whole context again; start a new session from a handoff before the context fills".
+- **The advice hint for it.** When it is the costliest cause, the X-ray's cache miss advice ends with "each call wrote the whole context again; hand off to a new session before the context fills".
 - **`after assistant message` is removed.** With the decoder fix, it names no miss in the 30 days. The 172 misses it had named were 171 compaction calls and one other miss. A Codex miss that no cause fits is `unknown (server side?)`.
 - **A warm Codex compaction is priced as a write of the whole context.**
   - X-ray: on a warm Codex cache, "/compact before a break (≈ $X now)" is the prompt at the short-lifetime write price plus the 10k-token summary, not the prompt at the read price.

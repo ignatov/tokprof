@@ -625,6 +625,7 @@ A request misses when it re-processes more than 5% and at least 2,000 tokens of 
 Coverage depends on what the logs contain:
 - **Claude Code 2.1.300 and later** logs its requests, so prompts are rebuilt exactly. Older transcripts are attributed at the request level only and show up as `unknown` content.
 - **Codex** prompts are rebuilt from the rollouts. The system prompt comes from `session_meta`, and every `response_item` is one conversation item: messages, reasoning, tool calls and their output, and `additional_tools`. A compaction swaps in its `replacement_history`.
+  - The compaction call is the request that a `compacted` line names in `compaction_response_id`. Codex sends it without the conversation's tools, so it reads nothing from the cache, and its misses get the cause `compaction call`.
   - Images count as a fixed size.
   - Tool schemas other than `additional_tools` are not logged.
   - `world_state` repeats the messages, so it is not counted.

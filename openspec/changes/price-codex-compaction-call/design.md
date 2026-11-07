@@ -66,7 +66,7 @@ It pays the write price of the conversation's cache lifetime, as the cold /compa
 
 ### 6. The hint lives in `miss_hint`
 
-The new text, "each compaction wrote the whole context again; start a new session from a handoff before the context fills", goes in `miss_hint`. The X-ray's cache miss advice and What to change (`savings.rs`) both show it.
+The new text, "each call wrote the whole context again; hand off to a new session before the context fills", goes in `miss_hint`. The X-ray's cache miss advice and What to change (`savings.rs`) both show it. It names the call, not the compaction, so that the advice item keeps within the two lines of 82 characters that the X-ray's fixed texts keep to, even for $2,500 of 999 calls.
 
 ### 7. The reference run is refreshed in this change
 

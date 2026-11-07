@@ -4,7 +4,7 @@ Every group ends with `cargo test --workspace` green, in a state that can be com
 
 ## 1. Before starting
 
-- [ ] 1.1 Record the baseline in the results table at the end of this file, with a release build of main at 5824258 or later:
+- [x] 1.1 Record the baseline in the results table at the end of this file, with a release build of main at 5824258 or later:
   - `tokprof --agent codex --since 30d misses` and `tokprof --agent claude --since 30d misses`, the cause tables;
   - the total avoidable of `tokprof --since 30d summary`;
   - the tables and savings lines of `tokprof --agent codex --since 30d bench` and of `tokprof --agent claude --since 30d bench`;
@@ -14,13 +14,13 @@ Every group ends with `cargo test --workspace` green, in a state that can be com
 
 ## 2. The compaction call in the Codex source
 
-- [ ] 2.1 On a `compacted` line with `compaction_response_id`, mark the stream-0 request whose `response_id` matches as a compaction call. Verify: decoder unit tests for "A Codex compaction call" and "An id no usage line has": no id, and an id that no usage line has.
-- [ ] 2.2 In `sources/codex/README.md`, name `compacted.compaction_response_id` and the versions: matched in 0.153–0.159, missing in 0.152, and earlier rollouts with `token_count` only. Also say that the compaction calls seen are local and sent without the conversation's tools, so they read nothing from the cache. Verify: the README has the field, the versions and the reason.
+- [x] 2.1 On a `compacted` line with `compaction_response_id`, mark the stream-0 request whose `response_id` matches as a compaction call. Verify: decoder unit tests for "A Codex compaction call" and "An id no usage line has": no id, and an id that no usage line has.
+- [x] 2.2 In `sources/codex/README.md`, name `compacted.compaction_response_id` and the versions: matched in 0.153–0.159, missing in 0.152, and earlier rollouts with `token_count` only. Also say that the compaction calls seen are local and sent without the conversation's tools, so they read nothing from the cache. Verify: the README has the field, the versions and the reason.
 
 ## 3. The cause
 
-- [ ] 3.1 Add the cause `compaction call` after `compaction`, outside the expected rebuilds. Remove `after assistant message`, the request field behind it, the decoder's `ended_with_message`, and the decoder test added in 5824258. Verify: unit tests next to the cause rules for "A Codex compaction call", "The request after the compaction", "A compaction call after a break" and "A Codex miss after an answer"; `ended_with_text` still gives the `continuation` trigger in its existing tests.
-- [ ] 3.2 Give `compaction call` the hint "each compaction wrote the whole context again; start a new session from a handoff before the context fills". Verify: a unit test of the cache miss advice with the spec's "Compaction calls" line; a What to change test where a `compaction call` row gets the hint as a sentence; "Hints by cause" gives "the logs do not show the cause" for `unknown (server side?)`.
+- [x] 3.1 Add the cause `compaction call` after `compaction`, outside the expected rebuilds. Remove `after assistant message`, the request field behind it, the decoder's `ended_with_message`, and the decoder test added in 5824258. Verify: unit tests next to the cause rules for "A Codex compaction call", "The request after the compaction", "A compaction call after a break" and "A Codex miss after an answer"; `ended_with_text` still gives the `continuation` trigger in its existing tests.
+- [x] 3.2 Give `compaction call` the hint "each call wrote the whole context again; hand off to a new session before the context fills". Verify: a unit test of the cache miss advice with the spec's "Compaction calls" line; a What to change test where a `compaction call` row gets the hint as a sentence; "Hints by cause" gives "the logs do not show the cause" for `unknown (server side?)`.
 
 ## 4. A warm compaction that writes the context
 
@@ -62,5 +62,15 @@ Every group ends with `cargo test --workspace` green, in a state that can be com
 
 ## Results
 
+The baseline was taken on 2026-11-07 at 14:00 with a release build of 8b1f183. The after column is filled as the checks run.
+
 | check | baseline | after |
 |---|---|---|
+| Codex misses, 30d | unknown (server side?) 174, 38.9M, $265; idle > TTL 49, 4.4M, $29.12; params changed 3, 406.8k, $0.98; model switch 3, 209.5k, $0.77 | |
+| Claude Code misses, 30d | idle > TTL 230, 99.0M, $773; history edited 66, 29.2M, $228; images removed 8, 3.6M, $28.22; unknown (server side?) 5, 972.8k, $7.93; tools changed 1, 49.9k, $0.39 | |
+| summary, 30d | avoidable on cache misses $1,333 (11.3%) of $11,842 | |
+| Codex bench, 30d: table | 16 returns, median 180.5k. resume as is $1.43, $3.40, $4.08, $65.31; /compact first $1.88, $2.55, $2.87, $45.85; handoff note $0.61, $1.28, $1.59, $25.44; heartbeats, then resume $2.05, $4.03, $4.71, $75.31; heartbeats, then compaction $1.52, $2.61, $3.22, $51.46 | |
+| Codex bench, 30d: heartbeats then compaction | kept 8 of 16 warm and compacted 8, for $21.40 of pings and compactions, saved $13.85 of $65.31 (21%); breaks that were not returns: another 122 pings and 8 compactions for $9.16, then it saves $4.69 (7%) | |
+| Codex bench, 30d: /compact first | cheaper than resuming from request 3 on ($19.46 over all) | |
+| Claude Code bench, 30d | 206 returns, median 480.3k. resume as is $3.85, $4.94, $8.11, $1,672; /compact first $4.39, $4.85, $6.29, $1,295; handoff note $0.73, $1.18, $2.62, $540; heartbeats, then resume $2.01, $3.10, $6.28, $1,294; heartbeats, then compaction $0.79, $1.62, $4.06, $836; it saved $836 of $1,672 (50%), and $693 (41%) with the other breaks | |
+| summary over all logs, 3 runs | 49.3 s, 35.6 s, 26.1 s: median 35.6 s, with a load average of 27 from other work on the machine | |

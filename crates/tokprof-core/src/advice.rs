@@ -310,6 +310,8 @@ pub fn advise(i: &Inputs) -> Vec<Advice> {
 pub const LOOKUP_HINT: &str = "Batch independent reads, or explore in a subagent.";
 /// What to do about thinking, as the thinking advice says it.
 pub const THINKING_HINT: &str = "use a lower effort for routine steps";
+/// What to do about compaction calls that read nothing from the cache.
+const COMPACTION_CALL_HINT: &str = "each call wrote the whole context again; hand off to a new session before the context fills";
 
 /// What to do about the misses of a cause, as the cache-miss advice says it.
 pub fn miss_hint(cause: Cause) -> &'static str {
@@ -322,7 +324,8 @@ pub fn miss_hint(cause: Cause) -> &'static str {
         }
         Cause::Lookback => "one step added more than 20 content blocks, past the cache lookback window",
         Cause::Compaction => "compaction rebuilds the cache by design",
-        Cause::AfterAssistantMessage | Cause::Unknown => "the logs do not show the cause",
+        Cause::CompactionCall => COMPACTION_CALL_HINT,
+        Cause::Unknown => "the logs do not show the cause",
     }
 }
 
@@ -718,7 +721,7 @@ mod tests {
             (Cause::ImagesRemoved, rewritten),
             (Cause::ThinkingDropped, rewritten),
             (Cause::Lookback, "one step added more than 20 content blocks, past the cache lookback window"),
-            (Cause::AfterAssistantMessage, unknown),
+            (Cause::CompactionCall, COMPACTION_CALL_HINT),
             (Cause::Unknown, unknown),
         ];
         let (s, live) = session(&[(BlockKind::System, None, 10_000.0, 0)], 1);
@@ -731,5 +734,22 @@ mod tests {
             i.misses = vec![(Cause::IdleTtl, 2, 3.09)];
         });
         assert!(small.is_empty(), "{small:#?}");
+    }
+
+    #[test]
+    fn compaction_calls_get_their_hint_in_two_lines() {
+        let (mut s, live) = session(&[(BlockKind::System, None, 10_000.0, 0)], 1);
+        s.agent = crate::testing::codex();
+        let lines = advice(&s, &live, &cold_cache(None), |i| i.misses = vec![(Cause::IdleTtl, 3, 2.1), (Cause::CompactionCall, 162, 247.9)]);
+        assert_eq!(
+            lines,
+            [
+                "Cache misses could have saved $250, mostly compaction call (162×): each call wrote the whole context again; hand off to a new session before the context fills."
+            ]
+        );
+        // The largest sums and counts still fit the two lines `advice` checks.
+        for (n, usd) in [(999, 2_500.0), (9, 12.34)] {
+            advice(&s, &live, &cold_cache(None), |i| i.misses = vec![(Cause::CompactionCall, n, usd)]);
+        }
     }
 }

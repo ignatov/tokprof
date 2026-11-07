@@ -327,6 +327,21 @@ mod tests {
     }
 
     #[test]
+    fn a_compaction_call_row_gets_its_hint_as_a_sentence() {
+        let codex = |min: i64, write: u64| Request {
+            api: crate::api::ApiId::OpenAi,
+            model: "gpt-6-astra".into(),
+            usage: Usage { write_short: write, output: 5_900, ..Usage::default() },
+            ..req(min, 0, 0, Trigger::Prompt, None)
+        };
+        let mut s = session("c", vec![codex(0, 242_713), Request { compaction_call: true, ..codex(1, 232_687) }]);
+        s.agent = crate::testing::codex();
+        let ch = changes_of(&[s]);
+        assert_eq!(ch.hint("compaction call"), Some("Each call wrote the whole context again; hand off to a new session before the context fills."));
+        assert_eq!(ch.sessions_of("compaction call").map(|l| l[0].session.as_str()), Some("c"));
+    }
+
+    #[test]
     fn the_ways_back_name_the_cold_return_and_the_cheapest() {
         let ch = changes_of(&sessions());
         assert_eq!(ch.returns, 1);

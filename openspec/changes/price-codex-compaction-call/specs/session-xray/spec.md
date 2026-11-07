@@ -49,7 +49,7 @@ When the unexpected cache misses of the session, subagents included, have an avo
 
 #### Scenario: Compaction calls
 - **WHEN** 162 compaction calls of a Codex session cost $250 that could have been avoided, more than any other cause
-- **THEN** the item reads "Cache misses could have saved $250, mostly compaction call (162×): each compaction wrote the whole context again; start a new session from a handoff before the context fills."
+- **THEN** the item reads "Cache misses could have saved $250, mostly compaction call (162×): each call wrote the whole context again; hand off to a new session before the context fills."
 
 #### Scenario: Small misses
 - **WHEN** the unexpected misses could have saved $3.09 of a $107 session

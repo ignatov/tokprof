@@ -10,13 +10,14 @@ use crate::model::{BlockKind, CompactionTrigger, Params, Request, Session, Usage
 
 const MIN_MISS_TOKENS: u64 = 2_000;
 const MIN_MISS_SHARE: f64 = 0.05;
-/// The API looks back at most 20 blocks from a cache breakpoint for an earlier entry.
 
+/// Why a request missed the cache.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum Cause {
     ModelSwitch,
     Compaction,
+    CompactionCall,
     ToolResultsCleared,
     IdleTtl,
     ParamsChanged,
@@ -27,7 +28,6 @@ pub enum Cause {
     ThinkingDropped,
     HistoryEdited,
     Lookback,
-    AfterAssistantMessage,
     Unknown,
 }
 
@@ -35,6 +35,7 @@ impl Cause {
     pub const ALL: [Cause; 14] = [
         Cause::ModelSwitch,
         Cause::Compaction,
+        Cause::CompactionCall,
         Cause::ToolResultsCleared,
         Cause::IdleTtl,
         Cause::ParamsChanged,
@@ -45,7 +46,6 @@ impl Cause {
         Cause::ThinkingDropped,
         Cause::HistoryEdited,
         Cause::Lookback,
-        Cause::AfterAssistantMessage,
         Cause::Unknown,
     ];
 
@@ -53,6 +53,7 @@ impl Cause {
         match self {
             Cause::ModelSwitch => "model switch",
             Cause::Compaction => "compaction",
+            Cause::CompactionCall => "compaction call",
             Cause::ToolResultsCleared => "tool results cleared",
             Cause::IdleTtl => "idle > TTL",
             Cause::ParamsChanged => "params changed",
@@ -63,7 +64,6 @@ impl Cause {
             Cause::ThinkingDropped => "thinking dropped",
             Cause::HistoryEdited => "history edited",
             Cause::Lookback => "lookback > 20 blocks",
-            Cause::AfterAssistantMessage => "after assistant message",
             Cause::Unknown => "unknown (server side?)",
         }
     }
@@ -131,6 +131,11 @@ fn classify(s: &Session, prev: &Prev, req: &Request, shape: Option<usize>, edit:
         };
         return (Cause::Compaction, detail);
     }
+    // The call sends the history the previous request cached, so it would have missed on a warm
+    // cache too.
+    if req.compaction_call {
+        return (Cause::CompactionCall, String::new());
+    }
     if let Some((ttl_ms, ttl_name)) = req.api.ttl(prev.long_ttl)
         && gap_s > ttl_ms as f64 / 1000.0
     {
@@ -163,9 +168,6 @@ fn classify(s: &Session, prev: &Prev, req: &Request, shape: Option<usize>, edit:
     }
     if req.api.rules().and_then(|r| r.lookback_blocks).is_some_and(|n| tail_blocks > n) {
         return (Cause::Lookback, format!("{tail_blocks} blocks appended"));
-    }
-    if req.after_assistant_message {
-        return (Cause::AfterAssistantMessage, String::new());
     }
     (Cause::Unknown, String::new())
 }
@@ -234,5 +236,53 @@ mod tests {
         s.compactions.push(Compaction { ts_ms: -1, kind: CompactionTrigger::Idle });
         let v = judge(&s, &prev(), &after_compaction(), None, None, 0).expect("a miss");
         assert_eq!((v.cause, v.detail.as_str()), (Cause::Compaction, ""));
+    }
+
+    /// The Codex request before a compaction call: a 242,713-token prompt it cached.
+    fn codex_prev(ts_ms: i64) -> Prev {
+        Prev { prompt: 242_713, ts_ms, model: "gpt-6-astra".into(), long_ttl: false, params: None, version: None, shape: None }
+    }
+
+    /// A Codex request at `ts_ms` that sends `sent` tokens and reads `read` of them from the cache.
+    fn codex_request(ts_ms: i64, sent: u64, read: u64) -> Request {
+        Request {
+            ts_ms,
+            api: crate::api::ApiId::OpenAi,
+            model: "gpt-6-astra".into(),
+            usage: Usage { cache_read: read, write_short: sent - read, output: 5_900, ..Usage::default() },
+            ..Request::default()
+        }
+    }
+
+    fn codex_verdict(prev: &Prev, req: &Request) -> Option<(u64, Cause)> {
+        let s = Session::new(crate::testing::codex(), "s".into());
+        judge(&s, prev, req, None, None, 0).map(|v| (v.rewritten, v.cause))
+    }
+
+    #[test]
+    fn a_codex_compaction_call_is_its_own_unexpected_miss() {
+        let call = Request { compaction_call: true, ..codex_request(60_000, 232_687, 0) };
+        assert_eq!(codex_verdict(&codex_prev(0), &call), Some((232_687, Cause::CompactionCall)));
+        assert!(!Cause::CompactionCall.expected());
+        assert_eq!(Cause::CompactionCall.name(), "compaction call");
+        // The request after the compaction reads the tools and instructions from the cache.
+        let after = Request { compacted_before: true, ..codex_request(120_000, 30_311, 17_200) };
+        let prev = Prev { prompt: 232_687, ..codex_prev(60_000) };
+        assert_eq!(codex_verdict(&prev, &after), Some((13_111, Cause::Compaction)));
+    }
+
+    #[test]
+    fn a_compaction_call_after_a_break_is_still_a_compaction_call() {
+        let call = Request { compaction_call: true, ..codex_request(2 * 3_600_000, 232_687, 0) };
+        assert_eq!(codex_verdict(&codex_prev(0), &call).map(|v| v.1), Some(Cause::CompactionCall));
+        let resumed = codex_request(2 * 3_600_000, 242_713, 0);
+        assert!(matches!(codex_verdict(&codex_prev(0), &resumed), Some((_, Cause::IdleTtl))), "without the mark it is the break");
+    }
+
+    #[test]
+    fn a_codex_miss_after_an_answer_has_no_cause() {
+        // A response that ended with an assistant message, then a request a minute later that
+        // misses with nothing else to explain it.
+        assert_eq!(codex_verdict(&codex_prev(0), &codex_request(60_000, 245_000, 0)), Some((242_713, Cause::Unknown)));
     }
 }
