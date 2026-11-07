@@ -398,12 +398,24 @@ pub fn fill(tint: Tint, p: &Pal) -> Color {
     p.bar.mix(c.alpha(1.0), share)
 }
 
-/// The line under the graph about frame `i`: its path, its value, its share of the session and
+/// A legend's swatch: a frame's fill, where it shows; on a dark theme, where the frames sit
+/// deep in the group, the color at 60%, so that a small square still shows it.
+fn swatch(tint: Tint, p: &Pal) -> Color {
+    if p.bar.luminance() < 0.3 { p.bar.mix(color(tint, p).0.alpha(1.0), 0.6) } else { fill(tint, p) }
+}
+
+/// The line under the graph about frame `i` while `root` is shown: its path under the root (the
+/// breadcrumb above the graph has the path to the root), its value, its share of the session and
 /// of its parent.
-pub fn describe(tree: &Tree, i: usize) -> String {
+pub fn describe(tree: &Tree, root: usize, i: usize) -> String {
     let n = &tree.nodes[i];
     let share = |of: i64| 100.0 * n.value as f64 / of.max(1) as f64;
-    let mut out = format!("{} · {} · {:.1}% of the session", tree.names(i), tree.amount(n.value), share(tree.total()));
+    let line = tree.line(i);
+    let below: Vec<&str> = match line.iter().position(|&x| x == root) {
+        Some(at) if at + 1 < line.len() => line[at + 1..].iter().map(|&x| tree.nodes[x].name.as_str()).collect(),
+        _ => vec![n.name.as_str()],
+    };
+    let mut out = format!("{} · {} · {:.1}% of the session", below.join(" › "), tree.amount(n.value), share(tree.total()));
     if let Some(parent) = n.parent.filter(|&p| p != 0) {
         out += &format!(" · {:.1}% of {}", share(tree.nodes[parent].value), tree.nodes[parent].name);
     }
@@ -448,7 +460,17 @@ pub fn tab(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal) -> Vec<El> {
         .w_full()
         .gap(12.0)
         .center_y()
-        .child(text(describe(&tree, shown)).key("flame-line").font(pal::SMALL_NUM).color(p.ink2).single_line().truncate().shrink().min_w(0.0).selectable(true))
+        .child(
+            text(describe(&tree, root, shown))
+                .key("flame-line")
+                .font(pal::SMALL_NUM)
+                .color(p.ink2)
+                .single_line()
+                .truncate()
+                .shrink()
+                .min_w(0.0)
+                .selectable(true),
+        )
         .child(spacer().grow(1.0))
         .child(text(hidden_note(hidden)).key("flame-hidden").font(pal::SMALL).color(p.ink3).single_line());
     vec![crumbs(&tree, root, p), col().w_full().gap(8.0).child(group).child(info).child(legend(p))]
@@ -554,7 +576,7 @@ fn legend(p: &Pal) -> El {
     ];
     let mut out = row().key("flame-legend").w_full().flex_wrap().gaps(6.0, 10.0).center_y();
     for (name, tint) in kinds {
-        let swatch = el().w(10.0).h(10.0).radius(R_MARK).fill(fill(tint, p));
+        let swatch = el().w(10.0).h(10.0).radius(R_MARK).fill(swatch(tint, p));
         out = out.child(row().gap(5.0).center_y().child(swatch).child(text(name).font(pal::SMALL).color(p.ink3).single_line()));
     }
     let keys = row()
@@ -608,8 +630,9 @@ mod tests {
         assert_eq!(t.nodes[0].size, t.nodes.len());
         assert_eq!(t.names(t.nodes[main].children[0]), "claude › ~/p › ab12 › main › turn 2");
         assert_eq!(t.find(&t.path(t.nodes[main].children[1])), Some(t.nodes[main].children[1]));
-        let d = describe(&t, t.nodes[main].children[0]);
-        assert_eq!(d, "claude › ~/p › ab12 › main › turn 2 · $2.00 · 50.0% of the session · 66.7% of main");
+        let d = describe(&t, 0, t.nodes[main].children[0]);
+        assert_eq!(d, "main › turn 2 · $2.00 · 50.0% of the session · 66.7% of main", "the path under the shown root");
+        assert_eq!(describe(&t, main, main), "main · $3.00 · 75.0% of the session", "the root by its name");
     }
 
     #[test]

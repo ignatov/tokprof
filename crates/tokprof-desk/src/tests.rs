@@ -400,7 +400,8 @@ fn the_bar_names_the_day_and_its_buttons_step_it() {
 #[test]
 fn the_list_title_counts_the_sessions_and_the_sorts_switch() {
     let mut rt = runtime(desk_of(30), (1400.0, 900.0));
-    assert_eq!(text_in(&rt, "list-head", "list-title"), "30 sessions, $0.00, costing 30");
+    assert_eq!(text_in(&rt, "list-head", "list-title"), "30 sessions, $0.00");
+    assert_eq!(text_in(&rt, "list-head", "list-costing"), "costing 30", "and, quieter, the sessions being costed");
     assert!(texts(&rt).iter().any(|t| t == "Thu 1 Jan 1970"), "a separator names the day: {:?}", &texts(&rt)[..20]);
     click(&mut rt, "sort-Cost");
     settle(&mut rt);
@@ -694,8 +695,23 @@ fn command_comma_opens_the_settings_and_keys_stay_with_them() {
     typed(&mut rt, "qj");
     assert_eq!(rt.shell_request, None, "q does not quit behind the panel");
     assert_eq!(rt.state.browser.selected(), selected, "j does not move the list");
+    // The window is dark: the keyboard starts in Dark theme, which comes right after Appearance.
+    assert_eq!(rt.state.panel.unwrap().resolve(true), (settings::Part::Dark, true));
+    assert!(rt.presented("part-dark").unwrap().0[1] < rt.presented("part-light").unwrap().0[1], "the dark grid above the light one");
+    let dark: Vec<&str> = themes::of(true).map(|t| t.id.as_str()).collect();
+    // `j` went a row down in the grid; → goes to the card after that one.
+    let at = dark.iter().position(|&id| id == rt.state.settings.dark_theme).unwrap();
+    assert_eq!(at, dark.iter().position(|&id| id == themes::DEFAULT_DARK).unwrap() + settings::COLUMNS, "j is the grid's ↓");
+    press(&mut rt, RuneKey::Right);
+    let after = dark[at + 1];
+    assert_eq!(rt.state.settings.dark_theme, after, "→ in Dark theme picks the next dark theme");
+    press(&mut rt, RuneKey::End);
+    assert_eq!(rt.state.settings.dark_theme, *dark.last().unwrap());
+    shift_tab(&mut rt);
     press(&mut rt, RuneKey::Right);
     assert_eq!(rt.state.settings.appearance, settings::Appearance::Light, "→ from As in system picks Light");
+    assert!(rt.presented("part-dark").unwrap().0[1] < rt.presented("part-light").unwrap().0[1], "the grids stay where they were");
+    press(&mut rt, RuneKey::Tab);
     press(&mut rt, RuneKey::Tab);
     let light: Vec<&str> = themes::of(false).map(|t| t.id.as_str()).collect();
     press(&mut rt, RuneKey::Home);
@@ -705,13 +721,6 @@ fn command_comma_opens_the_settings_and_keys_stay_with_them() {
     press(&mut rt, RuneKey::Up);
     press(&mut rt, RuneKey::Up);
     assert_eq!(rt.state.settings.light_theme, light[0], "↑ on the first row stays");
-    press(&mut rt, RuneKey::Tab);
-    press(&mut rt, RuneKey::Right);
-    let dark: Vec<&str> = themes::of(true).map(|t| t.id.as_str()).collect();
-    let after = dark[dark.iter().position(|&id| id == themes::DEFAULT_DARK).unwrap() + 1];
-    assert_eq!(rt.state.settings.dark_theme, after, "→ in Dark theme picks the next dark theme");
-    press(&mut rt, RuneKey::End);
-    assert_eq!(rt.state.settings.dark_theme, *dark.last().unwrap());
     press(&mut rt, RuneKey::Escape);
     assert!(rt.state.panel.is_none() && rt.presented("settings").is_none(), "esc closes it");
     assert_eq!(rt.state.browser.selected(), selected);
@@ -1177,16 +1186,16 @@ fn the_flame_tab_draws_the_stacks_tokprof_flame_writes() {
     }
     let hidden = flame::layout(&tree, 0, graph[2]).1;
     assert_eq!(text_in(&rt, "flame-info", "flame-hidden"), flame::hidden_note(hidden));
-    assert_eq!(text_in(&rt, "flame-info", "flame-line"), flame::describe(&tree, 0), "the line names the cursor's frame");
+    assert_eq!(text_in(&rt, "flame-info", "flame-line"), flame::describe(&tree, 0, 0), "the line names the cursor's frame");
     // The pointer on a frame names it in the line, instead of the cursor's.
     let main = tree.nodes[0].children[0];
     let (mx, my) = rt.find(&format!("frame-{main}")).unwrap();
     rt.pointer_move(mx, my);
     settle(&mut rt);
-    assert_eq!(text_in(&rt, "flame-info", "flame-line"), flame::describe(&tree, main));
+    assert_eq!(text_in(&rt, "flame-info", "flame-line"), flame::describe(&tree, 0, main));
     rt.pointer_move(1.0, 1.0);
     settle(&mut rt);
-    assert_eq!(text_in(&rt, "flame-info", "flame-line"), flame::describe(&tree, 0), "and the cursor's again once it leaves");
+    assert_eq!(text_in(&rt, "flame-info", "flame-line"), flame::describe(&tree, 0, 0), "and the cursor's again once it leaves");
     // The tree is built once per X-ray.
     press(&mut rt, RuneKey::Down);
     assert!(Rc::ptr_eq(&tree, &rt.state.flame_tree().unwrap()));
@@ -1217,7 +1226,7 @@ fn flame_zooms_by_click_and_enter_and_out_by_crumb_and_esc() {
     press(&mut rt, RuneKey::Right);
     let second = tree.nodes[0].children[1];
     assert_eq!(rt.state.flame.cursor, tree.path(second));
-    assert_eq!(text_in(&rt, "flame-info", "flame-line"), flame::describe(&tree, second));
+    assert_eq!(text_in(&rt, "flame-info", "flame-line"), flame::describe(&tree, 0, second));
     press(&mut rt, RuneKey::Right);
     assert_eq!(rt.state.flame.cursor, tree.path(*tree.nodes[0].children.get(2).unwrap_or(&second)), "the last drawn sibling stays");
     press(&mut rt, RuneKey::Left);
@@ -1668,8 +1677,10 @@ fn dark_themes_lower_the_large_marks_and_keep_the_text_colors() {
     let t = crate::themes::find("neon-arcade").expect("neon-arcade");
     let p = pal::pal(t);
     assert_eq!(p.warm, t.color("success"), "text in the green stays as the theme has it");
-    assert_eq!(p.work, t.color("canvas").mix(t.color("success"), pal::DARK_FILL), "work's bars sit into the background");
-    assert_eq!(p.read, t.color("canvas").mix(t.color("info"), pal::DARK_FILL));
+    assert_eq!(p.work, pal::mix_srgb(t.color("canvas"), t.color("success"), pal::DARK_FILL), "work's bars sit into the background");
+    assert_eq!(p.read, pal::mix_srgb(t.color("canvas"), t.color("info"), pal::DARK_FILL));
+    let half = pal::mix_srgb(rune::Color::BLACK, rune::Color::WHITE, 0.5);
+    assert!((rune::color::srgb_encode(half.r) - 0.5).abs() < 1e-4, "half way to the eye");
     let light = pal::pal(crate::themes::default(false));
     assert_eq!(light.work, crate::themes::default(false).color("success"), "light themes keep their marks");
 }

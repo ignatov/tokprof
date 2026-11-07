@@ -67,10 +67,10 @@ pub fn pal(t: &Theme) -> Pal {
     let dark = t.dark();
     let (wait, you, tail) = if dark { (0.45, 0.35, 0.3) } else { (0.3, 0.22, 0.25) };
     let on_accent = c("accentOnSolid");
-    // On a dark theme, the large filled marks (work, requests, the parts of the spend) sit a fifth
+    // On a dark theme, the large filled marks (work, requests, the parts of the spend) sit 40%
     // of the way into the background, so they do not glare; their text colors stay. The mix is in
-    // linear light, where 0.58 of a color reads as about 0.78 of it.
-    let fill = |role: &str| if dark { c("canvas").mix(c(role), DARK_FILL) } else { c(role) };
+    // sRGB, as the eye sees it.
+    let fill = |role: &str| if dark { mix_srgb(c("canvas"), c(role), DARK_FILL) } else { c(role) };
     Pal {
         bg: c("canvas"),
         bar: c("surfaceSubtle"),
@@ -111,8 +111,16 @@ pub fn pal(t: &Theme) -> Pal {
     }
 }
 
-/// How much of its color a large filled mark keeps over a dark theme's background, in linear light.
-pub const DARK_FILL: f32 = 0.58;
+/// How much of its color a large filled mark keeps over a dark theme's background, in sRGB.
+pub const DARK_FILL: f32 = 0.6;
+
+/// `t` of the way from `a` to `b` in sRGB, where a share of the way reads as that share to the
+/// eye; Rune's own mix is in linear light.
+pub fn mix_srgb(a: Color, b: Color, t: f32) -> Color {
+    use rune::color::{srgb_decode, srgb_encode};
+    let m = |x: f32, y: f32| srgb_decode(srgb_encode(x) + (srgb_encode(y) - srgb_encode(x)) * t);
+    Color { r: m(a.r, b.r), g: m(a.g, b.g), b: m(a.b, b.b), a: a.a + (b.a - a.a) * t }
+}
 
 /// Tabular figures, so that numbers in a column line up.
 const TNUM: &str = "'tnum' 1";

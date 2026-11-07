@@ -311,17 +311,19 @@ fn list_pane(s: &Desk, p: &Pal) -> El {
     let (total, pending) = b.known_total();
     let n = b.len() as u64;
     let none = n == 0 && !b.filter().is_empty();
-    let mut title = format!("{} {}, {}", tokprof_core::fmt::int(n), if n == 1 { "session" } else { "sessions" }, usd(total));
-    if pending > 0 {
-        title += &format!(", costing {pending}");
-    }
+    let title = format!("{} {}, {}", tokprof_core::fmt::int(n), if n == 1 { "session" } else { "sessions" }, usd(total));
+    // The sessions still being costed, quieter, after the title while there are any.
+    let costing = (pending > 0)
+        .then(|| text(format!("costing {pending}")).key("list-costing").font(pal::SMALL).color(p.ink3).single_line().truncate().shrink().min_w(0.0));
+    // The title keeps its room; the costing count gives way first.
+    let title_w = pal::text_w(&title, pal::SMALL_STRONG).min(LIST_WIDTH * 0.5);
     let sorts = Sort::ALL.iter().map(|&sort| {
         let label = match sort {
             Sort::Time => "Time",
             Sort::Cost => "Cost",
             Sort::Next => "Next",
         };
-        segment(format!("sort-{label}"), label, b.sort_order() == sort, p).on_press(move |s: &mut Desk| s.browser.sort_by(sort))
+        segment(format!("sort-{label}"), label, b.sort_order() == sort, p).px(9.0).on_press(move |s: &mut Desk| s.browser.sort_by(sort))
     });
     let head = row()
         .key("list-head")
@@ -337,9 +339,10 @@ fn list_pane(s: &Desk, p: &Pal) -> El {
                 .color(if list_has_keys(s) { p.accent } else { p.ink2 })
                 .single_line()
                 .truncate()
-                .grow(1.0)
-                .min_w(0.0),
+                .min_w(title_w),
         )
+        .children(costing)
+        .child(spacer().grow(1.0))
         .child(segments("sort", sorts.collect(), p.bar));
     col()
         .key("list-pane")

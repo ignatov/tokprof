@@ -149,12 +149,14 @@ pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
     // The chosen tab is a pill; while the inspector has the keyboard and its tab has no rows for a
     // cursor, the ring marks it instead.
     let ring_tab = keyboard(s) && s.tab_rows.get() == 0 && s.tab != Tab::Flame;
-    let tabs = row().key("tabs").w_full().h(44.0).px(10.0).gap(1.0).center_y().children(Tab::ALL.into_iter().map(|t| {
+    let (pad, digits) = tab_fit(pane_w, keyboard(s));
+    let tabs = row().key("tabs").w_full().h(44.0).px(10.0).gap(1.0).center_y().children(Tab::ALL.into_iter().enumerate().map(|(i, t)| {
         let on = s.tab == t;
         let tab = row()
             .key(format!("tab-{}", t.name()))
             .h(28.0)
-            .px(8.0)
+            .px(pad)
+            .gap(5.0)
             .center_y()
             .radius(PILL)
             .fill(if on { p.sel } else { Color::TRANSPARENT })
@@ -166,7 +168,8 @@ pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
                 s.show_tab(t, tx);
                 s.pane = crate::Focus::Inspector;
             })
-            .child(text(t.name()).font(pal::HEAD).color(if on { if keyboard(s) { p.accent } else { p.ink } } else { p.ink2 }).single_line());
+            .child(text(t.name()).font(pal::HEAD).color(if on { if keyboard(s) { p.accent } else { p.ink } } else { p.ink2 }).single_line())
+            .children(digits.then(|| overlay::keycap_on(&((i + 1) % 10).to_string(), p.panel, p).key("tab-digit")));
         overlay::ring(tab, on && ring_tab, p)
     }));
     let offset = s.pane_offset.clone();
@@ -186,6 +189,20 @@ fn note(s: impl Into<String>, p: &Pal) -> El {
     text(s.into()).w_full().wrap().font(pal::BODY).color(p.ink2).selectable(true)
 }
 
+/// The padding of the inspector's tabs in a pane `pane_w` wide, so that all ten stay on one line,
+/// and whether the digits that pick them show as keycaps: while the inspector has the keyboard,
+/// where they fit.
+pub fn tab_fit(pane_w: f32, keyboard: bool) -> (f32, bool) {
+    let labels: f32 = Tab::ALL.iter().map(|t| pal::text_w(t.name(), pal::HEAD)).sum();
+    // The row's padding and the gaps between the tabs, and some slack for the estimate.
+    let room = pane_w - 20.0 - 9.0 - 24.0 - labels;
+    let digits_w = 10.0 * (20.0 + 5.0);
+    if keyboard && room - digits_w >= 2.0 * 10.0 * 8.0 {
+        return (8.0, true);
+    }
+    ((room / 20.0).floor().clamp(3.0, 8.0), false)
+}
+
 /// A card: its title and a note at its right over a soft group, as Reports draws its cards.
 fn boxed(key: &str, title: &str, aside: Option<String>, body: El, p: &Pal) -> El {
     let mut head = row().w_full().gap(8.0).center_y().child(text(title.to_string()).font(pal::HEAD).color(p.ink2).single_line());
@@ -200,22 +217,23 @@ fn boxed(key: &str, title: &str, aside: Option<String>, body: El, p: &Pal) -> El
 /// and a note.
 pub(crate) fn bar_rows(rows: &[(String, f64, String, String)], color: Color, p: &Pal) -> El {
     let max = rows.iter().map(|r| r.1).fold(0.0, f64::max).max(1e-9);
-    // Every row keeps the note's room when one has a note, so that the bars share one track and
-    // their lengths compare.
-    let notes = rows.iter().any(|r| !r.3.is_empty());
+    // A note goes under its label, so that every bar has the same track and the numbers end at
+    // the card's edge.
     col().w_full().gap(4.0).children(rows.iter().enumerate().map(|(i, (label, share, value, note))| {
-        let mut line = row()
+        let mut head = col().w(190.0).gap(1.0).child(text(label.clone()).font(pal::BODY).color(p.ink).single_line().truncate().w(190.0));
+        if !note.is_empty() {
+            head = head.child(text(note.clone()).key("note").font(pal::SMALL).color(p.ink3).single_line().truncate().w(190.0));
+        }
+        let line = row()
             .w_full()
-            .h(20.0)
+            .min_h(20.0)
+            .py(if note.is_empty() { 0.0 } else { 2.0 })
             .gap(10.0)
             .center_y()
-            .child(text(label.clone()).font(pal::BODY).color(p.ink).single_line().truncate().w(190.0))
+            .child(head)
             .child(crate::overlay::meter(share / max, color, p, 6.0).key(format!("bar-{i}")))
             .child(row().w(50.0).justify_end().child(text(format!("{:.1}%", 100.0 * share)).font(pal::BODY_NUM).color(p.ink2).single_line()))
             .child(row().w(64.0).justify_end().child(text(value.clone()).font(pal::STRONG_NUM).color(p.ink).single_line()));
-        if notes {
-            line = line.child(text(note.clone()).font(pal::SMALL).color(p.ink3).single_line().truncate().w(150.0));
-        }
         numbered(line, p)
     }))
 }
@@ -727,7 +745,7 @@ fn work(x: &XRay, p: &Pal) -> Vec<El> {
             "tasks",
             "By task",
             Some("the session title, and what each subagent was asked to do".into()),
-            table(&[Column("cost", 70.0, true), Column("task", 0.0, false), Column("origin", 240.0, false)], rows, p),
+            table(&[Column("cost", 70.0, true), Column("task", 0.0, false), Column("origin", if ROOM.get() >= 900.0 { 270.0 } else { 240.0 }, false)], rows, p),
             p,
         ));
     }
@@ -821,7 +839,7 @@ fn tools(x: &XRay, p: &Pal) -> Vec<El> {
         .zip(cells.hints.iter().skip(1))
         .map(|(r, h)| r.iter().cloned().map(plain).chain([(h.clone(), Some(p.ink2))]).collect())
         .collect();
-    let mut body = col().w_full().gap(8.0).child(table_dropping(&cols, rows, &["hint", "after", "failed", "single"], p));
+    let mut body = col().w_full().gap(8.0).child(table_dropping(&cols, rows, &["hint", "after", "failed", "single", "avg input", "trips"], p));
     if cells.more > 0 {
         body = body.child(note(format!("{} more", cells.more), p));
     }
@@ -895,13 +913,16 @@ fn context(x: &XRay, p: &Pal) -> Vec<El> {
 
 fn cache(x: &XRay, p: &Pal) -> Vec<El> {
     let misses: Vec<_> = x.misses.iter().filter(|m| !m.cause.expected()).collect();
-    if x.misses.is_empty() {
-        return vec![overlay::empty(
-            "misses",
-            "No cache misses".into(),
-            Some(overlay::empty_line("every request after the first read its prefix from the cache", p)),
-            p,
-        )];
+    if x.misses.is_empty() || misses.is_empty() {
+        // Only rebuilds the session asked for, as a compaction or a change of model does.
+        let mut causes: Vec<&str> = x.misses.iter().map(|m| m.cause.name()).collect();
+        causes.sort_unstable();
+        causes.dedup();
+        let line = match x.misses.len() {
+            0 => "every request after the first read its prefix from the cache".to_string(),
+            n => format!("{} ({})", count(n as u64, "expected rebuild", "expected rebuilds"), causes.join(", ")),
+        };
+        return vec![overlay::empty("misses", "No cache misses".into(), Some(overlay::empty_line(&line, p)), p)];
     }
     let rewritten: u64 = misses.iter().map(|m| m.rewritten).sum();
     let premium: f64 = misses.iter().filter_map(|m| m.premium_usd).sum();
@@ -1001,6 +1022,16 @@ mod tests {
         assert_eq!(fitting(&cols, &drop, 300.0), [true, true, true, false, false], "then after");
         assert_eq!(fitting(&cols, &drop, 250.0), [true, true, false, false, false], "then failed");
         assert_eq!(fitting(&cols, &drop, 10.0), [true, true, false, false, false], "the others stay");
+    }
+
+    #[test]
+    fn the_tabs_stay_on_one_line_and_show_their_digits_where_there_is_room() {
+        assert_eq!(tab_fit(1019.0, true), (8.0, true), "the inspector of a 1400-point window");
+        assert_eq!(tab_fit(1019.0, false), (8.0, false), "digits only with the keyboard");
+        let (pad, digits) = tab_fit(579.0, true);
+        assert!(!digits && pad < 8.0, "at 960 the tabs come closer and show no digits: {pad}");
+        let labels: f32 = Tab::ALL.iter().map(|t| pal::text_w(t.name(), pal::HEAD)).sum();
+        assert!(labels + 20.0 * pad + 9.0 + 20.0 <= 579.0, "all ten fit");
     }
 
     #[test]

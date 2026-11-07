@@ -124,19 +124,41 @@ pub enum Part {
 }
 
 impl Part {
-    const ORDER: [Part; 3] = [Part::Appearance, Part::Light, Part::Dark];
+    /// The parts in the order the panel draws them and Tab moves through them: the appearance,
+    /// then the grid of the appearance the window was in when the panel opened, then the other.
+    pub fn order(dark_first: bool) -> [Part; 3] {
+        if dark_first { [Part::Appearance, Part::Dark, Part::Light] } else { [Part::Appearance, Part::Light, Part::Dark] }
+    }
 
-    fn step(self, back: bool) -> Part {
-        let at = Part::ORDER.iter().position(|&p| p == self).unwrap_or(0);
-        Part::ORDER[if back { (at + 2) % 3 } else { (at + 1) % 3 }]
+    fn step(self, back: bool, dark_first: bool) -> Part {
+        let order = Part::order(dark_first);
+        let at = order.iter().position(|&p| p == self).unwrap_or(0);
+        order[if back { (at + 2) % 3 } else { (at + 1) % 3 }]
     }
 }
 
-/// The open settings panel.
+/// The open settings panel: the part with the keyboard, and whether the dark grid comes first.
+/// Until a key or a click fixes them, they follow the window's appearance: the keyboard starts in
+/// its grid, which comes right after the appearance.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Panel {
-    /// The part with the keyboard.
-    pub part: Part,
+    pub part: Option<Part>,
+    pub dark_first: Option<bool>,
+}
+
+impl Panel {
+    /// The part with the keyboard and whether the dark grid comes first, in a window drawn dark
+    /// or not.
+    pub fn resolve(self, dark: bool) -> (Part, bool) {
+        let first = self.dark_first.unwrap_or(dark);
+        (self.part.unwrap_or(if first { Part::Dark } else { Part::Light }), first)
+    }
+
+    /// The panel with both fixed as they are now.
+    fn fixed(self, dark: bool) -> Panel {
+        let (part, first) = self.resolve(dark);
+        Panel { part: Some(part), dark_first: Some(first) }
+    }
 }
 
 impl Desk {
@@ -153,6 +175,8 @@ impl Desk {
     }
 
     pub fn pick_appearance(&mut self, a: Appearance) {
+        // The grids keep their order while the appearance changes under them.
+        self.panel = self.panel.map(|p| p.fixed(self.theme.get().dark()));
         self.settings.appearance = a;
         self.save("appearance", a.name());
     }
@@ -173,6 +197,9 @@ impl Desk {
     /// The keys of the open panel: every key stays with it.
     pub fn settings_key(&mut self, e: &KeyEvent, tx: &mut Tx) -> bool {
         let Some(panel) = self.panel else { return false };
+        let panel = panel.fixed(self.theme.get().dark());
+        self.panel = Some(panel);
+        let (part, first) = panel.resolve(false);
         let text = match &e.key {
             RuneKey::Text(t) if plain(e) => Some(t.as_str()),
             _ => None,
@@ -180,11 +207,11 @@ impl Desk {
         match (&e.key, text) {
             (RuneKey::Escape | RuneKey::Enter, _) => self.panel = None,
             (RuneKey::Tab, _) => {
-                let part = panel.part.step(e.mods.shift);
-                self.panel = Some(Panel { part });
+                let part = part.step(e.mods.shift, first);
+                self.panel = Some(Panel { part: Some(part), ..panel });
                 tx.scroll_into_view(part.key());
             }
-            _ if panel.part == Part::Appearance => {
+            _ if part == Part::Appearance => {
                 let at = Appearance::ALL.iter().position(|&a| a == self.settings.appearance).unwrap_or(0);
                 let to = match (&e.key, text) {
                     (RuneKey::Left, _) | (_, Some("h")) => at.saturating_sub(1),
@@ -194,7 +221,7 @@ impl Desk {
                 self.pick_appearance(Appearance::ALL[to]);
             }
             _ => {
-                let dark = panel.part == Part::Dark;
+                let dark = part == Part::Dark;
                 let list: Vec<&Theme> = themes::of(dark).collect();
                 let at = list.iter().position(|t| t.id == self.settings.theme_id(dark)).unwrap_or(0);
                 let Some(to) = grid_step(&e.key, text, at, list.len()) else { return true };
@@ -252,6 +279,7 @@ const GAP: f32 = 12.0;
 pub fn panel(s: &Desk, panel: Panel, p: &Pal, height: f32) -> El {
     let card_h = (height - 80.0).clamp(320.0, 780.0);
     let shown = s.theme.get();
+    let (keyboard, first) = panel.resolve(shown.dark());
     let badge = row()
         .key("settings-shown")
         .h(26.0)
@@ -272,14 +300,11 @@ pub fn panel(s: &Desk, panel: Panel, p: &Pal, height: f32) -> El {
         .child(spacer().grow(1.0))
         .child(badge);
     let body = col().key("settings-body").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(
-        col()
-            .w_full()
-            .px(CARD_PAD)
-            .py(18.0)
-            .gap(22.0)
-            .child(section(Part::Appearance, "Appearance", appearance_tiles(s, p), panel.part, p))
-            .child(section(Part::Light, "Light theme", theme_grid(s, false, p), panel.part, p))
-            .child(section(Part::Dark, "Dark theme", theme_grid(s, true, p), panel.part, p)),
+        col().w_full().px(CARD_PAD).py(18.0).gap(22.0).children(Part::order(first).map(|part| match part {
+            Part::Appearance => section(part, "Appearance", appearance_tiles(s, p), keyboard, p),
+            Part::Light => section(part, "Light theme", theme_grid(s, false, p), keyboard, p),
+            Part::Dark => section(part, "Dark theme", theme_grid(s, true, p), keyboard, p),
+        })),
     );
     let done = row()
         .key("settings-done")
@@ -340,9 +365,10 @@ fn appearance_tiles(s: &Desk, p: &Pal) -> El {
         };
         // The picture is clipped to its corners; the ring goes on the box around it, which the
         // clip leaves alone.
-        let picture =
-            el().w_full().h_full().radius(R_TILE).clip_rounded(R_TILE).border(1.0, if s.theme.get().dark() { p.line } else { p.row_line }).child(picture);
-        let frame = el().w_full().h(74.0).radius(R_TILE).child(picture);
+        let picture = el().w_full().h_full().radius(R_TILE).clip_rounded(R_TILE).child(picture);
+        // The edge over the picture, so that a tile as dark as the group around it still has one.
+        let edge = el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).radius(R_TILE).border(1.0, if s.theme.get().dark() { p.line } else { p.row_line });
+        let frame = el().w_full().h(74.0).radius(R_TILE).child(picture).child(edge);
         let frame = if chosen { frame.outline(2.0, 2.0, p.accent) } else { frame };
         col()
             .key(format!("appearance-{}", a.name()))

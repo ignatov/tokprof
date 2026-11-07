@@ -158,7 +158,11 @@ impl Desk {
 
 /// The key help over the window: a card of the groups in two columns.
 pub fn view(p: &Pal, height: f32) -> El {
-    let column = |groups: &[(&'static str, &'static [Keys])]| col().w(COLUMN_W).gap(GROUP_GAP).children(groups.iter().map(|(name, keys)| group(name, keys, p)));
+    // One key column for all the groups of a card column, so that what the keys do lines up.
+    let column = |groups: &[(&'static str, &'static [Keys])]| {
+        let caps_w = groups.iter().map(|(_, keys)| caps_w(keys)).fold(0.0, f32::max);
+        col().w(COLUMN_W).gap(GROUP_GAP).children(groups.iter().map(|(name, keys)| group(name, keys, caps_w, p)))
+    };
     let head = row().w_full().px(24.0).pt(20.0).pb(16.0).center_y().child(text("Keys").key("keys-title").font(pal::TITLE).color(p.ink).single_line());
     let foot = row()
         .key("keys-foot")
@@ -201,9 +205,7 @@ fn card_height() -> f32 {
 const ROW_H: f32 = 22.0;
 
 /// A group of keys: its name over a soft group of rows, the keycaps left and what they do right.
-fn group(name: &'static str, keys: &'static [Keys], p: &Pal) -> El {
-    // The keys' column as wide as the group's widest keys, so that what they do starts near them.
-    let caps_w = keys.iter().map(|k| k.keys.iter().map(|c| keycap_w(c) + 3.0).sum::<f32>()).fold(40.0, f32::max) + 8.0;
+fn group(name: &'static str, keys: &'static [Keys], caps_w: f32, p: &Pal) -> El {
     let rows = keys.iter().map(|k| {
         row()
             .w_full()
@@ -219,6 +221,11 @@ fn group(name: &'static str, keys: &'static [Keys], p: &Pal) -> El {
         .gap(10.0)
         .child(text(name).font(pal::HEAD).color(p.ink2).single_line())
         .child(col().w_full().px(14.0).py(10.0).radius(R_GROUP).fill(p.bar).children(rows))
+}
+
+/// The width the widest keys of a group take, so that what they do starts near them.
+fn caps_w(keys: &[Keys]) -> f32 {
+    keys.iter().map(|k| k.keys.iter().map(|c| keycap_w(c) + 3.0).sum::<f32>()).fold(40.0, f32::max) + 8.0
 }
 
 /// About how wide a keycap of `k` is: its text and its padding, at least square.

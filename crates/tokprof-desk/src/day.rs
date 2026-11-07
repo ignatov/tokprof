@@ -242,11 +242,33 @@ pub fn lanes_of(s: &Desk, parts: &DayParts, cx: &Cx<Desk>, p: &Pal, max_h: f32) 
         body = body
             .child(row().key("lanes-none").w_full().h(LANE).pl(LABEL_WIDTH + 14.0).center_y().child(text(note).font(pal::BODY).color(p.ink2).single_line()));
     }
-    let scroller = col().key("lanes-scroll").w_full().max_h((max_h - UNDER).max(3.0 * LANE)).scroll(ScrollSpec { stick_bottom: false }).child(body);
+    // The lanes the room holds, whole: the You lane, the sessions' and the line when none is
+    // listed; those that do not fit scroll, and a line under them says how many there are.
+    let rows = 1 + shown.max(usize::from(!lanes.lanes.is_empty()));
+    let (fit, more) = lanes_fit(max_h, rows);
+    let scroller = col().key("lanes-scroll").w_full().max_h(RULER + fit as f32 * LANE).scroll(ScrollSpec { stick_bottom: false }).child(body);
+    let scroller = col().w_full().child(scroller).children((more > 0).then(|| {
+        let line = format!("{more} more {} · scroll to see {}", if more == 1 { "lane" } else { "lanes" }, if more == 1 { "it" } else { "them" });
+        row().key("lanes-more").w_full().h(MORE_H).pl(LABEL_WIDTH + 14.0).center_y().child(text(line).font(pal::SMALL).color(p.ink3).single_line())
+    }));
     let pointer = s.pointer.as_ref().map(|ptr| pointer_text(lanes, &lives, range, ptr, width)).unwrap_or_default();
     // Under the tracks when they leave room; from the window's edge in a narrow one.
     let lead = if width >= 900.0 { LABEL_WIDTH + 14.0 } else { 14.0 };
     frame(col().w_full().pb(8.0).child(scroller).child(legend(pointer, lead, p)).child(day_lines(&parts.below, lead, p)))
+}
+
+/// The height of the line under the lanes that says how many more there are.
+const MORE_H: f32 = 18.0;
+
+/// How many of `rows` lanes show whole in lanes at most `max_h` high with what is under them,
+/// and how many more scroll; when some do, the line that says so takes room too. At least two.
+pub fn lanes_fit(max_h: f32, rows: usize) -> (usize, usize) {
+    let room = ((max_h - UNDER - RULER) / LANE).floor().max(2.0) as usize;
+    if rows <= room {
+        return (rows, 0);
+    }
+    let fit = (((max_h - UNDER - RULER - MORE_H) / LANE).floor().max(2.0) as usize).min(rows);
+    (fit, rows - fit)
 }
 
 /// What every track of the lanes shares: the time it shows, its width, and now when it is in it.
@@ -383,11 +405,30 @@ fn label(head: String, rest: String, agent: Option<Color>, p: &Pal) -> El {
     if let Some(c) = agent {
         l = l.child(dot(c, 7.0));
     }
-    // A long project gives up its end before the title is cut to nothing.
-    let most = LABEL_WIDTH * 0.6;
-    let least = pal::text_w(&head, pal::STRONG).min(most);
-    l.child(text(head).key("lane-head").font(pal::STRONG).color(p.ink).single_line().truncate().min_w(least).max_w(most))
-        .children((!rest.is_empty()).then(|| text(rest).key("lane-rest").font(pal::BODY).color(p.ink2).single_line().truncate().shrink().min_w(0.0)))
+    let (cut, rest) = label_parts(&head, &rest, agent.is_some());
+    // A head that fits keeps its own width, so the title starts a gap after it; a long one is
+    // cut to its share.
+    let head = text(head).key("lane-head").font(pal::STRONG).color(p.ink).single_line();
+    let head = match cut {
+        Some(w) => head.truncate().w(w),
+        None => head,
+    };
+    l.child(head).children(rest.map(|r| text(r).key("lane-rest").font(pal::BODY).color(p.ink2).single_line().truncate().shrink().min_w(0.0)))
+}
+
+/// The least room a lane's title keeps; with less, it is left out and the head takes the room.
+const TITLE_MIN: f32 = 60.0;
+
+/// How a lane label's head and title are drawn: the width the head is cut to, when it is too
+/// long for its share (60% of the label beside a title, all of it without), and the title,
+/// left out when the head leaves it under [`TITLE_MIN`].
+pub fn label_parts(head: &str, rest: &str, dot: bool) -> (Option<f32>, Option<String>) {
+    let room = LABEL_WIDTH - 24.0 - if dot { 14.0 } else { 0.0 };
+    let share = LABEL_WIDTH * 0.6;
+    let head_w = pal::text_w(head, pal::STRONG);
+    let title = !rest.is_empty() && head_w.min(share) + 7.0 + TITLE_MIN <= room;
+    let most = if title { share } else { room };
+    ((head_w > most).then_some(most), title.then(|| rest.to_string()))
 }
 
 fn hover(track: El, lane: Option<String>) -> El {
@@ -632,6 +673,28 @@ mod tests {
         assert_eq!(hot, ["6 cold returns", "$3.57", "$3.10"]);
         assert_eq!(runs.iter().map(|r| r.0.as_str()).collect::<String>(), "6 cold returns, $3.57 in their first requests, $3.10 avoidable", "nothing lost");
         assert_eq!(cold_runs("1 cold return: $0.40").iter().filter(|r| r.1).count(), 2);
+    }
+
+    #[test]
+    fn the_lanes_show_whole_and_say_how_many_more_scroll() {
+        // 900 points high: 384 for the lanes, 85 under them, 26 for the hours: 10 lanes of 26.
+        let max_h = (900.0 - 46.0) * 0.45;
+        assert_eq!(lanes_fit(max_h, 8), (8, 0), "all fit");
+        assert_eq!(lanes_fit(max_h, 10), (10, 0));
+        assert_eq!(lanes_fit(max_h, 12), (9, 3), "the line under them takes the room of one");
+        let (fit, _) = lanes_fit(max_h, 30);
+        assert!(RULER + fit as f32 * LANE + MORE_H + UNDER <= max_h + 0.01, "whole lanes and the line within the room");
+        assert_eq!(lanes_fit(100.0, 5), (2, 3), "two at least");
+    }
+
+    #[test]
+    fn a_lane_label_keeps_its_head_whole_and_its_title_only_with_room() {
+        assert_eq!(label_parts("rex", "Migrate terminal to Rex", true), (None, Some("Migrate terminal to Rex".into())), "a short head as it is");
+        assert_eq!(label_parts("json-profiler", "UI на rune", true), (None, Some("UI на rune".into())));
+        assert_eq!(label_parts("json-profiler", "", true).1, None);
+        // A head that would leave the title under 60 points takes the room alone, cut to it.
+        let (cut, title) = label_parts("fix-spelling-hey-we-ve-never-met-before", "Fix spelling in greeting", true);
+        assert_eq!((cut, title), (Some(LABEL_WIDTH - 24.0 - 14.0), None));
     }
 
     #[test]
