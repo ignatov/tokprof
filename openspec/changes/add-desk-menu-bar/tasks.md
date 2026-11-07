@@ -14,6 +14,7 @@
 - [x] 3.1 macOS glue: the status item with a monospaced-digit title, the menu kept in place, the target class for picks, the Dock bounce, the App Nap activity while a countdown shows; removed when the setting turns off. Only with a window, on the main thread.
 - [x] 3.2 `poll`: update the item, wake at the next second while a countdown shows, nothing more at rest; picks select the session in Day, close any card and bring the window forward through the app handle; `Open tokprof` and `Settings…`.
 - [x] 3.3 Runtime tests: a pick selects the session from Reports and closes a card; `Settings…` opens the panel; a frame without a window makes no item.
+- [x] 3.4 Fix from code review 2: while a session was warm but none counted (under $1, or still being costed), `poll` passed over the whole list every frame. The pass now runs once a second whenever anything is warm, and wakes nothing at rest; `the_list_is_passed_over_once_a_second_while_anything_is_warm` tests the throttle.
 
 ## 4. Check and document
 

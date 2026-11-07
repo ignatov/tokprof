@@ -131,14 +131,27 @@ pub struct MenuBar {
     nudges: Nudges,
     /// The running app, where picks go; none in a frame without a window and in tests.
     pub handle: Option<AppHandle<Desk>>,
-    /// The second of the last update while it counted down: the frames of that second skip the
-    /// pass over the list, since the next second wakes it anyway.
+    /// The second of the last pass over the list while a session was warm: the frames of that
+    /// second skip the pass, since the next second wakes it anyway. None at rest.
     counted_at: Option<i64>,
     #[cfg(target_os = "macos")]
     item: Option<native::Item>,
 }
 
 impl MenuBar {
+    /// Whether a frame at `now` skips the pass over the list: the status item shows, and a pass
+    /// in this second found a warm session.
+    fn skips(&self, shown: bool, now: i64) -> bool {
+        shown && self.counted_at == Some(now / 1000)
+    }
+
+    /// Notes a pass over the list at `now`; returns whether to wake at the next second, which is
+    /// while any listed session is warm, counted or not.
+    fn passed(&mut self, any_warm: bool, now: i64) -> bool {
+        self.counted_at = any_warm.then_some(now / 1000);
+        any_warm
+    }
+
     /// Whether the status item is in the menu bar.
     pub fn shown(&self) -> bool {
         #[cfg(target_os = "macos")]
@@ -161,7 +174,7 @@ pub fn poll(s: &mut Desk, now: i64, tx: &mut Tx) {
         return;
     }
     let next_second = Duration::from_millis((1000 - now.rem_euclid(1000)) as u64 + 5);
-    if s.menu_bar.shown() && s.menu_bar.counted_at == Some(now / 1000) {
+    if s.menu_bar.skips(s.menu_bar.shown(), now) {
         tx.wake_after(next_second);
         return;
     }
@@ -169,8 +182,9 @@ pub fn poll(s: &mut Desk, now: i64, tx: &mut Tx) {
     let counted = counted(&warm, now);
     let soon = soonest(&counted);
     let nudge = s.menu_bar.nudges.due(soon, now);
-    s.menu_bar.counted_at = soon.map(|_| now / 1000);
-    if soon.is_some() {
+    // Once a second while anything is warm, also when nothing counts: a warm session can come
+    // to count, and frames come many times a second while the window is used.
+    if s.menu_bar.passed(!warm.is_empty(), now) {
         tx.wake_after(next_second);
     }
     #[cfg(target_os = "macos")]
@@ -400,6 +414,18 @@ mod native {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_list_is_passed_over_once_a_second_while_anything_is_warm() {
+        let mut bar = super::MenuBar::default();
+        assert!(!bar.skips(true, 10_000), "the first frame passes over the list");
+        assert!(bar.passed(true, 10_000), "a warm session that does not count wakes it at the next second");
+        assert!(bar.skips(true, 10_999), "the other frames of that second skip the pass");
+        assert!(!bar.skips(false, 10_500), "until the status item shows, every frame passes");
+        assert!(!bar.skips(true, 11_000), "the next second passes again");
+        assert!(!bar.passed(false, 11_000), "nothing warm: no wake");
+        assert!(!bar.skips(true, 11_200), "at rest every frame passes, which costs nothing as nothing is warm");
+    }
+
     use super::*;
 
     const NOW: i64 = 1_800_000_000_000;
