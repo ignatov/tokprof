@@ -1964,3 +1964,17 @@ fn a_pick_in_the_menu_bar_selects_the_session_in_day_over_no_card() {
     let s = &rt.state;
     assert_eq!(s.browser.selected().map(|r| s.browser.session(r).to_string()).as_deref(), Some("id3"));
 }
+
+#[test]
+fn the_heads_of_the_list_and_the_inspector_meet_and_the_tabs_stay_put() {
+    let mut rt = runtime(desk_of(30), (1400.0, 900.0));
+    let rect = |rt: &Runtime<Desk>, key: &str| rt.elements().iter().find(|e| e.key.as_deref() == Some(key)).expect(key).rect;
+    let (head, tabs) = (rect(&rt, "list-head"), rect(&rt, "tabs"));
+    assert_eq!((head[1], head[3]), (tabs[1], tabs[3]), "one top and one height, so the lines under them are one line");
+    let before: Vec<f32> = inspector::Tab::ALL.iter().map(|t| rect(&rt, &format!("tab-{}", t.name()))[0]).collect();
+    press(&mut rt, RuneKey::Tab);
+    assert_eq!(rt.state.pane, Focus::Inspector);
+    assert!(inside(&rt, "tabs", "tab-digit").is_some(), "the digits show with the keyboard");
+    let after: Vec<f32> = inspector::Tab::ALL.iter().map(|t| rect(&rt, &format!("tab-{}", t.name()))[0]).collect();
+    assert_eq!(before, after, "and the tabs do not move for them");
+}

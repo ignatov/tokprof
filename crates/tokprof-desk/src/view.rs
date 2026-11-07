@@ -16,6 +16,8 @@ use crate::{Desk, Slot};
 pub const BAR_H: f32 = 46.0;
 pub const ROW: f32 = 28.0;
 pub const LIST_WIDTH: f32 = 380.0;
+/// The height of the heads over the list and the inspector, so that the lines under them meet.
+pub const HEAD_H: f32 = 44.0;
 /// The keys of the list's and the inspector's scroll viewports.
 pub const LIST: &str = "list";
 pub const PANE: &str = "pane";
@@ -328,7 +330,7 @@ fn list_pane(s: &Desk, p: &Pal) -> El {
     let head = row()
         .key("list-head")
         .w_full()
-        .h(34.0)
+        .h(HEAD_H)
         .px(12.0)
         .gap(8.0)
         .center_y()

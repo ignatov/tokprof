@@ -149,13 +149,15 @@ pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
     // The chosen tab is a pill; while the inspector has the keyboard and its tab has no rows for a
     // cursor, the ring marks it instead.
     let ring_tab = keyboard(s) && s.tab_rows.get() == 0 && s.tab != Tab::Flame;
-    let (pad, digits) = tab_fit(pane_w, keyboard(s));
-    let tabs = row().key("tabs").w_full().h(44.0).px(10.0).gap(1.0).center_y().children(Tab::ALL.into_iter().enumerate().map(|(i, t)| {
+    let (pad, digits) = tab_fit(pane_w);
+    let tabs = row().key("tabs").w_full().h(view::HEAD_H).px(10.0).gap(1.0).center_y().children(Tab::ALL.into_iter().enumerate().map(|(i, t)| {
         let on = s.tab == t;
         let tab = row()
             .key(format!("tab-{}", t.name()))
             .h(28.0)
-            .px(pad)
+            // Where the digits fit, a tab keeps their room without the keyboard too, around its
+            // name, so that the tabs stay where they are when the keyboard comes and goes.
+            .px(if digits && !keyboard(s) { pad + (DIGIT_W + 5.0) / 2.0 } else { pad })
             .gap(5.0)
             .center_y()
             .radius(PILL)
@@ -169,7 +171,7 @@ pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
                 s.pane = crate::Focus::Inspector;
             })
             .child(text(t.name()).font(pal::HEAD).color(if on { if keyboard(s) { p.accent } else { p.ink } } else { p.ink2 }).single_line())
-            .children(digits.then(|| overlay::keycap_on(&((i + 1) % 10).to_string(), p.panel, p).key("tab-digit")));
+            .children((digits && keyboard(s)).then(|| overlay::keycap_on(&((i + 1) % 10).to_string(), p.panel, p).key("tab-digit")));
         overlay::ring(tab, on && ring_tab, p)
     }));
     let offset = s.pane_offset.clone();
@@ -189,15 +191,18 @@ fn note(s: impl Into<String>, p: &Pal) -> El {
     text(s.into()).w_full().wrap().font(pal::BODY).color(p.ink2).selectable(true)
 }
 
+/// The width of a tab's digit as a keycap.
+const DIGIT_W: f32 = 20.0;
+
 /// The padding of the inspector's tabs in a pane `pane_w` wide, so that all ten stay on one line,
-/// and whether the digits that pick them show as keycaps: while the inspector has the keyboard,
-/// where they fit.
-pub fn tab_fit(pane_w: f32, keyboard: bool) -> (f32, bool) {
+/// and whether there is room for the digits that pick them; they show as keycaps while the
+/// inspector has the keyboard.
+pub fn tab_fit(pane_w: f32) -> (f32, bool) {
     let labels: f32 = Tab::ALL.iter().map(|t| pal::text_w(t.name(), pal::HEAD)).sum();
     // The row's padding and the gaps between the tabs, and some slack for the estimate.
     let room = pane_w - 20.0 - 9.0 - 24.0 - labels;
-    let digits_w = 10.0 * (20.0 + 5.0);
-    if keyboard && room - digits_w >= 2.0 * 10.0 * 8.0 {
+    let digits_w = 10.0 * (DIGIT_W + 5.0);
+    if room - digits_w >= 2.0 * 10.0 * 8.0 {
         return (8.0, true);
     }
     ((room / 20.0).floor().clamp(3.0, 8.0), false)
@@ -1026,9 +1031,8 @@ mod tests {
 
     #[test]
     fn the_tabs_stay_on_one_line_and_show_their_digits_where_there_is_room() {
-        assert_eq!(tab_fit(1019.0, true), (8.0, true), "the inspector of a 1400-point window");
-        assert_eq!(tab_fit(1019.0, false), (8.0, false), "digits only with the keyboard");
-        let (pad, digits) = tab_fit(579.0, true);
+        assert_eq!(tab_fit(1019.0), (8.0, true), "the inspector of a 1400-point window");
+        let (pad, digits) = tab_fit(579.0);
         assert!(!digits && pad < 8.0, "at 960 the tabs come closer and show no digits: {pad}");
         let labels: f32 = Tab::ALL.iter().map(|t| pal::text_w(t.name(), pal::HEAD)).sum();
         assert!(labels + 20.0 * pad + 9.0 + 20.0 <= 579.0, "all ten fit");
