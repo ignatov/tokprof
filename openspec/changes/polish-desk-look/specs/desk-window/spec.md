@@ -46,7 +46,7 @@ A theme SHALL give the window's background, panels, lines, text and accent, and 
 - **THEN** the bars of work, the request bars and the parts of the spend are their colors 60% of the way from the background in sRGB, and a warm countdown is the theme's green itself
 
 ### Requirement: Window layout
-The window SHALL show, under the bar, the lanes of the shown day across its whole width, at most 45% of its height with what is under them, and under them the list of sessions in a pane 380 points wide and the inspector of the selected session in the rest. Every text is in the system font; numbers that line up in columns use tabular figures.
+In Day, the window SHALL show, under the bar, the lanes of the shown day across its whole width, at most 45% of its height with what is under them, and under them the list of sessions in a pane 380 points wide and the inspector of the selected session in the rest. Every text is in the system font; numbers that line up in columns use tabular figures.
 
 #### Scenario: A narrow window
 - **WHEN** the window is 960 points wide
