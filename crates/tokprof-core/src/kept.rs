@@ -6,8 +6,9 @@
 //! Reading on gives what reading the whole log gives, since a decoder fed a log in parts gives
 //! what it gives fed at once. A log that was written anew is read whole: when it is another
 //! file at the same path, when it is shorter than what was read, or when the bytes before where
-//! the last read stopped changed. Every kept log is also read whole every few minutes, so that a
-//! change none of these shows is not kept for longer.
+//! the last read stopped changed. Every kept log is also read whole every few minutes, changed or
+//! not, so that a change none of these shows, or one of a file beside the log that its decoder
+//! reads, is not kept for longer.
 
 use std::collections::HashMap;
 use std::fs::Metadata;
@@ -25,7 +26,7 @@ use crate::source::{Decoder, LogSource, ReadOn, SessionRef};
 const RECENT: Duration = Duration::from_secs(3 * 24 * 3600);
 /// A kept log that nothing read for this long is dropped.
 const UNUSED: Duration = Duration::from_secs(30 * 60);
-/// A kept log is read whole again after this long.
+/// A kept log is read whole again after this long, changed or not.
 const WHOLE_AFTER: Duration = Duration::from_secs(10 * 60);
 /// The most bytes of logs kept at once; a kept decoder takes about a quarter of its log's size,
 /// and much less of a huge one's (3 % of a 2.1 GB log). A log counts at most a quarter of the
@@ -122,12 +123,15 @@ impl Kept {
         let slot = lock(&self.logs).entry(key.clone()).or_default().clone();
         let mut kept = lock(&slot);
         let now = Instant::now();
+        // Also a log that did not change is read whole now and then: its decoder may read files
+        // beside it, such as a subagent's meta file written later.
         let read = match kept.as_mut() {
+            Some(log) if now.duration_since(log.whole_at) >= WHOLE_AFTER => Ok(None),
             Some(log) if log.stamp == stamp => {
                 log.used = now;
                 Ok(Some(log.on.open))
             }
-            Some(log) if log.stamp.file == stamp.file && now.duration_since(log.whole_at) < WHOLE_AFTER => read_on(source, s, log, stamp, now),
+            Some(log) if log.stamp.file == stamp.file => read_on(source, s, log, stamp, now),
             _ => Ok(None),
         };
         let open = match read {
@@ -253,15 +257,19 @@ mod tests {
         }
     }
 
+    /// Counts the lines; the session's title is what the file `<log>.meta` beside it says when
+    /// the decoder is made, as a decoder that reads a meta file does.
     #[derive(Clone)]
-    struct Count(usize);
+    struct Count(usize, Option<String>);
 
     impl Decoder for Count {
         fn feed(&mut self, _: &str) {
             self.0 += 1;
         }
         fn snapshot(&self) -> Session {
-            Session::new(AgentId::unknown("lines"), self.0.to_string())
+            let mut s = Session::new(AgentId::unknown("lines"), self.0.to_string());
+            s.title = self.1.clone();
+            s
         }
         fn finish(self: Box<Self>) -> Session {
             self.snapshot()
@@ -302,8 +310,8 @@ mod tests {
         fn open(&self, s: &SessionRef) -> Result<Box<dyn Records>> {
             Ok(Box::new(File(s.path().to_path_buf())))
         }
-        fn decoder(&self, _: &SessionRef) -> Box<dyn Decoder> {
-            Box::new(Count(0))
+        fn decoder(&self, s: &SessionRef) -> Box<dyn Decoder> {
+            Box::new(Count(0, std::fs::read_to_string(s.path().with_extension("meta")).ok()))
         }
         fn activity(&self, _: &SessionRef) -> Result<Activity> {
             Ok(Activity::default())
@@ -357,6 +365,29 @@ mod tests {
             parse(&write(name, 1_000));
         }
         assert_eq!(kept_names(&k), ["c", "d", "e", "f"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_unchanged_log_is_read_whole_again_after_a_while() {
+        let dir = std::env::temp_dir().join(format!("tokprof-kept-idle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.log");
+        std::fs::write(&path, "x\n").unwrap();
+        let k = Kept::default();
+        let title = || k.parse(&Lines, &log(&path)).unwrap().title;
+        assert_eq!(title(), None);
+        std::fs::write(dir.join("a.meta"), "named").unwrap();
+        assert_eq!(title(), None, "unchanged and read whole lately: the kept session");
+        let slot = lock(&k.logs).values().next().unwrap().clone();
+        let mut held = lock(&slot);
+        let log = held.as_mut().unwrap();
+        // A machine started less than 10 minutes ago has no earlier instant.
+        let Some(earlier) = log.whole_at.checked_sub(WHOLE_AFTER) else { return };
+        log.whole_at = earlier;
+        drop(held);
+        assert_eq!(title().as_deref(), Some("named"), "read whole again: the meta file written since shows");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
