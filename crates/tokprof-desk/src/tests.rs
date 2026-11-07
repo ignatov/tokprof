@@ -1888,6 +1888,15 @@ fn a_session_opened_from_what_to_change_leaves_a_filter_being_typed_alone() {
 }
 
 #[test]
+fn without_cold_returns_the_ways_back_have_no_rows_for_the_cursor() {
+    let way = tokprof_core::pool::BenchRow { name: "resume".into(), ..Default::default() };
+    let mut c = tokprof_core::savings::Changes { ways: vec![way], ..Default::default() };
+    assert!(changes::lines(&c, reports::Part::Ways, None).is_empty(), "the card shows no ways");
+    c.returns = 3;
+    assert_eq!(changes::lines(&c, reports::Part::Ways, None), [changes::Line::Row("resume".into())]);
+}
+
+#[test]
 fn a_session_the_list_does_not_hold_says_so_and_stays_in_reports() {
     let (desk, part, name) = reports_desk_with_advice();
     let mut rt = runtime(desk, (1400.0, 2400.0));

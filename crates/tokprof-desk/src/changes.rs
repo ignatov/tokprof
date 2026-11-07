@@ -40,6 +40,10 @@ fn rows_of(c: &Changes, part: Part) -> &[Row] {
 /// The lines of a part, with the sessions of the row that is open under it.
 pub fn lines(c: &Changes, part: Part, open: Option<&(Part, String)>) -> Vec<Line> {
     if part == Part::Ways {
+        // Without cold returns the card shows no ways, and the cursor has no row in it.
+        if c.returns == 0 {
+            return Vec::new();
+        }
         return c.ways.iter().map(|w| Line::Row(w.name.clone())).collect();
     }
     let mut out = Vec::new();

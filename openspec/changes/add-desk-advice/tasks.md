@@ -19,6 +19,7 @@
 - [x] 3.3 The scene `reports-advice`.
 - [x] 3.4 Runtime tests: the rows, amounts and advice on the screen, Tab through the cards, a row opening its sessions and a session opening in Day, a session not listed; the old Reports tests updated for the new Tab order and the taller page.
 - [x] 3.5 Fix from code review 2: opening a session from a card sent the key `d` to the browser, which a filter being typed took. It now asks the browser for the selected session's day directly; `a_session_opened_from_what_to_change_leaves_a_filter_being_typed_alone` tests it.
+- [x] 3.6 Fix from code review 2: without cold returns, Coming back after a cold break drew no ways but the cursor moved over them. The card has no rows then; `without_cold_returns_the_ways_back_have_no_rows_for_the_cursor` tests it.
 
 ## 4. Check and document
 
