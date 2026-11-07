@@ -196,14 +196,17 @@ pub fn report(b: &Bench, style: &Style) -> String {
             assumption(b)
         ))
     );
-    let _ = writeln!(
-        out,
-        "{}",
-        style.dim(&format!(
-            "Heartbeats, then compaction sends the same pings and, at the next ping time past the window, a compaction that reads the warm context and outputs {} tokens.",
-            tokens(SUMMARY_TOKENS)
-        ))
-    );
+    let summary = tokens(SUMMARY_TOKENS);
+    let warm = match (compaction_titles(b, true), compaction_titles(b, false)) {
+        (_, writes) if writes.is_empty() => format!("a compaction that reads the warm context and outputs {summary} tokens."),
+        (reads, writes) if reads.is_empty() => format!(
+            "a compaction while the cache is warm that outputs {summary} tokens: it writes the context again in {writes}, whose compaction calls read nothing from the cache."
+        ),
+        (reads, writes) => format!(
+            "a compaction while the cache is warm that outputs {summary} tokens: it reads the context in {reads} and writes it again in {writes}, whose compaction calls read nothing from the cache."
+        ),
+    };
+    let _ = writeln!(out, "{}", style.dim(&format!("Heartbeats, then compaction sends the same pings and, at the next ping time past the window, {warm}")));
     out
 }
 
@@ -304,6 +307,48 @@ fn agent_title(agent: &AgentId) -> &str {
     &agent.info().title
 }
 
+/// The titles of the agents with returns whose compaction call reads the warm cache (`reads`), or
+/// writes the context again (not `reads`), joined with "and".
+fn compaction_titles(b: &Bench, reads: bool) -> String {
+    let mut t: Vec<&str> = b.returns.iter().filter(|r| r.agent.info().harness.compaction_reads_cache == reads).map(|r| agent_title(&r.agent)).collect();
+    t.sort();
+    t.dedup();
+    t.join(" and ")
+}
+
+/// The chart's notes, top down: the prices and the compaction model, heartbeats, and heartbeats
+/// then compaction. When an agent's compaction call writes the warm context again, a fourth note
+/// says in which agents a warm compaction reads the context and in which it writes it.
+fn chart_notes(b: &Bench) -> Vec<String> {
+    let window = window_name(b.keep_warm_ms);
+    let mut notes = vec![
+        format!(
+            "tokprof bench · requests priced at their time · a compaction call is modeled as writing the cold context again plus a {}-token summary",
+            round_tokens(SUMMARY_TOKENS as u64)
+        ),
+        format!(
+            "heartbeats: a ping at 5/6 of the cache lifetime, every {} on a 1h cache, for up to {window} after the last request; a return within the last ping's lifetime reads the cache",
+            human_duration(ping_every(3_600_000) as f64 / 1000.0)
+        ),
+    ];
+    let (reads, writes) = (compaction_titles(b, true), compaction_titles(b, false));
+    if writes.is_empty() {
+        notes.push(format!(
+            "heartbeats, then compaction: the same pings, then at the next ping time past {window} a compaction that reads the warm context; a later return starts from what it leaves"
+        ));
+        return notes;
+    }
+    notes.push(format!(
+        "heartbeats, then compaction: the same pings, then at the next ping time past {window} a compaction while the cache is warm; a later return starts from what it leaves"
+    ));
+    notes.push(if reads.is_empty() {
+        format!("a compaction while the cache is warm writes the context again in {writes}, whose compaction calls read nothing from the cache")
+    } else {
+        format!("a compaction while the cache is warm reads the context in {reads} and writes it again in {writes}, whose compaction calls read nothing from the cache")
+    });
+    notes
+}
+
 /// One agent's part of the chart: its returns and the mean cost curve of each strategy.
 struct Panel<'a> {
     agent: AgentId,
@@ -358,7 +403,9 @@ fn svg(b: &Bench, t: &Theme) -> String {
         keys
     };
     let below = keys.last().map_or(0.0, |k| k.3 - 80.0);
-    let h = 456.0 + below;
+    let notes = chart_notes(b);
+    // Three notes fit under the panels; each more makes the chart a line taller.
+    let h = 456.0 + below + 16.0 * notes.len().saturating_sub(3) as f64;
 
     let mut desc = String::new();
     for Panel { agent, returns, curves } in &panels {
@@ -528,28 +575,9 @@ fn svg(b: &Bench, t: &Theme) -> String {
             );
         }
     }
-    let _ = writeln!(
-        o,
-        r#"<text x="{PAD}" y="{}" font-size="11" fill="{}">tokprof bench · requests priced at their time · the compaction call is not logged: modeled as writing the cold context again plus a {}-token summary</text>"#,
-        h - 46.0,
-        t.muted,
-        round_tokens(SUMMARY_TOKENS as u64)
-    );
-    let _ = writeln!(
-        o,
-        r#"<text x="{PAD}" y="{}" font-size="11" fill="{}">heartbeats: a ping at 5/6 of the cache lifetime, every {} on a 1h cache, for up to {} after the last request; a return within the last ping's lifetime reads the cache</text>"#,
-        h - 30.0,
-        t.muted,
-        human_duration(ping_every(3_600_000) as f64 / 1000.0),
-        window_name(b.keep_warm_ms)
-    );
-    let _ = writeln!(
-        o,
-        r#"<text x="{PAD}" y="{}" font-size="11" fill="{}">heartbeats, then compaction: the same pings, then at the next ping time past {} a compaction that reads the warm context; a later return starts from what it leaves</text>"#,
-        h - 14.0,
-        t.muted,
-        window_name(b.keep_warm_ms)
-    );
+    for (i, note) in notes.iter().enumerate() {
+        let _ = writeln!(o, r#"<text x="{PAD}" y="{}" font-size="11" fill="{}">{note}</text>"#, h - 14.0 - 16.0 * (notes.len() - 1 - i) as f64, t.muted);
+    }
     o.push_str("</svg>\n");
     o
 }
@@ -566,11 +594,39 @@ mod tests {
         assert_eq!(round_tokens(490_700), "491k");
     }
 
+    /// An agent with this title whose compaction call reads the warm cache or writes the context
+    /// again, as its source says.
+    fn agent(name: &str, title: &str, compaction_reads_cache: bool) -> AgentId {
+        use tokprof_core::source::{AgentInfo, Harness};
+        AgentId::new(AgentInfo { title: title.into(), harness: Harness { compaction_reads_cache, ..Harness::default() }, ..AgentInfo::named(name) })
+    }
+
+    /// The bench of `three_returns` with a Codex return too, and the bases of the reference run.
+    fn two_agents() -> Bench {
+        use tokprof_core::bench::Base;
+        let mut b = three_returns();
+        let codex = agent("codex", "Codex", false);
+        b.returns.push(Return {
+            agent: codex.clone(),
+            api: tokprof_core::api::ApiId::OpenAi,
+            context: 180_000,
+            idle_ms: 7 * 3_600_000,
+            long_ttl: false,
+            cumulative: [(0.0, 1.43), (1.88, 2.1), (0.2, 0.61), (0.9, 2.05), (1.0, 1.52)].map(|(before, after)| vec![before, after]),
+            forecast: 1.4,
+            pings: 14,
+            kept_warm: false,
+            compacted: true,
+        });
+        b.base.insert(codex, Base { tokens: 20_800, compactions: 791 });
+        b
+    }
+
     /// Three returns followed for one request each, with what every way spends before the first
     /// request and after it.
     fn three_returns() -> Bench {
         use tokprof_core::bench::{Base, Elsewhere};
-        let claude = AgentId::new(tokprof_core::source::AgentInfo { title: "Claude Code".into(), ..tokprof_core::source::AgentInfo::named("claude") });
+        let claude = agent("claude", "Claude Code", true);
         // Per return: resume, /compact first, handoff, heartbeats, heartbeats then compaction,
         // each as (before the first request, after it); then kept warm and compacted.
         let ways = [
@@ -609,7 +665,68 @@ mod tests {
             out.contains("Breaks that were not cold returns would have taken another 12 pings and 2 compactions for $1.80; with them, it saves $7.30 (62%)."),
             "{out}"
         );
-        assert!(out.contains("Heartbeats, then compaction sends the same pings and, at the next ping time past the window, a compaction that reads the warm context and outputs 10.0k tokens."), "{out}");
+        assert!(
+            out.ends_with("Heartbeats, then compaction sends the same pings and, at the next ping time past the window, a compaction that reads the warm context and outputs 10.0k tokens.\n"),
+            "Claude Code alone: {out}"
+        );
+    }
+
+    #[test]
+    fn the_notes_say_where_a_warm_compaction_writes_the_context() {
+        let out = report(&two_agents(), &Style::with_color(false));
+        let notes: Vec<&str> = out.lines().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+        assert_eq!(
+            notes,
+            [
+                "The alternatives start from what a compaction leaves: claude 52.5k (median of 31 compactions), codex 20.8k (median of 791 compactions).",
+                "A compaction re-writes the cold context and outputs 10.0k tokens; a handoff note is 10.0k tokens written while the cache was warm.",
+                "A heartbeat goes out at 5/6 of the cache lifetime, every 50m on a 1h cache, reads the context and outputs 100 tokens; for Codex this assumes it resets the cache timer as it does in Claude Code.",
+                "Heartbeats, then compaction sends the same pings and, at the next ping time past the window, a compaction while the cache is warm that outputs 10.0k tokens: it reads the context in Claude Code and writes it again in Codex, whose compaction calls read nothing from the cache.",
+            ]
+        );
+        let mut codex_alone = two_agents();
+        codex_alone.returns.retain(|r| r.agent.name() == "codex");
+        assert!(
+            report(&codex_alone, &Style::with_color(false)).ends_with(
+                "a compaction while the cache is warm that outputs 10.0k tokens: it writes the context again in Codex, whose compaction calls read nothing from the cache.\n"
+            ),
+            "Codex alone"
+        );
+    }
+
+    #[test]
+    fn the_chart_notes_name_the_agents_whose_warm_compaction_writes_the_context() {
+        let notes = |b: &Bench| {
+            let chart = svg(b, &LIGHT);
+            chart
+                .lines()
+                .filter(|l| l.contains(r#"font-size="11""#))
+                .map(|l| l[l.find('>').unwrap() + 1..l.rfind("</").unwrap()].to_string())
+                .collect::<Vec<_>>()
+        };
+        let first = "tokprof bench · requests priced at their time · a compaction call is modeled as writing the cold context again plus a 10k-token summary";
+        let heartbeats = "heartbeats: a ping at 5/6 of the cache lifetime, every 50m on a 1h cache, for up to 2h after the last request; a return within the last ping's lifetime reads the cache";
+        assert_eq!(
+            notes(&three_returns()),
+            [
+                first,
+                heartbeats,
+                "heartbeats, then compaction: the same pings, then at the next ping time past 2h a compaction that reads the warm context; a later return starts from what it leaves",
+            ],
+            "Claude Code alone"
+        );
+        assert_eq!(
+            notes(&two_agents()),
+            [
+                first,
+                heartbeats,
+                "heartbeats, then compaction: the same pings, then at the next ping time past 2h a compaction while the cache is warm; a later return starts from what it leaves",
+                "a compaction while the cache is warm reads the context in Claude Code and writes it again in Codex, whose compaction calls read nothing from the cache",
+            ]
+        );
+        // The fourth note makes the chart a line taller.
+        let height = |b: &Bench| svg(b, &LIGHT).split("height=\"").nth(1).and_then(|h| h.split('"').next()).and_then(|h| h.parse::<f64>().ok()).unwrap();
+        assert_eq!(height(&two_agents()) - height(&three_returns()), 16.0);
     }
 
     #[test]

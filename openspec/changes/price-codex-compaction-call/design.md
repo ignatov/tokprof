@@ -47,16 +47,18 @@ This removes the `AfterAssistantMessage` variant, the `after_assistant_message` 
 
 *Alternative:* keep the cause with its fixed meaning. It names no miss on the corpus, and the spec's claim that it is a Codex signature does not hold.
 
-### 4. A capability says whether the agent's compaction call reads the cache
+### 4. The agent's harness says whether its compaction call reads the cache
 
-A new `Capabilities` flag, `compaction_reads_cache`:
+A new flag of the agent's `Harness`, `compaction_reads_cache`:
 - **Claude Code: true.** Its binary runs the compaction as a fork that shares the conversation's cache. Its logs hold no call.
 - **Codex: false.** Its logged calls read 0.4% from the cache.
 
+It goes in `Harness`, which says how the agent's harness works where tokprof needs it for an estimate, next to the pickup. `Capabilities` says what the agent's logs can tell, and this flag is no fact of the logs. An agent that does not set it is priced as writing the context, the higher of the two estimates.
+
 The flag is used in three places:
 - **advice.rs:** a warm `/compact` is the prompt at the read price when the flag is true, and at the write price of the conversation's cache lifetime when it is false.
-- **bench.rs:** with the flag false, /compact first takes `shared = 0`. The warm compaction of the fifth way, and the compactions it prices on breaks that were not returns, write the context instead of reading it.
-- **render_bench.rs:** the notes name, by the agent's title, the agents whose compaction writes the warm context.
+- **bench.rs:** with the flag false, the compaction call of /compact first reads nothing (`shared` is 0 for the call alone; the followed requests still read what the return read). The warm compaction of the fifth way, and the compactions it prices on breaks that were not returns, write the context instead of reading it.
+- **render_bench.rs:** the notes name, by the agent's title, the agents whose compaction writes the warm context. The report's last note says it in one sentence. The chart's notes get a fourth line for it, since the third note with the agents' names would be about 230 characters, past the 167 the chart's width holds, and the chart grows by a line. A run with only Claude Code keeps today's three notes.
 
 *Alternative:* measure it: take the median cache-read share of each agent's logged compaction calls. An X-ray of one session rarely has a compaction call of its own, so a default per agent is needed anyway. If Codex changes its call, the `compaction call` misses stop on the real logs. Then the source can turn the flag by version.
 

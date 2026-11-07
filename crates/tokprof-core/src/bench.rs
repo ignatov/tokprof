@@ -11,7 +11,8 @@
 //! - **/compact first**: a compaction call, then the requests on top of what a compaction
 //!   leaves. Claude Code does not log the call. It runs as a fork that shares the
 //!   conversation's cache, so on a cold cache it writes the whole context again, and then it
-//!   outputs a summary.
+//!   outputs a summary. Codex sends its call without the conversation's tools, so it reads
+//!   nothing from the cache and writes the whole context, warm or cold.
 //! - **new session + handoff note**: the old session writes a note while its cache is still
 //!   warm, and a new session does the requests on top of the same base.
 //! - **heartbeats, then resume**: while the session is idle, a ping at 5/6 of the cache
@@ -19,8 +20,9 @@
 //!   last request. A return within the lifetime of the last ping reads its context from the
 //!   cache and then goes on as logged. A later return is cold anyway, after the pings.
 //! - **heartbeats, then compaction**: the same pings, and at the next ping time past `keep_warm`
-//!   a compaction instead, while the cache is still warm. A return before it is warm; a later
-//!   one goes on from the base, as after /compact.
+//!   a compaction instead, while the cache is still warm. It reads the context where the
+//!   agent's compaction call shares the conversation's cache, and writes it again elsewhere. A
+//!   return before it is warm; a later one goes on from the base, as after /compact.
 //!
 //! An IDE that pinged would also ping through the breaks that were no cold return: those after
 //! which the cache was still warm, and the end of each conversation. The bench prices those
@@ -348,6 +350,19 @@ fn warm_call(pricing: &Pricing, model: &str, context: u64, output: f64, at_ms: i
     pricing.get(model, context, at_ms).map(|p| (context as f64 * p.read + output * p.output) / 1e6)
 }
 
+/// What a compaction of a `context`-token prompt on `model` costs at a moment while the cache is
+/// warm: it reads the context where the agent's compaction call shares the conversation's cache,
+/// and writes it again at the write price of the cache lifetime in use elsewhere; then it outputs
+/// the summary. `None` without a price.
+fn warm_compaction(pricing: &Pricing, agent: &AgentId, model: &str, context: u64, long_ttl: bool, at_ms: i64) -> Option<f64> {
+    if agent.info().harness.compaction_reads_cache {
+        return warm_call(pricing, model, context, SUMMARY_TOKENS, at_ms);
+    }
+    let p = pricing.get(model, context, at_ms)?;
+    let write = if long_ttl { p.write_long } else { p.write_short };
+    Some((context as f64 * write + SUMMARY_TOKENS * p.output) / 1e6)
+}
+
 /// What the two heartbeat ways send during the breaks that were no counted return, per agent.
 fn price_elsewhere(found: &Found, pricing: &Pricing, keep_warm_ms: i64) -> BTreeMap<AgentId, Elsewhere> {
     let mut out: BTreeMap<AgentId, Elsewhere> = BTreeMap::new();
@@ -366,7 +381,7 @@ fn price_elsewhere(found: &Found, pricing: &Pricing, keep_warm_ms: i64) -> BTree
         }
         let at = compaction_at(ttl_ms, keep_warm_ms);
         if at < idle
-            && let Some(usd) = warm_call(pricing, &b.model, b.context, SUMMARY_TOKENS, b.start_ms + at)
+            && let Some(usd) = warm_compaction(pricing, &b.agent, &b.model, b.context, b.long_ttl, b.start_ms + at)
         {
             e.compactions += 1;
             e.compaction_usd += usd;
@@ -406,6 +421,9 @@ fn price(c: &Case, base: u64, pricing: &Pricing, keep_warm_ms: i64) -> Option<Re
     let shared = (first.usage.cache_read as f64).min(base as f64).min(ctx);
     let keep = if ctx > shared { ((base as f64).min(ctx) - shared).max(0.0) / (ctx - shared) } else { 1.0 };
     let write = if c.long_ttl { p.write_long } else { p.write_short };
+    // The compaction call of /compact first reads what the return still read from the cache when
+    // it shares the conversation's cache; otherwise it writes the whole context.
+    let call_read = if c.agent.info().harness.compaction_reads_cache { shared } else { 0.0 };
     // Each ping reads the context at the price of its own time.
     let ttl_ms = c.api.ttl(c.long_ttl).map_or(i64::MAX, |(ttl_ms, _)| ttl_ms);
     let (pings, kept_warm) = heartbeats(c.idle_ms, ttl_ms, keep_warm_ms);
@@ -413,10 +431,11 @@ fn price(c: &Case, base: u64, pricing: &Pricing, keep_warm_ms: i64) -> Option<Re
     // Heartbeats then compaction: the same pings, then a compaction while the cache is warm.
     let compact_at = compaction_at(ttl_ms, keep_warm_ms);
     let compacted = compact_at < c.idle_ms;
-    let compaction = if compacted { warm_call(pricing, &first.model, c.context, SUMMARY_TOKENS, c.before_ms + compact_at).unwrap_or(0.0) } else { 0.0 };
+    let compaction =
+        if compacted { warm_compaction(pricing, &c.agent, &first.model, c.context, c.long_ttl, c.before_ms + compact_at).unwrap_or(0.0) } else { 0.0 };
     let up_front = [
         0.0,
-        (shared * p.read + (ctx - shared) * write + SUMMARY_TOKENS * p.output) / 1e6,
+        (call_read * p.read + (ctx - call_read) * write + SUMMARY_TOKENS * p.output) / 1e6,
         (ctx * note.read + SUMMARY_TOKENS * note.output) / 1e6,
         pinged,
         pinged + compaction,
@@ -628,6 +647,67 @@ mod tests {
             let compact = r.after(Strategy::Compact, k) - r.after(Strategy::Compact, 0);
             assert!((mine - compact).abs() < 1e-9, "request {k}: {mine} vs {compact}");
         }
+    }
+
+    /// A Codex request on `gpt-6-astra`, which writes at the 30-minute price.
+    fn codex_request(ts_ms: i64, read: u64, write: u64) -> Request {
+        Request {
+            ts_ms,
+            api: crate::api::ApiId::OpenAi,
+            model: "gpt-6-astra".into(),
+            usage: Usage { cache_read: read, write_short: write, output: 1_000, ..Usage::default() },
+            ..Request::default()
+        }
+    }
+
+    /// A Codex conversation with a 200k-token context, a cold return `idle_min` minutes later that
+    /// reads 15k of it from the cache, a request after the return, then a compaction.
+    fn codex_session(idle_min: i64) -> Session {
+        let back = 60_000 + idle_min * 60_000;
+        let after = Request { compacted_before: true, ..codex_request(back + 200_000, 15_000, 5_000) };
+        let requests = vec![
+            codex_request(0, 0, 190_000),
+            codex_request(60_000, 190_000, 10_000),
+            codex_request(back, 15_000, 187_000),
+            codex_request(back + 30_000, 202_000, 2_000),
+            after,
+        ];
+        let mut s = Session::new(crate::testing::codex(), "c".into());
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+        s
+    }
+
+    #[test]
+    fn a_codex_compaction_writes_the_whole_context_warm_or_cold() {
+        let b = replay(scan(&codex_session(120), &Filter::default(), 60, 100_000), &Pricing::defaults(), 60, 100_000, HOUR);
+        let r = &b.returns[0];
+        assert_eq!((r.context, r.long_ttl), (200_000, false));
+        // /compact first: all 200k written at the 30m price, though the return read 15k.
+        let compaction: f64 = (200_000.0 * 12.5 + 10_000.0 * 50.0) / 1e6;
+        assert!((compaction - 3.00).abs() < 1e-9);
+        assert!((r.after(Strategy::Compact, 0) - compaction).abs() < 1e-9, "{}", r.after(Strategy::Compact, 0));
+        // Heartbeats then compaction: pings at 25 and 50 minutes, a compaction at 75 that writes
+        // the warm context again, then the return two hours after the last request.
+        assert_eq!((r.pings, r.compacted), (2, true));
+        let warm_then_compact = r.after(Strategy::WarmThenCompact, 0) - r.after(Strategy::Heartbeats, 0);
+        assert!((warm_then_compact - compaction).abs() < 1e-9, "{warm_then_compact}");
+    }
+
+    #[test]
+    fn a_codex_break_that_was_no_return_compacts_by_writing_the_context() {
+        let codex = crate::testing::codex();
+        let mut s = Session::new(codex.clone(), "c".into());
+        s.chains.push(Chain {
+            name: "main".into(),
+            kind: ChainKind::Main,
+            requests: vec![codex_request(0, 0, 190_000), codex_request(60_000, 190_000, 10_000)],
+        });
+        let mut found = scan(&s, &Filter::default(), 60, 100_000);
+        // The logs end two hours after the conversation's last request.
+        found.latest_ms = Some(60_000 + 2 * HOUR);
+        let e = price_elsewhere(&found, &Pricing::defaults(), HOUR)[&codex];
+        assert_eq!((e.pings, e.compactions), (2, 1));
+        assert!((e.compaction_usd - 3.00).abs() < 1e-9, "{e:?}");
     }
 
     #[test]

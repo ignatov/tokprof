@@ -176,8 +176,8 @@ pub fn advise(i: &Inputs) -> Vec<Advice> {
                     ));
                 }
                 let after = i.after_compaction.map_or(setup + 2.0 * SUMMARY_TOKENS, |t| t as f64);
-                // The compaction call shares the conversation's cache, so on a cold cache it
-                // writes the whole context again before it summarizes it.
+                // On a cold cache the compaction call writes the whole context again before it
+                // summarizes it.
                 let compact = prompt * write / 1e6 + SUMMARY_TOKENS * p.output / 1e6;
                 out.push(Advice::priced(
                     Topic::CarryOn,
@@ -188,8 +188,10 @@ pub fn advise(i: &Inputs) -> Vec<Advice> {
         } else {
             let left = human_duration((i.cache.ttl_ms - i.cache.idle_ms) as f64 / 1000.0);
             let mut line = format!("Cache warm for {left}: keep going now");
-            // While warm, the compaction call reads the context at the cache rate.
-            let compact = price.map(|p| prompt * p.read / 1e6 + SUMMARY_TOKENS * p.output / 1e6);
+            // While warm, a compaction call that shares the conversation's cache reads the
+            // context at the cache rate; any other writes it again.
+            let reads = i.session.agent.info().harness.compaction_reads_cache;
+            let compact = price.map(|p| prompt * if reads { p.read } else { write_of(p) } / 1e6 + SUMMARY_TOKENS * p.output / 1e6);
             if let Some(c) = compact {
                 line += &format!(", or /compact before a break (≈ {} now)", usd(c));
             }
@@ -510,6 +512,19 @@ mod tests {
                 "Then a new session that refers to this one is cheaper: ≈ $0.45 to pick up the work (`tokprof handoff s`).",
             ]
         );
+    }
+
+    #[test]
+    fn a_warm_codex_compaction_writes_the_context_again() {
+        let pricing = crate::pricing::Pricing::defaults();
+        let astra = |n| pricing.get("gpt-6-astra", n, crate::TEST_NOW_MS);
+        let (mut s, mut live) = session(&[(BlockKind::Tools, None, 10_000.0, 0), (BlockKind::ToolResult, Some("exec_command"), 220_000.0, 1)], 1);
+        s.agent = crate::testing::codex();
+        live.model = "gpt-6-astra".into();
+        let cache = CacheState { long_ttl: false, ttl_ms: 1_800_000, ttl_name: "30m", idle_ms: 10 * 60_000, ..cold_cache(Some(2.6)) };
+        let lines = priced_advice(&s, &live, &cache, &astra, |i| i.first_prompt = Some(18_000));
+        // (230,000 × 12.50 + 10,000 × 50) / 1,000,000: the call writes the prompt at the 30m price.
+        assert_eq!(lines[0], "Cache warm for 20m: keep going now, or /compact before a break (≈ $3.38 now).");
     }
 
     #[test]

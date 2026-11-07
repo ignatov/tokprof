@@ -78,7 +78,7 @@ pub(crate) mod testing {
                 "lower skillListingBudgetFraction (default 0.01 of the context window), or turn unused skills off with skillOverrides in settings.json".into(),
             )],
             cost_counter: Some("Claude Code's own cost counter".into()),
-            harness: Harness { pickup: Some(Pickup { taken_tokens: 8_000.0, requests: 4.0, output_tokens: 2_000.0 }) },
+            harness: Harness { pickup: Some(Pickup { taken_tokens: 8_000.0, requests: 4.0, output_tokens: 2_000.0 }), compaction_reads_cache: true },
             public_names: CLAUDE_NAMES,
             ..AgentInfo::named("claude")
         })
@@ -89,7 +89,7 @@ pub(crate) mod testing {
             short_id_len: 18,
             title: "Codex".into(),
             instruction_files: vec!["AGENTS.md".into()],
-            harness: Harness { pickup: Some(Pickup { taken_tokens: 30_000.0, requests: 6.0, output_tokens: 4_000.0 }) },
+            harness: Harness { pickup: Some(Pickup { taken_tokens: 30_000.0, requests: 6.0, output_tokens: 4_000.0 }), compaction_reads_cache: false },
             public_names: CODEX_NAMES,
             ..AgentInfo::named("codex")
         })

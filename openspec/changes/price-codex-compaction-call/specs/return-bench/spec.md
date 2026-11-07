@@ -57,7 +57,12 @@ The chart SHALL say what every number and mark is: a title and subtitle naming t
 - **THEN** it is titled `Coming back to a big session after its prompt cache expired`, with the subtitle `Mean cost per return over the requests that follow, for cold returns to sessions of 100k+ tokens in local logs`
 - **AND** the legend reads `resume as is (as logged)`, `/compact first (replayed)`, `new session + handoff note (replayed)`, `heartbeats, then resume (replayed)` and `heartbeats, then compaction (replayed)`
 - **AND** the Claude Code panel is headed `Claude Code · 218 returns, median context 488k tokens`, its request axis is labeled `requests after coming back`, the resume line is marked `1st request $3.96` at request 1, and the lines end at $8.19, $6.33, $6.30, $4.03 and $2.55
-- **AND** the notes read `tokprof bench · requests priced at their time · a compaction call is modeled as writing the cold context again plus a 10k-token summary`, `heartbeats: a ping at 5/6 of the cache lifetime, every 50m on a 1h cache, for up to 6h after the last request; a return within the last ping's lifetime reads the cache` and `heartbeats, then compaction: the same pings, then at the next ping time past 6h a compaction while the cache is warm, which reads the context in Claude Code and writes it again in Codex; a later return starts from what it leaves`
+- **AND** the notes read `tokprof bench · requests priced at their time · a compaction call is modeled as writing the cold context again plus a 10k-token summary`, `heartbeats: a ping at 5/6 of the cache lifetime, every 50m on a 1h cache, for up to 6h after the last request; a return within the last ping's lifetime reads the cache`, `heartbeats, then compaction: the same pings, then at the next ping time past 6h a compaction while the cache is warm; a later return starts from what it leaves` and `a compaction while the cache is warm reads the context in Claude Code and writes it again in Codex, whose compaction calls read nothing from the cache`
+- **AND** the fourth note makes the chart one line taller than a chart with three
+
+#### Scenario: Notes for Claude Code alone
+- **WHEN** only Claude Code has returns
+- **THEN** the chart has three notes, the last `heartbeats, then compaction: the same pings, then at the next ping time past 6h a compaction that reads the warm context; a later return starts from what it leaves`
 
 #### Scenario: Line styles
 - **WHEN** the chart draws the five ways

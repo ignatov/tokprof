@@ -127,8 +127,13 @@ impl Codex {
             ttl_settings: None,
             setup_hints: vec![("instructions".to_string(), "trim AGENTS.md".to_string())],
             cost_counter: None,
-            // Measured by the reference bench (docs/reference-bench.md).
-            harness: Harness { pickup: Some(Pickup { taken_tokens: 30_000.0, requests: 6.0, output_tokens: 4_000.0 }) },
+            harness: Harness {
+                // Measured by the reference bench (docs/reference-bench.md).
+                pickup: Some(Pickup { taken_tokens: 30_000.0, requests: 6.0, output_tokens: 4_000.0 }),
+                // The compaction call goes without the conversation's tools, so it reads nothing
+                // from the cache (see README.md).
+                compaction_reads_cache: false,
+            },
             capabilities: Capabilities {
                 own_cost: OwnCost::None,
                 compaction_trigger: false,

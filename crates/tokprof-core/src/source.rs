@@ -190,6 +190,9 @@ impl PublicNames {
 pub struct Harness {
     /// What picking up a session's work in a new session takes, as measured for this agent.
     pub pickup: Option<Pickup>,
+    /// The agent's compaction call shares the conversation's cache, so a compaction while the
+    /// cache is warm reads the context. An agent that does not say so writes it again.
+    pub compaction_reads_cache: bool,
 }
 
 /// A pickup as the reference bench measured it: the tokens a new session takes in, over how many

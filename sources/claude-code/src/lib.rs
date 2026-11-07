@@ -440,8 +440,12 @@ impl ClaudeCode {
             .map(|(source, hint)| (source.to_string(), hint.to_string()))
             .collect(),
             cost_counter: Some("Claude Code's own cost counter".to_string()),
-            // Measured by the reference bench (docs/reference-bench.md).
-            harness: Harness { pickup: Some(Pickup { taken_tokens: 8_000.0, requests: 4.0, output_tokens: 2_000.0 }) },
+            harness: Harness {
+                // Measured by the reference bench (docs/reference-bench.md).
+                pickup: Some(Pickup { taken_tokens: 8_000.0, requests: 4.0, output_tokens: 2_000.0 }),
+                // The compaction call runs as a fork of the conversation, on its cache (see README.md).
+                compaction_reads_cache: true,
+            },
             capabilities: Capabilities {
                 own_cost: OwnCost::Session,
                 compaction_trigger: true,
