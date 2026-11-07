@@ -377,6 +377,11 @@ When the latest prompt holds at least 100,000 tokens, the first advice items SHA
 - **THEN** the items read "Cache warm for 50m: keep going now, or /compact before a break (≈ $0.39 now).", "Once it is cold, resuming writes the whole 950.0k context again (+$7.41)." and "Then a new session that refers to this one is cheaper: ≈ $0.45 to pick up the work (`tokprof handoff 3f951de0`)."
 - **AND** `/compact` now is the prompt at the read price plus 10,000 output tokens
 
+#### Scenario: Warm cache on Codex
+- **WHEN** a 230.0k-token Codex prompt on `gpt-6-astra` stays warm for 20 more minutes
+- **THEN** the first item reads "Cache warm for 20m: keep going now, or /compact before a break (≈ $3.38 now)."
+- **AND** `/compact` now is the prompt at the write price plus 10,000 output tokens, (230,000 × 12.50 + 10,000 × 50) / 1,000,000, because Codex's compaction call reads nothing from the cache (see cache-misses, Compaction call)
+
 #### Scenario: Warm cache, a new session is not cheaper
 - **WHEN** the cache is warm and the pickup estimate is not below the extra cost of re-writing the prompt
 - **THEN** the items end after "Once it is cold, resuming writes the whole <size> context again (+<extra>).", with no third item
@@ -511,7 +516,11 @@ When the unexpected cache misses of the session, subagents included, have an avo
 #### Scenario: Hints by cause
 - **WHEN** the costliest cause is a model or parameter change, a change of tools, system prompt or agent version, rewritten history, or a step past the lookback window
 - **THEN** the hint is, in turn, "switch model or effort in a new session, not mid-task", "avoid toggling MCP servers or plugins, or updating the agent, mid-task", "earlier messages were rewritten, and everything after them was written again" or "one step added more than 20 content blocks, past the cache lookback window"
-- **AND** misses after an assistant message or of unknown cause get "the logs do not show the cause"
+- **AND** misses of unknown cause get "the logs do not show the cause"
+
+#### Scenario: Compaction calls
+- **WHEN** 162 compaction calls of a Codex session cost $250 that could have been avoided, more than any other cause
+- **THEN** the item reads "Cache misses could have saved $250, mostly compaction call (162×): each call wrote the whole context again; hand off to a new session before the context fills."
 
 #### Scenario: Small misses
 - **WHEN** the unexpected misses could have saved $3.09 of a $107 session
