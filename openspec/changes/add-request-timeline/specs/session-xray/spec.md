@@ -23,18 +23,18 @@ Under a header, the list SHALL print one row per request: `#`, the local time `M
 
 #### Scenario: A miss
 - **WHEN** request 57 at 11-03 14:00:12 read 12.3k, wrote 490.3k after 1.0h idle on a 1h cache, sent 3 uncached tokens and 1.2k of output, and cost $3.95 with $3.82 avoidable
-- **THEN** its row reads like `    57  11-03 14:00:12   12.3k  490.3k         3    1.2k  505.0k   $3.95  missed: idle > TTL: 1.0h idle, 1h TTL · $3.82 avoidable`
+- **THEN** its row reads like `    57  11-03 14:00:12   12.3k  490.3k         3    1.2k  502.6k   $3.95  missed: idle > TTL: 1.0h idle, 1h TTL · $3.82 avoidable`
 
 #### Scenario: A growing context
 - **WHEN** a request without a miss has a context 5.1k larger than the previous request's
 - **THEN** its why reads `context +5.1k`
 
 ### Requirement: Why of a request row
-A row's why SHALL be the first that applies: `missed: <cause>: <detail>`, with `· $<n> avoidable` when priced, for an unexpected miss; `rebuilt: <cause>` for an expected rebuild; `first request` for the first request of a chain; `context +<n>` or `context −<n>` for a change in size from the previous request; else nothing.
+A row's why SHALL be the first that applies: `missed: <cause>: <detail>`, with `· $<n> avoidable` when priced, for an unexpected miss; `rebuilt: <cause>: <detail>` for an expected rebuild; `first request` for the first request of a chain; `context +<n>` or `context −<n>` for a change in size from the previous request; else nothing.
 
 #### Scenario: A rebuild
-- **WHEN** a request rebuilt its prompt after a compaction
-- **THEN** its why reads `rebuilt: compaction`
+- **WHEN** a request rebuilt its prompt after an automatic compaction
+- **THEN** its why reads `rebuilt: compaction: auto`
 
 ### Requirement: Entered and changed lines
 Under a row, an `entered` line SHALL give what entered the context since the previous request of its chain, grouped by kind, tool and target, largest first: up to 3 groups, then `<n> more <tokens>`. It is left out when nothing entered or the log does not show the prompt. A `changed` line follows when the model, the effort, another setting the log names, the agent's version or the tool set changed, or a compaction came between.

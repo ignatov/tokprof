@@ -149,7 +149,7 @@ A click on a column, a plain step, or esc clears the range.
 - **THEN** the range is cleared and the card shows the selected request again, and the inspector keeps the keyboard
 
 ### Requirement: Requests table
-Under the cards, `Requests` SHALL list the requests in a table: `#`, `sent`, `after` (red when longer than the cache lives), `in context`, then `read`, `write`, `uncached` and `output` in tokens as the log gives them, `cost`, and `why`. The why is `missed: <cause>`, `rebuilt: <cause>` for an expected rebuild, `first request`, or `context +<n>` or `context −<n>`. The timeline and the cards stay above the table while it scrolls.
+Under the cards, `Requests` SHALL list the requests in a table: `#`, `sent`, `after` (red when longer than the cache lives), `in context`, then `read`, `write`, `uncached` and `output` in tokens as the log gives them, `cost`, and `why`. The why is `missed: <cause>`, `rebuilt: <cause>` for an expected rebuild, `first request`, or `context +<n>` or `context −<n>`. Where the inspector is 760 pt tall or more, the timeline and the cards stay above the table while it scrolls.
 
 #### Scenario: A miss in the table
 - **WHEN** request 57 missed after an idle break

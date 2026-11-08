@@ -117,6 +117,8 @@ struct Totals {
     setup: SetupSpend,
     /// The stacks of `tokprof flame`'s default stack.
     profile: Profile,
+    /// The records of the main conversation's requests.
+    timeline: crate::timeline::Collector,
 }
 
 /// The setup block of a session: what it cost, what the main conversation and the subagents
@@ -143,18 +145,10 @@ struct RequestRow {
     ts_ms: i64,
     usd: f64,
     tokens: f64,
-    /// The prompt's size: what the request sent, cached or not.
-    prompt: u64,
     activity: &'static str,
 }
 
-/// A request of the main conversation, as the window's request track draws it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RequestPoint {
-    pub ts_ms: i64,
-    pub prompt_tokens: u64,
-    pub usd: f64,
-}
+pub use crate::timeline::RequestPoint;
 
 impl Sink for Totals {
     fn session(&mut self, s: &Session) {
@@ -164,15 +158,16 @@ impl Sink for Totals {
 
     fn request(&mut self, r: &RequestRecord) {
         self.tools.request(r);
+        // An advisor call counts when it was made, like the main request it was part of.
+        let main = self.file == 1 && (r.chain_kind == ChainKind::Main || r.advisor);
+        self.timeline.request(r, main);
         self.rows.push(RequestRow {
             file: self.file,
             chain: r.chain.to_string(),
-            // An advisor call counts when it was made, like the main request it was part of.
-            main: self.file == 1 && (r.chain_kind == ChainKind::Main || r.advisor),
+            main,
             ts_ms: r.ts_ms,
             usd: r.price.map_or(0.0, |p| p.cost(&r.usage)),
             tokens: (r.usage.prompt() + r.usage.output) as f64,
-            prompt: r.usage.prompt(),
             activity: r.activity,
         });
         self.requests += 1;
@@ -188,7 +183,12 @@ impl Sink for Totals {
     }
 
     fn miss(&mut self, miss: MissEvent) {
+        self.timeline.miss(&miss);
         self.misses.miss(miss);
+    }
+
+    fn entered(&mut self, e: &analysis::Entered) {
+        self.timeline.entered(e);
     }
 
     fn block_entered(&mut self, b: &BlockEntry) {
@@ -264,6 +264,10 @@ pub struct XRay {
     /// The main conversation's requests in time order, its advisor calls included; requests
     /// without a time are left out.
     pub points: Vec<RequestPoint>,
+    /// The main log's typed messages, interrupts and compactions, and when each subagent ran,
+    /// for the request timeline.
+    pub marks: Vec<crate::timeline::Mark>,
+    pub subagent_spans: Vec<crate::timeline::SubagentSpan>,
     /// What each stack of `tokprof flame`'s default stack spent, the stacks that
     /// `tokprof flame --session` writes for the session.
     pub stacks: Stacks,
@@ -391,19 +395,13 @@ pub fn xray(catalog: &Catalog, file: &SessionRef, pricing: &Pricing, now_ms: i64
         setup,
         misses: totals.misses,
         work: totals.work,
-        points: points_of(&totals.rows),
+        points: totals.timeline.points(),
+        marks: crate::timeline::marks_of(main),
+        subagent_spans: crate::timeline::subagent_spans(&sessions),
         rhythm: crate::rhythm::SessionRhythm::of(main, now_ms, &crate::rhythm::local_offset),
         busy: crate::busy::Busy::of(main, &sessions[1..]),
         stacks: totals.profile.stacks,
     })
-}
-
-/// The main conversation's requests that have a time, in time order.
-fn points_of(rows: &[RequestRow]) -> Vec<RequestPoint> {
-    let mut points: Vec<RequestPoint> =
-        rows.iter().filter(|r| r.main && r.ts_ms > 0).map(|r| RequestPoint { ts_ms: r.ts_ms, prompt_tokens: r.prompt, usd: r.usd }).collect();
-    points.sort_by_key(|p| p.ts_ms);
-    points
 }
 
 /// Tool calls by tool and target: the calls in the messages the requests produced, so each call
@@ -749,19 +747,7 @@ mod tests {
     use super::*;
 
     fn row(file: usize, chain: &str, main: bool, ts_ms: i64, usd: f64, activity: &'static str) -> RequestRow {
-        RequestRow { file, chain: chain.into(), main, ts_ms, usd, tokens: 1.0, prompt: ts_ms as u64 * 10, activity }
-    }
-
-    #[test]
-    fn the_points_are_the_main_requests_with_a_time_in_time_order() {
-        let rows = [
-            row(1, "main", true, 20, 2.0, "reading"),
-            row(2, "subagent: survey", false, 15, 4.0, "web"),
-            row(1, "main", true, 5, 1.0, "prompt"),
-            row(1, "main", true, 0, 9.0, "prompt"),
-        ];
-        let points = points_of(&rows);
-        assert_eq!(points, [RequestPoint { ts_ms: 5, prompt_tokens: 50, usd: 1.0 }, RequestPoint { ts_ms: 20, prompt_tokens: 200, usd: 2.0 }]);
+        RequestRow { file, chain: chain.into(), main, ts_ms, usd, tokens: 1.0, activity }
     }
 
     #[test]

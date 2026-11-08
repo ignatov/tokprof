@@ -108,6 +108,17 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
         ],
     ),
     (
+        "Requests",
+        &[
+            k(&["←", "→", "↑", "↓"], "request before, after"),
+            k(&["PgUp", "PgDn"], "ten requests back, on"),
+            k(&["Home", "End"], "the first, the last request"),
+            k(&["⇧↑", "⇧↓"], "a range of requests"),
+            k(&["t"], "dollars or tokens"),
+            k(&["esc"], "clear the range"),
+        ],
+    ),
+    (
         "Reports",
         &[
             k(&["Tab", "⇧Tab"], "next, previous card"),

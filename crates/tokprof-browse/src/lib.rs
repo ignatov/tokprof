@@ -10,6 +10,7 @@ pub mod filters;
 pub mod paths;
 pub mod reading;
 pub mod render_calendar;
+pub mod render_requests;
 pub mod render_rhythm;
 pub mod render_sessions;
 pub mod render_tools;

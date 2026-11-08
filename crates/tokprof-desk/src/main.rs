@@ -14,6 +14,7 @@ mod overlay;
 mod pal;
 mod palette;
 mod reports;
+mod requests;
 mod settings;
 mod themes;
 mod view;
@@ -236,6 +237,8 @@ pub struct Desk {
     pub calendar: calendar::State,
     /// The cache countdown in the macOS menu bar.
     pub menu_bar: menubar::MenuBar,
+    /// The `Requests` tab's selection, range, hover and unit.
+    pub requests: requests::State,
 }
 
 /// The panes that take the keyboard, in the order Tab moves through them.
@@ -300,6 +303,7 @@ impl Desk {
             reports: reports::State::new(tokprof_browse::reports::Reports::detached()),
             calendar: calendar::State::new(tokprof_browse::calendar::Calendars::detached()),
             menu_bar: menubar::MenuBar::default(),
+            requests: requests::State::default(),
         }
     }
 
@@ -367,6 +371,9 @@ impl Desk {
     /// Shift+← and → switch tabs.
     fn inspector_key(&mut self, e: &KeyEvent, tx: &mut Tx) -> bool {
         if self.tab == Tab::Flame && self.flame_key(e) {
+            return true;
+        }
+        if self.tab == Tab::Requests && requests::key(self, e, tx) {
             return true;
         }
         let at = Tab::ALL.iter().position(|&t| t == self.tab).unwrap_or(0);
@@ -689,6 +696,7 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
             }
             // In a zoomed flame graph, esc zooms out before it gives the keyboard back.
             RuneKey::Escape if s.tab == Tab::Flame && inspector::keyboard(s) && s.flame_out() => return true,
+            RuneKey::Escape if inspector::keyboard(s) && requests::clear_range(s) => return true,
             RuneKey::Escape if !zoomed && s.pane != Focus::List => {
                 s.pane = Focus::List;
                 return true;
@@ -957,6 +965,8 @@ const SCENES: &[Scene] = &[
         s.tab = Tab::Tools;
         s.cursor = 2;
     }),
+    ("requests-hover", requests::scene_hover),
+    ("requests-range", requests::scene_range),
     ("flame-zoomed", |s| {
         s.pane = Focus::Inspector;
         s.tab = Tab::Flame;

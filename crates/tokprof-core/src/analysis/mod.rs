@@ -169,6 +169,56 @@ pub trait Sink {
     fn block_entered(&mut self, _: &BlockEntry) {}
     /// A share of a request's spend charged to a tool call or result, or to no tool.
     fn tool_share(&mut self, _: &ToolShare) {}
+    /// What a request added to its chain's context, after its request, miss and shares.
+    fn entered(&mut self, _: &Entered) {}
+}
+
+/// A request with what entered its chain's context since the previous request: for the X-ray's
+/// request timeline.
+pub struct Entered<'a> {
+    pub session: &'a Session,
+    pub request: &'a Request,
+    pub chain_kind: ChainKind,
+    /// The prompt's shape in force: tool names and system prompt.
+    pub shape: Option<usize>,
+    /// The previous request the miss check compared this one with.
+    pub prev: Option<&'a Prev>,
+    /// The blocks the prompt held for the first time, with their tokens; `None` when the log
+    /// does not show the prompt.
+    pub blocks: Option<&'a [(usize, f64)]>,
+    pub price: Option<Price>,
+    /// Tokens of the cached prefix the request processed again, when it missed.
+    pub rewritten: u64,
+}
+
+/// A request's cost in the X-ray's five components (read, write, rewrite after miss, uncached,
+/// output), sliced as the attribution slices it: the re-processed prefix comes out of the cache
+/// write first, then out of the uncached input. The rewrite's avoidable part is the premium over
+/// the read price.
+pub fn request_parts(usage: &Usage, price: Option<Price>, rewritten: u64) -> [crate::profile::Values; 5] {
+    use crate::profile::Values;
+    let (pr, pw, pu, po) = match price {
+        Some(p) => {
+            let w = usage.cache_write().max(1) as f64;
+            let pw =
+                if usage.cache_write() == 0 { p.write_short } else { (usage.write_short as f64 * p.write_short + usage.write_long as f64 * p.write_long) / w };
+            (p.read / 1e6, pw / 1e6, p.input / 1e6, p.output / 1e6)
+        }
+        None => (0.0, 0.0, 0.0, 0.0),
+    };
+    let (r, w, u) = (usage.cache_read as f64, usage.cache_write() as f64, usage.uncached as f64);
+    let rw = (rewritten as f64).min(w + u);
+    let w_re = w.min(rw);
+    let u_re = (rw - w_re).min(u);
+    let o = usage.output as f64;
+    let v = |tokens: f64, usd: f64, avoidable: f64| Values { tokens, usd, avoidable };
+    [
+        v(r, r * pr, 0.0),
+        v(w - w_re, (w - w_re) * pw, 0.0),
+        v(w_re + u_re, w_re * pw + u_re * pu, w_re * (pw - pr) + u_re * (pu - pr)),
+        v(u - u_re, (u - u_re) * pu, 0.0),
+        v(o, o * po, 0.0),
+    ]
 }
 
 /// Two sinks fed at once, so a command collects only what it shows.
@@ -201,6 +251,11 @@ impl<A: Sink, B: Sink> Sink for (A, B) {
     fn tool_share(&mut self, t: &ToolShare) {
         self.0.tool_share(t);
         self.1.tool_share(t);
+    }
+
+    fn entered(&mut self, e: &Entered) {
+        self.0.entered(e);
+        self.1.entered(e);
     }
 }
 
@@ -447,6 +502,8 @@ struct Walker<'a> {
     block_seen: Vec<bool>,
     /// Blocks the latest request held for the first time, with their tokens there.
     entered: Vec<(usize, f64)>,
+    /// Whether the log showed the latest request's prompt.
+    known: bool,
     first_ts: Option<i64>,
     models: Vec<String>,
     /// Origin and trigger of the requests, which every share of a request carries.
@@ -477,6 +534,7 @@ impl<'a> Walker<'a> {
             block_ts: vec![None; s.blocks.len()],
             block_seen: vec![false; s.blocks.len()],
             entered: Vec::new(),
+            known: false,
             first_ts: None,
             models: Vec::new(),
             origins: Vec::new(),
@@ -585,6 +643,16 @@ impl<'a> Walker<'a> {
                     client: req.client_name().to_string(),
                 });
             }
+            sink.entered(&Entered {
+                session: s,
+                request: req,
+                chain_kind: if req.advisor { ChainKind::Advisor } else { self.chain.kind },
+                shape: self.shape,
+                prev: self.prev.as_ref(),
+                blocks: self.known.then_some(self.entered.as_slice()),
+                price,
+                rewritten: verdict.as_ref().map_or(0, |v| v.rewritten),
+            });
         }
 
         if !req.advisor {
@@ -688,6 +756,7 @@ impl<'a> Walker<'a> {
             });
         }
         let total_chars: f64 = spans.iter().map(|(_, c)| c).sum();
+        self.known = total_chars > 0.0;
         if total_chars <= 0.0 {
             spans.clear();
             spans.push((Slot::UnknownContext, 1.0));

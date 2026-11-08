@@ -133,8 +133,17 @@ tokprof                     # X-ray the latest session on this machine
 tokprof ui                  # browse all sessions interactively
 tokprof sessions            # list session logs, newest first by last activity (--cost adds each session's cost)
 tokprof scan 3f951de0       # X-ray one session by id prefix, or: tokprof scan path/to/session.jsonl
+tokprof scan 3f951de0 --requests   # each request: tokens, cost, why, what entered its context and what changed
 tokprof handoff 3f951de0    # the line to start a new session with, instead of resuming this one
 tokprof day                 # today with the agents: when you sat at them and what they did meanwhile
+```
+
+`tokprof scan --requests` lists the requests of the main conversation instead of the X-ray. Each row gives the cache read, cache write, uncached and output tokens, the context, the cost and why: the miss with its cause and avoidable dollars, a rebuild, the first request, or how much the context grew. Under a row, `entered` gives the largest blocks that entered the context since the previous request, and `changed` what changed (model, effort, tools, the agent's version, a compaction):
+
+```
+     #  sent              read   write  uncached  output context    cost  why
+   365  11-03 16:27:57   14.3k  865.0k         4    6.3k  879.4k   $7.05  missed: idle > TTL: 1.1h idle, 1h TTL · $6.73 avoidable
+        entered  3.2k images · 618 assistant text · 309 user prompt
 ```
 
 A session's time is its last activity: the time of the last record in its log that carries one. The latest session is the one active last. Claude Code also writes records without a time, such as `cost-state`, when the IDE resumes a session that then does nothing, and those do not count.
@@ -280,7 +289,7 @@ Under `time`, the `rhythm` line counts the session's turns as [Your day with the
 
 ### The same in a window
 
-`tokprof-desk` shows what `tokprof ui` shows in a native window on macOS, laid out as a profiler. The day's lanes run along the top at the times of the log: your sittings, and per session its work, its waits for you, and a tail as long as its cache stays warm, up to a line at now. Below them are the sessions, with a countdown while a cache is warm and the next request's cost in red once it is cold, and an inspector of the selected session: its requests on a time axis up to now, the next request, the ways to continue with the cheapest marked, tabs for the X-ray's blocks, and `Flame`, the session's spend as an icicle graph of the stacks `tokprof flame` writes, zoomed by a click. It takes the keys of `tokprof ui` (← and → step the day) and the mouse, and Tab moves the keyboard between the lanes, the list and the inspector, whose tabs and rows the arrows then move through. `Reports` in its bar (⌘2) shows the last 7, 30 or 90 days with the numbers of `tokprof summary` and `tokprof pauses`: spend by day, project, origin and model, and the cold returns; a click on a day or a project opens its sessions. Its settings (⌘,) pick the appearance and a light and a dark theme from the 41 color themes of Rex, and turn on two live options, both off by default: a cache countdown in the menu bar, and `Waiting order`, which adds `Waiting` to the list's orders, as `tokprof ui --waiting` does, with the waiting sessions under `Waiting for you` and the rest under `Others`.
+`tokprof-desk` shows what `tokprof ui` shows in a native window on macOS, laid out as a profiler. The day's lanes run along the top at the times of the log: your sittings, and per session its work, its waits for you, and a tail as long as its cache stays warm, up to a line at now. Below them are the sessions, with a countdown while a cache is warm and the next request's cost in red once it is cold, and an inspector of the selected session: its requests on a time axis up to now, the next request, the ways to continue with the cheapest marked, tabs for the X-ray's blocks, `Requests` with the request timeline (a column per request stacked by cost component, the context against its window, lines at cache misses and compactions, marks where you typed, stopped the agent, three tool calls failed in a row or the agent committed; click or ← → to see why a request cost what it did and what entered its context, drag for the total of a range), and `Flame`, the session's spend as an icicle graph of the stacks `tokprof flame` writes, zoomed by a click. It takes the keys of `tokprof ui` (← and → step the day) and the mouse, and Tab moves the keyboard between the lanes, the list and the inspector, whose tabs and rows the arrows then move through. `Reports` in its bar (⌘2) shows the last 7, 30 or 90 days with the numbers of `tokprof summary` and `tokprof pauses`: spend by day, project, origin and model, and the cold returns; a click on a day or a project opens its sessions. Its settings (⌘,) pick the appearance and a light and a dark theme from the 41 color themes of Rex, and turn on two live options, both off by default: a cache countdown in the menu bar, and `Waiting order`, which adds `Waiting` to the list's orders, as `tokprof ui --waiting` does, with the waiting sessions under `Waiting for you` and the rest under `Others`.
 
 It is a Mac app, `tokprof.app`, with its own name and icon in the Dock: install it from a release as [The Mac app](#the-mac-app) says, or build it from a clone:
 

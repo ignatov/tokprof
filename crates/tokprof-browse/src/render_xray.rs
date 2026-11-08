@@ -634,6 +634,8 @@ pub(crate) mod tests {
             rhythm: None,
             busy: Default::default(),
             points: Vec::new(),
+            marks: Vec::new(),
+            subagent_spans: Vec::new(),
             stacks: Default::default(),
         }
     }

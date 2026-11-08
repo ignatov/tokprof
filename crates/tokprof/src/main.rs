@@ -8,7 +8,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use tokprof_browse::day::{self, keeps_client, temp_folders};
 use tokprof_browse::filters::{normalize_project, parse_date, parse_since};
 use tokprof_browse::reading::{sources, warnings};
-use tokprof_browse::{calendar, clipboard, paths, render_calendar, render_rhythm, render_sessions, render_xray};
+use tokprof_browse::{calendar, clipboard, paths, render_calendar, render_requests, render_rhythm, render_sessions, render_xray};
 use tokprof_core::analysis::{self, Component};
 use tokprof_core::calendar::Metric;
 use tokprof_core::export;
@@ -63,7 +63,13 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// X-ray one session: a session file, a session id prefix, or the latest session.
-    Scan { target: Option<String> },
+    Scan {
+        target: Option<String>,
+        /// Print the requests of the main conversation instead: each with its tokens, cost and
+        /// why, what entered its context since the previous request and what changed.
+        #[arg(long)]
+        requests: bool,
+    },
     /// The line to start a new session with so that it picks up where an earlier one stopped,
     /// instead of resuming it: the session's id and the path of its log. In a terminal, it is
     /// also copied to the clipboard.
@@ -254,7 +260,7 @@ fn main() -> Result<()> {
     let pricing = paths::pricing(cli.prices.as_deref())?;
     let style = fmt::Style::with_color(std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none());
     let mut command = match cli.command.take() {
-        None => Command::Scan { target: None },
+        None => Command::Scan { target: None, requests: false },
         Some(c) => c,
     };
     // Without `-o`, the profile goes into the profile directory, which is made once the options
@@ -329,12 +335,17 @@ fn main() -> Result<()> {
     let filtered = cli.project.is_some() || cli.session.is_some() || cli.since.is_some() || cli.until.is_some() || cli.client.is_some();
     let none_found = || if filtered { "no session logs found for these filters" } else { "no session logs found" };
     match &command {
-        Command::Scan { target } => {
+        Command::Scan { target, requests } => {
             let file = match target {
                 Some(spec) => xray::find(spec, &catalog, &select)?,
                 None => xray::latest(&catalog, &select).context(none_found())?,
             };
-            print!("{}", render_xray::text(&xray::xray(&catalog, &file, &pricing, now_ms())?, &style, &paths::profile_dir(), catalog.home()));
+            let x = xray::xray(&catalog, &file, &pricing, now_ms())?;
+            if *requests {
+                print!("{}", render_requests::text(&x, &style));
+                return Ok(());
+            }
+            print!("{}", render_xray::text(&x, &style, &paths::profile_dir(), catalog.home()));
             return Ok(());
         }
         Command::Sessions { limit, cost } => {

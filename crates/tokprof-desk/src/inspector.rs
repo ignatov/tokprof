@@ -85,6 +85,13 @@ pub fn version(s: &Desk, cx: &Cx<Desk>, theme: &str) -> u64 {
             s.cursor,
         ),
         (s.tab == Tab::Flame).then(|| crate::flame::version(s, cx)),
+        (s.tab == Tab::Requests).then(|| {
+            (
+                s.requests.version(),
+                cx.layout_size(crate::requests::CHART).map(|sz| sz[0].to_bits()),
+                cx.layout_size("inspector").map(|sz| sz[1] >= crate::requests::PIN_H),
+            )
+        }),
     ))
 }
 
@@ -107,8 +114,17 @@ fn numbered(line: El, p: &Pal) -> El {
     let line = line.key(format!("row-{n}")).radius(R_ROW).on_press(move |s: &mut Desk| {
         s.pane = crate::Focus::Inspector;
         s.cursor = n;
+        if s.tab == Tab::Requests {
+            crate::requests::row_pressed(s, n);
+        }
     });
     if cursor == Some(n) { overlay::ring_at(line.fill(p.sel), true, 1.0, p) } else { line.hover(p.hover) }
+}
+
+/// Puts the cursor of the tab being drawn on row `n`, for a tab whose selection is its own.
+pub(crate) fn cursor_row(n: Option<usize>) {
+    let (count, _) = ROWS.get();
+    ROWS.set((count, n));
 }
 
 pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
@@ -119,10 +135,22 @@ pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
         view::window_size(s, cx).0 - list
     });
     ROOM.set(pane_w - 36.0 - 28.0);
+    // What stays above the scrolling pane: the request timeline and its card.
+    let mut pinned = None;
     let body = match s.browser.xray() {
         Some(x) => match s.tab {
             Tab::Summary => summary(s, x, cx, p),
-            Tab::Requests => requests(s, x, cx, p),
+            Tab::Requests => {
+                let (top, mut rest) = crate::requests::tab(s, x, cx, p);
+                // The timeline stays above the table where the inspector is tall enough.
+                let tall = cx.layout_size("inspector").is_some_and(|sz| sz[1] >= crate::requests::PIN_H);
+                match top {
+                    Some(t) if tall => pinned = Some(t),
+                    Some(t) => rest.insert(0, t),
+                    None => {}
+                }
+                rest
+            }
             Tab::Spend => spend_tab(x, p),
             Tab::Work => work(x, p),
             Tab::Waits => waits(x, p),
@@ -184,7 +212,8 @@ pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
         .on_scroll_offset(move |at| offset.set(at.offset[1]))
         .on_layout(|s: &mut Desk, r| s.pane_height = r[3])
         .child(col().key("pane-body").w_full().px(18.0).pt(14.0).pb(26.0).gap(14.0).children(body));
-    col().key("inspector").grow(1.0).h_full().min_w(0.0).min_h(0.0).child(tabs).child(el().w_full().h(1.0).fill(p.line)).child(pane)
+    let pinned = pinned.map(|t| col().key("pinned").w_full().px(18.0).pt(14.0).child(t));
+    col().key("inspector").grow(1.0).h_full().min_w(0.0).min_h(0.0).child(tabs).child(el().w_full().h(1.0).fill(p.line)).children(pinned).child(pane)
 }
 
 fn note(s: impl Into<String>, p: &Pal) -> El {
@@ -245,7 +274,7 @@ pub(crate) fn bar_rows(rows: &[(String, f64, String, String)], color: Color, p: 
 
 /// A column of a table: its title, its width (0 for the one that takes the rest), and whether
 /// its cells are numbers, set right.
-struct Column(&'static str, f32, bool);
+pub(crate) struct Column(pub &'static str, pub f32, pub bool);
 
 fn table(cols: &[Column], rows: Vec<Vec<(String, Option<Color>)>>, p: &Pal) -> El {
     table_dropping(cols, rows, &[], p)
@@ -279,7 +308,7 @@ thread_local! {
 }
 
 /// A table whose columns named in `drop` are left out, first to last, when the card is too narrow.
-fn table_dropping(cols: &[Column], rows: Vec<Vec<(String, Option<Color>)>>, drop: &[&str], p: &Pal) -> El {
+pub(crate) fn table_dropping(cols: &[Column], rows: Vec<Vec<(String, Option<Color>)>>, drop: &[&str], p: &Pal) -> El {
     let keep = fitting(&cols.iter().map(|c| (c.1, c.0)).collect::<Vec<_>>(), drop, ROOM.get());
     let cols: Vec<&Column> = cols.iter().zip(&keep).filter(|(_, k)| **k).map(|(c, _)| c).collect();
     let rows: Vec<Vec<(String, Option<Color>)>> = rows.into_iter().map(|r| r.into_iter().zip(&keep).filter(|(_, k)| **k).map(|(c, _)| c).collect()).collect();
@@ -327,7 +356,7 @@ pub fn components(x: &XRay) -> Vec<(Component, f64, String)> {
     Component::ALL.iter().zip(&x.components).map(|(c, v)| (*c, value(v) / total.max(1e-9), amount(x, v))).filter(|(_, share, _)| *share >= 0.0005).collect()
 }
 
-fn component_color(c: Component, p: &Pal) -> Color {
+pub(crate) fn component_color(c: Component, p: &Pal) -> Color {
     match c {
         Component::Read => p.read,
         Component::Write => p.write,
@@ -695,33 +724,6 @@ fn summary(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal) -> Vec<El> {
             .children([next_box(s, x, p), ways_box(x, p), spend_box(x, p)].map(|b| col().grow(1.0).min_w(0.0).child(b.grow(1.0)))),
     );
     out.extend(tips(x, p));
-    out
-}
-
-fn requests(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal) -> Vec<El> {
-    let mut out: Vec<El> = request_track(s, x, cx, p, 120.0).into_iter().collect();
-    let ttl = x.context.as_ref().map_or(i64::MAX, |c| c.cache.ttl_ms);
-    let shown = x.points.len().saturating_sub(300);
-    let rows = x.points.iter().enumerate().skip(shown).map(|(i, q)| {
-        let gap = i.checked_sub(1).map(|j| q.ts_ms - x.points[j].ts_ms);
-        let after = gap.map_or(String::new(), |g| human_duration(g as f64 / 1000.0));
-        let cold = gap.is_some_and(|g| g >= ttl);
-        vec![
-            plain((i + 1).to_string()),
-            plain(local_time(q.ts_ms, "%m-%d %H:%M:%S")),
-            (after, cold.then_some(p.cold)),
-            plain(tokens(q.prompt_tokens as f64)),
-            plain(usd(q.usd)),
-        ]
-    });
-    let cols =
-        [Column("#", 40.0, true), Column("sent", 0.0, false), Column("after", 90.0, true), Column("in context", 110.0, true), Column("cost", 90.0, true)];
-    let mut body = col().w_full().gap(8.0).child(table(&cols, rows.collect(), p));
-    if shown > 0 {
-        body = body.child(note(format!("and {shown} earlier requests"), p));
-    }
-    let aside = format!("{} of the main conversation; an after longer than the cache lives is in red", count(x.points.len() as u64, "request", "requests"));
-    out.push(boxed("requests", "Requests", Some(aside), body, p));
     out
 }
 
