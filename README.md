@@ -592,6 +592,33 @@ The table here keeps five of its rows. Over these 30 days, answers at 21:00 took
 
 The logs give the hand-offs as each source's README lists them: Claude Code's `stop_reason`, interrupt and notification texts, `queued_command` attachments and question tools; Codex's `task_complete` and `turn_aborted` events. Neither logs permission prompts, so a wait for one counts as work, or as silence after 15 minutes.
 
+## Your calendar
+
+`tokprof calendar` draws months of work as a grid of days, a column per week and a row per weekday, as GitHub draws contributions. Each day is one of five marks: nothing, then the four quarters of the days that had any. Below the grid: the total, the active days, the current and longest streak of days with a request, the busiest day and weekday, and a punchcard of weekday by hour.
+
+```
+$ tokprof calendar
+tokprof · calendar · spend
+         Aug       Sep         Oct       Nov
+    Mon  · ▒ ▓ ░ █ ▓ ▒ ▓ █ ▓ ▒ ▓ █ ▓ ▒
+    ...
+    less · ░ ▒ ▓ █ more   ░ up to $38  ▒ up to $96  ▓ up to $171  █ more
+
+total     $11,603 from Mon 3 Aug to Sun 8 Nov 2026, 98 days
+active    87 of 98 days had a request
+streaks   current 34 days, longest 41 days (Mon 7 Sep – Sat 17 Oct)
+busiest   Tue 14 Oct, $812
+weekday   Tuesdays, $2,431
+```
+
+`--metric` picks what the marks show: `spend` (the default), `avoidable` (spend lost to cache misses), `agent` (minutes some agent worked, each minute once), `keyboard` (your time at the keyboard, as `tokprof day` counts sittings), `messages` and `commits` (commits the agents made). `--agent`, `--project`, `--session`, `--since` and `--until` work as for `tokprof summary`, so `tokprof calendar --since 2026-10-09 --until 2026-11-08` totals what `tokprof summary` with the same dates calls `Total priced`.
+
+A cell is a day as `tokprof day` has it, from the middle of one night to the middle of the next, so a night's work counts in the day before it, and a cell's messages and time at the keyboard are those `tokprof day <date>` prints.
+
+The numbers come from a day store, `~/Library/Caches/tokprof/days-1.json` on macOS (`~/.cache/tokprof/` elsewhere, `$TOKPROF_CACHE_DIR` to move it). It keeps, for each log, its spend, misses, requests, commits, the minutes the agent worked and the times of your actions, by hour; no text. The first run reads every log; later runs read only the logs that changed and answer in about a second. When an agent deletes old logs (Claude Code does after `cleanupPeriodDays`, 30 days by default), the store keeps their days, and the `kept` line says how many days come only from it.
+
+In the window, ⌘3 shows the same calendar, larger, with a tooltip on each day; a click opens that day.
+
 ## Flame graphs and profiles
 
 `tokprof flame` writes a JFR into `~/tokprof`, or into `$TOKPROF_DIR` if set. The file is named after the filters: `all.jfr`, `3f951de0.jfr` for `--session 3f951de0`, `billing-since-7d.jfr`. Existing files are overwritten.
