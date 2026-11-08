@@ -3,6 +3,7 @@
 //! `tokprof ui`; this draws them with Rune and passes the window's keys and clicks on.
 
 mod ansi;
+mod calendar;
 mod changes;
 mod day;
 mod flame;
@@ -78,6 +79,10 @@ struct Cli {
     /// merino-light or ink-meridian).
     #[arg(long)]
     colors: Option<String>,
+    /// With --snap or --tree: the calendar's metric (spend, agent, keyboard, messages, commits,
+    /// avoidable), as `tokprof calendar --metric` takes it.
+    #[arg(long)]
+    metric: Option<String>,
     /// Stay in the terminal until the window closes, instead of starting it on its own.
     #[arg(long)]
     wait: bool,
@@ -225,8 +230,10 @@ pub struct Desk {
     /// key, is not taken by a later X-ray.
     pub xray_seen: RefCell<Option<Arc<tokprof_core::xray::XRay>>>,
     pub flame_w: f32,
-    /// Day or Reports, and the state of Reports.
+    /// Day, Reports or Calendar, and the state of Reports.
     pub reports: reports::State,
+    /// The state of Calendar.
+    pub calendar: calendar::State,
     /// The cache countdown in the macOS menu bar.
     pub menu_bar: menubar::MenuBar,
 }
@@ -291,6 +298,7 @@ impl Desk {
             xray_seen: RefCell::default(),
             flame_w: 0.0,
             reports: reports::State::new(tokprof_browse::reports::Reports::detached()),
+            calendar: calendar::State::new(tokprof_browse::calendar::Calendars::detached()),
             menu_bar: menubar::MenuBar::default(),
         }
     }
@@ -544,7 +552,7 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
     if s.status_shown() {
         tx.wake_after(Duration::from_secs(view::STATUS_SECS).saturating_sub(s.status.1.elapsed()) + Duration::from_millis(5));
     }
-    let reported = reports::poll(s, tx);
+    let reported = reports::poll(s, tx) | calendar::poll(s, tx);
     // The menu bar counts down whether the window shows or not; it draws nothing in the window.
     menubar::poll(s, now, tx);
     arrived || cooled || waited || counting || turned || reported
@@ -659,6 +667,17 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
             return true;
         }
         return reports::on_key(s, e, tx);
+    }
+    if s.reports.mode == reports::Mode::Calendar {
+        if matches!(&e.key, RuneKey::Text(t) if t == "?") && !e.mods.cmd && !e.mods.ctrl {
+            s.open_help();
+            return true;
+        }
+        if key_of(e) == Some(Key::Interrupt) {
+            tx.quit();
+            return true;
+        }
+        return calendar::on_key(s, e, tx);
     }
     // The pane with the keyboard takes its keys first; a filter being typed takes them all.
     if !s.browser.editing() && plain(e) {
@@ -776,10 +795,15 @@ fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk>
     let catalog = Arc::new(catalog);
     let (select, pricing, tab) = checked(cli, &catalog)?;
     let reports = tokprof_browse::reports::Reports::start(catalog.clone(), pricing.clone(), select.clone(), wake.clone());
+    let calendars = tokprof_browse::calendar::Calendars::start(catalog.clone(), pricing.clone(), select.clone(), paths::day_store(), wake.clone());
+    let client_ignored = select.client.is_some();
     let browser = Browser::start(catalog, pricing, select, !headless, wake, frontend())?;
     let mut desk = Desk::new(browser, !headless);
     desk.tab = tab;
     desk.reports.data = reports;
+    desk.calendar.data = calendars;
+    desk.calendar.client_ignored = client_ignored;
+    desk.calendar.metric = metric(cli)?.unwrap_or(tokprof_core::calendar::Metric::Spend);
     if headless {
         if let Some(t) = colors(cli)? {
             desk.settings = settings::Settings::of_theme(t);
@@ -808,7 +832,17 @@ fn checked(cli: &Cli, catalog: &Catalog) -> Result<(Query, tokprof_core::pricing
         None => Tab::Summary,
     };
     colors(cli)?;
+    metric(cli)?;
     Ok((select, pricing, tab))
+}
+
+/// The metric `--metric` names, if it names one.
+fn metric(cli: &Cli) -> Result<Option<tokprof_core::calendar::Metric>> {
+    let Some(name) = cli.metric.as_deref() else { return Ok(None) };
+    match tokprof_core::calendar::Metric::parse(name) {
+        Some(m) => Ok(Some(m)),
+        None => bail!("--metric takes one of: {}", tokprof_core::calendar::Metric::NAMES),
+    }
 }
 
 /// The theme `--colors` names, if it names one.
@@ -881,7 +915,7 @@ type Scene = (&'static str, fn(&mut Desk));
 
 /// The scenes: a pane with the keyboard, the flame graph zoomed two levels in, a filter being typed
 /// that matches nothing, the settings open, the palette open with a query, the key help, and Reports on
-/// the last 30 days, waited for, also with the sessions of its first saving open.
+/// the last 30 days, waited for, also with the sessions of its first saving open, and Calendar.
 const SCENES: &[Scene] = &[
     ("settings", |s| s.panel = Some(settings::Panel::default())),
     ("waiting", |s| {
@@ -904,6 +938,18 @@ const SCENES: &[Scene] = &[
         if let Some(name) = first {
             changes::toggle(s, reports::Part::Saved, &name);
         }
+    }),
+    ("calendar", |s| {
+        reports::show(s, reports::Mode::Calendar);
+        let changes = s.browser.changes();
+        s.calendar.data.settle(changes, Duration::from_secs(120));
+    }),
+    ("calendar-day", |s| {
+        reports::show(s, reports::Mode::Calendar);
+        let changes = s.browser.changes();
+        s.calendar.data.settle(changes, Duration::from_secs(120));
+        // The cursor a week back, with its day's tooltip.
+        s.calendar.cursor = s.calendar.calendar().map(|c| c.last - 7);
     }),
     ("lanes-keyboard", |s| s.pane = Focus::Lanes),
     ("inspector-keyboard", |s| {

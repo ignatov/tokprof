@@ -13,6 +13,7 @@ use crate::overlay::{self, R_CARD, R_ROW};
 use crate::pal::{self, Pal};
 use crate::reports::Mode;
 use crate::{Desk, Focus};
+use tokprof_core::calendar::Metric;
 
 /// The open palette: what is typed, and the place of the highlighted entry.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -62,6 +63,9 @@ pub enum Action {
     Period7,
     Period30,
     Period90,
+    Calendar,
+    /// Calendar with one of its metrics.
+    CalendarOf(tokprof_core::calendar::Metric),
     Handoff,
     Jfr,
     Html,
@@ -87,7 +91,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 29] = [
+    pub const ALL: [Action; 36] = [
         Action::Settings,
         Action::KeyHelp,
         Action::DayView,
@@ -95,6 +99,13 @@ impl Action {
         Action::Period7,
         Action::Period30,
         Action::Period90,
+        Action::Calendar,
+        Action::CalendarOf(Metric::Spend),
+        Action::CalendarOf(Metric::Agent),
+        Action::CalendarOf(Metric::Keyboard),
+        Action::CalendarOf(Metric::Messages),
+        Action::CalendarOf(Metric::Commits),
+        Action::CalendarOf(Metric::Avoidable),
         Action::Handoff,
         Action::Jfr,
         Action::Html,
@@ -121,6 +132,15 @@ impl Action {
 
     pub fn title(self) -> &'static str {
         match self {
+            Action::Calendar => "Calendar",
+            Action::CalendarOf(m) => match m {
+                Metric::Spend => "Calendar: spend",
+                Metric::Agent => "Calendar: agent time",
+                Metric::Keyboard => "Calendar: at the keyboard",
+                Metric::Messages => "Calendar: messages",
+                Metric::Commits => "Calendar: commits",
+                Metric::Avoidable => "Calendar: avoidable",
+            },
             Action::Settings => "Settings…",
             Action::KeyHelp => "Key help",
             Action::DayView => "Day",
@@ -161,6 +181,8 @@ impl Action {
             Action::DayView => &["⌘1"],
             Action::Reports => &["⌘2"],
             Action::Period7 | Action::Period30 | Action::Period90 => &[],
+            Action::Calendar => &["⌘3"],
+            Action::CalendarOf(_) => &[],
             Action::Handoff => &["c"],
             Action::Jfr => &["f"],
             Action::Html => &["o"],
@@ -192,6 +214,8 @@ impl Action {
                 | Action::Period7
                 | Action::Period30
                 | Action::Period90
+                | Action::Calendar
+                | Action::CalendarOf(_)
                 | Action::Handoff
                 | Action::Jfr
                 | Action::Html
@@ -209,8 +233,9 @@ impl Action {
             // The full-size inspector has the keyboard.
             Action::FullSize | Action::ToLanes | Action::ToList | Action::ToInspector => !zoomed,
             Action::BackToList => zoomed,
-            Action::DayView => s.reports.mode == Mode::Reports,
-            Action::Reports => s.reports.mode == Mode::Day,
+            Action::DayView => s.reports.mode != Mode::Day,
+            Action::Reports => s.reports.mode != Mode::Reports,
+            Action::Calendar => s.reports.mode != Mode::Calendar,
             _ => true,
         }
     }
@@ -611,6 +636,11 @@ impl Desk {
             Action::KeyHelp => self.open_help(),
             Action::DayView => crate::reports::show(self, Mode::Day),
             Action::Reports => crate::reports::show(self, Mode::Reports),
+            Action::Calendar => crate::reports::show(self, Mode::Calendar),
+            Action::CalendarOf(m) => {
+                crate::reports::show(self, Mode::Calendar);
+                crate::calendar::pick_metric(self, m);
+            }
             Action::Period7 | Action::Period30 | Action::Period90 => {
                 crate::reports::show(self, Mode::Reports);
                 let days = match a {

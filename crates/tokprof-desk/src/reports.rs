@@ -33,6 +33,7 @@ const PLOT_PAD: f32 = 7.0;
 pub enum Mode {
     Day,
     Reports,
+    Calendar,
 }
 
 /// The parts of the report that take the keyboard, in the order Tab moves through them.
@@ -135,10 +136,11 @@ pub fn poll(s: &mut Desk, tx: &mut Tx) -> bool {
     arrived || moved
 }
 
-/// Shows Day or Reports.
+/// Shows Day, Reports or Calendar.
 pub fn show(s: &mut Desk, mode: Mode) {
     s.reports.mode = mode;
     s.reports.hover = None;
+    s.calendar.hover = None;
 }
 
 /// Picks the period of `days` days.
@@ -155,12 +157,14 @@ pub fn pick_period(s: &mut Desk, days: u32, tx: &mut Tx) {
     }
 }
 
-/// ⌘1 shows Day and ⌘2 Reports, whichever shows now.
+/// ⌘1 shows Day, ⌘2 Reports and ⌘3 Calendar, whichever shows now.
 pub fn switch_key(s: &mut Desk, e: &KeyEvent) -> bool {
     let mode = if e.is_command('1') {
         Mode::Day
     } else if e.is_command('2') {
         Mode::Reports
+    } else if e.is_command('3') {
+        Mode::Calendar
     } else {
         return false;
     };
@@ -292,7 +296,7 @@ pub fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
     true
 }
 
-/// The switch between Day and Reports, at the start of the bar.
+/// The switch between Day, Reports and Calendar, at the start of the bar.
 pub fn switch(s: &Desk, p: &Pal) -> El {
     let mode = s.reports.mode;
     view::segments(
@@ -300,6 +304,7 @@ pub fn switch(s: &Desk, p: &Pal) -> El {
         vec![
             view::segment("mode-day".into(), "Day", mode == Mode::Day, p).on_press(|s: &mut Desk| show(s, Mode::Day)),
             view::segment("mode-reports".into(), "Reports", mode == Mode::Reports, p).on_press(|s: &mut Desk| show(s, Mode::Reports)),
+            view::segment("mode-calendar".into(), "Calendar", mode == Mode::Calendar, p).on_press(|s: &mut Desk| show(s, Mode::Calendar)),
         ],
         p.panel,
     )

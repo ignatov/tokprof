@@ -25,7 +25,7 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
         &[
             k(&["⌘K"], "command palette"),
             k(&["⌘,"], "settings"),
-            k(&["⌘1", "⌘2"], "Day, Reports"),
+            k(&["⌘1", "⌘2", "⌘3"], "Day, Reports, Calendar"),
             k(&["?"], "this key help"),
             k(&["Tab", "⇧Tab"], "keyboard to the next, previous pane"),
             k(&["⏎"], "inspector full size; in Flame, zoom in"),
@@ -116,6 +116,17 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
             k(&["PgUp", "PgDn"], "ten rows up, down"),
             k(&["Home", "End", "g", "G"], "the first, the last"),
             k(&["⏎"], "open the day, the project, a row's sessions or a session"),
+            k(&["esc", "⌘1"], "back to Day"),
+        ],
+    ),
+    (
+        "Calendar",
+        &[
+            k(&["↑", "↓", "k", "j"], "day before, after"),
+            k(&["←", "→", "h", "l"], "week before, after"),
+            k(&["Home", "End"], "the first, the last day"),
+            k(&["m", "⇧M"], "next, previous metric"),
+            k(&["⏎"], "open the day"),
             k(&["esc", "⌘1"], "back to Day"),
         ],
     ),

@@ -2071,3 +2071,6 @@ fn a_frame_in_waiting_order() {
     assert!(texts(&rt).iter().any(|t| t == "Waiting for you"));
     assert!(!rt.state.settings.waiting, "without reading the saved settings");
 }
+
+#[path = "calendar_tests.rs"]
+mod calendar_view;

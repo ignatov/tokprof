@@ -36,12 +36,20 @@ The grid SHALL draw each day as a rounded square, a column per week and a row pe
 - **WHEN** the grid is drawn
 - **THEN** the last day's square is ringed in the theme's ink
 
+#### Scenario: Kept by the store
+- **WHEN** the calendar is drawn
+- **THEN** beside the grid, or under it in a window too narrow for both, the numbers end with `Kept by the store`: the days that come only from logs that are gone, or `no day yet`
+
 ### Requirement: A day in the calendar
-The pointer over a day's square SHALL show a tooltip beside it with the day's date and weekday and every metric of that day: spend, avoidable, requests, sessions with a request, agent time, time at the keyboard with its sittings, messages, and commits, pushes and pull requests. A click on a square shows Day with the lanes of that day. A day after the last day has no square.
+The pointer over a day's square SHALL show a tooltip beside it with the day's date and weekday and every metric of that day: spend, avoidable, requests, sessions with a request, agent time, time at the keyboard with its sittings, messages, and commits, pushes and pull requests; and whether the day comes only or partly from logs that are gone. A click on a square shows Day with the lanes of that day. A day after the last day has no square.
 
 #### Scenario: Hovering a day
 - **WHEN** the pointer rests over the square of 5 November
-- **THEN** a tooltip reads like `Thu 5 Nov 2026`, `$214 spent, $31 avoidable, 1,820 requests, 8 sessions`, `agents worked 6.2h`, `2.5h at the keyboard in 14 sittings, 47 messages`, `3 commits, 1 push, no pull request`
+- **THEN** a tooltip reads like `Thu 5 Nov 2026`, `$214 spent, $31.00 of it avoidable`, `1,820 requests in 8 sessions`, `agents worked 6.2h`, `2.5h at the keyboard in 14 sittings, 47 messages`, `3 commits, 1 push, no pull request`
+
+#### Scenario: A day whose logs are gone
+- **WHEN** every log of 5 September is gone and the store keeps its numbers
+- **THEN** its tooltip ends with `only from the store: its logs are gone`, and with `partly from the store: some of its logs are gone` when only some are
 
 #### Scenario: Opening a day
 - **WHEN** the user clicks the square of 5 November
@@ -70,7 +78,7 @@ The calendar SHALL be computed on a worker; no frame waits for it. It refreshes 
 - **THEN** the window draws no more frames for it
 
 ### Requirement: Calendar in a frame without a window
-`--scene calendar` SHALL draw the frame in Calendar, waiting up to 120 seconds for it, and `--metric <name>` picks its metric by the names of `tokprof calendar --metric`.
+`--scene calendar` SHALL draw the frame in Calendar, waiting up to 120 seconds for it, and `--scene calendar-day` the same with the cursor a week before the last day and its tooltip. `--metric <name>` picks the metric by the names of `tokprof calendar --metric`.
 
 #### Scenario: A frame of the calendar
 - **WHEN** the user runs `tokprof-desk --snap out.png --scene calendar --metric keyboard`

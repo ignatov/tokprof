@@ -49,6 +49,8 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     let inspector = |cx: &Cx<Desk>| rune::memo("inspector", crate::inspector::version(s, cx, &theme.id), || crate::inspector::inspector(s, cx, &p));
     if s.reports.mode == crate::reports::Mode::Reports {
         root = root.child(crate::reports::view(s, cx, &p));
+    } else if s.reports.mode == crate::reports::Mode::Calendar {
+        root = root.child(crate::calendar::view(s, cx, &p));
     } else if s.browser.zoomed() {
         root = root.child(inspector(cx));
     } else {
@@ -175,7 +177,7 @@ fn bar(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
         .gap(10.0)
         .center_y()
         .child(crate::reports::switch(s, p));
-    // Reports has no day: the bar keeps the switch, the status and the live mark.
+    // Reports and Calendar have no day: the bar keeps the switch, the status and the live mark.
     let day = s.reports.mode == crate::reports::Mode::Day;
     if day {
         bar = bar
