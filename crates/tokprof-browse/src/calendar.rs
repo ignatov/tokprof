@@ -63,8 +63,9 @@ pub fn read_line(catalog: &Catalog, r: &Refreshed, secs: f64, path: &Path) -> St
     let read = if r.read.is_empty() { format!("read no log in {secs:.1}s") } else { crate::reading::sources(catalog, &r.read, secs) };
     let gone = if r.gone > 0 { format!(", {} gone from disk", tokprof_core::fmt::int(r.gone as u64)) } else { String::new() };
     format!(
-        "{read}; {} from the store{gone} ({})",
-        tokprof_core::fmt::count(r.from_store as u64, "log", "logs"),
+        "{read}; {} {} from the store{gone} ({})",
+        tokprof_core::fmt::int(r.from_store as u64),
+        if r.from_store == 1 { "log" } else { "logs" },
         display_path(&path.to_string_lossy(), None, catalog.home())
     )
 }

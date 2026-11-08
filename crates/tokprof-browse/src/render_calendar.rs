@@ -154,7 +154,7 @@ pub fn numbers(cal: &Calendar, metric: Metric) -> Vec<String> {
         out.push(format!("weekday   {}, {}", weekday_plural(w), amount(v, unit)));
     }
     match cal.only_kept() {
-        0 => {}
+        0 => out.push("kept      no day comes only from the store yet; it keeps the days of logs the agents delete".to_string()),
         n => out.push(format!("kept      {} only from the store: their logs are gone", fmt::count(n as u64, "day comes", "days come"))),
     }
     out
@@ -226,9 +226,10 @@ mod tests {
         assert_eq!(lines[13], "streaks   no current streak, longest 8 days (Mon 26 Oct – Mon 2 Nov)");
         assert_eq!(lines[14], "busiest   Mon 2 Nov, $8.00");
         assert_eq!(lines[15], "weekday   Mondays, $9.00");
-        assert_eq!(lines[17], "punchcard spend by weekday and hour, local time");
-        assert_eq!(lines[18], "     00    03    06    09    12    15    18    21");
-        assert!(lines[20].starts_with("Tue  · ") && lines[20].ends_with("▓ ·"), "{}", lines[20]);
+        assert_eq!(lines[16], "kept      no day comes only from the store yet; it keeps the days of logs the agents delete");
+        assert_eq!(lines[18], "punchcard spend by weekday and hour, local time");
+        assert_eq!(lines[19], "     00    03    06    09    12    15    18    21");
+        assert!(lines[21].starts_with("Tue  · ") && lines[21].ends_with("▓ ·"), "{}", lines[21]);
         assert!(!text.contains('\x1b'));
     }
 

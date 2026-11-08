@@ -599,16 +599,27 @@ The logs give the hand-offs as each source's README lists them: Claude Code's `s
 ```
 $ tokprof calendar
 tokprof · calendar · spend
-         Aug       Sep         Oct       Nov
-    Mon  · ▒ ▓ ░ █ ▓ ▒ ▓ █ ▓ ▒ ▓ █ ▓ ▒
-    ...
-    less · ░ ▒ ▓ █ more   ░ up to $38  ▒ up to $96  ▓ up to $171  █ more
+     Aug       Sep     Oct     Nov
+Mon  · ▓ ▒ ▒ ▒ · ░ █ ░ ░ █ █ █ ▒
+Tue  · ▓ ▒ ▓ ░ · ▒ █ ░ ▒ █ ▓ █ █
+Wed  · ▓ ▒ ▒ ▒ · ░ ░ █ ▒ █ █ ▓ ▒
+Thu  ▒ █ ▓ ▓ ░ · ▒ ░ ▓ ░ ▓ █ █ ░
+Fri  ▒ █ ░ ▓ ░ · ▓ · █ ▒ ▓ ▓ ▒ █
+Sat  ░ █ ░ ▓ ▒ · ▓ ░ ▓ ░ █ ▒ ░ ▓
+Sun  ▓ ▓ ░ ▒ ░ ░ █ ░ ▓ ▓ ▒ █ █ ▒
+     less · ░ ▒ ▓ █ more   ░ up to $35.11  ▒ up to $208  ▓ up to $343  █ more
 
-total     $11,603 from Mon 3 Aug to Sun 8 Nov 2026, 98 days
-active    87 of 98 days had a request
-streaks   current 34 days, longest 41 days (Mon 7 Sep – Sat 17 Oct)
-busiest   Tue 14 Oct, $812
-weekday   Tuesdays, $2,431
+total     $22,778 from Thu 6 Aug to Sun 8 Nov 2026, 95 days
+active    88 of 95 days had a request
+streaks   current 44 days, longest 44 days (Sat 26 Sep – Sun 8 Nov)
+busiest   Sun 25 Oct, $1,221
+weekday   Tuesdays, $3,952
+kept      no day comes only from the store yet; it keeps the days of logs the agents delete
+
+punchcard spend by weekday and hour, local time
+     00    03    06    09    12    15    18    21
+Mon  █ ▒ ▒ ▒ ▒ ░ ░ ░ ░ ▓ ░ ▓ ▓ █ █ ▒ ▓ ▓ ▓ ▓ ▒ ▓ █ █
+...
 ```
 
 `--metric` picks what the marks show: `spend` (the default), `avoidable` (spend lost to cache misses), `agent` (minutes some agent worked, each minute once), `keyboard` (your time at the keyboard, as `tokprof day` counts sittings), `messages` and `commits` (commits the agents made). `--agent`, `--project`, `--session`, `--since` and `--until` work as for `tokprof summary`, so `tokprof calendar --since 2026-10-09 --until 2026-11-08` totals what `tokprof summary` with the same dates calls `Total priced`.
@@ -617,7 +628,7 @@ A cell is a day as `tokprof day` has it, from the middle of one night to the mid
 
 The numbers come from a day store, `~/Library/Caches/tokprof/days-1.json` on macOS (`~/.cache/tokprof/` elsewhere, `$TOKPROF_CACHE_DIR` to move it). It keeps, for each log, its spend, misses, requests, commits, the minutes the agent worked and the times of your actions, by hour; no text. The first run reads every log; later runs read only the logs that changed and answer in about a second. When an agent deletes old logs (Claude Code does after `cleanupPeriodDays`, 30 days by default), the store keeps their days, and the `kept` line says how many days come only from it.
 
-In the window, ⌘3 shows the same calendar, larger, with a tooltip on each day; a click opens that day.
+In the window, ⌘3 shows the same calendar, larger, with a tooltip on each day that names all its numbers and whether it comes from the store alone; a click or ⏎ opens that day. `--client` does not apply: the store does not keep the client of each request.
 
 ## Flame graphs and profiles
 

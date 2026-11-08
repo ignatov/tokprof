@@ -165,7 +165,7 @@ The levels SHALL be drawn as `·`, `░`, `▒`, `▓` and `█`. In a terminal 
 - **THEN** the legend reads `less · ░ ▒ ▓ █ more   ░ up to $2.00  ▒ up to $4.00  ▓ up to $6.00  █ more`
 
 ### Requirement: Calendar numbers
-Below the legend, the calendar SHALL print `total`, `active`, `streaks`, `busiest`, `weekday` and, when there are any, `kept` over the days shown: from the first day with a request or an action, or the first column's Monday when that is later, to the last day. A streak is a run of days with a request; the current one ends at the last day, or at the day before when the last day has none. `kept` counts the days whose every amount and action comes from logs that are gone.
+Below the legend, the calendar SHALL print `total`, `active`, `streaks`, `busiest`, `weekday` and `kept` over the days shown: from the first day with a request or an action, or the first column's Monday when that is later, to the last day. A streak is a run of days with a request; the current one ends at the last day, or at the day before when the last day has none. `kept` counts the days whose every amount and action comes from logs that are gone.
 
 #### Scenario: The lines
 - **WHEN** the calendar of spend shows 98 days from 2026-08-03 to 2026-11-08
@@ -175,6 +175,10 @@ Below the legend, the calendar SHALL print `total`, `active`, `streaks`, `busies
   `streaks   current 34 days, longest 41 days (Mon 7 Sep – Sat 17 Oct)`
   `busiest   Tue 14 Oct, $812`
   `weekday   Tuesdays, $2,431`
+
+#### Scenario: No day from the store alone
+- **WHEN** no day shown comes only from logs that are gone
+- **THEN** the last line reads `kept      no day comes only from the store yet; it keeps the days of logs the agents delete`
 
 #### Scenario: Units
 - **WHEN** the metric is `keyboard` or `agent`
