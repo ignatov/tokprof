@@ -446,39 +446,102 @@ fn header(s: &Desk, x: &XRay, p: &Pal) -> El {
         }))
 }
 
-/// The time axis of the request track: from the first request to now. When the session went
-/// cold long ago, the axis breaks after its cache went cold and keeps its last part for now.
+/// The time axis of the request track: from the first request to now. When the time after the
+/// last request would take more than `TAIL` of the axis, the axis breaks at the last request and
+/// that time gets `TAIL`: the warm part of it the first half and the cold part the second, or all
+/// of it while the cache is still warm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Axis {
     pub begin: i64,
-    /// Where the axis breaks, `now` when it does not.
-    pub cut: i64,
+    pub last: i64,
+    pub cold_at: i64,
     pub now: i64,
 }
 
 const TEN_MIN: i64 = 600_000;
+/// The most of the axis the time after the last request takes.
+pub const TAIL: f32 = 0.08;
+/// Where now sits, a little before the end, so that the next request fits.
+const END: f32 = 0.97;
 
 impl Axis {
-    pub fn of(first: i64, cold_at: i64, now: i64) -> Axis {
+    pub fn of(first: i64, last: i64, cold_at: i64, now: i64) -> Axis {
         let begin = first - first.rem_euclid(TEN_MIN);
-        let life = cold_at.max(first + TEN_MIN) - begin;
-        if now - begin <= 3 * life.max(3_600_000) { Axis { begin, cut: now, now } } else { Axis { begin, cut: begin + life + life / 6, now } }
+        let now = now.max(first);
+        let last = last.clamp(first, now);
+        Axis { begin, last, cold_at, now }
     }
 
     pub fn broken(&self) -> bool {
-        self.cut < self.now
+        END * (self.now - self.last) as f32 > TAIL * (self.now - self.begin).max(1) as f32
     }
 
-    /// Where a moment is along the axis, from 0 to 1; after a break, the time between the break
-    /// and now is left out.
+    /// Where the axis breaks, from 0 to 1: at the last request.
+    pub fn break_at(&self) -> f32 {
+        END - TAIL
+    }
+
+    /// Where a moment is along the axis, from 0 to 1.
     pub fn at(&self, ts: i64) -> f32 {
-        // Now sits a little before the end, so that the next request fits.
+        let share = |a: i64, b: i64| ((ts - a) as f64 / (b - a).max(1) as f64).clamp(0.0, 1.0) as f32;
         if !self.broken() {
-            return 0.97 * ((ts - self.begin) as f64 / (self.now - self.begin).max(1) as f64).clamp(0.0, 1.0) as f32;
+            return END * share(self.begin, self.now);
         }
-        if ts <= self.cut { 0.8 * ((ts - self.begin) as f64 / (self.cut - self.begin).max(1) as f64).clamp(0.0, 1.0) as f32 } else { 0.97 }
+        let work = END - TAIL;
+        if ts <= self.last {
+            return work * share(self.begin, self.last);
+        }
+        if self.cold_at > self.last && self.cold_at < self.now {
+            return if ts <= self.cold_at {
+                work + TAIL / 2.0 * share(self.last, self.cold_at)
+            } else {
+                work + TAIL / 2.0 + TAIL / 2.0 * share(self.cold_at, self.now)
+            };
+        }
+        work + TAIL * share(self.last, self.now)
     }
 }
+
+/// The band along the axis from the last request to now: green while the cache stayed warm, red
+/// once it went cold, with a break mark where the axis breaks. `width` is the axis's width.
+pub fn cache_band(axis: &Axis, width: f32, p: &Pal) -> El {
+    let xs = |ts: i64| axis.at(ts) * width;
+    let warm_end = axis.cold_at.min(axis.now);
+    let mut band = el().key("cache-band").w_full().h(BAND_H);
+    band = band.child(
+        el().key("warm-span").absolute(xs(axis.last), 1.0).w((xs(warm_end) - xs(axis.last)).max(1.0)).h(BAND_H - 2.0).radius(2.0).fill(p.warm.alpha(0.75)),
+    );
+    if axis.now >= axis.cold_at {
+        let x0 = xs(axis.cold_at);
+        band = band.child(el().key("cold-span").absolute(x0, 1.0).w((xs(axis.now) - x0).max(1.0)).h(BAND_H - 2.0).radius(2.0).fill(p.cold.alpha(0.6)));
+    }
+    if axis.broken() {
+        band = band.child(text("//").key("axis-break").font(pal::HOURS).color(p.ink2).single_line().absolute(axis.break_at() * width - 5.0, -6.0));
+    }
+    band
+}
+
+/// The times under an axis, each where there is room: from its place on, or, near the end, up to
+/// it, keeping clear of now's label at the end.
+pub fn axis_times(marks: Vec<(f32, String, &'static str)>, width: f32, p: &Pal) -> Vec<El> {
+    let mut out = Vec::new();
+    let mut taken = f32::MIN;
+    for (x0, t, what) in marks {
+        let label =
+            |c: El| c.child(text(t.clone()).font(pal::SMALL_STRONG).color(p.ink).single_line()).child(text(what).font(pal::SMALL).color(p.ink2).single_line());
+        if x0 - taken >= 84.0 && x0 <= width - 150.0 {
+            out.push(label(col().absolute(x0, 3.0 + BAND_H)));
+            taken = x0;
+        } else if x0 - 102.0 - taken >= 12.0 && x0 - 6.0 <= width - 108.0 {
+            out.push(label(col().absolute(x0 - 102.0, 3.0 + BAND_H).w(96.0).items_end()));
+            taken = x0;
+        }
+    }
+    out
+}
+
+/// The height of the cache band under an axis.
+pub const BAND_H: f32 = 7.0;
 
 /// The track of the session's requests on a time axis up to now: a bar per request as tall as
 /// its cost, the time the cache stayed warm, the time it has been cold, and the next request.
@@ -491,24 +554,13 @@ fn request_track(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal, tall: f32) -> Optio
         (last, x.context.as_ref().map_or(last, |c| last + c.cache.ttl_ms))
     });
     let next = s.browser.selected().and_then(|r| s.browser.cells(r, now).next_usd);
-    let axis = Axis::of(first, cold_at, now);
+    let axis = Axis::of(first, last, cold_at, now);
     let width = cx.layout_size(TRACK).map_or(640.0, |sz| sz[0]).max(100.0);
     let xs = |ts: i64| axis.at(ts) * width;
     let top = x.points.iter().map(|q| q.usd).fold(0.0, f64::max).max(next.unwrap_or(0.0)).max(1e-9);
     let height = |usd: f64| ((usd / top) as f32 * tall).max(2.0);
     let cold = now >= cold_at;
     let mut track = el().key(TRACK).w_full().h(tall + 18.0);
-    // The time the cache stayed warm, and the time it has been cold.
-    let warm_end = cold_at.min(now);
-    track = track.child(el().key("warm-span").absolute(xs(last), 18.0).w((xs(warm_end) - xs(last)).max(1.0)).h(tall).fill(p.tail.alpha(0.45)));
-    if cold {
-        let x0 = xs(cold_at);
-        track = track.child(el().key("cold-span").absolute(x0, 18.0).w((xs(now) - x0).max(1.0)).h(tall).fill(p.cold.alpha(0.07)));
-    }
-    if axis.broken() {
-        let x0 = 0.8 * width;
-        track = track.child(text("…").font(pal::BODY).color(p.ink3).absolute(x0 + 0.075 * width, 18.0 + tall / 2.0 - 8.0));
-    }
     for (i, q) in x.points.iter().enumerate() {
         let h = height(q.usd);
         track = track.child(el().key(format!("request-{i}")).absolute(xs(q.ts_ms) - 1.5, 18.0 + tall - h).w(3.0).h(h).radius(1.5).fill(p.bars).help(format!(
@@ -549,22 +601,12 @@ fn request_track(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal, tall: f32) -> Optio
     let mut marks: Vec<(f32, String, &'static str)> =
         vec![(xs(first), local_time(first, "%H:%M"), "start"), (xs(last), local_time(last, "%H:%M"), "last request")];
     marks.push((xs(cold_at), local_time(cold_at, "%H:%M"), if cold { "cache cold" } else { "cold then" }));
-    let mut axis_row = el().w_full().h(30.0);
-    let mut taken = f32::MIN;
-    for (x0, t, what) in marks {
-        if x0 - taken >= 84.0 && x0 <= width - 150.0 {
-            axis_row = axis_row.child(
-                col()
-                    .absolute(x0, 3.0)
-                    .child(text(t).font(pal::SMALL_STRONG).color(p.ink).single_line())
-                    .child(text(what).font(pal::SMALL).color(p.ink2).single_line()),
-            );
-            taken = x0;
-        }
-    }
+    // The cache's band along the axis, and the times under it.
+    let mut axis_row = el().w_full().h(30.0 + BAND_H).child(cache_band(&axis, width, p).absolute(0.0, 0.0));
+    axis_row = axis_row.children(axis_times(marks, width, p));
     axis_row = axis_row.child(
         col()
-            .absolute(width - 120.0, 3.0)
+            .absolute(width - 120.0, 3.0 + BAND_H)
             .w(120.0)
             .items_end()
             .child(text(local_time(now, "%H:%M")).font(pal::SMALL_STRONG).color(p.ink).single_line())
@@ -981,16 +1023,23 @@ mod tests {
     const HOUR: i64 = 3_600_000;
 
     #[test]
-    fn the_axis_runs_to_now_and_breaks_after_a_long_cold_time() {
-        // A session from 10:27 to 11:09, cold at 12:09, now 14:33: one axis to now.
-        let (first, cold_at, now) = (10 * HOUR + 27 * 60_000, 12 * HOUR + 9 * 60_000, 14 * HOUR + 33 * 60_000);
-        let a = Axis::of(first, cold_at, now);
+    fn the_axis_runs_to_now_and_the_time_after_the_last_request_takes_at_most_eight_percent() {
+        // A session from 10:27 to 11:09, cold at 12:09, now 11:12: one axis to now.
+        let (first, last, cold_at) = (10 * HOUR + 27 * 60_000, 11 * HOUR + 9 * 60_000, 12 * HOUR + 9 * 60_000);
+        let now = 11 * HOUR + 12 * 60_000;
+        let a = Axis::of(first, last, cold_at, now);
         assert!(!a.broken() && a.begin == 10 * HOUR + 20 * 60_000, "{a:?}");
         assert_eq!(a.at(now), 0.97, "now a little before the end");
-        assert!((a.at(cold_at) - 0.97 * 109.0 / 253.0).abs() < 1e-4, "12:09 is 109 minutes of 253 along");
-        // Three days later the axis breaks: the session keeps 80% of the track, now its end.
-        let later = Axis::of(first, cold_at, now + 72 * HOUR);
-        assert!(later.broken() && later.at(cold_at) < 0.8 && later.at(now + 72 * HOUR) > 0.9, "{later:?}");
+        assert!((a.at(last) - 0.97 * 49.0 / 52.0).abs() < 1e-4, "11:09 is 49 minutes of 52 along");
+        // At 14:33 the time after the last request would take most of the axis: it breaks, and
+        // the warm hour and the cold time after it share the last 8%.
+        let later = Axis::of(first, last, cold_at, 14 * HOUR + 33 * 60_000);
+        assert!(later.broken(), "{later:?}");
+        assert!((later.at(last) - 0.89).abs() < 1e-4 && (later.at(cold_at) - 0.93).abs() < 1e-4 && (later.at(later.now) - 0.97).abs() < 1e-4);
+        assert!((later.at(10 * HOUR + 48 * 60_000) - 0.89 * 28.0 / 49.0).abs() < 1e-4, "the work keeps 89%");
+        // Three days later, the same.
+        let days = Axis::of(first, last, cold_at, 14 * HOUR + 72 * HOUR);
+        assert!(days.broken() && (days.at(cold_at) - 0.93).abs() < 1e-4);
     }
 
     #[test]

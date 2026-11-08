@@ -163,7 +163,7 @@ fn frame(s: &Desk, x: &XRay) -> Option<Frame> {
         (last, x.context.as_ref().map_or(last, |c| last + c.cache.ttl_ms))
     });
     let next = s.browser.selected().and_then(|r| s.browser.cells(r, now).next_usd);
-    Some(Frame { axis: Axis::of(first, cold_at, now), last, cold_at, now, next })
+    Some(Frame { axis: Axis::of(first, last, cold_at, now), last, cold_at, now, next })
 }
 
 fn width(s: &Desk, cx: Option<&Cx<Desk>>) -> f32 {
@@ -241,16 +241,7 @@ fn chart(s: &Desk, x: &XRay, cx: &Cx<Desk>, sel: usize, range: Option<(usize, us
     }
 
     let mut chart = el().key(CHART).w_full().h(CHART_H + 2.0);
-    // The time the cache stayed warm, and the time it has been cold.
     let cold = f.now >= f.cold_at;
-    chart =
-        chart.child(el().key("warm-span").absolute(xs(f.last), 0.0).w((xs(f.cold_at.min(f.now)) - xs(f.last)).max(1.0)).h(CHART_H).fill(p.tail.alpha(0.12)));
-    if cold {
-        chart = chart.child(el().key("cold-span").absolute(xs(f.cold_at), 0.0).w((xs(f.now) - xs(f.cold_at)).max(1.0)).h(CHART_H).fill(p.cold.alpha(0.07)));
-    }
-    if f.axis.broken() {
-        chart = chart.child(text("…").font(pal::BODY).color(p.ink3).absolute(0.875 * plot(w), CHART_H / 2.0 - 8.0));
-    }
     // A range, shaded.
     if let Some((a, b)) = range {
         let (lo, hi) = (a.min(b), a.max(b));
@@ -379,27 +370,18 @@ fn chart(s: &Desk, x: &XRay, cx: &Cx<Desk>, sel: usize, range: Option<(usize, us
         );
     }
     // The times under the axis, as Summary gives them.
-    let mut axis_row = el().w_full().h(30.0);
-    let mut taken = f32::MIN;
+    // The cache's band along the axis, and the times under it.
+    let mut axis_row = el().w_full().h(30.0 + inspector::BAND_H).child(inspector::cache_band(&f.axis, plot(w), p).absolute(0.0, 0.0));
     let first = x.points[0].ts_ms;
-    for (x0, t, what) in [
+    let times = vec![
         (xs(first), local_time(first, "%H:%M"), "start"),
         (xs(f.last), local_time(f.last, "%H:%M"), "last request"),
         (xs(f.cold_at), local_time(f.cold_at, "%H:%M"), if cold { "cache cold" } else { "cold then" }),
-    ] {
-        if x0 - taken >= 84.0 && x0 <= w - 150.0 {
-            axis_row = axis_row.child(
-                col()
-                    .absolute(x0, 3.0)
-                    .child(text(t).font(pal::SMALL_STRONG).color(p.ink).single_line())
-                    .child(text(what).font(pal::SMALL).color(p.ink2).single_line()),
-            );
-            taken = x0;
-        }
-    }
+    ];
+    axis_row = axis_row.children(inspector::axis_times(times, plot(w), p));
     axis_row = axis_row.child(
         col()
-            .absolute(w - 120.0, 3.0)
+            .absolute(w - 120.0, 3.0 + inspector::BAND_H)
             .w(120.0)
             .items_end()
             .child(text(local_time(f.now, "%H:%M")).font(pal::SMALL_STRONG).color(p.ink).single_line())
