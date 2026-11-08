@@ -70,6 +70,7 @@ pub enum Action {
     SortTime,
     SortCost,
     SortNext,
+    SortWaiting,
     Resort,
     Fit,
     WholeDay,
@@ -86,7 +87,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 28] = [
+    pub const ALL: [Action; 29] = [
         Action::Settings,
         Action::KeyHelp,
         Action::DayView,
@@ -102,6 +103,7 @@ impl Action {
         Action::SortTime,
         Action::SortCost,
         Action::SortNext,
+        Action::SortWaiting,
         Action::Resort,
         Action::Fit,
         Action::WholeDay,
@@ -134,6 +136,7 @@ impl Action {
             Action::SortTime => "Sort by Time",
             Action::SortCost => "Sort by Cost",
             Action::SortNext => "Sort by Next request",
+            Action::SortWaiting => "Sort by Waiting",
             Action::Resort => "Sort again",
             Action::Fit => "Fit the lanes to the day's actions",
             Action::WholeDay => "Show 24 h in the lanes",
@@ -163,7 +166,7 @@ impl Action {
             Action::Html => &["o"],
             Action::Filter => &["/"],
             Action::ClearFilter => &["esc"],
-            Action::SortTime | Action::SortCost | Action::SortNext => &["s"],
+            Action::SortTime | Action::SortCost | Action::SortNext | Action::SortWaiting => &["s"],
             Action::Resort => &["r"],
             Action::Fit | Action::WholeDay => &[],
             Action::DayBack => &["←"],
@@ -202,6 +205,7 @@ impl Action {
         let zoomed = s.browser.zoomed();
         match self {
             Action::ClearFilter => !s.browser.filter().is_empty(),
+            Action::SortWaiting => s.browser.waiting(),
             // The full-size inspector has the keyboard.
             Action::FullSize | Action::ToLanes | Action::ToList | Action::ToInspector => !zoomed,
             Action::BackToList => zoomed,
@@ -621,11 +625,12 @@ impl Desk {
             Action::Html => self.browser_key(key('o'), tx),
             Action::Filter => self.browser_key(key('/'), tx),
             Action::ClearFilter => self.browser.clear_filter(),
-            Action::SortTime | Action::SortCost | Action::SortNext => {
+            Action::SortTime | Action::SortCost | Action::SortNext | Action::SortWaiting => {
                 self.browser.sort_by(match a {
                     Action::SortTime => Sort::Time,
                     Action::SortCost => Sort::Cost,
-                    _ => Sort::Next,
+                    Action::SortNext => Sort::Next,
+                    _ => Sort::Waiting,
                 });
                 self.scroll_to_selected(tx);
             }

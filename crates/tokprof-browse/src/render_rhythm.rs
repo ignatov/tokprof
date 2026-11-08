@@ -167,20 +167,20 @@ mod tests {
 
     #[test]
     fn the_advice_follows_the_cache_line_one_item_after_the_other() {
-        // Turns of 3 minutes, one ending every 4 minutes while the user was there.
-        let text = day_of(&session(3, 4), &returns());
+        // Turns of 2 minutes, each answered a minute later: one stretch of 3 steps.
+        let text = day_of(&session(2, 3), &returns());
         let lines: Vec<&str> = text.lines().collect();
         let cache = lines.iter().position(|l| l.starts_with("cache     ")).unwrap();
         assert_eq!(lines[cache], "cache     3 cold returns, $12.60 in their first requests, $12.00 of it avoidable");
         assert!(lines[cache + 1].starts_with("advice    ▸ 3 returns after the cache expired cost $12.00 "), "{text}");
-        let step = lines.iter().position(|l| l.starts_with("          ▸ While you were there, an agent ended a turn every 4.0m, ")).expect(&text);
+        let step = lines.iter().position(|l| l.starts_with("          ▸ Once you led a session step by step: ")).expect(&text);
         assert!(step > cache + 2, "{text}");
         for line in lines[cache + 2..step].iter().chain(&lines[step + 1..]) {
             assert!(line.starts_with(&" ".repeat(12)) && !line.starts_with(&" ".repeat(13)), "a wrapped line: {line:?}");
         }
         assert!(lines[cache + 1..].iter().all(|l| l.chars().count() <= 12 + 82), "{text}");
         let joined = lines[step..].iter().map(|l| l.trim_start()).collect::<Vec<_>>().join(" ");
-        assert!(joined.contains("after turns of a median 3.0m: you led it step by step. "), "{joined}");
+        assert!(joined.contains("each answered within 3m (3 messages in 6.0m). "), "{joined}");
     }
 
     #[test]
@@ -218,12 +218,12 @@ mod tests {
     #[test]
     fn the_advice_of_the_pause_report_follows_the_rhythm_lines() {
         let r = rhythm::Returns::of(&returns(), true);
-        let text = section(&session(3, 4), (i64::MIN, i64::MAX), &|_| 0, &r, &fmt::Style::with_color(false));
+        let text = section(&session(2, 3), (i64::MIN, i64::MAX), &|_| 0, &r, &fmt::Style::with_color(false));
         let lines: Vec<&str> = text.lines().collect();
         let stops = lines.iter().position(|l| l.starts_with("stops     ")).expect(&text);
         assert!(lines[stops + 1].starts_with("advice    ▸ 3 returns after the cache expired "), "{text}");
         let blank = stops + lines[stops..].iter().position(|l| l.is_empty()).expect(&text);
-        assert!(lines[stops + 2..blank].iter().any(|l| l.starts_with("          ▸ While you were there")), "{text}");
+        assert!(lines[stops + 2..blank].iter().any(|l| l.starts_with("          ▸ Once you led")), "{text}");
         assert!(lines[blank + 1].starts_with("hour"), "the hour table follows the advice: {text}");
     }
 

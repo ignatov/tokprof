@@ -27,7 +27,7 @@ use anyhow::{Result, bail};
 use clap::Parser;
 use rune::{App, AppSpec, Chrome, Key as RuneKey, KeyEvent, Tx, Waker};
 
-use tokprof_browse::browser::{Browser, Frontend, Key, Viewport, Wake, now_ms};
+use tokprof_browse::browser::{Browser, Frontend, Key, Sort, Viewport, Wake, now_ms};
 use tokprof_browse::filters::{normalize_project, parse_date, parse_since};
 use tokprof_browse::paths;
 use tokprof_core::catalog::Catalog;
@@ -160,6 +160,8 @@ pub type Book = Browser<Styled>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Slot {
     Day(i64),
+    /// A group's label in waiting order: `Waiting for you`, `Nobody waits for you` or `Others`.
+    Label(&'static str),
     Row(usize),
 }
 
@@ -180,6 +182,8 @@ pub struct Desk {
     pub window: (f32, f32),
     /// When a listed cache goes cold next, as the last poll found it.
     pub next_cold: Option<i64>,
+    /// When a wait on the screen next changes, as the last poll found it.
+    pub next_wait: Option<i64>,
     /// The browser's count of lists put in place again, as the last poll saw it.
     pub relisted: u32,
     /// Where the pointer rests over the lanes.
@@ -252,8 +256,10 @@ impl Desk {
         browser.set_pane(view::DAY_PANE);
         let relisted = browser.relisted();
         let prefs = if live { rune::prefs::Prefs::open(settings::APP_ID) } else { rune::prefs::Prefs::memory() };
+        let settings = settings::Settings::read(&prefs);
+        browser.set_waiting(settings.waiting);
         Desk {
-            settings: settings::Settings::read(&prefs),
+            settings,
             prefs,
             panel: None,
             palette: None,
@@ -268,6 +274,7 @@ impl Desk {
             pane_height: 0.0,
             window: (0.0, 0.0),
             next_cold: None,
+            next_wait: None,
             relisted,
             pointer: None,
             tab: Tab::Summary,
@@ -291,6 +298,7 @@ impl Desk {
     /// The desk with its settings in this store instead.
     pub fn with_prefs(mut self, prefs: rune::prefs::Prefs) -> Desk {
         self.settings = settings::Settings::read(&prefs);
+        self.browser.set_waiting(self.settings.waiting);
         self.prefs = prefs;
         self
     }
@@ -426,7 +434,7 @@ impl Desk {
         *self.slots.borrow_mut() = view::slots(self);
         let into = self.list_offset.get().rem_euclid(view::ROW);
         let mut slot = self.slot_of(self.browser.top());
-        if self.separator_on_top && slot > 0 && matches!(self.slots.borrow().get(slot - 1), Some(Slot::Day(_))) {
+        if self.separator_on_top && slot > 0 && matches!(self.slots.borrow().get(slot - 1), Some(Slot::Day(_) | Slot::Label(_))) {
             slot -= 1;
         }
         tx.scroll_to_y(view::LIST, slot as f32 * view::ROW + into);
@@ -489,7 +497,7 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
     if s.browser.relisted() == s.relisted {
         let slot = (s.list_offset.get() / view::ROW).max(0.0) as usize;
         let top = s.row_at(slot);
-        s.separator_on_top = matches!(s.slots.borrow().get(slot), Some(Slot::Day(_)));
+        s.separator_on_top = matches!(s.slots.borrow().get(slot), Some(Slot::Day(_) | Slot::Label(_)));
         s.browser.set_top(top);
     }
     let arrived = s.browser.tick() | s.flame_dive();
@@ -505,6 +513,12 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
     let cooled = s.next_cold.is_some_and(|at| now >= at);
     s.next_cold = s.browser.next_cold(now);
     if let Some(at) = s.next_cold {
+        tx.wake_after(Duration::from_millis((at - now).max(1) as u64));
+    }
+    // A wait on the screen grows, and passes the waiting limit.
+    let waited = s.next_wait.is_some_and(|at| now >= at);
+    s.next_wait = s.browser.next_wait_change(now);
+    if let Some(at) = s.next_wait {
         tx.wake_after(Duration::from_millis((at - now).max(1) as u64));
     }
     if let Some(at) = s.browser.next_due() {
@@ -533,7 +547,7 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
     let reported = reports::poll(s, tx);
     // The menu bar counts down whether the window shows or not; it draws nothing in the window.
     menubar::poll(s, now, tx);
-    arrived || cooled || counting || turned || reported
+    arrived || cooled || waited || counting || turned || reported
 }
 
 /// The browser's key for a key of the window, when it takes one.
@@ -870,6 +884,10 @@ type Scene = (&'static str, fn(&mut Desk));
 /// the last 30 days, waited for, also with the sessions of its first saving open.
 const SCENES: &[Scene] = &[
     ("settings", |s| s.panel = Some(settings::Panel::default())),
+    ("waiting", |s| {
+        s.browser.set_waiting(true);
+        s.browser.sort_by(Sort::Waiting);
+    }),
     ("palette", |s| s.palette = Some(palette::Palette { query: "to".into(), at: 0 })),
     ("keys", |s| s.help = true),
     ("reports", |s| {

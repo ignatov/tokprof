@@ -668,6 +668,9 @@ pub struct Glance {
     pub last_ms: i64,
     /// The session's title, when its log names one.
     pub title: Option<String>,
+    /// Since when the session waits for the user, as the rhythm says (see
+    /// [`crate::rhythm::waiting_since`]); the waiting limit is not applied.
+    pub waiting_since: Option<i64>,
 }
 
 impl Glance {
@@ -678,7 +681,9 @@ impl Glance {
     }
 }
 
-pub fn glance(catalog: &Catalog, row: &SessionRow, pricing: &Pricing, now_ms: i64) -> Glance {
+/// What a session costs and what its next request would cost now. `temp` lists the temporary
+/// folders, whose sessions never wait for the user.
+pub fn glance(catalog: &Catalog, row: &SessionRow, pricing: &Pricing, now_ms: i64, temp: &[String]) -> Glance {
     let mut t = Totals::default();
     let mut main = None;
     for (k, file) in row.files().enumerate() {
@@ -697,13 +702,14 @@ pub fn glance(catalog: &Catalog, row: &SessionRow, pricing: &Pricing, now_ms: i6
         g.cold_at_ms = live.ts_ms + cache.ttl_ms;
         g.last_ms = live.ts_ms;
     }
+    g.waiting_since = main.as_ref().and_then(|s| crate::rhythm::waiting_since(s, temp));
     g.title = main.and_then(|s| s.title);
     g
 }
 
 /// The glances of these rows, in parallel.
 pub fn glances(catalog: &Catalog, rows: &[SessionRow], pricing: &Pricing, now_ms: i64) -> Vec<Glance> {
-    rows.par_iter().map(|r| glance(catalog, r, pricing, now_ms)).collect()
+    rows.par_iter().map(|r| glance(catalog, r, pricing, now_ms, &[])).collect()
 }
 
 /// Writes a session's profile to `path` (.jfr or .html), the same one `tokprof flame --session`

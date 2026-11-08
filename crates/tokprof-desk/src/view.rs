@@ -254,10 +254,27 @@ fn filter_field(s: &Desk, p: &Pal) -> El {
 }
 
 /// The slots of the list: a row per listed session and, in time order, a separator row before
-/// the first session of each day.
+/// the first session of each day; in waiting order, `Waiting for you` (or `Nobody waits for
+/// you`) on top and `Others` after the last session that waits.
 pub fn slots(s: &Desk) -> Vec<Slot> {
     let b = &s.browser;
     let mut out = Vec::with_capacity(b.len() + 16);
+    if b.sort_order() == Sort::Waiting {
+        let now = now_ms();
+        let last = (0..b.len()).rev().find(|&r| b.wait(r, now).is_some());
+        out.push(Slot::Label(if last.is_some() { "Waiting for you" } else { "Nobody waits for you" }));
+        let others = last.map_or(0, |l| l + 1);
+        for r in 0..b.len() {
+            if r == others {
+                out.push(Slot::Label("Others"));
+            }
+            out.push(Slot::Row(r));
+        }
+        if others >= b.len() && last.is_none() {
+            out.push(Slot::Label("Others"));
+        }
+        return out;
+    }
     let by_time = b.sort_order() == Sort::Time;
     let offset = &rhythm::local_offset;
     let mut last = None;
@@ -295,6 +312,7 @@ fn list_pane(s: &Desk, p: &Pal) -> El {
         |s: &Desk, i| match s.slots.borrow().get(i) {
             Some(Slot::Row(r)) => Cow::Borrowed(s.browser.session(*r)),
             Some(Slot::Day(d)) => Cow::Owned(format!("day-{d}")),
+            Some(Slot::Label(l)) => Cow::Owned(format!("label-{l}")),
             None => Cow::Borrowed("gone"),
         },
         list_row,
@@ -319,11 +337,12 @@ fn list_pane(s: &Desk, p: &Pal) -> El {
         .then(|| text(format!("costing {pending}")).key("list-costing").font(pal::SMALL).color(p.ink3).single_line().truncate().shrink().min_w(0.0));
     // The title keeps its room; the costing count gives way first.
     let title_w = pal::text_w(&title, pal::SMALL_STRONG).min(LIST_WIDTH * 0.5);
-    let sorts = Sort::ALL.iter().map(|&sort| {
+    let sorts = b.sorts().iter().map(|&sort| {
         let label = match sort {
             Sort::Time => "Time",
             Sort::Cost => "Cost",
             Sort::Next => "Next",
+            Sort::Waiting => "Waiting",
         };
         segment(format!("sort-{label}"), label, b.sort_order() == sort, p).px(9.0).on_press(move |s: &mut Desk| s.browser.sort_by(sort))
     });
@@ -384,6 +403,15 @@ fn list_row(s: &Desk, i: usize) -> El {
                 .center_y()
                 .child(text(day_label(date, today)).key("day-label").font(pal::SMALL_STRONG).color(p.ink3).single_line());
         }
+        Some(Slot::Label(label)) => {
+            return row()
+                .w_full()
+                .h(ROW)
+                .px(18.0)
+                .pt(10.0)
+                .center_y()
+                .child(text(label).key("group-label").font(pal::SMALL_STRONG).color(p.ink3).single_line());
+        }
         None => return el().h(ROW),
     };
     let b = &s.browser;
@@ -422,7 +450,11 @@ fn list_row(s: &Desk, i: usize) -> El {
         .radius(R_ROW)
         .fill(if selected { p.sel } else { Color::TRANSPARENT })
         .hover(if selected { p.sel } else { p.hover })
-        .child(text(local_time(c.active_ms, "%H:%M")).key("time").font(pal::SMALL_NUM).color(ink2).single_line().w(36.0))
+        .child(match b.wait(r, now) {
+            // A wait in place of the time, in the color of a wait in the lanes.
+            Some(wait) => text(rhythm::duration(wait)).key("time").font(pal::SMALL_NUM).color(p.wait).single_line().w(36.0),
+            None => text(local_time(c.active_ms, "%H:%M")).key("time").font(pal::SMALL_NUM).color(ink2).single_line().w(36.0),
+        })
         .child(dot(agent, 7.0).key("agent"))
         .child(text(name.clone()).key("title").font(pal::BODY).color(ink).single_line().truncate().grow(1.0).shrink().min_w(0.0))
         .child(row().w(58.0).justify_end().child(text(c.cost.to_string()).key("cost").font(pal::STRONG_NUM).color(ink).single_line()))

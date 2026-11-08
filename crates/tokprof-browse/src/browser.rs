@@ -42,24 +42,30 @@ pub enum Sort {
     Cost,
     /// What the next request would cost now.
     Next,
+    /// The sessions that wait for the user, the longest wait first, then the others by time;
+    /// only with the waiting option.
+    Waiting,
 }
 
 impl Sort {
-    pub const ALL: [Sort; 3] = [Sort::Time, Sort::Cost, Sort::Next];
+    pub const ALL: [Sort; 4] = [Sort::Time, Sort::Cost, Sort::Next, Sort::Waiting];
 
     pub fn name(self) -> &'static str {
         match self {
             Sort::Time => "time",
             Sort::Cost => "cost",
             Sort::Next => "next request",
+            Sort::Waiting => "waiting",
         }
     }
 
-    fn following(self) -> Sort {
+    /// The order after this one, with or without the waiting option.
+    fn following(self, waiting: bool) -> Sort {
         match self {
             Sort::Time => Sort::Cost,
             Sort::Cost => Sort::Next,
-            Sort::Next => Sort::Time,
+            Sort::Next if waiting => Sort::Waiting,
+            Sort::Next | Sort::Waiting => Sort::Time,
         }
     }
 }
@@ -273,6 +279,10 @@ pub struct Browser<T> {
     /// The screen shows a day beside the list at all times, as the window does (see
     /// `keep_day_beside`).
     beside: bool,
+    /// The waiting option: the list may be sorted by waiting, and shows waits then.
+    waiting: bool,
+    /// The temporary folders, whose sessions never wait.
+    temp: Arc<Vec<String>>,
 }
 
 impl<T> Browser<T> {
@@ -430,6 +440,8 @@ impl<T> Browser<T> {
             costs: true,
             relisted: 0,
             beside: false,
+            waiting: false,
+            temp: Arc::new(crate::day::temp_folders()),
         };
         browser.refilter();
         browser
@@ -755,11 +767,11 @@ impl<T> Browser<T> {
         if due.is_empty() {
             return;
         }
-        let (catalog, pricing, notify) = (self.catalog.clone(), self.pricing.clone(), self.notify.clone());
+        let (catalog, pricing, notify, temp) = (self.catalog.clone(), self.pricing.clone(), self.notify.clone(), self.temp.clone());
         std::thread::spawn(move || {
             due.into_par_iter().for_each_with(notify, |notify, (i, version, row)| {
                 let started = Instant::now();
-                let g = xray::glance(&catalog, &row, &pricing, now_ms());
+                let g = xray::glance(&catalog, &row, &pricing, now_ms(), &temp);
                 notify.send(Note::Glance(i, version, g, started.elapsed()));
             });
         });
@@ -834,8 +846,11 @@ impl<T> Browser<T> {
         self.sort_keeping(keep);
     }
 
+    /// Sorts the list again in its order. The list then shows from its first row, as far as
+    /// the selection allows, so that the top of the new order is on the screen.
     fn sort(&mut self) {
         self.sort_keeping(self.selected_entry());
+        self.top = 0;
     }
 
     /// The value of each entry that the current order sorts by, at `now`; an unknown one is -1.
@@ -844,6 +859,14 @@ impl<T> Browser<T> {
             Sort::Time => e.row.active_ms as f64,
             Sort::Cost => e.glance.as_ref().map_or(-1.0, |g| g.cost),
             Sort::Next => e.glance.as_ref().and_then(|g| g.next(now)).map_or(-1.0, |(usd, _)| usd),
+            // A wait sorts above every time, the oldest first; the others follow by time.
+            Sort::Waiting => match &e.glance {
+                None => -1.0,
+                Some(g) => match g.waiting_since.filter(|&w| rhythm::waits_at(w, now)) {
+                    Some(since) => 2.0 * now as f64 - since as f64,
+                    None => e.row.active_ms as f64,
+                },
+            },
         };
         self.entries.iter().map(key).collect()
     }
@@ -961,7 +984,7 @@ impl<T> Browser<T> {
             Key::Left | Key::Char('h') | Key::Backspace => self.zoom = false,
             Key::Char('/') => self.editing = true,
             Key::Char('s') => {
-                self.sort = self.sort.following();
+                self.sort = self.sort.following(self.waiting);
                 self.sort();
             }
             Key::Char('r') => self.sort(),
@@ -1035,8 +1058,12 @@ impl<T> Browser<T> {
     pub fn cells(&self, row: usize, now: i64) -> Cells<'_> {
         let r = &self.entries[self.visible[row]].row;
         let g = self.entries[self.visible[row]].glance.as_ref();
+        let time = match self.wait_of(self.visible[row], now) {
+            Some(wait) => format!("waits {}", rhythm::duration(wait)),
+            None => local_time(r.active_ms, "%m-%d %H:%M"),
+        };
         Cells {
-            time: local_time(r.active_ms, "%m-%d %H:%M"),
+            time,
             agent: r.file.agent.name(),
             agent_place: self.catalog.order(&r.file.agent).0,
             project: &r.project,
@@ -1086,6 +1113,78 @@ impl<T> Browser<T> {
     pub fn known_total(&self) -> (f64, usize) {
         let known = self.visible.iter().filter_map(|&i| self.entries[i].glance.as_ref().map(|g| g.cost)).sum();
         (known, self.visible.iter().filter(|&&i| self.entries[i].glance.is_none()).count())
+    }
+
+    /// How long the session of entry `i` has waited for the user at `now`, while the list is
+    /// sorted by waiting and the wait is within the waiting limit.
+    fn wait_of(&self, i: usize, now: i64) -> Option<i64> {
+        if self.sort != Sort::Waiting {
+            return None;
+        }
+        let since = self.entries[i].glance.as_ref()?.waiting_since?;
+        rhythm::waits_at(since, now).then_some((now - since).max(0))
+    }
+
+    /// How long each listed session that waits for the user has waited at `now`, while the list
+    /// is sorted by waiting, by row.
+    pub fn wait(&self, row: usize, now: i64) -> Option<i64> {
+        self.wait_of(self.visible[row], now)
+    }
+
+    /// How many listed sessions wait for the user at `now`.
+    pub fn waiting_count(&self, now: i64) -> usize {
+        self.visible.iter().filter(|&&i| self.entries[i].glance.as_ref().and_then(|g| g.waiting_since).is_some_and(|w| rhythm::waits_at(w, now))).count()
+    }
+
+    /// The waiting option: whether the list may be sorted by waiting. Turning it off while the
+    /// list is sorted by waiting sorts it by time.
+    pub fn set_waiting(&mut self, on: bool) {
+        self.waiting = on;
+        if !on && self.sort == Sort::Waiting {
+            self.sort_by(Sort::Time);
+        }
+    }
+
+    pub fn waiting(&self) -> bool {
+        self.waiting
+    }
+
+    /// The orders `s` cycles through.
+    pub fn sorts(&self) -> &'static [Sort] {
+        if self.waiting { &Sort::ALL } else { &Sort::ALL[..3] }
+    }
+
+    /// When the wait a waiting row shows next changes its text or passes the waiting limit, after
+    /// `now`, while the list is sorted by waiting.
+    pub fn next_wait_change(&self, now: i64) -> Option<i64> {
+        if self.sort != Sort::Waiting {
+            return None;
+        }
+        self.visible
+            .iter()
+            .filter_map(|&i| self.entries[i].glance.as_ref()?.waiting_since)
+            .filter(|&since| rhythm::waits_at(since, now))
+            .map(|since| {
+                let wait = (now - since).max(0);
+                // The span reads in seconds, tenths of minutes, minutes, then tenths of hours.
+                let step = match wait {
+                    w if w < 60_000 => 1_000,
+                    w if w < 600_000 => 6_000,
+                    w if w < 3_600_000 => 60_000,
+                    _ => 360_000,
+                };
+                (since + (wait / step + 1) * step).min(since + rhythm::WAITING_LIMIT_MS)
+            })
+            .min()
+    }
+
+    /// Takes this glance for the session with this id, as the costing would give it; for the
+    /// tests of a screen, whose browser costs nothing itself.
+    #[doc(hidden)]
+    pub fn put_glance(&mut self, session: &str, glance: Glance) {
+        if let Some(e) = self.entries.iter_mut().find(|e| e.is(session)) {
+            e.glance = Some(glance);
+        }
     }
 
     /// The list's order.
@@ -1194,8 +1293,13 @@ impl<T> Browser<T> {
     pub fn list_title(&self, now: i64) -> String {
         let known: f64 = self.visible.iter().filter_map(|&i| self.entries[i].glance.as_ref().map(|g| g.cost)).sum();
         let pending = self.visible.iter().filter(|&&i| self.entries[i].glance.is_none()).count();
+        let waits = match (self.sort, self.waiting_count(now)) {
+            (Sort::Waiting, 0) => ", none waits".to_string(),
+            (Sort::Waiting, n) => format!(", {n} wait"),
+            _ => String::new(),
+        };
         format!(
-            " {} sessions · {} · by {}{}{} · next = one more request ",
+            " {} sessions · {} · by {}{waits}{}{} · next = one more request ",
             self.visible.len(),
             usd(known),
             self.sort.name(),
@@ -1283,7 +1387,11 @@ impl<T> Browser<T> {
         } else if self.zoom {
             " ↑↓ PgUp PgDn scroll · ← back · f JFR · o HTML · c handoff · q quit · d day"
         } else {
-            " ↑↓ move · ⏎ zoom · / filter · s sort: time, cost, next · r re-sort · f JFR for IntelliJ · o HTML · c handoff · q quit · d day"
+            if self.waiting {
+                " ↑↓ move · ⏎ zoom · / filter · s sort: time, cost, next, waiting · r re-sort · f JFR for IntelliJ · o HTML · c handoff · q quit · d day"
+            } else {
+                " ↑↓ move · ⏎ zoom · / filter · s sort: time, cost, next · r re-sort · f JFR for IntelliJ · o HTML · c handoff · q quit · d day"
+            }
         }
     }
 
@@ -1527,6 +1635,98 @@ mod tests {
         assert_eq!(a.next_due(), None, "a session that left holds nothing back");
         a.notify.tx.send(Note::Status("hi".into())).unwrap();
         assert!(a.absorb(), "a note arrived");
+    }
+
+    /// Sessions 0..5 last active 1000 - i s after the epoch, costed, with sessions 1, 3 and 4
+    /// waiting since 40m, 16m and 2m before `now`.
+    fn waiting_app(now: i64) -> Browser<String> {
+        let mut a = app_of((0..5).map(|i| row(i, "~/p", 1000 - i as u64)).collect());
+        for (i, e) in a.entries.iter_mut().enumerate() {
+            let since = match i {
+                1 => Some(now - 40 * 60_000),
+                3 => Some(now - 16 * 60_000),
+                4 => Some(now - 2 * 60_000),
+                _ => None,
+            };
+            e.glance = Some(xray::Glance { cost: 1.0, waiting_since: since, cold_at_ms: i64::MAX, ..xray::Glance::default() });
+        }
+        a
+    }
+
+    fn sessions(a: &Browser<String>) -> Vec<&str> {
+        (0..a.len()).map(|r| a.session(r)).collect()
+    }
+
+    #[test]
+    fn without_the_waiting_option_s_cycles_three_orders() {
+        let mut a = waiting_app(now_ms());
+        assert_eq!(a.sorts(), [Sort::Time, Sort::Cost, Sort::Next]);
+        for _ in 0..3 {
+            press(&mut a, Key::Char('s'));
+        }
+        assert_eq!(a.sort_order(), Sort::Time);
+        assert!(a.footer_keys().contains("s sort: time, cost, next · "), "{}", a.footer_keys());
+        assert!((0..a.len()).all(|r| !a.cells(r, now_ms()).time.starts_with("waits")), "no row shows a wait");
+        a.set_waiting(true);
+        assert!(a.footer_keys().contains("s sort: time, cost, next, waiting · "), "{}", a.footer_keys());
+        assert_eq!(a.sort_order(), Sort::Time, "the list still starts in time order");
+    }
+
+    #[test]
+    fn by_waiting_the_longest_wait_comes_first() {
+        let now = now_ms();
+        let mut a = waiting_app(now);
+        a.set_waiting(true);
+        for _ in 0..2 {
+            press(&mut a, Key::Char('s'));
+        }
+        a.top = 3;
+        press(&mut a, Key::Char('s'));
+        assert_eq!(a.top(), 0, "after a sort the list shows from its first row");
+        assert_eq!(a.sort_order(), Sort::Waiting);
+        assert_eq!(sessions(&a), ["id1", "id3", "id4", "id0", "id2"], "the waits, the longest first, then the others newest first");
+        assert!(a.list_title(now).contains("· by waiting, 3 wait · "), "{}", a.list_title(now));
+        assert_eq!(a.cells(0, now).time, "waits 40m");
+        assert_eq!(a.cells(2, now).time, "waits 2.0m");
+        assert!(a.cells(3, now).time.contains(':'), "a row that does not wait shows its time");
+        assert_eq!(a.wait(1, now), Some(16 * 60_000));
+        assert_eq!(a.next_wait_change(now), Some(now + 6_000), "the 2.0m wait reads 2.1m in 6 s");
+        press(&mut a, Key::Char('s'));
+        assert_eq!(a.sort_order(), Sort::Time, "back to time after four presses");
+        assert!((0..a.len()).all(|r| !a.cells(r, now).time.starts_with("waits")), "no wait by time");
+        assert_eq!(a.next_wait_change(now), None);
+    }
+
+    #[test]
+    fn an_answered_wait_keeps_its_row() {
+        let now = now_ms();
+        let mut a = waiting_app(now);
+        a.set_waiting(true);
+        a.sort_by(Sort::Waiting);
+        // The user typed in session 3; once it is costed again it no longer waits.
+        a.entries[3].glance.as_mut().unwrap().waiting_since = None;
+        assert_eq!(sessions(&a)[1], "id3", "the row stays where it is");
+        assert!(a.cells(1, now).time.contains(':'));
+        assert!(a.list_title(now).contains("· by waiting, 2 wait, r re-sorts · "), "{}", a.list_title(now));
+    }
+
+    #[test]
+    fn waits_pass_the_limit_and_none_waits() {
+        let now = now_ms();
+        let mut a = waiting_app(now);
+        a.set_waiting(true);
+        a.sort_by(Sort::Waiting);
+        let later = now + 2 * 3_600_000 - 40 * 60_000;
+        assert_eq!(a.waiting_count(later), 2, "the 40m wait passed the 2-hour limit");
+        assert!(a.cells(0, later).time.contains(':'));
+        for e in &mut a.entries {
+            e.glance.as_mut().unwrap().waiting_since = None;
+        }
+        a.sort_by(Sort::Waiting);
+        assert!(a.list_title(now).contains("· by waiting, none waits · "), "{}", a.list_title(now));
+        assert_eq!(sessions(&a), ["id0", "id1", "id2", "id3", "id4"], "time order");
+        a.set_waiting(false);
+        assert_eq!(a.sort_order(), Sort::Time, "turning the option off sorts by time");
     }
 
     #[test]
@@ -1864,6 +2064,7 @@ mod tests {
             cold_at_ms: cold_at,
             last_ms: last,
             title: Some("Fix the export".into()),
+            waiting_since: None,
         });
         a.entries[1].glance = Some(xray::Glance { cost: 2.0, cold_at_ms: i64::MAX, ..Default::default() });
         assert_eq!(a.cache_life("id0"), Some((last, cold_at)));

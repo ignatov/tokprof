@@ -301,6 +301,33 @@ impl Lane {
     pub fn work_ms(&self) -> i64 {
         self.work.iter().map(|(a, b)| b - a).sum()
     }
+
+    /// Since when the session waits for the user: the last turn's logged end, or the agent's
+    /// question that has no answer yet, when the user has not acted since. An interrupted turn,
+    /// or one whose end is not logged, starts no wait. The waiting limit is the caller's to apply
+    /// (see [`waits_at`]).
+    pub fn waiting_since(&self) -> Option<i64> {
+        let last = self.turns.last()?;
+        let quiet_since = |ts: i64| self.actions.last().is_none_or(|(a, _)| *a <= ts);
+        let end = (last.how == End::Logged).then_some(last.end).filter(|&e| quiet_since(e));
+        let asked = self.questions.last().filter(|(q, answer)| answer.is_none() && *q >= last.start && quiet_since(*q)).map(|(q, _)| *q);
+        end.max(asked)
+    }
+}
+
+/// How long after its end of turn or question a session still counts as waiting for the user.
+pub const WAITING_LIMIT_MS: i64 = 2 * HOUR;
+
+/// Whether a wait that started at `since` still counts at `now_ms`.
+pub fn waits_at(since: i64, now_ms: i64) -> bool {
+    now_ms - since < WAITING_LIMIT_MS
+}
+
+/// Since when a main session waits for the user, as its lane says; never for a session the
+/// rhythm leaves out. `temp` lists the temporary folders, as for [`Timeline::of`].
+pub fn waiting_since(s: &Session, temp: &[String]) -> Option<i64> {
+    let t = Timeline::of(s, temp);
+    if t.left_out { None } else { Lane::of(&t).waiting_since() }
 }
 
 /// Where one day starts.
@@ -476,6 +503,12 @@ pub struct Summary {
     pub questions: usize,
     /// How long after its question each answer came.
     pub question_answers: Vec<i64>,
+    /// Each stretch of steps: how many steps it has, and the time from its first to its last.
+    pub stretches: Vec<(usize, i64)>,
+    /// Each answer that came while another session waited for an answer later in the same
+    /// sitting: whether it went to the newest wait, its chance (one over the sessions waiting),
+    /// and the oldest wait then.
+    pub among: Vec<(bool, f64, i64)>,
 }
 
 impl Summary {
@@ -514,6 +547,7 @@ impl Summary {
                 s.questions += 1;
                 s.question_answers.extend(answer.map(|a| a - ask));
             }
+            s.stretches.extend(stretches(lane, days).into_iter().filter(|&(first, _, _)| inside(first)).map(|(_, n, time)| (n, time)));
         }
         actions.sort_unstable();
         s.messages.sort_unstable();
@@ -527,6 +561,25 @@ impl Summary {
             let i = s.sittings.partition_point(|(a, _)| *a <= ts);
             i > 0 && ts <= s.sittings[i - 1].1
         };
+        // The answers of the day, each with its lane, for the answers that came while others
+        // waited.
+        let sitting_of = |ts: i64| {
+            let i = s.sittings.partition_point(|(a, _)| *a <= ts);
+            (i > 0 && ts <= s.sittings[i - 1].1).then(|| i - 1)
+        };
+        let waits: Vec<(i64, i64, usize, Option<usize>)> = lanes
+            .iter()
+            .enumerate()
+            .flat_map(|(k, l)| l.answers.iter().filter(|(end, msg)| days.day_of(*end) == days.day_of(*msg)).map(move |&(end, msg)| (end, msg, k)))
+            .map(|(end, msg, k)| (end, msg, k, sitting_of(msg)))
+            .collect();
+        for &(end, msg, k, sitting) in waits.iter().filter(|w| inside(w.1) && w.3.is_some()) {
+            let others: Vec<i64> = waits.iter().filter(|o| o.2 != k && o.0 <= msg && msg < o.1 && o.3 == sitting).map(|o| o.0).collect();
+            if let Some(&oldest) = others.iter().min() {
+                let newest = others.iter().all(|&o| end >= o);
+                s.among.push((newest, 1.0 / (others.len() + 1) as f64, msg - oldest.min(end)));
+            }
+        }
         let mut ends: Vec<(i64, bool, bool)> =
             lanes.iter().flat_map(|l| &l.turns).filter(|t| t.ended_by_agent() && inside(t.end)).map(|t| (t.end, present(t.end), t.by == Start::Wake)).collect();
         ends.sort_unstable();
@@ -582,6 +635,14 @@ impl Summary {
         let answers: Vec<i64> = self.answers.iter().map(|a| a.1).collect();
         let answered = median(&answers).map_or("no answers".to_string(), |a| format!("you answered in a median {}", duration(a)));
         out.push(format!("answers   {turns}; {answered}"));
+        out.push(match self.queue() {
+            Some((share, n, chance, oldest)) => format!(
+                "queue     when several sessions waited, you answered the one that waited least first in {share:.0}% of {} ({chance:.0}% by chance); the oldest had waited a median {}",
+                fmt::count(n as u64, "answer", "answers"),
+                duration(oldest)
+            ),
+            None => "queue     no answer while another session waited".to_string(),
+        });
         let questions = match (self.questions, median(&self.question_answers)) {
             (0, _) => "no questions from the agent".to_string(),
             (n, Some(a)) => format!("{} answered in a median {}", fmt::count(n as u64, "question from the agent", "questions from the agent"), duration(a)),
@@ -593,6 +654,16 @@ impl Summary {
             fmt::count(self.typed_while_working as u64, "message typed while the agent worked", "messages typed while the agent worked"),
         ));
         out
+    }
+
+    /// The answers that came while others waited: the share that went to the newest wait and
+    /// their mean chance, both in percent, their count, and the median oldest wait.
+    pub fn queue(&self) -> Option<(f64, usize, f64, i64)> {
+        let n = self.among.len();
+        let oldest = median(&self.among.iter().map(|a| a.2).collect::<Vec<_>>())?;
+        let newest = self.among.iter().filter(|a| a.0).count();
+        let chance = self.among.iter().map(|a| a.1).sum::<f64>() / n as f64;
+        Some((100.0 * newest as f64 / n as f64, n, 100.0 * chance, oldest))
     }
 
     /// The median over breaks of the share of the break in which some agent worked, in percent.
@@ -624,12 +695,15 @@ impl Summary {
 }
 
 /// The thresholds of the rhythm advice: what a warm cache would have saved on the cold returns,
-/// the median wait of the agent's questions, the share of a median break the agents worked, and
-/// both the median turn and the time between turn ends while the user was there.
+/// the median wait of the agent's questions, the answers that came while others waited (how
+/// many, the share that went to the newest, the median oldest wait), and the share of a median
+/// break the agents worked. Step by step needs one stretch of steps.
 pub const ADVICE_SAVED_USD: f64 = 10.0;
 pub const ADVICE_QUESTION_MS: i64 = 10 * MINUTE;
+pub const ADVICE_AMONG_ANSWERS: usize = 10;
+pub const ADVICE_NEWEST_PERCENT: f64 = 50.0;
+pub const ADVICE_OLDEST_MS: i64 = 10 * MINUTE;
 pub const ADVICE_WORKED_PERCENT: f64 = 30.0;
-pub const ADVICE_STEP_MS: i64 = 5 * MINUTE;
 
 /// The cold returns of the time shown, as the pause report finds them: how many, what a warm
 /// cache would have saved on them, the breaks before them, and whether they had prices.
@@ -661,7 +735,7 @@ impl Returns {
 
 impl Summary {
     /// The advice over this stretch of time, in the order its items come: cold returns,
-    /// questions, out of work, step by step. `files` are the instruction files of the agents
+    /// questions, newest first, out of work, step by step. `files` are the instruction files of the agents
     /// shown.
     pub fn advice(&self, returns: &Returns, files: &[String]) -> Vec<String> {
         let mut out = Vec::new();
@@ -682,6 +756,17 @@ impl Summary {
                 fmt::count(self.questions as u64, "question", "questions")
             ));
         }
+        if let Some((share, n, _, oldest)) = self.queue()
+            && n >= ADVICE_AMONG_ANSWERS
+            && share >= ADVICE_NEWEST_PERCENT
+            && oldest >= ADVICE_OLDEST_MS
+        {
+            out.push(format!(
+                "When several sessions waited, you answered the one that waited least first in {share:.0}% of {} answers, while the oldest waited a median {}. Go through them oldest first: run tokprof ui --waiting and press s until the list is by waiting.",
+                fmt::int(n as u64),
+                duration(oldest)
+            ));
+        }
         let still = median(&self.breaks.iter().map(|b| b.still_after).collect::<Vec<_>>());
         let length = median(&self.breaks.iter().map(|b| b.to - b.from).collect::<Vec<_>>());
         if let (Some(still), Some(length), Some(share)) = (still, length, self.worked_share())
@@ -693,20 +778,53 @@ impl Summary {
                 duration(length)
             ));
         }
-        let present = self.ends.iter().filter(|e| e.1).count() as i64;
-        if let Some(turn) = median(&self.turns)
-            && present > 0
-            && turn < ADVICE_STEP_MS
-            && self.keyboard_ms() / present < ADVICE_STEP_MS
-        {
+        if !self.stretches.is_empty() {
+            let times = match self.stretches.len() {
+                1 => "Once".to_string(),
+                n => format!("{n} times"),
+            };
+            let steps: usize = self.stretches.iter().map(|s| s.0).sum();
+            let time: i64 = self.stretches.iter().map(|s| s.1).sum();
             out.push(format!(
-                "While you were there, an agent ended a turn every {}, after turns of a median {}: you led it step by step. Give it a goal and a way to check it, not a step, and leave between its turns.",
-                duration(self.keyboard_ms() / present),
-                duration(turn)
+                "{times} you led a session step by step: 3 or more short turns in a row, each answered within 3m ({} in {}). Give it a goal and a way to check it, not a step, and leave between its turns.",
+                fmt::count(steps as u64, "message", "messages"),
+                duration(time)
             ));
         }
         out
     }
+}
+
+/// A step is a message that answers, in less than this, the end of a turn the user started
+/// that took less than this; a stretch is this many steps in a row in one session, or more.
+pub const STEP_MS: i64 = 3 * MINUTE;
+pub const STRETCH_STEPS: usize = 3;
+
+/// The stretches of steps of a lane: each one's first step, its steps, and the time from its
+/// first step to its last.
+fn stretches(lane: &Lane, days: &Days) -> Vec<(i64, usize, i64)> {
+    let step = |msg: i64| {
+        lane.answers.iter().any(|&(end, m)| {
+            m == msg
+                && m - end < STEP_MS
+                && days.day_of(end) == days.day_of(m)
+                && lane.turns.iter().any(|t| t.end == end && t.by == Start::Typed && t.how != End::Interrupted && t.end - t.start < STEP_MS)
+        })
+    };
+    let mut out = Vec::new();
+    let mut run: Vec<i64> = Vec::new();
+    let messages = lane.actions.iter().filter(|(_, e)| e.is_message()).map(|(ts, _)| Some(*ts));
+    for msg in messages.chain([None]) {
+        if let Some(m) = msg.filter(|&m| step(m)) {
+            run.push(m);
+            continue;
+        }
+        if run.len() >= STRETCH_STEPS {
+            out.push((run[0], run.len(), run[run.len() - 1] - run[0]));
+        }
+        run.clear();
+    }
+    out
 }
 
 /// The spans merged where they overlap, in time order.
@@ -1251,6 +1369,35 @@ mod tests {
     }
 
     #[test]
+    fn a_session_waits_from_its_last_end_of_turn() {
+        let ended = Lane::of(&timeline("a", &[(t(14, 0), Typed), (t(14, 10), Request), (t(14, 20), TurnEnd)]));
+        assert_eq!(ended.waiting_since(), Some(t(14, 20)));
+        assert!(waits_at(t(14, 20), t(14, 36)), "it has waited 16m");
+        let answered = Lane::of(&timeline("a", &[(t(14, 0), Typed), (t(14, 20), TurnEnd), (t(14, 25), Typed)]));
+        assert_eq!(answered.waiting_since(), None, "the user answered");
+        let woke = Lane::of(&timeline("a", &[(t(14, 0), Typed), (t(14, 20), TurnEnd), (t(14, 30), Wake), (t(14, 31), Request), (t(14, 34), TurnEnd)]));
+        assert_eq!(woke.waiting_since(), Some(t(14, 34)), "counted from the end of the turn it started itself");
+        let working = Lane::of(&timeline("a", &[(t(14, 0), Typed), (t(14, 20), Request)]));
+        assert_eq!(working.waiting_since(), None, "no end of turn is logged");
+        let stopped = Lane::of(&timeline("a", &[(t(14, 0), Typed), (t(14, 2), Interrupt), (t(14, 2), TurnEnd)]));
+        assert_eq!(stopped.waiting_since(), None, "an interrupt is an action, and the turn did not end on its own");
+    }
+
+    #[test]
+    fn a_question_with_no_answer_waits() {
+        let asked = Lane::of(&timeline("a", &[(t(14, 0), Typed), (t(14, 5), Request), (t(14, 20), Question)]));
+        assert_eq!(asked.waiting_since(), Some(t(14, 20)));
+        let answered = Lane::of(&timeline("a", &[(t(14, 0), Typed), (t(14, 20), Question), (t(14, 22), Answer), (t(14, 23), Request)]));
+        assert_eq!(answered.waiting_since(), None);
+    }
+
+    #[test]
+    fn the_waiting_limit() {
+        assert!(waits_at(t(12, 0), t(13, 59)));
+        assert!(!waits_at(t(12, 0), t(14, 0)), "2 hours after the end of turn");
+    }
+
+    #[test]
     fn sittings_and_breaks() {
         let a = Lane::of(&timeline("a", &[(t(10, 0), Typed), (t(10, 5), Typed), (t(10, 14), Typed)]));
         let b = Lane::of(&timeline("b", &[(t(10, 40), Typed)]));
@@ -1395,6 +1542,21 @@ mod tests {
         assert_eq!(left_out_line(0), None);
     }
 
+    #[test]
+    fn sessions_left_out_never_wait() {
+        let mut s = Session::new(crate::testing::claude(), "x".into());
+        s.typed.push(crate::model::TypedMessage { ts_ms: t(14, 0), label: "fix it".into() });
+        s.push_handoff(t(14, 20), HandoffKind::TurnEnd);
+        let temp = ["/private/var/folders/19/abc/T/".to_string()];
+        s.cwd = Some("/Users/me/src/app".into());
+        assert_eq!(waiting_since(&s, &temp), Some(t(14, 20)));
+        s.cwd = Some("/private/var/folders/19/abc/T/cmsg-acp-Hr88x0".into());
+        assert_eq!(waiting_since(&s, &temp), None, "a session in the temporary folder");
+        s.cwd = Some("/Users/me/src/app".into());
+        s.scripted = true;
+        assert_eq!(waiting_since(&s, &temp), None, "a program ran it");
+    }
+
     fn spans(n: usize, minutes: i64, gap: i64) -> Vec<(i64, i64)> {
         (0..n as i64).map(|k| (t(8, 0) + k * (minutes + gap) * MINUTE, t(8, 0) + (k * (minutes + gap) + minutes) * MINUTE)).collect()
     }
@@ -1434,12 +1596,13 @@ mod tests {
         assert_eq!(lines[1], "left      the agents stood still a median 8.0m after you left, and worked through 28% of a median break");
         assert_eq!(lines[2], "present   an agent ended a turn every 4.5m while you were there; it started 37% of its turns itself");
         assert_eq!(lines[3], "answers   the agent's turn took a median 3.5m; you answered in a median 3.7m");
-        assert_eq!(lines[4], "stops     39 interrupts, 46 messages typed while the agent worked, 74 questions from the agent answered in a median 2.3m");
+        assert_eq!(lines[4], "queue     no answer while another session waited");
+        assert_eq!(lines[5], "stops     39 interrupts, 46 messages typed while the agent worked, 74 questions from the agent answered in a median 2.3m");
         let quiet = Summary { sittings: vec![(0, MINUTE)], interrupts: 1, typed_while_working: 1, ..Summary::default() };
         let lines = quiet.lines();
         assert_eq!(lines[2], "present   no turn ended while you were there; it started 0% of its turns itself");
         assert_eq!(lines[3], "answers   no turns you started; no answers");
-        assert_eq!(lines[4], "stops     1 interrupt, 1 message typed while the agent worked, no questions from the agent");
+        assert_eq!(lines[5], "stops     1 interrupt, 1 message typed while the agent worked, no questions from the agent");
     }
 
     #[test]
@@ -1719,25 +1882,105 @@ mod tests {
 
     #[test]
     fn advice_on_step_by_step() {
-        // Ten turns end in 36 minutes at the keyboard: one every 3.6m.
-        let steps = |turn: i64, sitting: i64| Summary {
-            sittings: vec![(0, sitting)],
-            ends: (0..10).map(|k| (k, true, false)).chain([(HOUR, false, false)]).collect(),
-            turns: vec![turn; 10],
-            ..Summary::default()
-        };
+        let steps = |stretches: Vec<(usize, i64)>| Summary { stretches, ..Summary::default() };
         assert_eq!(
-            steps(210_000, 36 * MINUTE).advice(&Returns::default(), &[]),
+            steps(vec![(3, 5 * MINUTE), (4, 6 * MINUTE), (3, 5 * MINUTE), (4, 6 * MINUTE)]).advice(&Returns::default(), &[]),
             [
-                "While you were there, an agent ended a turn every 3.6m, after turns of a median 3.5m: you led it step by step. Give it a goal and a way to check it, not a step, and leave between its turns."
+                "4 times you led a session step by step: 3 or more short turns in a row, each answered within 3m (14 messages in 22m). Give it a goal and a way to check it, not a step, and leave between its turns."
             ]
         );
-        assert!(steps(5 * MINUTE, 36 * MINUTE).advice(&Returns::default(), &[]).is_empty(), "a median turn of 5 minutes");
-        assert!(steps(210_000, 50 * MINUTE).advice(&Returns::default(), &[]).is_empty(), "a turn ending every 5 minutes");
-        assert!(
-            Summary { ends: Vec::new(), ..steps(210_000, 36 * MINUTE) }.advice(&Returns::default(), &[]).is_empty(),
-            "no turn ended while the user was there"
+        assert!(steps(vec![(3, 5 * MINUTE + 30_000)]).advice(&Returns::default(), &[])[0].starts_with("Once you led a session step by step"));
+        // Short turns that end often are no stretch on their own.
+        let quick =
+            Summary { sittings: vec![(0, 36 * MINUTE)], ends: (0..10).map(|k| (k, true, false)).collect(), turns: vec![210_000; 10], ..Summary::default() };
+        assert!(quick.advice(&Returns::default(), &[]).is_empty(), "however short the median turn");
+    }
+
+    /// Answers that came while others waited: `newest` of `n` went to the newest wait, each with
+    /// chance `chance` and the oldest wait `oldest`.
+    fn among(n: usize, newest: usize, chance: f64, oldest: i64) -> Vec<(bool, f64, i64)> {
+        (0..n).map(|k| (k < newest, chance, oldest)).collect()
+    }
+
+    #[test]
+    fn the_queue_line() {
+        let s = Summary { among: among(538, 382, 0.43, 40 * MINUTE), ..Summary::default() };
+        assert_eq!(
+            s.lines()[4],
+            "queue     when several sessions waited, you answered the one that waited least first in 71% of 538 answers (43% by chance); the oldest had waited a median 40m"
         );
+        let one = Summary { among: among(1, 1, 0.5, 13 * MINUTE), ..Summary::default() };
+        assert!(one.lines()[4].contains("first in 100% of 1 answer (50% by chance)"), "{}", one.lines()[4]);
+    }
+
+    #[test]
+    fn advice_on_answering_the_newest_first() {
+        let s = |n, newest, oldest| Summary { among: among(n, newest, 0.43, oldest), ..Summary::default() };
+        assert_eq!(
+            s(538, 382, 40 * MINUTE).advice(&Returns::default(), &[]),
+            [
+                "When several sessions waited, you answered the one that waited least first in 71% of 538 answers, while the oldest waited a median 40m. Go through them oldest first: run tokprof ui --waiting and press s until the list is by waiting."
+            ]
+        );
+        assert!(s(9, 9, HOUR).advice(&Returns::default(), &[]).is_empty(), "fewer than 10 answers");
+        assert!(s(10, 4, HOUR).advice(&Returns::default(), &[]).is_empty(), "under 50%");
+        assert_eq!(s(10, 5, 10 * MINUTE).advice(&Returns::default(), &[]).len(), 1, "50% and 10 minutes");
+        assert!(s(10, 5, 10 * MINUTE - 1).advice(&Returns::default(), &[]).is_empty(), "under 10 minutes");
+    }
+
+    #[test]
+    fn the_newest_first_among_several_waiting() {
+        let a = Lane::of(&timeline("a", &[(t(9, 55), Typed), (t(10, 0), TurnEnd), (t(10, 20), Typed)]));
+        let b = Lane::of(&timeline("b", &[(t(10, 5), Typed), (t(10, 12), TurnEnd), (t(10, 13), Typed)]));
+        let s = summary(&[a, b]);
+        assert_eq!(s.among, [(true, 0.5, 13 * MINUTE)], "the answer to b; no other session waited when a was answered");
+    }
+
+    #[test]
+    fn a_session_answered_in_a_later_sitting_is_not_waiting_together() {
+        let a = Lane::of(&timeline("a", &[(t(9, 55), Typed), (t(10, 0), TurnEnd), (t(11, 0), Typed)]));
+        let b = Lane::of(&timeline("b", &[(t(10, 5), Typed), (t(10, 12), TurnEnd), (t(10, 13), Typed)]));
+        assert!(summary(&[a, b]).among.is_empty());
+    }
+
+    #[test]
+    fn stretches_of_steps() {
+        // Turns of 1m, 2m and 1m, each answered within 2m: three steps.
+        let lane = Lane::of(&timeline(
+            "a",
+            &[(t(10, 0), Typed), (t(10, 1), TurnEnd), (t(10, 2), Typed), (t(10, 4), TurnEnd), (t(10, 5), Typed), (t(10, 6), TurnEnd), (t(10, 8), Typed)],
+        ));
+        assert_eq!(summary(&[lane]).stretches, [(3, 6 * MINUTE)]);
+        // A step, the answer to a 10-minute turn, two more steps: no stretch.
+        let broken = Lane::of(&timeline(
+            "a",
+            &[
+                (t(10, 0), Typed),
+                (t(10, 1), TurnEnd),
+                (t(10, 2), Typed),
+                (t(10, 12), TurnEnd),
+                (t(10, 13), Typed),
+                (t(10, 14), TurnEnd),
+                (t(10, 15), Typed),
+                (t(10, 16), TurnEnd),
+                (t(10, 17), Typed),
+            ],
+        ));
+        assert!(summary(&[broken]).stretches.is_empty());
+        // A turn of exactly 3m, or an answer after exactly 3m, is no step.
+        let row = |turn: i64, answer: i64| {
+            let mut events = vec![(t(10, 0), Typed)];
+            let mut at = t(10, 0);
+            for _ in 0..3 {
+                events.push((at + turn, TurnEnd));
+                at += turn + answer;
+                events.push((at, Typed));
+            }
+            summary(&[Lane::of(&timeline("a", &events))]).stretches.len()
+        };
+        assert_eq!(row(MINUTE, MINUTE), 1);
+        assert_eq!(row(STEP_MS, MINUTE), 0, "a turn of exactly 3m");
+        assert_eq!(row(MINUTE, STEP_MS), 0, "an answer after exactly 3m");
     }
 
     #[test]
@@ -1745,14 +1988,14 @@ mod tests {
         let s = Summary {
             sittings: vec![(0, 36 * MINUTE), (74 * MINUTE, 75 * MINUTE)],
             breaks: vec![Break { from: 36 * MINUTE, to: 74 * MINUTE, still_after: 4 * MINUTE, worked: 4 * MINUTE }],
-            ends: (0..10).map(|k| (k, true, false)).collect(),
-            turns: vec![210_000],
             questions: 1,
             question_answers: vec![78 * MINUTE],
+            among: among(20, 15, 0.4, 30 * MINUTE),
+            stretches: vec![(3, 5 * MINUTE)],
             ..Summary::default()
         };
         let starts: Vec<String> = s.advice(&cold(23, 107.2), &files(CLAUDE)).iter().map(|a| a.split(' ').take(3).collect::<Vec<_>>().join(" ")).collect();
-        assert_eq!(starts, ["23 returns after", "The agent's questions", "After you left,", "While you were"]);
+        assert_eq!(starts, ["23 returns after", "The agent's questions", "When several sessions", "After you left,", "Once you led"]);
     }
 
     #[test]

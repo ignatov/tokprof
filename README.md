@@ -244,6 +244,8 @@ advice    ▸ Resuming writes the whole 817.6k context again (+$6.38), then $0.1
 
 Rows move only when you sort or filter, so the list holds still while costs load and sessions work. When the order is out of date, the list title says `r re-sorts`.
 
+`tokprof ui --waiting` adds a fourth order to `s`, by waiting, for going through the sessions that wait for you in a round, the oldest first. A session waits from the end of its agent's last turn, or from its question with no answer, until you act in it again, for up to 2 hours. In this order the waiting sessions come first, the longest wait on top, each with `waits 16m` where the others show their time, and the title counts them: `by waiting, 3 wait`. The other sessions follow by time. tokprof profiles the past, so this live order is off unless you ask for it.
+
 A session that keeps growing is read again after a pause as long as its last read took, so a big log being written uses at most half of a core.
 
 The list's last column is the cost of one more request and its share of the session's cost so far. Green means the cache is warm, red means it is cold and the request re-writes the whole context. `tokprof sessions --cost` shows the same column.
@@ -254,7 +256,7 @@ The list's last column is the cost of one more request and its share of the sess
 | `⏎`, `→` or `l` | Show the X-ray full screen; `↑` `↓`, `j` `k`, PgUp PgDn and space then scroll it |
 | `←`, `h`, `esc` or backspace | Go back to the list |
 | `/` | Filter by project, agent or id; `esc` clears it |
-| `s` | Sort by time, cost, or next request |
+| `s` | Sort by time, cost, or next request; with `--waiting`, also by waiting |
 | `r` | Sort again in the same order |
 | `f` | Write the session's JFR for IntelliJ Profiler to `~/tokprof/<id>.jfr`, or into `$TOKPROF_DIR` if set |
 | `o` | Write the session's HTML flame graph to `~/tokprof/<id>.html`, or into `$TOKPROF_DIR`, and open it in the browser |
@@ -278,7 +280,7 @@ Under `time`, the `rhythm` line counts the session's turns as [Your day with the
 
 ### The same in a window
 
-`tokprof-desk` shows what `tokprof ui` shows in a native window on macOS, laid out as a profiler. The day's lanes run along the top at the times of the log: your sittings, and per session its work, its waits for you, and a tail as long as its cache stays warm, up to a line at now. Below them are the sessions, with a countdown while a cache is warm and the next request's cost in red once it is cold, and an inspector of the selected session: its requests on a time axis up to now, the next request, the ways to continue with the cheapest marked, tabs for the X-ray's blocks, and `Flame`, the session's spend as an icicle graph of the stacks `tokprof flame` writes, zoomed by a click. It takes the keys of `tokprof ui` (← and → step the day) and the mouse, and Tab moves the keyboard between the lanes, the list and the inspector, whose tabs and rows the arrows then move through. `Reports` in its bar (⌘2) shows the last 7, 30 or 90 days with the numbers of `tokprof summary` and `tokprof pauses`: spend by day, project, origin and model, and the cold returns; a click on a day or a project opens its sessions. Its settings (⌘,) pick the appearance and a light and a dark theme from the 41 color themes of Rex.
+`tokprof-desk` shows what `tokprof ui` shows in a native window on macOS, laid out as a profiler. The day's lanes run along the top at the times of the log: your sittings, and per session its work, its waits for you, and a tail as long as its cache stays warm, up to a line at now. Below them are the sessions, with a countdown while a cache is warm and the next request's cost in red once it is cold, and an inspector of the selected session: its requests on a time axis up to now, the next request, the ways to continue with the cheapest marked, tabs for the X-ray's blocks, and `Flame`, the session's spend as an icicle graph of the stacks `tokprof flame` writes, zoomed by a click. It takes the keys of `tokprof ui` (← and → step the day) and the mouse, and Tab moves the keyboard between the lanes, the list and the inspector, whose tabs and rows the arrows then move through. `Reports` in its bar (⌘2) shows the last 7, 30 or 90 days with the numbers of `tokprof summary` and `tokprof pauses`: spend by day, project, origin and model, and the cold returns; a click on a day or a project opens its sessions. Its settings (⌘,) pick the appearance and a light and a dark theme from the 41 color themes of Rex, and turn on two live options, both off by default: a cache countdown in the menu bar, and `Waiting order`, which adds `Waiting` to the list's orders, as `tokprof ui --waiting` does, with the waiting sessions under `Waiting for you` and the rest under `Others`.
 
 It is a Mac app, `tokprof.app`, with its own name and icon in the Dock: install it from a release as [The Mac app](#the-mac-app) says, or build it from a clone:
 
@@ -521,6 +523,7 @@ sittings  16, 4.1h at the keyboard, 59 messages to 12 sessions; median sitting 1
 left      the agents stood still a median 19m after you left, and worked through 68% of a median break
 present   an agent ended a turn every 6.6m while you were there; it started 3% of its turns itself
 answers   the agent's turn took a median 6.4m; you answered in a median 3.2m
+queue     when several sessions waited, you answered the one that waited least first in 67% of 12 answers (45% by chance); the oldest had waited a median 19m
 stops     2 interrupts, 0 messages typed while the agent worked, 3 questions from the agent answered in a median 2.7m
 cache     5 cold returns, $15.48 in their first requests, $14.91 of it avoidable
 advice    ▸ 5 returns after the cache expired cost $14.91 that a warm cache would have saved;
@@ -534,9 +537,17 @@ advice    ▸ 5 returns after the cache expired cost $14.91 that a warm cache wo
 - `left` says how soon after you left all agents stood still, and how much of a break at least one of them worked. A short time there means each message left the agents little work for the break.
 - `present` says how often an agent ended a turn while you sat there, and how many turns the agent started itself, after a background task or a message from another session.
 - `answers` gives how long the agent's turn took after your message, and how long you took to answer after its turn ended, within one day.
+- `queue` looks at the answers you gave while another session waited for an answer you gave later in the same sitting. It says how often you answered the session that had waited least, against how often a random pick would have, and how long the oldest had waited by then.
 - `stops` counts your interrupts, the messages you typed while the agent worked, and the agent's questions with how long you took to answer them.
 - `cache` gives the day's cold returns, as `tokprof pauses` counts them.
-- `advice` has an item for each of four rules that holds, with the numbers it rests on and one thing to do, and is left out when none holds. Cold returns: a warm cache would have saved $10 or more on them. Questions: the agent's questions waited a median of more than 10 minutes for your answer. Out of work: the agents worked through less than 30% of a median break. Step by step: the agent's turns took a median of less than 5 minutes, and while you were there a turn ended more often than every 5 minutes. Over the author's 31 days to 2026-11-02 these fired on 21, 6, 19 and 16 days, two items on a median day.
+- `advice` has an item for each of five rules that holds, with the numbers it rests on and one thing to do, and is left out when none holds.
+  - Cold returns: a warm cache would have saved $10 or more on them.
+  - Questions: the agent's questions waited a median of more than 10 minutes for your answer.
+  - Newest first: of 10 or more answers in the `queue` line, half or more went to the session that had waited least, while the oldest had waited a median of 10 minutes or more.
+  - Out of work: the agents worked through less than 30% of a median break.
+  - Step by step: at least once, you answered 3 short turns in a row in one session, each within 3 minutes, after turns of less than 3 minutes. Such steps cost no more per edit on the author's logs, but take more of your messages for the same work.
+
+  Over the author's 31 days to 2026-11-02, cold returns, questions and out of work fired on 21, 6 and 19 days. Over the 30 days to 2026-11-07, newest first fired on 14 days and step by step on 10.
 
 A day runs from the middle of one night to the middle of the next, so a sitting after midnight stays in its evening. The night before a day is the longest pause in your messages, answers and interrupts, across sessions, whose middle falls between 18:00 the day before and 12:00 the day. A long break in the afternoon has its middle outside that window, so it is no night. Until noon, only a pause of 4 hours counts, so at 02:00 you are still in the evening's day. The `night` line names the pause before the day and the one after it; over 30 days of the author's logs the days started at a median 05:14. A day with no pause around it starts at midnight.
 
@@ -549,34 +560,35 @@ A session's work is its turns. A turn starts at your message, or at a background
 ```
 Your rhythm: when you sat at the agents and what they did meanwhile
 
-nights    a day runs from the middle of one night to the middle of the next; days started at a median 05:14
-left out  127 sessions that nobody typed in: a program ran them, or they ran in a temporary folder
+nights    a day runs from the middle of one night to the middle of the next; days started at a median 05:13
+left out  255 sessions that nobody typed in: a program ran them, or they ran in a temporary folder
 
-sittings  317, 3.2d at the keyboard, 1349 messages to 190 sessions; median sitting 6.5m, median break 34m
-left      the agents stood still a median 6.5m after you left, and worked through 23% of a median break
-present   an agent ended a turn every 4.2m while you were there; it started 32% of its turns itself
-answers   the agent's turn took a median 3.3m; you answered in a median 2.9m
-stops     40 interrupts, 35 messages typed while the agent worked, 77 questions from the agent answered in a median 2.3m
-advice    ▸ 213 returns after the cache expired cost $763 that a warm cache would have saved;
-            their breaks had a median of 3.2h. Come back before the cache expires, or before a
+sittings  347, 4.3d at the keyboard, 1796 messages to 258 sessions; median sitting 8.8m, median break 31m
+left      the agents stood still a median 12m after you left, and worked through 49% of a median break
+present   an agent ended a turn every 3.8m while you were there; it started 30% of its turns itself
+answers   the agent's turn took a median 2.8m; you answered in a median 2.7m
+queue     when several sessions waited, you answered the one that waited least first in 71% of 537 answers (43% by chance); the oldest had waited a median 39m
+stops     55 interrupts, 62 messages typed while the agent worked, 95 questions from the agent answered in a median 2.1m
+advice    ▸ 257 returns after the cache expired cost $776 that a warm cache would have saved;
+            their breaks had a median of 3.3h. Come back before the cache expires, or before a
             longer break run /compact or start the next session from a handoff (tokprof
             handoff).
-          ▸ After you left, the agents stood still a median 6.5m into a median 34m break and
-            worked through 23% of it. Before a break, give each session its next steps too, or
-            a plan it can work through without asking.
-          ▸ While you were there, an agent ended a turn every 4.2m, after turns of a median
-            3.3m: you led it step by step. Give it a goal and a way to check it, not a step,
-            and leave between its turns.
+          ▸ When several sessions waited, you answered the one that waited least first in 71%
+            of 537 answers, while the oldest waited a median 39m. Go through them oldest
+            first: run tokprof ui --waiting and press s until the list is by waiting.
+          ▸ 18 times you led a session step by step: 3 or more short turns in a row, each
+            answered within 3m (77 messages in 1.7h). Give it a goal and a way to check it,
+            not a step, and leave between its turns.
 
 hour  messages  turn ends  median answer
-10          63         84           2.7m
-14          90        152           2.5m
-17         117        174           1.9m
-21          72        128           7.2m
-22         110        166           7.6m
+10          76        100           2.5m
+14         110        176           2.7m
+17         136        215           2.4m
+21          93        157           6.7m
+22         152        221           3.8m
 ```
 
-The table here keeps five of its rows. Over these 30 days, the agents ran out of work a few minutes after each break began, and evening answers took three to four times as long as afternoon ones.
+The table here keeps five of its rows. Over these 30 days, answers at 21:00 took more than twice as long as afternoon ones, and when several sessions waited, the one that had just finished got the answer far more often than chance.
 
 The logs give the hand-offs as each source's README lists them: Claude Code's `stop_reason`, interrupt and notification texts, `queued_command` attachments and question tools; Codex's `task_complete` and `turn_aborted` events. Neither logs permission prompts, so a wait for one counts as work, or as silence after 15 minutes.
 

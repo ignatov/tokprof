@@ -1,7 +1,7 @@
 //! The day's lanes in the window: an hours row, the `You` lane with the sittings, a lane per
 //! session with its work, waits, messages, questions and stops at the times of the log, a tail as
 //! long as its cache stays warm, the now line, and under them the legend, the line about the time
-//! under the pointer and the day's `sittings`, `answers` and `cache` lines.
+//! under the pointer and the day's `sittings`, `answers`, `queue` and `cache` lines.
 
 use rune::{Color, Cx, El, ScrollSpec, col, el, row, spacer, text};
 use tokprof_browse::browser::now_ms;
@@ -27,9 +27,9 @@ const RIGHT: f32 = 16.0;
 /// The key of the hours row's scale, whose width every lane's track has.
 pub const SCALE: &str = "scale";
 const HOUR_MS: i64 = 3_600_000;
-/// The height under the lanes: the legend with the pointer's line (24), the day's three lines
+/// The height under the lanes: the legend with the pointer's line (24), the day's four lines
 /// (16 each, 2 apart), the room under them and the line under the lanes.
-const UNDER: f32 = 24.0 + 3.0 * DAY_LINE + 2.0 * 2.0 + 8.0 + 1.0;
+const UNDER: f32 = 24.0 + 4.0 * DAY_LINE + 3.0 * 2.0 + 8.0 + 1.0;
 const DAY_LINE: f32 = 16.0;
 
 /// Where the pointer rests over the lanes: the lane's session, `None` for the `You` lane, and how
@@ -523,12 +523,12 @@ fn legend(pointer: String, lead: f32, p: &Pal) -> El {
     line.child(spacer().grow(1.0)).child(text(pointer).key("pointer-text").font(pal::SMALL_NUM).color(p.ink2).single_line().truncate().shrink().min_w(0.0))
 }
 
-/// The day's `sittings`, `answers` and `cache` lines, one under the other, each after its label;
+/// The day's `sittings`, `answers`, `queue` and `cache` lines, one under the other, each after its label;
 /// in the cache line the count of cold returns and the dollars in the cold color when the day had
 /// cold returns.
 fn day_lines(below: &str, lead: f32, p: &Pal) -> El {
     let mut lines = col().key("day-lines").w_full().pl(lead).pr(RIGHT).gap(2.0);
-    for label in ["sittings", "answers", "cache"] {
+    for label in ["sittings", "answers", "queue", "cache"] {
         if let Some(rest) = line_of(below, label) {
             let cold = label == "cache" && rest.contains("cold return") && !rest.starts_with("no ");
             let mut line = row()
@@ -677,10 +677,11 @@ mod tests {
 
     #[test]
     fn the_lanes_show_whole_and_say_how_many_more_scroll() {
-        // 900 points high: 384 for the lanes, 85 under them, 26 for the hours: 10 lanes of 26.
+        // 900 points high: 384 for the lanes, 103 under them, 26 for the hours: 9 lanes of 26.
         let max_h = (900.0 - 46.0) * 0.45;
         assert_eq!(lanes_fit(max_h, 8), (8, 0), "all fit");
-        assert_eq!(lanes_fit(max_h, 10), (10, 0));
+        assert_eq!(lanes_fit(max_h, 9), (9, 0));
+        assert_eq!(lanes_fit(max_h, 10), (9, 1));
         assert_eq!(lanes_fit(max_h, 12), (9, 3), "the line under them takes the room of one");
         let (fit, _) = lanes_fit(max_h, 30);
         assert!(RULER + fit as f32 * LANE + MORE_H + UNDER <= max_h + 0.01, "whole lanes and the line within the room");

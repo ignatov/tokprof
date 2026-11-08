@@ -66,11 +66,19 @@ pub struct Settings {
     pub dark_theme: String,
     /// The cache countdown in the macOS menu bar, off by default.
     pub menu_bar: bool,
+    /// The waiting order of the list, off by default.
+    pub waiting: bool,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { appearance: Appearance::System, light_theme: themes::DEFAULT_LIGHT.into(), dark_theme: themes::DEFAULT_DARK.into(), menu_bar: false }
+        Settings {
+            appearance: Appearance::System,
+            light_theme: themes::DEFAULT_LIGHT.into(),
+            dark_theme: themes::DEFAULT_DARK.into(),
+            menu_bar: false,
+            waiting: false,
+        }
     }
 }
 
@@ -84,6 +92,7 @@ impl Settings {
             light_theme: theme("light_theme", false).unwrap_or(d.light_theme),
             dark_theme: theme("dark_theme", true).unwrap_or(d.dark_theme),
             menu_bar: prefs.get::<String>("menu_bar").as_deref() == Some("on"),
+            waiting: prefs.get::<String>("waiting").as_deref() == Some("on"),
         }
     }
 
@@ -125,14 +134,16 @@ pub enum Part {
     Light,
     Dark,
     MenuBar,
+    Waiting,
 }
 
 impl Part {
     /// The parts in the order the panel draws them and Tab moves through them: the appearance,
     /// then the grid of the appearance the window was in when the panel opened, then the other,
-    /// and the menu bar countdown last.
-    pub fn order(dark_first: bool) -> [Part; 4] {
-        if dark_first { [Part::Appearance, Part::Dark, Part::Light, Part::MenuBar] } else { [Part::Appearance, Part::Light, Part::Dark, Part::MenuBar] }
+    /// then the menu bar countdown and the waiting order last.
+    pub fn order(dark_first: bool) -> [Part; 5] {
+        let (first, second) = if dark_first { (Part::Dark, Part::Light) } else { (Part::Light, Part::Dark) };
+        [Part::Appearance, first, second, Part::MenuBar, Part::Waiting]
     }
 
     fn step(self, back: bool, dark_first: bool) -> Part {
@@ -199,6 +210,14 @@ impl Desk {
         self.save("menu_bar", if on { "on" } else { "off" });
     }
 
+    /// Turns the waiting order on or off; off while the list is sorted by waiting sorts it by
+    /// time.
+    pub fn pick_waiting(&mut self, on: bool) {
+        self.settings.waiting = on;
+        self.browser.set_waiting(on);
+        self.save("waiting", if on { "on" } else { "off" });
+    }
+
     /// Saves a setting; the bar says so when the file cannot be written.
     fn save(&mut self, key: &str, value: &str) {
         if let Err(e) = store(&mut self.prefs, key, value) {
@@ -235,6 +254,11 @@ impl Desk {
             _ if part == Part::MenuBar => match (&e.key, text) {
                 (RuneKey::Left, _) | (_, Some("h")) => self.pick_menu_bar(false),
                 (RuneKey::Right, _) | (_, Some("l")) => self.pick_menu_bar(true),
+                _ => {}
+            },
+            _ if part == Part::Waiting => match (&e.key, text) {
+                (RuneKey::Left, _) | (_, Some("h")) => self.pick_waiting(false),
+                (RuneKey::Right, _) | (_, Some("l")) => self.pick_waiting(true),
                 _ => {}
             },
             _ => {
@@ -277,6 +301,7 @@ impl Part {
             Part::Light => "part-light",
             Part::Dark => "part-dark",
             Part::MenuBar => "part-menu-bar",
+            Part::Waiting => "part-waiting",
         }
     }
 }
@@ -323,6 +348,7 @@ pub fn panel(s: &Desk, panel: Panel, p: &Pal, height: f32) -> El {
             Part::Light => section(part, "Light theme", theme_grid(s, false, p), keyboard, p),
             Part::Dark => section(part, "Dark theme", theme_grid(s, true, p), keyboard, p),
             Part::MenuBar => section(part, "Menu bar countdown", menu_bar_choice(s, p), keyboard, p),
+            Part::Waiting => section(part, "Waiting order", waiting_choice(s, p), keyboard, p),
         })),
     );
     let done = row()
@@ -422,6 +448,21 @@ fn menu_bar_choice(s: &Desk, p: &Pal) -> El {
         p.panel,
     );
     let about = "How long the warm caches stay warm, of sessions that cost $1.00 or more to resume cold";
+    row().w_full().gap(GAP).center_y().child(choice).child(text(about).font(pal::SMALL).color(p.ink2).single_line().truncate().shrink().min_w(0.0))
+}
+
+/// `Off` and `On` for the waiting order, with what it does beside them.
+fn waiting_choice(s: &Desk, p: &Pal) -> El {
+    let on = s.settings.waiting;
+    let choice = crate::view::segments(
+        "waiting",
+        vec![
+            crate::view::segment("waiting-off".into(), "Off", !on, p).on_press(|s: &mut Desk| s.pick_waiting(false)),
+            crate::view::segment("waiting-on".into(), "On", on, p).on_press(|s: &mut Desk| s.pick_waiting(true)),
+        ],
+        p.panel,
+    );
+    let about = "A Waiting order in the list: the sessions that wait for you, the longest wait first";
     row().w_full().gap(GAP).center_y().child(choice).child(text(about).font(pal::SMALL).color(p.ink2).single_line().truncate().shrink().min_w(0.0))
 }
 

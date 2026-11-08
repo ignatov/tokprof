@@ -260,7 +260,7 @@ fn synthetic_day() -> tokprof_browse::render_rhythm::DayParts {
         }],
     };
     let strip = tokprof_core::rhythm::Strip { lines: vec!["(the strip in characters)".into()] };
-    let below = "\nsittings  1, 50m at the keyboard\nanswers   the agent's turn took a median 30m\ncache     no cold returns\n";
+    let below = "\nsittings  1, 50m at the keyboard\nanswers   the agent's turn took a median 30m\nqueue     no answer while another session waited\ncache     no cold returns\n";
     tokprof_browse::render_rhythm::DayParts { above: "tokprof · day\nday       …\n\n".into(), strip: Some((strip, lanes)), below: below.into() }
 }
 
@@ -301,6 +301,10 @@ fn the_lanes_draw_the_log_s_times_name_them_under_the_pointer_and_select_a_lane(
     assert!(rt.elements().iter().any(|e| e.key.as_deref() == Some("legend")));
     assert_eq!(text_in(&rt, "day-cache", ""), "", "the day's lines under the lanes");
     assert!(texts(&rt).iter().any(|t| t == "no cold returns"), "{:?}", texts(&rt));
+    let all = texts(&rt);
+    let at = |t: &str| all.iter().position(|x| x == t).unwrap_or_else(|| panic!("no {t:?} in {all:?}"));
+    assert!(at("the agent's turn took a median 30m") < at("no answer while another session waited"), "the queue line under answers");
+    assert!(at("no answer while another session waited") < at("no cold returns"), "and over cache");
 
     // A click on the lane selects its session in the list, with the day beside it.
     click(&mut rt, &format!("lane-{}", lane.id));
@@ -1669,7 +1673,8 @@ fn in_a_small_window_the_lanes_and_what_is_under_them_take_at_most_45_percent() 
     rt.frame(1.0 / 60.0);
     let lanes = rt.presented("lanes").expect("the lanes").0;
     assert!(lanes[3] <= 0.45 * (640.0 - view::BAR_H) + 1.0, "the first frame: {lanes:?}");
-    assert!(lanes[3] >= 0.4 * (640.0 - view::BAR_H), "and they take the room they have: {lanes:?}");
+    // Whole lanes and the line of how many more leave at most a lane and that line unused.
+    assert!(lanes[3] >= 0.45 * (640.0 - view::BAR_H) - day::LANE - 18.0, "and they take the room they have: {lanes:?}");
 }
 
 #[test]
@@ -1938,6 +1943,8 @@ fn the_menu_bar_countdown_is_picked_in_the_settings_and_a_frame_makes_no_item() 
     click(&mut rt, "menu-bar-on");
     assert!(rt.state.settings.menu_bar, "a click picks On");
     press(&mut rt, RuneKey::Tab);
+    assert_eq!(part(&rt), Some(settings::Part::Waiting), "the waiting order comes last");
+    press(&mut rt, RuneKey::Tab);
     assert_eq!(part(&rt), Some(settings::Part::Appearance), "Tab goes round");
 }
 
@@ -1977,4 +1984,90 @@ fn the_heads_of_the_list_and_the_inspector_meet_and_the_tabs_stay_put() {
     assert!(inside(&rt, "tabs", "tab-digit").is_some(), "the digits show with the keyboard");
     let after: Vec<f32> = inspector::Tab::ALL.iter().map(|t| rect(&rt, &format!("tab-{}", t.name()))[0]).collect();
     assert_eq!(before, after, "and the tabs do not move for them");
+}
+
+/// Five sessions, costed, with id1, id3 and id4 waiting since 40m, 16m and 2m before now.
+fn waiting_desk() -> Desk {
+    let mut desk = desk_of(5);
+    let now = tokprof_browse::browser::now_ms();
+    for i in 0..5 {
+        let since = match i {
+            1 => Some(now - 40 * 60_000),
+            3 => Some(now - 16 * 60_000),
+            4 => Some(now - 2 * 60_000),
+            _ => None,
+        };
+        let g = tokprof_core::xray::Glance { cost: 1.0, waiting_since: since, cold_at_ms: i64::MAX, ..Default::default() };
+        desk.browser.put_glance(&format!("id{i}"), g);
+    }
+    desk
+}
+
+#[test]
+fn the_waiting_order_is_a_setting_off_by_default() {
+    let mut rt = runtime(waiting_desk(), (1400.0, 900.0));
+    assert!(!rt.state.settings.waiting && rt.state.prefs.get::<String>("waiting").is_none(), "off without settings");
+    assert!(rt.find("sort-Waiting").is_none(), "the head offers Time, Cost and Next only");
+    for _ in 0..3 {
+        press(&mut rt, RuneKey::Text("s".into()));
+    }
+    assert_eq!(rt.state.browser.sort_order(), tokprof_browse::browser::Sort::Time, "s cycles three orders");
+    assert!(!texts(&rt).iter().any(|t| t == "40m"), "no row shows a wait");
+    assert!(!palette::entries(&rt.state, "sort by").iter().any(|e| e.title == "Sort by Waiting"), "the palette has no Sort by Waiting");
+
+    command(&mut rt, ',');
+    let part = |rt: &Runtime<Desk>| rt.state.panel.map(|p| p.resolve(rt.state.theme.get().dark()).0);
+    for _ in 0..3 {
+        press(&mut rt, RuneKey::Tab);
+    }
+    assert_eq!(part(&rt), Some(settings::Part::Waiting), "last, after the menu bar countdown");
+    press(&mut rt, RuneKey::Right);
+    assert!(rt.state.settings.waiting, "→ picks On");
+    assert_eq!(rt.state.prefs.get::<String>("waiting").as_deref(), Some("on"));
+    press(&mut rt, RuneKey::Escape);
+    assert!(rt.find("sort-Waiting").is_some(), "the head offers Waiting at once");
+
+    click(&mut rt, "sort-Waiting");
+    settle(&mut rt);
+    let all = texts(&rt);
+    let at = |t: &str| all.iter().position(|x| x == t).unwrap_or_else(|| panic!("no {t:?} in {all:?}"));
+    // The test runs for seconds, so the 2-minute wait may read 2.0m or 2.1m.
+    let two = all.iter().position(|x| x.starts_with("2.") && x.ends_with('m')).expect("the 2-minute wait");
+    assert!(at("Waiting for you") < at("40m") && at("40m") < at("16m") && at("16m") < two && two < at("Others"), "{all:?}");
+    assert_eq!(rt.state.browser.session(0), "id1");
+
+    command(&mut rt, ',');
+    for _ in 0..3 {
+        press(&mut rt, RuneKey::Tab);
+    }
+    press(&mut rt, RuneKey::Left);
+    assert_eq!(rt.state.browser.sort_order(), tokprof_browse::browser::Sort::Time, "off in waiting order sorts by time");
+    press(&mut rt, RuneKey::Escape);
+    assert!(rt.find("sort-Waiting").is_none(), "Waiting leaves the head");
+}
+
+#[test]
+fn nobody_waits_and_the_palette_sorts_by_waiting() {
+    let mut desk = desk_of(3);
+    desk.browser.set_waiting(true);
+    let mut rt = runtime(desk, (1400.0, 900.0));
+    command(&mut rt, 'k');
+    typed(&mut rt, "sort by waiting");
+    press(&mut rt, RuneKey::Enter);
+    settle(&mut rt);
+    assert_eq!(rt.state.browser.sort_order(), tokprof_browse::browser::Sort::Waiting, "as the Waiting button sorts it");
+    let all = texts(&rt);
+    let at = |t: &str| all.iter().position(|x| x == t).unwrap_or_else(|| panic!("no {t:?} in {all:?}"));
+    assert!(at("Nobody waits for you") < at("Others"), "{all:?}");
+}
+
+#[test]
+fn a_frame_in_waiting_order() {
+    let mut desk = waiting_desk();
+    let scene = SCENES.iter().find(|(name, _)| *name == "waiting").expect("the waiting scene");
+    (scene.1)(&mut desk);
+    let rt = runtime(desk, (1400.0, 900.0));
+    assert_eq!(rt.state.browser.sort_order(), tokprof_browse::browser::Sort::Waiting);
+    assert!(texts(&rt).iter().any(|t| t == "Waiting for you"));
+    assert!(!rt.state.settings.waiting, "without reading the saved settings");
 }

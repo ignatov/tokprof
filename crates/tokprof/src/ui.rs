@@ -41,9 +41,11 @@ fn lines(text: &Text<'static>) -> usize {
     text.lines.len()
 }
 
-pub fn run(catalog: Arc<Catalog>, pricing: Pricing, dump: Option<(u16, u16)>, select: Query) -> Result<()> {
-    // The terminal draws at least every 100 ms, so the background work needs not wake it.
+pub fn run(catalog: Arc<Catalog>, pricing: Pricing, dump: Option<(u16, u16)>, select: Query, waiting: bool) -> Result<()> {
+    // The terminal draws at least every 100 ms, so the background work needs not wake it, and a
+    // wait on the screen is redrawn as it grows.
     let mut app = Browser::start(catalog, pricing, select, dump.is_none(), Arc::new(|| {}), terminal())?;
+    app.set_waiting(waiting);
     if let Some((width, height)) = dump {
         return dump_frame(&mut app, width, height);
     }
@@ -177,8 +179,14 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 Some((cell, cold)) => Span::styled(format!("{cell:>12}"), Style::new().fg(if cold { Color::Red } else { Color::Green })),
                 None => Span::raw(" ".repeat(12)),
             };
+            // A wait reads in the strip's wait color; a time is dim.
+            let time = if c.time.starts_with("waits ") {
+                Span::styled(format!("{:<11}", c.time), Style::new().fg(Color::Yellow))
+            } else {
+                Span::raw(format!("{:<11}", c.time)).dim()
+            };
             ListItem::new(Line::from(vec![
-                Span::raw(c.time).dim(),
+                time,
                 Span::raw(" "),
                 Span::styled(format!("{:<6}", c.agent), Style::new().fg(agent_color)),
                 Span::raw(" "),

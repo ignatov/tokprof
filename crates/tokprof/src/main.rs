@@ -76,6 +76,9 @@ enum Command {
     },
     /// Browse all sessions interactively: the list on the left, the X-ray on the right.
     Ui {
+        /// Add the waiting order to `s`: the sessions that wait for you, the longest wait first.
+        #[arg(long)]
+        waiting: bool,
         /// Render one frame as text, e.g. 160x45, instead of running in the terminal.
         #[arg(long, hide = true)]
         dump: Option<String>,
@@ -347,7 +350,7 @@ fn main() -> Result<()> {
             }
             return Ok(());
         }
-        Command::Ui { dump } => {
+        Command::Ui { dump, waiting } => {
             let size = match dump {
                 Some(d) => {
                     let size = d.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
@@ -355,7 +358,7 @@ fn main() -> Result<()> {
                 }
                 None => None,
             };
-            return ui::run(std::sync::Arc::new(catalog), pricing, size, select);
+            return ui::run(std::sync::Arc::new(catalog), pricing, size, select, *waiting);
         }
         _ => {}
     }
