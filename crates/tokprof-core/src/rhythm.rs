@@ -473,6 +473,24 @@ impl Days {
     }
 }
 
+/// The sittings of actions in time order: runs of actions, each less than `GAP_MS` after the
+/// one before, from the first to the last.
+pub fn sittings(actions: &[i64]) -> Vec<(i64, i64)> {
+    let mut out: Vec<(i64, i64)> = Vec::new();
+    for &ts in actions {
+        match out.last_mut() {
+            Some(last) if ts - last.1 < GAP_MS => last.1 = ts,
+            _ => out.push((ts, ts)),
+        }
+    }
+    out
+}
+
+/// How long a sitting counts at the keyboard: at least a minute.
+pub fn sitting_ms((a, b): (i64, i64)) -> i64 {
+    (b - a).max(MIN_SITTING_MS)
+}
+
 /// A break between two sittings of one day: when it ran, how long after its start all agents
 /// stood still, and how long some agent worked in it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -551,12 +569,7 @@ impl Summary {
         }
         actions.sort_unstable();
         s.messages.sort_unstable();
-        for ts in actions {
-            match s.sittings.last_mut() {
-                Some(last) if ts - last.1 < GAP_MS => last.1 = ts,
-                _ => s.sittings.push((ts, ts)),
-            }
-        }
+        s.sittings = sittings(&actions);
         let present = |ts: i64| {
             let i = s.sittings.partition_point(|(a, _)| *a <= ts);
             i > 0 && ts <= s.sittings[i - 1].1
@@ -599,7 +612,7 @@ impl Summary {
 
     /// The time at the keyboard: the sittings, each at least a minute.
     pub fn keyboard_ms(&self) -> i64 {
-        self.sittings.iter().map(|(a, b)| (b - a).max(MIN_SITTING_MS)).sum()
+        self.sittings.iter().map(|&s| sitting_ms(s)).sum()
     }
 
     /// The five rhythm lines.

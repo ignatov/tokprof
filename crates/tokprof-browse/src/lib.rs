@@ -3,11 +3,13 @@
 //! and the texts of the X-ray, the day and the session list.
 
 pub mod browser;
+pub mod calendar;
 pub mod clipboard;
 pub mod day;
 pub mod filters;
 pub mod paths;
 pub mod reading;
+pub mod render_calendar;
 pub mod render_rhythm;
 pub mod render_sessions;
 pub mod render_tools;

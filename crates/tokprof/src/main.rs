@@ -8,8 +8,9 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use tokprof_browse::day::{self, keeps_client, temp_folders};
 use tokprof_browse::filters::{normalize_project, parse_date, parse_since};
 use tokprof_browse::reading::{sources, warnings};
-use tokprof_browse::{clipboard, paths, render_rhythm, render_sessions, render_xray};
+use tokprof_browse::{calendar, clipboard, paths, render_calendar, render_rhythm, render_sessions, render_xray};
 use tokprof_core::analysis::{self, Component};
+use tokprof_core::calendar::Metric;
 use tokprof_core::export;
 use tokprof_core::labels::display_path;
 use tokprof_core::pauses::Pauses;
@@ -184,6 +185,16 @@ enum Command {
     Day {
         /// The day that begins on this date (YYYY-MM-DD); by default the day that holds now.
         date: Option<String>,
+    },
+    /// A calendar of your days, a column per week and a row per weekday, as GitHub draws
+    /// contributions, with the total, active days, streaks, the busiest day and weekday, and a
+    /// punchcard by weekday and hour. Its numbers come from a day store in the cache folder that
+    /// is read again only for the logs that changed, and that keeps the days of deleted logs.
+    Calendar {
+        /// What the marks show: spend, agent (minutes some agent worked), keyboard (your time at
+        /// the keyboard), messages, commits (by the agents) or avoidable (lost to cache misses).
+        #[arg(long, default_value = "spend", value_parser = parse_metric)]
+        metric: Metric,
     },
     /// Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent
     /// do (trips), with a hint per row.
@@ -371,6 +382,33 @@ fn main() -> Result<()> {
             eprintln!("{line}");
         }
         print!("{}", day.text);
+        return Ok(());
+    }
+    if let Command::Calendar { metric } = &command {
+        if cli.client.is_some() {
+            bail!("calendar cannot filter by client; drop --client");
+        }
+        let started = Instant::now();
+        let path = paths::day_store();
+        let shown = std::io::stderr().is_terminal();
+        let last = std::sync::Mutex::new(Instant::now());
+        let progress = |done: usize, total: usize| {
+            let mut at = last.lock().unwrap_or_else(|e| e.into_inner());
+            if shown && (at.elapsed().as_millis() >= 250 || done == total) {
+                *at = Instant::now();
+                eprint!("\rreading the logs into the store… {done} of {total} logs");
+                if done == total {
+                    eprint!("\r\x1b[2K");
+                }
+            }
+        };
+        let (store, refreshed) = calendar::update(&catalog, &agents, &pricing, &path, progress)?;
+        eprintln!("{}", calendar::read_line(&catalog, &refreshed, started.elapsed().as_secs_f64(), &path));
+        if let Some(aside) = &store.broken {
+            eprintln!("warning: the day store could not be read; it was moved to {}", display_path(&aside.to_string_lossy(), None, catalog.home()));
+        }
+        warn(&refreshed.unreadable);
+        print!("{}", render_calendar::text(&calendar::compute(&store, &select, now_ms()), *metric, &style));
         return Ok(());
     }
     if let Command::Bench { requests, min_context, keep_warm, svg } = &command {
@@ -626,6 +664,7 @@ fn main() -> Result<()> {
         | Command::Prices { .. }
         | Command::Bench { .. }
         | Command::Day { .. }
+        | Command::Calendar { .. }
         | Command::Pauses
         | Command::Share { .. }
         | Command::Pool { .. } => {
@@ -779,6 +818,11 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+/// A metric of `tokprof calendar`.
+fn parse_metric(s: &str) -> Result<Metric, String> {
+    Metric::parse(s).ok_or_else(|| format!("unknown metric {s:?}; use {}", Metric::NAMES))
+}
+
 /// A duration in hours or minutes, 6h or 90m, in ms.
 fn parse_duration(s: &str) -> Result<i64, String> {
     let (n, unit) = match s.strip_suffix('m') {
@@ -812,6 +856,16 @@ mod tests {
         let mut cli = Cli::parse_from(["tokprof", "--project", "~/src/billing/", "--since", "7d", "flame"]);
         cli.project = cli.project.as_deref().map(normalize_project);
         assert_eq!(default_name(&cli, Value::Cost), "billing-since-7d.jfr");
+    }
+
+    #[test]
+    fn calendar_metrics_by_name() {
+        let Some(Command::Calendar { metric }) = Cli::parse_from(["tokprof", "calendar"]).command else { panic!("not the calendar") };
+        assert_eq!(metric, Metric::Spend);
+        let Some(Command::Calendar { metric }) = Cli::parse_from(["tokprof", "calendar", "--metric", "keyboard"]).command else { panic!() };
+        assert_eq!(metric, Metric::Keyboard);
+        let err = Cli::try_parse_from(["tokprof", "calendar", "--metric", "tokens"]).err().unwrap().to_string();
+        assert!(err.contains("spend, agent, keyboard, messages, commits, avoidable"), "{err}");
     }
 
     #[test]

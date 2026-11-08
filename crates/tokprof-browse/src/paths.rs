@@ -38,6 +38,30 @@ pub fn pricing(explicit: Option<&Path>) -> Result<Pricing> {
     Ok(pricing)
 }
 
+/// The folder of the files tokprof keeps to answer faster: `$TOKPROF_CACHE_DIR`, else
+/// `~/Library/Caches/tokprof` on macOS, `%LOCALAPPDATA%\tokprof` on Windows, and
+/// `$XDG_CACHE_HOME/tokprof` or `~/.cache/tokprof` elsewhere.
+pub fn cache_dir() -> PathBuf {
+    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if let Some(dir) = var("TOKPROF_CACHE_DIR") {
+        return dir;
+    }
+    if cfg!(target_os = "macos") {
+        return home().join("Library").join("Caches").join("tokprof");
+    }
+    if cfg!(windows)
+        && let Some(local) = var("LOCALAPPDATA")
+    {
+        return local.join("tokprof");
+    }
+    var("XDG_CACHE_HOME").unwrap_or_else(|| home().join(".cache")).join("tokprof")
+}
+
+/// The day store's file in the cache folder.
+pub fn day_store() -> PathBuf {
+    cache_dir().join(tokprof_core::daystore::FILE_NAME)
+}
+
 pub fn home() -> PathBuf {
     std::env::home_dir().unwrap_or_default()
 }
