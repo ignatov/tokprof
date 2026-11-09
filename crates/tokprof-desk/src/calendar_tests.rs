@@ -143,33 +143,53 @@ fn the_first_look_reads_the_logs_into_the_store() {
     assert_eq!(text_of(&rt, "cal-progress"), "reading the logs into the store…");
 }
 
+/// Runs frames until the card shows `ym`, as the worker of a step sends it.
+fn until_card(rt: &mut Runtime<Desk>, ym: tokprof_core::month::Ym) {
+    for _ in 0..200 {
+        if rt.state.month.card.as_ref().and_then(|c| c.month.ym) == Some(ym) && rt.state.month.next.is_none() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        rt.frame(1.0 / 60.0);
+    }
+    panic!("the card did not reach {ym:?}");
+}
+
 #[test]
-fn r_opens_the_month_in_review_of_the_cursor_and_its_keys_stay_with_it() {
+fn r_opens_the_last_complete_month_and_the_cursors_month_and_keys_stay_with_the_card() {
     let (desk, cal) = calendar_desk();
     let mut rt = runtime(desk, (1400.0, 900.0));
     command(&mut rt, '3');
     settle(&mut rt);
     assert!(rt.presented("month-review").is_some(), "the button by the metric pills");
+    // With no cursor moved, the last complete month, as `tokprof month` shows it.
     typed(&mut rt, "r");
-    let ym = tokprof_core::month::Ym::of_date(cal.last);
-    assert_eq!(rt.state.month.card.as_ref().and_then(|c| c.month.ym), Some(ym));
+    let this = tokprof_core::month::Ym::of_date(rhythm::date_of(tokprof_browse::browser::now_ms(), &rhythm::local_offset));
+    assert_eq!(rt.state.month.card.as_ref().and_then(|c| c.month.ym), Some(this.previous()));
     assert!(rt.presented("month-card").is_some() && rt.presented("month-save").is_some());
     let shown = texts(&rt);
-    assert!(shown.contains(&ym.name()), "{shown:?}");
-    for private in ["~/", "/a", "s1"] {
-        assert!(!shown.iter().any(|t| t.contains(private) && t.contains("month")), "{private}");
-    }
-    // Keys stay with the card: q does nothing, ← shows the month before, esc closes it.
+    assert!(shown.contains(&this.previous().name()), "{shown:?}");
+    // Keys stay with the card: q does nothing, ← computes the month before on a worker.
     typed(&mut rt, "qm");
     assert_eq!(rt.shell_request, None);
     assert_eq!(rt.state.calendar.metric, Metric::Spend, "m does not reach the calendar");
-    press(&mut rt, RuneKey::Left);
-    assert_eq!(rt.state.month.card.as_ref().and_then(|c| c.month.ym), Some(ym.previous()));
+    rt.key(KeyEvent::from(RuneKey::Left));
+    assert_eq!(rt.state.month.card.as_ref().and_then(|c| c.month.ym), Some(this.previous()), "the card keeps its month until the next arrives");
+    until_card(&mut rt, this.previous().previous());
     press(&mut rt, RuneKey::Right);
+    until_card(&mut rt, this.previous());
     press(&mut rt, RuneKey::Right);
-    assert_eq!(rt.state.month.card.as_ref().and_then(|c| c.month.ym), Some(ym), "never past this month");
+    until_card(&mut rt, this);
+    press(&mut rt, RuneKey::Right);
+    settle(&mut rt);
+    assert!(rt.state.month.next.is_none() && rt.state.month.card.as_ref().and_then(|c| c.month.ym) == Some(this), "never past this month");
     press(&mut rt, RuneKey::Escape);
     assert!(rt.state.month.card.is_none() && rt.state.reports.mode == reports::Mode::Calendar);
+    // A cursor a key moved opens its own month.
+    press(&mut rt, RuneKey::Up);
+    typed(&mut rt, "r");
+    assert_eq!(rt.state.month.card.as_ref().and_then(|c| c.month.ym), Some(tokprof_core::month::Ym::of_date(cal.last - 1)));
+    press(&mut rt, RuneKey::Escape);
     // A click on the button opens it too, and the palette offers it.
     click(&mut rt, "month-review");
     settle(&mut rt);
@@ -177,6 +197,43 @@ fn r_opens_the_month_in_review_of_the_cursor_and_its_keys_stay_with_it() {
     press(&mut rt, RuneKey::Escape);
     let titles: Vec<String> = palette::entries(&rt.state, "month").into_iter().map(|e| e.title).collect();
     assert!(titles.contains(&"Month in review".to_string()), "{titles:?}");
+}
+
+#[test]
+fn a_save_that_fails_or_hangs_says_so_and_ends() {
+    let mut fails = std::process::Command::new("sh");
+    fails.args(["-c", "echo first >&2; echo could not draw the month card >&2; exit 3"]).stderr(std::process::Stdio::piped());
+    assert_eq!(month::run_for(fails, std::time::Duration::from_secs(5)), Err("could not draw the month card".to_string()));
+    let mut hangs = std::process::Command::new("sleep");
+    hangs.arg("5").stderr(std::process::Stdio::piped());
+    let started = std::time::Instant::now();
+    let err = month::run_for(hangs, std::time::Duration::from_millis(200)).unwrap_err();
+    assert!(err.contains("was stopped") && started.elapsed() < std::time::Duration::from_secs(3), "{err}");
+}
+
+#[test]
+fn the_card_image_fails_without_a_store_and_lists_no_session() {
+    let dir = std::env::temp_dir().join(format!("tokprof-card-image-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cli = crate::Cli::try_parse_from(["tokprof-desk", "--card-image", "--month", "2026-10"]).unwrap();
+    let catalog = Arc::new(Catalog::new(Vec::new(), PathBuf::new()));
+    let select = Query::default();
+    let empty = crate::card_image(&cli, catalog.clone(), Pricing::defaults(), select.clone(), &dir.join("days-2.json"));
+    assert_eq!(empty.err().map(|e| e.to_string()), Some("could not draw the month card: the day store is empty".to_string()));
+    // With a store: the card alone, and a browser that lists nothing.
+    let entry = Entry {
+        key: "/a".into(),
+        agent: "claude".into(),
+        session: "s".into(),
+        main: "s".into(),
+        minutes: vec![Minute { minute: 1_791_000_000_000 / 60_000, usd: 1.0, requests: 1, ..Minute::default() }],
+        ..Entry::default()
+    };
+    let store = tokprof_core::daystore::Store { path: dir.join("days-2.json"), entries: vec![entry], ..Default::default() };
+    store.save().unwrap();
+    let desk = crate::card_image(&cli, catalog, Pricing::defaults(), select, &dir.join("days-2.json")).unwrap();
+    assert!(desk.month.alone && desk.month.card.is_some() && desk.browser.is_empty());
 }
 
 #[test]

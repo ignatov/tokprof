@@ -90,6 +90,10 @@ struct Cli {
     /// and `month-card`.
     #[arg(long)]
     month: Option<String>,
+    /// With --snap: draw only the month in review of --month, from the day store as it is, without
+    /// listing or costing sessions; fail when the card cannot be drawn. Save image runs this.
+    #[arg(long, hide = true)]
+    card_image: bool,
     /// Stay in the terminal until the window closes, instead of starting it on its own.
     #[arg(long)]
     wait: bool,
@@ -815,6 +819,9 @@ fn query(cli: &Cli, agents: Vec<AgentId>) -> Result<Query> {
 fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk> {
     let catalog = Arc::new(catalog);
     let (select, pricing, tab) = checked(cli, &catalog)?;
+    if cli.card_image {
+        return card_image(cli, catalog, pricing, select, &paths::day_store());
+    }
     let reports = tokprof_browse::reports::Reports::start(catalog.clone(), pricing.clone(), select.clone(), wake.clone());
     let desk_select = select.clone();
     let calendars =
@@ -874,6 +881,29 @@ fn month_of(cli: &Cli) -> Result<Option<tokprof_core::month::Ym>> {
         Some(ym) => Ok(Some(ym)),
         None => bail!("--month takes YYYY-MM"),
     }
+}
+
+/// The desk of `--card-image`: no sessions, only the month in review of `--month` from the store
+/// as it is, and an error when the card cannot be drawn, so that no other picture is saved as it.
+fn card_image(cli: &Cli, catalog: Arc<Catalog>, pricing: tokprof_core::pricing::Pricing, select: Query, store: &std::path::Path) -> Result<Desk> {
+    let ym = month_of(cli)?.ok_or_else(|| anyhow::anyhow!("--card-image needs --month"))?;
+    let store = tokprof_core::daystore::Store::load(store, now_ms());
+    if let Some(e) = &store.unreadable {
+        bail!("could not draw the month card: the day store cannot be read ({e})");
+    }
+    let month = tokprof_browse::calendar::month(&store, &Query { since_ms: None, until_ms: None, ..select }, ym, now_ms());
+    if store.entries.is_empty() {
+        bail!("could not draw the month card: the day store is empty");
+    }
+    let browser = Browser::detached(catalog, Vec::new(), pricing, frontend());
+    let mut desk = Desk::new(browser, false);
+    if let Some(t) = colors(cli)? {
+        desk.settings = settings::Settings::of_theme(t);
+    }
+    desk.month.card = Some(month::Card { month, status: None });
+    desk.month.alone = true;
+    desk.reports.mode = reports::Mode::Calendar;
+    Ok(desk)
 }
 
 /// The filters of the command line, as the program that draws an image takes them again.
@@ -1017,11 +1047,20 @@ const SCENES: &[Scene] = &[
         month::open(s, s.month.wanted);
     }),
     ("month-card", |s| {
+        // Drawn from the store already, with --card-image.
+        if s.month.alone {
+            return;
+        }
         reports::show(s, reports::Mode::Calendar);
         let changes = s.browser.changes();
         s.calendar.data.settle(changes, Duration::from_secs(120));
         month::open(s, s.month.wanted);
         s.month.alone = true;
+        // Never a picture of something else under the card's name.
+        if s.month.card.is_none() {
+            eprintln!("could not draw the month card: the day store gave no month");
+            std::process::exit(2);
+        }
     }),
     ("calendar-day", |s| {
         reports::show(s, reports::Mode::Calendar);

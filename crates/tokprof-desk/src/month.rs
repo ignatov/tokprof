@@ -53,6 +53,17 @@ pub struct State {
     /// The command line's filters, for the program that draws the image.
     pub args: Vec<String>,
     pub saving: Option<Saved>,
+    /// The month ← or → asked for, computed on a worker; the card shows the month before it until
+    /// it arrives.
+    pub next: Option<Arc<Mutex<Option<Month>>>>,
+}
+
+/// How long the program that draws the image may take.
+pub const SAVE_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// This month, by the local clock.
+fn this_month() -> Ym {
+    Ym::of_date(tokprof_core::rhythm::date_of(tokprof_browse::browser::now_ms(), &tokprof_core::rhythm::local_offset))
 }
 
 /// The month of the cell cursor, or of the last day.
@@ -60,12 +71,31 @@ fn cursor_month(s: &Desk) -> Option<Ym> {
     crate::calendar::cursor_date(s).map(Ym::of_date)
 }
 
-/// Opens the card of `ym`, or of the cursor's month, computed from the calendar's store.
+/// The month a card opens on: `ym`, else the month of a cell cursor a key moved, else the last
+/// complete month, as `tokprof month` shows it.
+pub fn month_to_open(s: &Desk, ym: Option<Ym>) -> Ym {
+    ym.or_else(|| s.calendar.cursor.and(cursor_month(s))).unwrap_or_else(|| this_month().previous())
+}
+
+/// Opens the card of `ym` (see `month_to_open`), computed from the calendar's store.
 pub fn open(s: &mut Desk, ym: Option<Ym>) {
-    let Some(ym) = ym.or_else(|| cursor_month(s)) else { return };
+    let ym = month_to_open(s, ym);
     let Some(store) = s.calendar.data.get().and_then(|c| c.store.clone()) else { return };
     let month = tokprof_browse::calendar::month(&store, &s.calendar.select, ym, tokprof_browse::browser::now_ms());
     s.month.card = Some(Card { month, status: None });
+}
+
+/// Asks for the card of `ym` on a worker; the card keeps its month until it arrives.
+pub fn step_to(s: &mut Desk, ym: Ym) {
+    let Some(store) = s.calendar.data.get().and_then(|c| c.store.clone()) else { return };
+    let select = s.calendar.select.clone();
+    let slot: Arc<Mutex<Option<Month>>> = Arc::default();
+    s.month.next = Some(slot.clone());
+    std::thread::spawn(move || {
+        let month = tokprof_browse::calendar::month(&store, &select, ym, tokprof_browse::browser::now_ms());
+        *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(month);
+        crate::wake();
+    });
 }
 
 /// The keys while the card is open: ← and → the month before and after, `s` saves the image,
@@ -82,11 +112,12 @@ pub fn on_key(s: &mut Desk, e: &KeyEvent, _: &mut Tx) -> bool {
     match &e.key {
         RuneKey::Escape => s.month.card = None,
         RuneKey::Left | RuneKey::Right => {
-            if let Some(ym) = ym {
+            // From the month asked for last, so that quick presses step on.
+            let pending = s.month.next.as_ref().and_then(|n| n.lock().ok().and_then(|m| m.as_ref().and_then(|m| m.ym)));
+            if let Some(ym) = pending.or(ym) {
                 let to = if e.key == RuneKey::Left { ym.previous() } else { ym.next() };
-                let this = Ym::of_date(tokprof_core::rhythm::date_of(tokprof_browse::browser::now_ms(), &tokprof_core::rhythm::local_offset));
-                if to <= this {
-                    open(s, Some(to));
+                if to <= this_month() {
+                    step_to(s, to);
                 }
             }
         }
@@ -123,20 +154,59 @@ pub fn save(s: &mut Desk) {
     if let Some(c) = &mut s.month.card {
         c.status = Some("saving the image…".into());
     }
+    args.push("--card-image".into());
     std::thread::spawn(move || {
-        let out = std::process::Command::new(exe).args(&args).stdin(std::process::Stdio::null()).output();
-        let result = match out {
-            Ok(o) if o.status.success() && path.exists() => Ok(path),
-            Ok(o) => Err(String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("the image was not written").to_string()),
-            Err(e) => Err(e.to_string()),
-        };
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+        let result = run_for(cmd, SAVE_LIMIT).and_then(|_| if path.exists() { Ok(path) } else { Err("the image was not written".to_string()) });
         *saved.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
         crate::wake();
     });
 }
 
-/// Takes in a finished save. Returns whether the card changed.
+/// Runs a program to its end, at most `limit`: its last line of stderr when it fails, and a
+/// timeout, after which it is stopped.
+pub fn run_for(mut cmd: std::process::Command, limit: std::time::Duration) -> Result<(), String> {
+    use std::io::Read;
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut err = String::new();
+                if let Some(mut e) = child.stderr.take() {
+                    let _ = e.read_to_string(&mut err);
+                }
+                return if status.success() { Ok(()) } else { Err(err.lines().last().unwrap_or("the image was not written").to_string()) };
+            }
+            Ok(None) if started.elapsed() >= limit => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("it took more than {} s, so it was stopped", limit.as_secs()));
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
+/// Takes in a month a step computed, and a finished save. Returns whether the card changed.
 pub fn poll(s: &mut Desk) -> bool {
+    let mut changed = false;
+    if let Some(slot) = &s.month.next {
+        let arrived = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(month) = arrived {
+            s.month.next = None;
+            if s.month.card.is_some() {
+                s.month.card = Some(Card { month, status: None });
+            }
+            changed = true;
+        }
+    }
+    changed | poll_save(s)
+}
+
+fn poll_save(s: &mut Desk) -> bool {
     let Some(saved) = &s.month.saving else { return false };
     let Some(result) = saved.lock().unwrap_or_else(|e| e.into_inner()).take() else { return false };
     s.month.saving = None;
