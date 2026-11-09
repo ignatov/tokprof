@@ -49,6 +49,15 @@ The month SHALL give the share of prompt tokens read from the cache, the dollars
 ### Requirement: The month before
 The month SHALL compare its spend, agent hours and avoidable share with the month before, as an arrow and the difference, with the relative change for spend and agent hours. It shows no comparison when the month before has no request and no message.
 
+#### Scenario: An incomplete month before
+- **WHEN** Claude Code deleted its logs before 29 September, so the store holds claude only from then, and October is shown
+- **THEN** the card has no comparison and a footnote reads `no comparison with September: claude's logs start 29 Sep`, and `tokprof month` prints that note instead of the deltas
+- **AND** the month before is incomplete by the rule of desk-window's An incomplete period before; a month before with no data gives no note
+
+#### Scenario: Logs that start inside the month
+- **WHEN** September is shown and claude's logs start on 29 September
+- **THEN** a footnote reads `September holds part of its work: claude's logs start 29 Sep`, and a longest streak that starts on the first day the store holds reads `… since Thu 6 Aug, when the logs start`
+
 #### Scenario: More spend
 - **WHEN** October spent $11,632 and September $3,729
 - **THEN** the comparison reads `spend ↑ $7,903 (+212%)`

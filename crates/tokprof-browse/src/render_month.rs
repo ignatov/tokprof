@@ -56,7 +56,15 @@ pub fn facts(m: &Month) -> Vec<(&'static str, String)> {
     }
     if let Some(s) = m.longest {
         let days = fmt::count(s.days() as u64, "day", "days");
-        out.push(("longest streak", if s.days() == 1 { days } else { format!("{days} in a row, {} – {}", day_name(s.from), day_name(s.to)) }));
+        let text = if m.streak_from_first_stored() {
+            // The store starts that day: the streak may have begun before it.
+            format!("{days} in a row since {}, when the logs start", day_name(s.from))
+        } else if s.days() == 1 {
+            days
+        } else {
+            format!("{days} in a row, {} – {}", day_name(s.from), day_name(s.to))
+        };
+        out.push(("longest streak", text));
     }
     if let Some((model, v, share)) = &m.top_model {
         out.push(("top model", format!("{model}, {}, {} of spend", usd(*v), pct(*share))));
@@ -131,6 +139,21 @@ pub fn delta_cells(m: &Month) -> Option<(String, Vec<(String, String)>)> {
         out.push((format!("{} {:.1} pt", arrow(d), d.abs()), format!("avoidable, {:.1}% from {:.1}%", 100.0 * now, 100.0 * was)));
     }
     Some((p.ym.month_name(), out))
+}
+
+/// What the month cannot say: no comparison when the month before holds only part of an agent's
+/// logs, and the agents whose logs start inside the month itself.
+pub fn notes(m: &Month) -> Vec<String> {
+    let starts =
+        |gaps: &[(String, i64)]| gaps.iter().map(|(a, ts)| format!("{a}'s logs start {}", fmt::local_time(*ts, "%-d %b"))).collect::<Vec<_>>().join(", ");
+    let mut out = Vec::new();
+    if let (true, false, Some(ym)) = (m.before_any, m.before_gaps.is_empty(), m.ym) {
+        out.push(format!("no comparison with {}: {}", ym.previous().month_name(), starts(&m.before_gaps)));
+    }
+    if let (false, Some(ym)) = (m.own_gaps.is_empty(), m.ym) {
+        out.push(format!("{} holds part of its work: {}", ym.month_name(), starts(&m.own_gaps)));
+    }
+    out
 }
 
 /// The line for next month: the costliest miss cause, its dollars and tokprof's advice for it.
@@ -255,6 +278,9 @@ pub fn text(m: &Month, style: &Style) -> String {
     if let Some((name, lines)) = deltas(m) {
         let _ = writeln!(out, "{:<15}{}", format!("vs {name}"), lines.join(", "));
     }
+    for n in notes(m) {
+        let _ = writeln!(out, "{:<15}{n}", "note");
+    }
     if let Some(line) = next_month(m) {
         let _ = writeln!(out, "{:<15}{line}", "next month");
     }
@@ -337,6 +363,21 @@ mod tests {
         assert!(next_month_plain(&m).unwrap().starts_with("Compaction rewriting the context cost $347. "));
         // The command line keeps tokprof's names.
         assert!(next_month(&october()).unwrap().starts_with("$749 went to idle > TTL."));
+    }
+
+    #[test]
+    fn an_incomplete_month_before_gives_a_note_not_deltas() {
+        let claude_from = Ym { year: 2026, month: 10 }.first_date() * 86_400_000 - 2 * 86_400_000 + 12 * 3_600_000;
+        let m = Month { previous: None, before_gaps: vec![("claude".into(), claude_from)], before_any: true, ..october() };
+        let text = text(&m, &Style::with_color(false));
+        assert!(!text.contains("vs September"));
+        assert!(
+            text.contains(&format!("\nnote           no comparison with September: claude's logs start {}\n", fmt::local_time(claude_from, "%-d %b"))),
+            "{text}"
+        );
+        // A streak from the first day the store holds may have begun before it.
+        let m = Month { first_stored: m.longest.map(|s| s.from), ..m };
+        assert!(facts(&m).iter().any(|(l, v)| *l == "longest streak" && v.ends_with("when the logs start")));
     }
 
     #[test]

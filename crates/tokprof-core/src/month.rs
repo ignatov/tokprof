@@ -133,6 +133,16 @@ pub struct Month {
     /// the unknown one), and that premium.
     pub top_cause: Option<(Cause, f64)>,
     pub previous: Option<Brief>,
+    /// The agents with requests in the month whose first request in the store comes after the
+    /// month before starts (see `compare::gaps`): then there is no comparison, and this says why.
+    pub before_gaps: Vec<(String, i64)>,
+    /// The month before holds a request or a message.
+    pub before_any: bool,
+    /// The agents whose first request in the store comes after this month starts: the month holds
+    /// only part of their work.
+    pub own_gaps: Vec<(String, i64)>,
+    /// The local date of the first request in the store of the entries kept, of any agent.
+    pub first_stored: Option<i64>,
     pub title: Option<Title>,
 }
 
@@ -152,6 +162,11 @@ impl Month {
         (self.total.prompt_tokens > 0).then(|| self.total.read_tokens as f64 / self.total.prompt_tokens as f64)
     }
 
+    /// The longest streak starts on the first day the store holds, so it may have begun before.
+    pub fn streak_from_first_stored(&self) -> bool {
+        matches!((self.longest, self.first_stored), (Some(s), Some(f)) if s.from == f)
+    }
+
     /// Commits per hour some agent worked.
     pub fn commits_per_hour(&self) -> Option<f64> {
         (self.total.agent_minutes > 0).then(|| self.total.commits as f64 / (self.total.agent_minutes as f64 / 60.0))
@@ -162,7 +177,11 @@ impl Month {
     pub fn of(entries: &[Entry], filters: &Filters, ym: Ym, now_ms: i64, offset: Offset) -> Month {
         let mut m = Month::alone(entries, filters, ym, now_ms, offset);
         let prev = Month::alone(entries, filters, ym.previous(), now_ms, offset);
-        if prev.any() {
+        // As Reports judge a period before: incomplete when an agent's data starts inside it.
+        m.before_gaps = crate::compare::gaps(entries, filters, (m.from_ms, m.to_ms), prev.from_ms);
+        m.own_gaps = crate::compare::gaps(entries, filters, (m.from_ms, m.to_ms), m.from_ms);
+        m.before_any = prev.any();
+        if prev.any() && m.before_gaps.is_empty() {
             m.previous =
                 Some(Brief { ym: ym.previous(), usd: prev.total.usd, agent_minutes: prev.total.agent_minutes, avoidable_share: prev.avoidable_share() });
         }
@@ -266,6 +285,12 @@ impl Month {
             .filter(|(c, _)| *c != Cause::Unknown)
             .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.name().cmp(a.0.name())))
             .filter(|(_, v)| *v > 0.0);
+        m.first_stored = entries
+            .iter()
+            .filter(|e| filters.keeps(e))
+            .flat_map(|e| e.minutes.iter().filter(|x| x.requests > 0 && x.minute > 0).map(|x| x.minute * MINUTE_MS))
+            .min()
+            .map(|ts| rhythm::date_of(ts, offset));
         m.title = title(&m);
         m
     }
@@ -361,6 +386,7 @@ mod tests {
     fn the_month_counts_its_window_and_compares_the_one_before() {
         let day = 86_400_000;
         let e = entry(vec![
+            minute(oct1() - 35 * day, 0.5),             // August: the store starts before September
             minute(oct1() - HOUR_MS, 7.0),              // September 30, 23:00
             minute(oct1() + 10 * HOUR_MS, 2.0),         // October 1
             minute(oct1() + 20 * day, 3.0),             // October 21
@@ -377,6 +403,26 @@ mod tests {
         let so_far = Month::of(&[entry(vec![minute(oct1() + 10 * HOUR_MS, 2.0)])], &Filters::default(), Ym { year: 2026, month: 10 }, oct1() + 5 * day, &off);
         assert!(!so_far.complete && so_far.previous.is_none());
         assert_eq!(so_far.to_ms, oct1() + 5 * day);
+    }
+
+    #[test]
+    fn no_comparison_when_an_agent_starts_inside_the_month_before() {
+        let day = 86_400_000;
+        // Codex all along; claude only from 29 September, as after Claude Code deleted its logs.
+        let codex =
+            Entry { agent: "codex".into(), ..entry(vec![minute(oct1() - 40 * day, 1.0), minute(oct1() - 20 * day, 1.0), minute(oct1() + 3 * day, 1.0)]) };
+        let claude =
+            Entry { key: "/c".into(), session: "c".into(), main: "c".into(), ..entry(vec![minute(oct1() - 2 * day, 9.0), minute(oct1() + 4 * day, 30.0)]) };
+        let m = Month::of(&[codex.clone(), claude.clone()], &Filters::default(), Ym { year: 2026, month: 10 }, oct1() + 40 * day, &off);
+        assert!(m.previous.is_none(), "September is incomplete, so no deltas");
+        assert_eq!(m.before_gaps, vec![("claude".to_string(), oct1() - 2 * day)]);
+        assert!(m.own_gaps.is_empty(), "October holds all of both");
+        // September itself holds claude only from the 29th.
+        let sep = Month::of(&[codex.clone(), claude], &Filters::default(), Ym { year: 2026, month: 9 }, oct1() + 40 * day, &off);
+        assert_eq!(sep.own_gaps.len(), 1);
+        // With codex alone, September is whole and October compares with it.
+        let whole = Month::of(&[codex], &Filters::default(), Ym { year: 2026, month: 10 }, oct1() + 40 * day, &off);
+        assert!(whole.previous.is_some() && whole.before_gaps.is_empty());
     }
 
     #[test]

@@ -331,9 +331,9 @@ pub fn card_el(m: &Month, p: &Pal, rounded: bool) -> El {
                 .child(text(line).w_full().wrap().max_lines(2).font(NEXT).color(p.ink)),
         );
     }
-    // The requests without a price, as a footnote.
-    if let Some(n) = note {
-        body = body.child(text(n).key("month-note").font(RULE).color(p.ink3).single_line());
+    // The footnotes: what the month cannot say, and the requests without a price.
+    for (k, n) in tokprof_browse::render_month::notes(m).into_iter().chain(note).enumerate() {
+        body = body.child(text(n).key(format!("month-note-{k}")).font(RULE).color(p.ink3).single_line());
     }
     body
 }
