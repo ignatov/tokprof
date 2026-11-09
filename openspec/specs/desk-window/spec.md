@@ -40,7 +40,7 @@ The window SHALL draw its own bar along the top, 46 points high, with the window
 - **THEN** the bar reads `wrote <n> frames to ~/tokprof/<id>.html` and the page opens, as in `tokprof ui`
 
 ### Requirement: Day controls
-The bar SHALL hold the shown day's name with buttons to the day before and after, a Today button, the day's summary (when it started, its sittings and its sessions), the lanes' zoom (`Fit` or `24 h`), the filter, and a `Live` mark while the window follows the logs. In Reports the day's name, its buttons, Today, the summary, the zoom and the filter, which filters the list, are not shown.
+The bar SHALL hold the shown day's name with buttons to the day before and after, a Today button, the day's summary (when it started, its sittings and its sessions), the lanes' zoom (`Fit` or `24 h`), the filter, and a `Live` mark while the window follows the logs. In Reports and in Calendar the day's name, its buttons, Today, the summary, the zoom and the filter, which filters the list, are not shown.
 
 #### Scenario: Other days
 - **WHEN** the user clicks the button before the day's name
@@ -52,6 +52,10 @@ The bar SHALL hold the shown day's name with buttons to the day before and after
 
 #### Scenario: In Reports
 - **WHEN** Reports is shown
+- **THEN** the bar holds the switch, the status and `Live`, and no day controls and no filter
+
+#### Scenario: In Calendar
+- **WHEN** Calendar is shown
 - **THEN** the bar holds the switch, the status and `Live`, and no day controls and no filter
 
 ### Requirement: Window layout
@@ -66,7 +70,11 @@ In Day, the window SHALL show, under the bar, the lanes of the shown day across 
 - **THEN** the lanes scroll under an hours row that stays on top, as many whole lanes show as fit, a line under them says how many more there are (`2 more lanes · scroll to see them`), and the list and the inspector keep their place
 
 ### Requirement: Day lanes
-The lanes SHALL show the day as work-rhythm's Day strip with shapes, at the times of the log: a `You` lane with the sittings, then one lane per session with actions that day, most actions first, labeled with its project and title. Work and waits for the user's answer are bars from their start to their end, at least 1 point wide, and the user's messages, the agent's questions and the user's stops are marks at their moment, in work-rhythm's colors. The selected session's lane is highlighted.
+The lanes SHALL show the day as work-rhythm's Day strip with shapes, at the times of the log: a `You` lane with the sittings, the `Agents at work` lane, then a lane per session with actions that day, most actions first, labeled with its project and title. Its bars and marks take work-rhythm's colors, and the selected session's lane is highlighted.
+
+#### Scenario: Bars and marks
+- **WHEN** a session's agent worked, waited for the user's answer, asked a question, and the user typed and stopped it
+- **THEN** the work and the wait are bars from their start to their end, at least 1 point wide, and the message, the question and the stop are marks at their moment
 
 #### Scenario: A short piece of work
 - **WHEN** the agent worked from 14:32:10 to 14:32:50
@@ -95,7 +103,7 @@ On the current day, a red line SHALL mark now in the lanes, with the time after 
 - **THEN** the lanes show 08:00 to 15:00
 
 ### Requirement: What the lanes say
-Under the lanes SHALL be the legend, and the `sittings`, `answers`, `queue` and `cache` lines of the day as `tokprof day` prints them. A line under them names what is under the pointer: the time, the lane and what it shows there.
+Under the lanes SHALL be the legend, and the `sittings`, `agents`, `answers`, `queue` and `cache` lines of the day as `tokprof day` prints them. A line under them names what is under the pointer: the time, the lane and what it shows there.
 
 #### Scenario: The time under the pointer
 - **WHEN** the pointer rests over a lane at 14:32
@@ -104,6 +112,10 @@ Under the lanes SHALL be the legend, and the `sittings`, `answers`, `queue` and 
 #### Scenario: The queue line
 - **WHEN** the shown day had 24 answers among several sessions waiting (see work-rhythm)
 - **THEN** the `queue` line under `answers` reads as `tokprof day` prints it for that day
+
+#### Scenario: The agents at work under the pointer
+- **WHEN** the pointer rests over the `Agents at work` lane at 14:20, while three sessions worked
+- **THEN** the line reads like `14:20 · 3 agents at work: ecad11 Инфографика…, 230043 Ордер…, 66f6be Новый…`, the sessions in the lanes' order
 
 ### Requirement: The selected session's day
 Selecting a session whose last activity is on another day than the lanes show SHALL show that day in the lanes, as the local date of its last activity five hours earlier. When that day has no lane of the session, the lanes stay on it.
@@ -190,7 +202,7 @@ While the lanes have the keyboard, ↑ and ↓ (and `k`, `j`) SHALL select the s
 - **THEN** the third lane's session is selected in the list and shown in the inspector
 
 ### Requirement: Keys in the inspector
-While the inspector has the keyboard, ← and → (and `h`, `l`) SHALL show the tab before or after outside `Flame`, and Shift+← and Shift+→ in every tab; the digits 1 to 9 show the tab of that place, and 0 `Flame`. In a tab with rows (requests, the bars of spend, work and waits, prompts, tools, the context's tables, misses), ↑ and ↓ (and `k`, `j`) move a cursor by a row, PgUp and PgDn by ten, Home and End to the ends, and the inspector scrolls to show it. In `Summary` they scroll it.
+While the inspector has the keyboard, ← and → (and `h`, `l`) SHALL show the tab before or after outside `Flame` and `Requests`, and Shift+← and Shift+→ in every tab; the digits 1 to 9 show the tab of that place, and 0 `Flame`. In a tab with rows (bars, tables, prompts, misses), ↑ and ↓ (and `k`, `j`) move a cursor by a row, PgUp and PgDn by ten, Home and End to the ends, and the inspector scrolls to show it. In `Summary` they scroll it.
 
 #### Scenario: Through the prompts
 - **WHEN** the inspector has the keyboard on `Prompts` and the user presses ↓ three times
@@ -207,6 +219,10 @@ While the inspector has the keyboard, ← and → (and `h`, `l`) SHALL show the 
 #### Scenario: Leaving the flame graph
 - **WHEN** the inspector has the keyboard on `Flame` and the user presses Shift+←
 - **THEN** it shows `Cache`
+
+#### Scenario: Requests take the arrows
+- **WHEN** the inspector has the keyboard on `Requests` and the user presses ←
+- **THEN** the request before is selected, and the tab stays `Requests`
 
 ### Requirement: Inspector
 The inspector SHALL show the selected session's X-ray as native controls under tabs: `Summary`, `Requests`, `Spend`, `Work`, `Waits`, `Prompts`, `Tools`, `Context`, `Cache` and `Flame`. Every number in it is the one `tokprof scan` prints for the session at the same moment, and in `Flame` the one `tokprof flame --session <id>` writes. Texts can be selected with the mouse, and ⌘C copies the selection.
@@ -227,7 +243,7 @@ The inspector SHALL show the selected session's X-ray as native controls under t
 - **THEN** the handoff is marked as the cheapest
 
 ### Requirement: Other tabs
-The tabs from `Requests` to `Cache` SHALL show session-xray's blocks of those names: the requests, the spend by component and by chain, work by origin and by activity, waits and slow requests, the prompts, the tool table, what the context holds and what cost the most to keep in it, and the cache misses. A click on a tab shows it.
+The tabs from `Spend` to `Cache` SHALL show session-xray's blocks of those names: the spend by component and by chain, work by origin and by activity, waits and slow requests, the prompts, the tool table, what the context holds and what cost the most to keep in it, and the cache misses. `Requests` shows the request timeline (see Request timeline). A click on a tab shows it.
 
 #### Scenario: Prompts
 - **WHEN** the user clicks `Prompts`
@@ -474,7 +490,7 @@ While the palette is open, typed characters SHALL go to its query and Backspace 
 - **THEN** it stays on the last entry
 
 ### Requirement: Key help
-`?` SHALL open the key help when no filter is being typed and no overlay is open: a rounded card over the window dimmed and blurred, listing every key of the window grouped under `Anywhere`, `List`, `Lanes`, `Inspector`, `Settings` and `Palette`, each key drawn as a keycap with what it does. esc or `?` close it, and no other key reaches the window behind it, but ⌘Q quits. The palette's `Key help` opens it too.
+`?` SHALL open the key help when no filter is being typed and no overlay is open: a rounded card over the window dimmed and blurred, listing every key of the window grouped under `Anywhere`, `Lanes`, `Palette`, `Settings`, `List`, `Inspector`, `Flame`, `Reports` and `Calendar`, each key drawn as a keycap with what it does. esc or `?` close it, and no other key reaches the window behind it, but ⌘Q quits. The palette's `Key help` opens it too.
 
 #### Scenario: Opening the key help
 - **WHEN** the list has the keyboard and the user presses `?`
@@ -566,7 +582,7 @@ While the inspector has the keyboard on `Flame`, ← and → (and `h`, `l`) SHAL
 - **THEN** the turn is shown as the root, and then its parent is
 
 ### Requirement: Reports view
-The bar SHALL hold a `Day | Reports` switch left of the day's name, and ⌘1 shows Day, ⌘2 Reports. Reports replaces the lanes, the list and the inspector under the bar with the report of a period in one scrolling pane, the cards of the Report cards requirement. The window starts in Day.
+The bar SHALL hold a `Day | Reports | Calendar` switch left of the day's name, and ⌘1 shows Day, ⌘2 Reports, ⌘3 Calendar. Reports replaces the lanes, the list and the inspector under the bar with the report of a period in one scrolling pane, the cards of the Report cards requirement. The window starts in Day.
 
 #### Scenario: Switching
 - **WHEN** the user clicks `Reports` in the bar, or presses ⌘2
@@ -650,7 +666,7 @@ The model card SHALL hold the summary table's rows in its order: agent, model, r
 - **THEN** its part of the card reads `No cold returns.`
 
 ### Requirement: Keys in Reports
-In Reports, Tab and Shift+Tab SHALL move the keyboard through the period, by day, by project, by origin, by model, cold returns and largest context, ringed in the accent and scrolled into view. ← and → pick the period or move the day cursor; ↑ ↓ (`k`, `j`), Home and End move a row cursor; ⏎ opens the cursor's day or project as a click does. ⌘Q, ⌘W, ⌘,, ⌘K, `?`, Ctrl+C, ⌘1 and ⌘2 act as in Day; esc shows Day; the other keys do nothing.
+In Reports, Tab and Shift+Tab SHALL move the keyboard through the period, by day, by project, by origin, by model, cold returns and largest context, ringed in the accent and scrolled into view. ← and → pick the period or move the day cursor; ↑ ↓ (`k`, `j`), Home and End move a row cursor; ⏎ opens the cursor's day or project as a click does. ⌘Q, ⌘W, ⌘,, ⌘K, `?`, Ctrl+C, ⌘1, ⌘2 and ⌘3 act as in Day; esc shows Day; the other keys do nothing.
 
 #### Scenario: A day by keys
 - **WHEN** by day has the keyboard, and the user presses ← twice and ⏎
@@ -832,3 +848,495 @@ The settings panel SHALL offer `Waiting order`, `Off` or `On`, last, after `Menu
 #### Scenario: No settings yet
 - **WHEN** the window starts and the settings file has no `waiting`
 - **THEN** the head offers `Time`, `Cost` and `Next` only
+
+### Requirement: Calendar view
+⌘3 or `Calendar` in the bar's switch SHALL show Calendar: in one scrolling pane under the bar, the metric as pills, the calendar of activity-calendar drawn large, its legend and its numbers, and its punchcard, in rounded cards as in Reports. It counts what `tokprof calendar --metric <metric>` counts with the window's `--agent`, `--project`, `--session`, `--since` and `--until`. esc, ⌘1 or `Day` show Day as it was.
+
+#### Scenario: Switching
+- **WHEN** the user presses ⌘3
+- **THEN** the lanes, the list and the inspector give way to the calendar, and `Calendar` is marked in the switch
+
+#### Scenario: The same numbers as the CLI
+- **WHEN** Calendar shows spend and the user runs `tokprof calendar` with the same filters at the same time
+- **THEN** every cell's level, the cuts, the total, active days, streaks, the busiest day and weekday, and the punchcard's levels are the same
+
+#### Scenario: From the palette and the key help
+- **WHEN** the user picks `Calendar: messages` in the command palette
+- **THEN** Calendar shows messages; the palette also offers `Calendar` and each other metric, and the key help lists ⌘3 and the keys of Calendar
+
+### Requirement: Calendar grid in the window
+The grid SHALL draw each day as a rounded square, a column per week and a row per weekday, labeled `Mon`, `Wed` and `Fri`, with the month labels of the CLI above. Levels 1 to 4 are the accent (the cold color for `Avoidable`) mixed into the card's background at 30%, 55%, 80% and 100%. Level none is the subtle stroke, or in a dark theme an empty square with a hairline of it. A dot marks the last day. The legend reads `less`, the squares and `more`, with the cuts.
+
+#### Scenario: Squares that use the room
+- **WHEN** the grid has 14 weeks in a window 1400 points wide
+- **THEN** each square is 44 points, the most a square takes, with the numbers beside the grid; with more weeks the squares shrink to fit, down to 11 points, and the numbers go under the grid when squares beside them would be under 14 points
+
+#### Scenario: A dark theme
+- **WHEN** the window is drawn in Merino Dark
+- **THEN** the squares go from the subtle stroke through the accent mixed into the dark card to the accent
+
+#### Scenario: Metric pills
+- **WHEN** Calendar opens
+- **THEN** it shows one segmented group `Spend`, `Agent time`, `At the keyboard`, `Messages`, `Commits` and `Avoidable`, as the bar's switch, with `Spend` picked
+
+#### Scenario: Nothing and a little in a dark theme
+- **WHEN** the window is drawn in Merino Dark, Neon Arcade or Cathode Amber
+- **THEN** a day without the metric is an empty outlined square, never filled like a day of level 1
+
+#### Scenario: Numbers of the metric
+- **WHEN** Calendar shows commits
+- **THEN** the numbers beside the grid read `828 commits`, `Days with commits 46 of 95`, the streaks of days with commits, and the busiest day with `77 commits`
+
+#### Scenario: Another metric
+- **WHEN** the user clicks `Messages`
+- **THEN** the grid, the legend, the numbers and the punchcard show messages, without the store being read again
+
+#### Scenario: Today
+- **WHEN** the grid is drawn
+- **THEN** the last day's square has a small dot in the theme's ink, and only the cursor is ringed
+
+#### Scenario: Kept by the store
+- **WHEN** the calendar is drawn
+- **THEN** beside the grid, or under it in a window too narrow for both, the numbers end with `Kept by the store`: the days that come only from logs that are gone, or `no day yet`
+
+### Requirement: A day in the calendar
+The pointer over a day's square SHALL show a tooltip with the day's date and weekday and every metric of that day: spend, avoidable, requests, sessions with a request, agent time, time at the keyboard with its sittings, messages, and commits, pushes and pull requests; and whether the day comes only or partly from logs that are gone. A click on a square shows Day with the lanes of that day. A day after the last day has no square.
+
+#### Scenario: Hovering a day
+- **WHEN** the pointer rests over the square of 5 November
+- **THEN** a tooltip reads like `Thu 5 Nov 2026`, `$214 spent, $31.00 of it avoidable`, `1,820 requests in 8 sessions, 5 you typed in`, `agents worked 6.2h`, `2.5h at the keyboard in 14 sittings, 47 messages`, `3 commits, 1 push, no pull request`
+- **AND** `you typed in` counts the sessions the Day view counts, those with an action of the user
+
+#### Scenario: Where the tooltip goes
+- **WHEN** the pointer rests over a day of the grid's last column
+- **THEN** the tooltip stands beside the grid at that day's row, over the numbers, or under the grid when the numbers are under it, so that it covers no day
+
+#### Scenario: A day longer than 24 hours
+- **WHEN** the day of 20 September ran from Sun 05:10 to Mon 07:16
+- **THEN** its tooltip adds `the day ran 26.1h, from Sun 05:10 to Mon 07:16`, so that 24.6h of agent time in it reads right
+
+#### Scenario: A day whose logs are gone
+- **WHEN** every log of 5 September is gone and the store keeps its numbers
+- **THEN** its tooltip ends with `only from the store: its logs are gone`, and with `partly from the store: some of its logs are gone` when only some are
+
+#### Scenario: Opening a day
+- **WHEN** the user clicks the square of 5 November
+- **THEN** the window shows Day with the lanes of 2026-11-05
+
+### Requirement: Keys in Calendar
+In Calendar, a cursor SHALL ring one day, the last day to start with. ↑ and ↓ (`k`, `j`) move it a day back and forward, ← and → (`h`, `l`) a week; Home and End go to the first and the last day; it never leaves the days shown. The day under the cursor shows its tooltip, and ⏎ opens it as a click does. `m` picks the next metric and ⇧M the one before. ⌘Q, ⌘W, ⌘,, ⌘K, `?`, Ctrl+C, ⌘1, ⌘2 and ⌘3 act as in Day; esc shows Day; the other keys do nothing.
+
+#### Scenario: A day by keys
+- **WHEN** the cursor is on the last day and the user presses ← and ⏎
+- **THEN** the window shows Day with the lanes of the date a week before the last day
+
+#### Scenario: The metric by keys
+- **WHEN** Calendar shows spend and the user presses `m` twice
+- **THEN** it shows the time at the keyboard
+
+### Requirement: Calendar computation
+The calendar SHALL be computed on a worker; no frame waits for it. It refreshes the day store (see activity-calendar) and computes every metric at once. While the store is being filled it reads `reading the logs into the store… <n> of <m> logs`. When the logs change while Calendar is shown, it is computed again once 4 times its last computation and at least 60 seconds passed, with `updating…` by the pills. While Calendar is not shown, nothing is computed for it.
+
+#### Scenario: The first look
+- **WHEN** the user opens Calendar for the first time with no store on disk
+- **THEN** the pane reads `reading the logs into the store… 0 of 1958 logs`, the count grows while the window stays responsive, and the calendar replaces it when it arrives
+
+#### Scenario: At rest
+- **WHEN** the calendar has arrived and the logs do not change
+- **THEN** the window draws no more frames for it
+
+#### Scenario: The store was reset
+- **WHEN** the store could not be parsed, or could not be read or written (see activity-calendar, Writing the store)
+- **THEN** the line by the pills says so, as the command line warns
+
+#### Scenario: Prices edited while the window runs
+- **WHEN** the user edits `~/.config/tokprof/prices.toml` while Calendar is shown
+- **THEN** the next computation reads the price files again and uses the new prices, so the window and `tokprof calendar` make the same fingerprint and do not read each other's logs again
+
+### Requirement: Calendar in a frame without a window
+`--scene calendar` SHALL draw the frame in Calendar, waiting up to 120 seconds for it, and `--scene calendar-day` the same with the cursor a week before the last day and its tooltip. `--metric <name>` picks the metric by the names of `tokprof calendar --metric`.
+
+#### Scenario: A frame of the calendar
+- **WHEN** the user runs `tokprof-desk --snap out.png --scene calendar --metric keyboard`
+- **THEN** `out.png` shows the calendar of the time at the keyboard
+
+#### Scenario: An unknown metric
+- **WHEN** the user runs `tokprof-desk --snap out.png --scene calendar --metric tokens`
+- **THEN** the command fails, naming the metrics
+
+### Requirement: Request timeline
+`Requests` SHALL open with a `Request timeline` card: the requests of the main conversation (the main log's main chains and advisor calls) on the time axis of Summary's track. Each request is a column of five stacked parts, the X-ray's components in the Spend card's colors: cache read, cache write, rewrite after miss, uncached input and output. They add up to its cost. A pill `$` / `tokens` switches the parts to tokens. Requests within the same 4 pt of the axis share one column.
+
+#### Scenario: The parts add up
+- **WHEN** a request read 412.3k tokens from the cache, re-wrote 490.3k after an idle break, sent 3 uncached tokens and wrote 1.2k of output
+- **THEN** its column stacks its cache read, rewrite after miss, uncached input and output in dollars, their sum is the cost the table gives for it, and over the session the columns add up to the X-ray's `main` spend, plus `advisor` when the session has advisor calls
+
+#### Scenario: Tokens
+- **WHEN** the user clicks `tokens`, or presses `t` while the inspector has the keyboard
+- **THEN** the columns show the same parts in tokens, the scale at the left is in tokens, and the pill shows `tokens` as chosen
+
+#### Scenario: Requests close together
+- **WHEN** several requests fall within the same 4 pt of the axis
+- **THEN** they share one column whose parts are their sums, and the hover names how many requests it holds
+
+#### Scenario: What stays
+- **WHEN** `Requests` shows a session
+- **THEN** the axis, the warm and cold spans and the dashed next request are those of Summary's track, and the times under the axis are those of Summary
+
+### Requirement: Context line
+The timeline SHALL draw each request's context as a line on a second scale at its right, from 0 to the context window of the session's latest model, or to the largest context when no window is known.
+
+#### Scenario: A known window
+- **WHEN** the latest model's context window is 1.0M
+- **THEN** the right scale reads `1.0M` at its top and `0` at its foot, and the line passes through each column's context at the height of its share of the window
+
+#### Scenario: No known window
+- **WHEN** no context window is known for the session's latest model
+- **THEN** the right scale goes up to the largest context and reads `largest` at its top
+
+### Requirement: Miss and compaction markers
+The timeline SHALL draw a thin line at each unexpected cache miss of the main conversation, from the label row down to just above its column, labelled by the name of its cause. The line is red when the miss's avoidable premium is $0.50 or more, and in the cache write's color otherwise. A compaction of the main log is a dashed line labelled `compacted` with its kind. An expected rebuild has no miss line.
+
+#### Scenario: A costly idle miss
+- **WHEN** a request at 14:00 missed after 1.0h idle on a 1h cache, with $3.82 avoidable
+- **THEN** a red line stands at 14:00, labelled `idle > TTL`, and its column shows the rewrite after miss in red
+
+#### Scenario: A small miss
+- **WHEN** a request missed because its tools changed, with $0.12 avoidable
+- **THEN** its line is in the cache write's color, labelled `tools changed`
+
+#### Scenario: Which labels show
+- **WHEN** labels of lines would come closer than 8 pt
+- **THEN** they are placed costliest miss first and compactions last, and a label that cannot keep 8 pt clear of every label placed is left out
+
+#### Scenario: Labels that collide
+- **WHEN** a compaction at 16:28 stands 60 pt from a miss with $6.73 avoidable, and a $0.12 miss sits between them
+- **THEN** only the $6.73 miss's label shows, and its line stops above its column so that the column's height reads
+
+#### Scenario: Expected rebuilds
+- **WHEN** the conversation compacted at 16:49 and the next request rebuilt its prompt
+- **THEN** a dashed line stands at 16:49 labelled with the kind, such as `compacted (auto)`, and no miss line marks the rebuild
+
+#### Scenario: The markers and the X-ray
+- **WHEN** the X-ray of the session lists cache misses of the chain `main`
+- **THEN** the timeline has one miss line for each of them, at its time and with its cause, and none for a subagent's misses
+
+### Requirement: Event markers
+A row of small marks above the columns SHALL show, from the main log:
+- each message the user typed, as a dot in the message color;
+- each time the user stopped the agent, in the stop color;
+- each failure streak, as a red triangle at the request that read the third failed result. A streak is 3 or more tool calls in a row whose results failed; refused and denied calls neither count nor break it.
+
+The agent's commits are diamonds on a row of their own just above the axis.
+
+#### Scenario: A streak
+- **WHEN** three `Read` calls in a row failed, then one worked
+- **THEN** one red triangle stands at the request that read the third failure
+
+#### Scenario: A commit
+- **WHEN** the agent ran `git commit` and it worked
+- **THEN** a diamond in ink stands on the commits' row at the request that made the call, apart from the typed messages' dots, in every theme
+- **AND** a commit is a shell call that ran `git commit` and worked
+
+#### Scenario: The legend lists what is there
+- **WHEN** the session has no stop and no failure streak
+- **THEN** the legend names neither
+
+### Requirement: The time after the last request
+The timeline and Summary's track SHALL keep the time from the last request to now to a tail of at most 8% of the axis, behind a break, with the cache's band along the axis (warm, then cold). The requests set the dollar scale. The next request is a dashed box at now with its cost over it, cut at the top with a mark when it is taller. Under the axis, now's label holds its time, and its day when the last request was on another day.
+
+#### Scenario: Days later
+- **WHEN** the last request was on Tue 3 Nov at 18:27 and it is Mon 9 Nov 03:41
+- **THEN** now's label reads `Mon 9 Nov 03:41` over `now, 5.4d later`, and `18:27 last request` keeps its label before the cache's times do
+
+#### Scenario: A dear next request
+- **WHEN** the next request would cost $4.90 and the dearest column $1.20
+- **THEN** the scale reads `$1.20`, the box reaches the top with a mark, and `$4.90` stands over it
+
+#### Scenario: The legend
+- **WHEN** the timeline is drawn
+- **THEN** its legend names `cache warm, then cold, after the last request` and `next request, estimated`
+
+### Requirement: Subagent band
+A band under the columns SHALL show each subagent's span, from its first request to its last, with the subagent's task as its hover. The subagents' requests are not columns of the timeline.
+
+#### Scenario: A subagent
+- **WHEN** a subagent made requests from 12:29 to 12:37
+- **THEN** the band under the columns covers 12:29 to 12:37, and its hover names the subagent's task
+
+### Requirement: Request under the pointer
+A card over the timeline SHALL describe the column under the pointer: the request's time, model and effort; its five parts in dollars and tokens and its cost; its context; the cause and detail when it missed, with the avoidable dollars; and the markers at its place. For a shared column, it gives the number of requests, their first and last time, and the sums.
+
+#### Scenario: A miss
+- **WHEN** the pointer rests on the column of a request that missed after an idle break
+- **THEN** the card reads its time, `claude-opus-5-5`, its parts, its context, and `missed: idle > TTL: 1.0h idle, 1h TTL · $3.82 avoidable`
+
+#### Scenario: Leaving the chart
+- **WHEN** the pointer leaves the chart
+- **THEN** the card goes away
+
+### Requirement: Selected request
+One request of the timeline SHALL be selected, the costliest when the tab opens for a session. A click on a column selects its request, the costliest of a shared column. The timeline marks its column in the accent. A card under the timeline shows it: its number, time, model, effort and cost; its cost split as a bar and a row per part in dollars and tokens; and the why, what entered and what changed of the requirements below.
+
+#### Scenario: Another session
+- **WHEN** the user selects another session and shows `Requests`
+- **THEN** that session's costliest request is selected
+
+#### Scenario: A click
+- **WHEN** the user clicks a column of the timeline
+- **THEN** its request is selected and the card shows it
+
+### Requirement: Why a request cost what it did
+The selected request's card SHALL say what the request read from the cache, what it wrote and why. The reason is the first that applies:
+- the miss, with its cause and detail and the avoidable dollars;
+- an expected rebuild, with its cause;
+- the first request of its chain;
+- the context growing or shrinking by the difference from the previous request.
+
+#### Scenario: Why a request cost $3.95
+- **WHEN** the selected request read 12.3k, re-wrote 490.3k after 1.0h idle on a 1h cache and cost $3.95
+- **THEN** the why reads that it read 12.3k from the cache and wrote 490.3k because it missed the cache: idle > TTL: 1.0h idle, 1h TTL, with $3.82 avoidable
+
+#### Scenario: A growing context
+- **WHEN** a request without a miss wrote 5.1k tokens and its context is 5.1k larger than the previous request's
+- **THEN** the why reads that it wrote 5.1k as the context grew by 5.1k
+
+### Requirement: What entered since the previous request
+The selected request's card SHALL list the blocks that entered the context since the previous request of its chain, grouped by kind, tool and target, with tokens, largest first: up to 8, then `<n> more` with their tokens. A block's size is the share of the prompt its text takes, as in `Context`. For the first request of a chain the list is what its prompt holds. When the log does not show the prompt, it reads `unknown: the log does not show this prompt`.
+
+#### Scenario: What entered
+- **WHEN** a tool result of `Bash cargo test` of 6.1k tokens, the call of 200 tokens and 400 tokens of assistant text entered since the previous request
+- **THEN** the card lists `6.1k tool results Bash cargo test`, then `400 assistant text` and `200 tool calls Bash cargo test`
+
+#### Scenario: An old log
+- **WHEN** the log does not show what the request's prompt held
+- **THEN** the list reads `unknown: the log does not show this prompt`, and no size is guessed
+
+### Requirement: What changed since the previous request
+The selected request's card SHALL list what changed since the previous request of its chain: the model, the effort, another setting the log names, the agent's version, the tools added and removed, the system prompt's size, and a compaction between them. It also gives the time since the previous request against the cache's lifetime, in red when it is longer.
+
+#### Scenario: A long break
+- **WHEN** the selected request came 1.0h after the previous one, and the cache lives 1h
+- **THEN** the card reads `1.0h after the previous request, past the 1h cache` in red
+
+#### Scenario: New tools
+- **WHEN** two tools were added since the previous request and the effort went from `high` to `max`
+- **THEN** the card reads `effort high → max` and `tools +2 −0` with the names of the two tools
+
+### Requirement: Range of requests
+A drag of 4 pt or more across the timeline SHALL select the requests whose columns it covers, shaded on the chart. While a range is selected, the card under the timeline totals it instead:
+- the first and last request, their times and the span;
+- the number of requests and the five parts in dollars and tokens;
+- the unexpected misses in it and their avoidable dollars, the compactions, and the messages the user typed.
+
+A click on a column, a plain step, or esc clears the range.
+
+#### Scenario: Dragging over an hour
+- **WHEN** the user drags from 13:00 to 14:05 over 40 requests that cost $12.40 with one miss of $3.82 avoidable
+- **THEN** the card reads `40 requests`, `13:00 → 14:05`, `$12.40` with its parts, and `1 miss · $3.82 avoidable`
+
+#### Scenario: Esc
+- **WHEN** a range is selected, the inspector has the keyboard, and the user presses esc
+- **THEN** the range is cleared and the card shows the selected request again, and the inspector keeps the keyboard
+
+### Requirement: Requests table
+Under the cards, `Requests` SHALL list the requests in a table: `#`, `sent`, `after` (red when longer than the cache lives), `in context`, then `read`, `write`, `uncached` and `output` in tokens as the log gives them, `cost`, and `why`. The why is `missed: <cause>`, `rebuilt: <cause>` for an expected rebuild, `first request`, or `context +<n>` or `context −<n>`. Where the inspector is 760 pt tall or more, the timeline and the cards stay above the table while it scrolls.
+
+#### Scenario: A miss in the table
+- **WHEN** request 57 missed after an idle break
+- **THEN** its row's why reads `missed: idle > TTL`
+
+### Requirement: Rows of the requests table
+The table SHALL hold up to 300 rows: all of them, the 300 that end at the latest request, or the 300-row page that holds the selected request. A note says how many earlier or later requests are left out. The selected request's row is marked and kept on the screen, and a click on a row selects its request.
+
+#### Scenario: The row follows the chart
+- **WHEN** the user clicks a column of the timeline
+- **THEN** that request's row is marked and scrolled into view, and the card shows it
+
+#### Scenario: An early request
+- **WHEN** a session has 622 requests and the user selects the 10th
+- **THEN** the table shows requests 1 to 300 and a note `and 322 later requests`
+
+### Requirement: Keys in Requests
+While the inspector has the keyboard on `Requests`, the keys SHALL be:
+- ← and → (and `h`, `l`) select the request before or after, as ↑ and ↓ (and `k`, `j`) do;
+- PgUp and PgDn move by ten requests, Home and End to the first and the last;
+- Shift+↑ and Shift+↓ start or extend a range from the selected request;
+- `t` switches between dollars and tokens;
+- esc clears a range before it gives the keyboard back;
+- Shift+← and Shift+→ show the tab before or after, as in every tab.
+
+#### Scenario: Stepping
+- **WHEN** the costliest request is the 57th and the user presses →
+- **THEN** the 58th request is selected, in the chart, the card and the table
+
+#### Scenario: Leaving the tab
+- **WHEN** the user presses Shift+→ on `Requests`
+- **THEN** the inspector shows `Spend`
+
+### Requirement: Requests in a frame without a window
+`--scene requests-hover` SHALL draw the frame on `Requests` with the inspector's keyboard and the pointer's card over the selected request's column. `--scene requests-range` SHALL draw it with a range from the selected request over the 20 requests before it. Both use `--session` to pick a session, as the list's filter does.
+
+#### Scenario: A session's timeline
+- **WHEN** the user runs `tokprof-desk --snap out.png --session 230043e6 --tab requests`
+- **THEN** `out.png` shows that session's timeline with its costliest request selected
+
+### Requirement: Agents at work lane
+Under the `You` lane, on a day when two or more sessions worked at once, the lanes SHALL have an `Agents at work` lane, 28 points high: a stepped area in the work color, as high at each moment as work-rhythm's number of agents at work, its full height the peak or 4, whichever is more. Its label says `Agents at work` and `peak <n> at <HH:MM>`.
+
+#### Scenario: A peak of seven
+- **WHEN** seven sessions worked at once at 14:20, and never more
+- **THEN** the area reaches its full height at 14:20, and the label reads `peak 7 at 14:20`
+
+#### Scenario: One session at a time
+- **WHEN** at most one session worked at any moment of the day
+- **THEN** the day has no `Agents at work` lane, and the `agents` line stays under the lanes
+
+#### Scenario: A few agents
+- **WHEN** at most two agents worked at once
+- **THEN** the area reaches half of the lane's height, so that days compare when stepping with ← and →
+
+#### Scenario: Not a session
+- **WHEN** the user clicks the `Agents at work` lane
+- **THEN** the selection stays where it was
+
+### Requirement: Room for the lanes
+The lanes and what is under them SHALL take 45% of the window's height under the bar, or more, up to 55%, when that shows fewer session lanes than 8 in a window 900 points high and 3 in one 640 high, and in between as many as a straight line between them gives. Lanes are 24 points high, and the day's lines under them 15.
+
+#### Scenario: A busy day
+- **WHEN** the window is 1400 by 900 and the day of 2026-11-01 has 40 sessions
+- **THEN** 8 session lanes show whole under `You` and `Agents at work`, and the line under them says how many more scroll
+
+#### Scenario: The smallest window
+- **WHEN** the window is 960 by 640 on the same day
+- **THEN** 3 session lanes show whole
+
+### Requirement: Month in review in the window
+Calendar SHALL offer `Month in review` as a button after the metric pills, as the key `r` and as a palette entry. Each opens the card of month-review over the window dimmed and blurred: for the month of a cell cursor a key moved, else for the last complete month, as `tokprof month`. ← and → show the month before and after, never past this month. esc, `Close` or a click outside close it. While it is open, every key but ⌘Q is its own.
+
+#### Scenario: Opening the card
+- **WHEN** Calendar shows the last day of October under the cursor and the user presses `r`
+- **THEN** the card of October 2026 opens over Calendar
+
+#### Scenario: Another month
+- **WHEN** the card shows October and the user presses ←
+- **THEN** September is computed in the background, and the card shows October until September arrives
+
+#### Scenario: Keys stay with the card
+- **WHEN** the card is open and the user types `q` and `m`
+- **THEN** the window stays open and the metric does not change
+
+### Requirement: The card's look
+The card SHALL be 540 by 675 points, a 4:5 shape, in the theme's colors on its canvas. It shows the headline in large type, the title as an accent badge beside its rule, the big numbers three by two, and the month's days as squares in the calendar's levels of spend beside the facts. Then come the cache and the comparison as rows of small numbers, and the line for next month in a tinted box. The busiest day's square is ringed.
+
+#### Scenario: The days' legend
+- **WHEN** the card is drawn
+- **THEN** under the month's squares a legend reads `spend per day · less`, the five squares, `more`, and `cuts at $121, $269, $591`
+
+#### Scenario: No month before
+- **WHEN** the month before has no data
+- **THEN** the room of the comparison goes between the card's parts, and no empty band stands above the line for next month
+
+#### Scenario: Plain words
+- **WHEN** coming back after a cold cache lost $873, more than any other cause
+- **THEN** the card's line reads `Coming back after the cache expired cost $873. Compact or wrap up a big session before a long break.`, while `tokprof month` keeps `$873 went to idle > TTL.`; requests without a price are a footnote
+
+#### Scenario: Light and dark
+- **WHEN** the window is drawn in Merino Light or Merino Dark
+- **THEN** the card uses that theme's canvas, ink and accent, and every text stays inside it
+
+### Requirement: Saving the card
+`Save image` and `s` SHALL write the card alone as a 1080×1350 PNG to `~/Downloads/tokprof-<YYYY-MM>.png`, drawn in the window's theme without a window, with the window's filters, from the day store as it is and without listing any session. A file of that name is never overwritten: the next free of `-2`, `-3`… is used. The card and the bar then say `saved ~/Downloads/tokprof-2026-10.png`, or why it could not be saved. Nothing is sent anywhere.
+
+#### Scenario: A card that cannot be drawn
+- **WHEN** the day store cannot be read or is empty when the image is drawn
+- **THEN** no file is written, and the card says `could not save the image: could not draw the month card: …`; no other picture is ever saved under the card's name
+
+#### Scenario: A save that hangs
+- **WHEN** drawing the image takes more than 60 seconds
+- **THEN** it is stopped, the card says `could not save the image: it took more than 60 s, so it was stopped`, and `Save image` works again
+
+#### Scenario: A second save
+- **WHEN** `~/Downloads/tokprof-2026-10.png` exists and the user saves October again
+- **THEN** the image goes to `~/Downloads/tokprof-2026-10-2.png`, and the window says so
+
+### Requirement: The card in a frame without a window
+`--scene month` SHALL draw Calendar with the card open, and `--scene month-card` the card alone, filling the frame. Both take the month from `--month YYYY-MM`, else the month of the last day. `--month` takes only YYYY-MM.
+
+#### Scenario: The image of October
+- **WHEN** the user runs `tokprof-desk --snap out.png --scene month-card --month 2026-10 --size 540x675`
+- **THEN** `out.png` is the card of October, 1080 by 1350 pixels
+
+#### Scenario: A bad month
+- **WHEN** the user runs `tokprof-desk --snap out.png --scene month --month october`
+- **THEN** the command fails with `--month takes YYYY-MM`
+
+### Requirement: Key numbers against the period before
+Under each key number, Reports SHALL compare it with the period of the same length just before the one shown, from the day store (see activity-calendar). The comparison reads `<arrow> <change> (<percent>)`, or `= <zero>` when the number did not change, and the card's title notes `against <first day> – <last day>`. The avoidable dollars, their share of the spend in points, and the cold returns are green when they fall and red when they rise. Spend, sessions and requests have no colour.
+
+#### Scenario: More spend
+- **WHEN** on 9 Nov the last 30 days cost $12,203 and the 30 days before them cost $11,000
+- **THEN** the spend reads `↑ $1,203 (+11%)` in the text's colour, and the card notes `against 10 Sep – 10 Oct 2026`: the period before ends at the hour the period shown starts
+
+#### Scenario: Fewer misses
+- **WHEN** the avoidable dollars fell from $640 to $597, and their share from 12.5% to 11.3% of spend
+- **THEN** the line under them reads `↓ $43.00 (−7%) · ↓ 1.2 points` in green
+
+#### Scenario: More cold returns
+- **WHEN** the cold returns rose from 90 to 106
+- **THEN** their line reads `↑ 16 (+18%)` in red, comparing the count only
+
+#### Scenario: No earlier data
+- **WHEN** the store holds no request, miss or cold return in the period before
+- **THEN** no number has a comparison, and the card's title has the note `no earlier data`
+
+#### Scenario: A client filter
+- **WHEN** the window runs with `--client`
+- **THEN** no number has a comparison, and the note reads `no comparison with --client`
+
+### Requirement: Causes against the period before
+Each row of `Could have been saved` SHALL give, after its dollars, the cause's avoidable dollars in the period before and the change in percent: `was <dollars> · <arrow> <percent>`. A cause with no dollars before reads `new`. The change is green when it falls and red when it rises. With no earlier data, or with `--client`, the rows have no comparison.
+
+#### Scenario: Fewer idle misses
+- **WHEN** `idle > TTL` could have saved $796, and $1,012 in the period before
+- **THEN** the row reads `idle > TTL` `$796` `was $1,012 · ↓ 21%`, the change in green
+
+#### Scenario: A new cause
+- **WHEN** `tools changed` could have saved $12 and had nothing in the period before
+- **THEN** its row reads `new`
+
+### Requirement: An incomplete period before
+The comparison SHALL be incomplete when an agent with requests in the period shown, and at least 10% of its spend, has its first request in the whole store after the period before starts, as when the agent deleted its older logs before the store kept them. The project and session filters do not move that first request. Then the card notes `against <dates>, incomplete: <agent> only from <day>`, and every change of the key numbers and causes is grey.
+
+#### Scenario: Logs deleted before the store
+- **WHEN** Reports shows 10 Oct – 9 Nov, and the store's first Claude Code request is on 29 Sep
+- **THEN** the card notes `against 10 Sep – 10 Oct 2026, incomplete: claude only from 29 Sep`, and `↑ $6,779 (+128%)` and the other changes are grey
+
+#### Scenario: A complete period before
+- **WHEN** Reports shows 7 days from 2 Nov, and every agent's data in the store starts before 26 Oct
+- **THEN** the card notes only `against 26 Oct – 2 Nov 2026`, and the changes are coloured
+
+#### Scenario: A new project
+- **WHEN** Reports shows 7 days with `--project ~/src/new`, the project's first request is on 1 Nov, and the store's first Claude Code request is on 29 Sep
+- **THEN** the comparison is complete and coloured
+
+### Requirement: A small agent in the period before
+An agent whose data starts after the period before starts, but that has less than 10% of the period shown's spend (of its requests, when nothing is priced), SHALL NOT make the comparison incomplete. The card names it after the dates: `; <agent> only from <day>, <share>% of spend, not judged`.
+
+#### Scenario: Trying a new agent
+- **WHEN** Codex's first request in the store is on 5 Nov and it has 3% of the last 7 days' spend
+- **THEN** the card notes `against 26 Oct – 2 Nov 2026; codex only from 5 Nov, 3% of spend, not judged`, and the changes stay coloured
+
+### Requirement: A week of Reports in a frame without a window
+`--scene reports-week` SHALL draw the frame in Reports on the last 7 days, waiting up to 120 seconds for the report and for the day store, as `--scene reports` does for 30 days.
+
+#### Scenario: The frame
+- **WHEN** the user runs `tokprof-desk --snap out.png --scene reports-week`
+- **THEN** `out.png` shows Reports on the last 7 days, compared with the 7 days before
+
+### Requirement: Causes gone since the period before
+After its rows, `Could have been saved` SHALL list each miss cause that had avoidable dollars in the period before and none in the period shown, most first. Such a row has `$0.00`, no share bar, nothing to open, and reads `was <dollars> · gone`: green, or grey when the comparison is incomplete.
+
+#### Scenario: Compaction calls stopped
+- **WHEN** compaction calls could have saved $367 in the 7 days before and nothing in the last 7 days
+- **THEN** the last row reads `compaction call` `$0.00` `was $367 · gone` in green
