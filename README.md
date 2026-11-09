@@ -672,7 +672,7 @@ vs September   spend ↑ $7,903 (+212%), agent time ↑ 111h (+100%), avoidable 
 next month     $873 went to idle > TTL. Compact or wrap up a big session before a long break.
 ```
 
-The month runs from local midnight on its first day to the next month's, so its spend and avoidable dollars equal `tokprof summary --since 2026-10-01 --until 2026-11-01`. "Saved by cache reads" is the tokens read from the cache times the difference between the uncached input price and the cache read price; requests without a price are not counted, and the card says how many. When the month before holds only part of an agent's logs (Claude Code deletes old ones), the card makes no comparison and says why, as Reports does.
+The month runs from local midnight on its first day to the next month's, so its spend and avoidable dollars equal `tokprof summary --since 2026-10-01 --until 2026-11-01`. "Saved by the cache" is the tokens read from the cache times the difference between the uncached input price and the cache read price; requests without a price are not counted, and the card says how many. When an agent's logs start inside the month before, the card makes no comparison and says where they start, as Reports does; when they start inside the month shown, a footnote says so.
 
 The title is the first of these whose rule holds, with the rule printed under it: **Night owl** (33% or more of agent time between 22:00 and 05:00), **Early bird** (20% or more of your keyboard time between 05:00 and 09:00), **Conductor** (25% or more of agent time with 3 or more sessions at once), **Marathon** (28 or more days in a row), **Cache keeper** (under 5% of spend avoidable), **Shipper** (0.75 or more commits per agent hour).
 

@@ -141,7 +141,7 @@ pub fn delta_cells(m: &Month) -> Option<(String, Vec<(String, String)>)> {
     Some((p.ym.month_name(), out))
 }
 
-/// What the month cannot say: no comparison when the month before holds only part of an agent's
+/// What the month cannot say: no comparison when an agent's logs start inside the month before,
 /// logs, and the agents whose logs start inside the month itself.
 pub fn notes(m: &Month) -> Vec<String> {
     let starts =
@@ -150,8 +150,12 @@ pub fn notes(m: &Month) -> Vec<String> {
     if let (true, false, Some(ym)) = (m.before_any, m.before_gaps.is_empty(), m.ym) {
         out.push(format!("no comparison with {}: {}", ym.previous().month_name(), starts(&m.before_gaps)));
     }
-    if let (false, Some(ym)) = (m.own_gaps.is_empty(), m.ym) {
-        out.push(format!("{} holds part of its work: {}", ym.month_name(), starts(&m.own_gaps)));
+    // A plain fact: a log that was deleted and an agent first used that day look the same. An
+    // agent the comparison note already names is not named twice.
+    let named = if m.before_any { &m.before_gaps[..] } else { &[] };
+    let own: Vec<(String, i64)> = m.own_gaps.iter().filter(|g| !named.contains(g)).cloned().collect();
+    if !own.is_empty() {
+        out.push(starts(&own));
     }
     out
 }
@@ -375,6 +379,11 @@ mod tests {
             text.contains(&format!("\nnote           no comparison with September: claude's logs start {}\n", fmt::local_time(claude_from, "%-d %b"))),
             "{text}"
         );
+        // An agent whose logs start inside the month shown: a plain fact, once.
+        let own = Month { own_gaps: vec![("codex".into(), claude_from)], ..m.clone() };
+        assert_eq!(notes(&own).last().unwrap(), &format!("codex's logs start {}", fmt::local_time(claude_from, "%-d %b")));
+        let both = Month { own_gaps: m.before_gaps.clone(), ..m.clone() };
+        assert_eq!(notes(&both).len(), 1, "claude is named by the comparison note already");
         // A streak from the first day the store holds may have begun before it.
         let m = Month { first_stored: m.longest.map(|s| s.from), ..m };
         assert!(facts(&m).iter().any(|(l, v)| *l == "longest streak" && v.ends_with("when the logs start")));
