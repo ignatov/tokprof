@@ -988,6 +988,13 @@ const SCENES: &[Scene] = &[
         // The day store, for the period before.
         s.calendar.data.settle(changes, Duration::from_secs(120));
     }),
+    ("reports-week", |s| {
+        reports::show(s, reports::Mode::Reports);
+        s.reports.days = 7;
+        let changes = s.browser.changes();
+        s.reports.data.settle(7, changes, Duration::from_secs(120));
+        s.calendar.data.settle(changes, Duration::from_secs(120));
+    }),
     ("reports-advice", |s| {
         reports::show(s, reports::Mode::Reports);
         let (days, changes) = (s.reports.days, s.browser.changes());

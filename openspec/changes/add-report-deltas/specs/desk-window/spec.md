@@ -35,3 +35,21 @@ Each row of `Could have been saved` SHALL give, after its dollars, the cause's a
 #### Scenario: A new cause
 - **WHEN** `tools changed` could have saved $12 and had nothing in the period before
 - **THEN** its row reads `new`
+
+### Requirement: An incomplete period before
+The comparison SHALL be incomplete when, for an agent with requests in the period shown, the store's first request of that agent comes after the period before starts, as when the agent deleted its older logs before the store kept them. Then the key numbers card notes `against <dates>, incomplete: <agent> only from <day>`, and every change of the key numbers and of the causes is grey, judging nothing.
+
+#### Scenario: Logs deleted before the store
+- **WHEN** Reports shows 10 Oct – 9 Nov, and the store's first Claude Code request is on 29 Sep
+- **THEN** the card notes `against 10 Sep – 10 Oct 2026, incomplete: claude only from 29 Sep`, and `↑ $6,779 (+128%)` and the other changes are grey
+
+#### Scenario: A complete period before
+- **WHEN** Reports shows 7 days from 2 Nov, and every agent's data in the store starts before 26 Oct
+- **THEN** the card notes only `against 26 Oct – 2 Nov 2026`, and the changes are coloured
+
+### Requirement: A week of Reports in a frame without a window
+`--scene reports-week` SHALL draw the frame in Reports on the last 7 days, waiting up to 120 seconds for the report and for the day store, as `--scene reports` does for 30 days.
+
+#### Scenario: The frame
+- **WHEN** the user runs `tokprof-desk --snap out.png --scene reports-week`
+- **THEN** `out.png` shows Reports on the last 7 days, compared with the 7 days before

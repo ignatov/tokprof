@@ -30,6 +30,7 @@ impl Before {
             Before::Waiting => Some("comparing with the period before…".into()),
             Before::Client => Some("no comparison with --client".into()),
             Before::NoData(_) => Some("no earlier data".into()),
+            Before::Totals(t) if t.incomplete() => Some(format!("against {}, incomplete: {}", compare::dates((t.from_ms, t.to_ms), true), t.gaps_note())),
             Before::Totals(t) => Some(format!("against {}", compare::dates((t.from_ms, t.to_ms), true))),
         }
     }
@@ -48,9 +49,8 @@ pub fn before(s: &Desk, report: &Report) -> Before {
         return Before::Client;
     }
     let Some(store) = s.calendar.data.get().and_then(|c| c.store.clone()) else { return Before::Waiting };
-    let window = compare::before((report.since_ms, report.until_ms));
-    let t = Totals::of(&store.entries, &tokprof_browse::calendar::filters(&s.calendar.select), window);
-    if t.any { Before::Totals(t) } else { Before::NoData(window) }
+    let t = Totals::before(&store.entries, &tokprof_browse::calendar::filters(&s.calendar.select), (report.since_ms, report.until_ms));
+    if t.any { Before::Totals(t) } else { Before::NoData((t.from_ms, t.to_ms)) }
 }
 
 /// What identifies the store compared with, for the view's memo.
@@ -76,12 +76,14 @@ fn runs(key: &'static str, parts: Vec<(String, Color)>) -> El {
 /// period before.
 pub fn key_lines(o: &Overview, before: &Before, p: &Pal) -> Vec<Option<El>> {
     let Some(b) = before.totals() else { return vec![None, None, None, None, None] };
+    // An incomplete period before judges nothing: every change is grey.
+    let judged = |v: Verdict| if b.incomplete() { p.ink3 } else { color(v, p) };
     let neutral = |now: f64, was: f64, money: bool| (compare::delta(now, was, money), p.ink3);
-    let sensed = |now: f64, was: f64, money: bool| (compare::delta(now, was, money), color(compare::verdict(now, was, Sense::LowerIsBetter, money), p));
+    let sensed = |now: f64, was: f64, money: bool| (compare::delta(now, was, money), judged(compare::verdict(now, was, Sense::LowerIsBetter, money)));
     let (avoidable, share) = o.avoidable();
     let (returns, _) = o.cold_returns();
     let share_part =
-        (compare::points(share, b.share()), color(compare::verdict((share * 10.0).round(), (b.share() * 10.0).round(), Sense::LowerIsBetter, false), p));
+        (compare::points(share, b.share()), judged(compare::verdict((share * 10.0).round(), (b.share() * 10.0).round(), Sense::LowerIsBetter, false)));
     vec![
         Some(runs("delta-spend", vec![neutral(o.spend_usd(), b.spend, true)])),
         Some(runs("delta-avoidable", vec![sensed(avoidable, b.avoidable, true), (" · ".into(), p.ink3), share_part])),
@@ -99,6 +101,7 @@ pub fn cause_cell(name: &str, usd: f64, before: &Before, p: &Pal) -> Option<(Str
     let was = b.causes.get(name).copied();
     let t = compare::cause_change(usd, was);
     let c = match was.filter(|w| *w >= 0.005) {
+        _ if b.incomplete() => p.ink3,
         None => p.cold,
         Some(w) => color(compare::verdict(usd, w, Sense::LowerIsBetter, true), p),
     };
@@ -129,8 +132,10 @@ mod tests {
     }
 
     /// The window in Reports on the fixture's report over `window`, with a store that holds
-    /// `before` dollars, $1 of it avoidable by `idle > TTL`, in the window before.
-    fn desk(window: (i64, i64), before: Option<f64>, client: bool) -> (Runtime<Desk>, Overview) {
+    /// `before` dollars, $1 of it avoidable by `idle > TTL`, a day into the window before, and a
+    /// request in the window shown; with `whole`, also a request a day before the window before,
+    /// so that the store's data of the agent starts before it.
+    fn desk_of(window: (i64, i64), before: Option<f64>, client: bool, whole: bool) -> (Runtime<Desk>, Overview) {
         let (catalog, select) = fixture();
         let o = tokprof_core::overview::collect(&catalog, &select, &Pricing::defaults(), |_, _| {}).unwrap();
         let o2 = tokprof_core::overview::collect(&catalog, &select, &Pricing::defaults(), |_, _| {}).unwrap();
@@ -143,7 +148,11 @@ mod tests {
                     agent: "claude".into(),
                     main: "m".into(),
                     session: "m".into(),
-                    minutes: vec![Minute { minute: (start + DAY) / 60_000, usd, avoidable_usd: 1.0, requests: 4, ..Minute::default() }],
+                    minutes: [(whole, start - DAY, 0.0, 0.0, 1), (true, start + DAY, usd, 1.0, 4), (true, window.0 + DAY, 0.0, 0.0, 1)]
+                        .into_iter()
+                        .filter(|m| m.0)
+                        .map(|(_, ts, usd, avoidable_usd, requests)| Minute { minute: ts / 60_000, usd, avoidable_usd, requests, ..Minute::default() })
+                        .collect(),
                     misses: vec![((start + DAY) / 3_600_000, "idle > TTL".into(), 1.0)],
                     cold: vec![start + DAY],
                     ..Entry::default()
@@ -158,6 +167,10 @@ mod tests {
             rt.frame(1.0 / 60.0);
         }
         (rt, o2)
+    }
+
+    fn desk(window: (i64, i64), before: Option<f64>, client: bool) -> (Runtime<Desk>, Overview) {
+        desk_of(window, before, client, true)
     }
 
     fn texts(rt: &Runtime<Desk>) -> Vec<String> {
@@ -176,9 +189,25 @@ mod tests {
         let spend = compare::delta(o.spend_usd(), 0.5, true);
         assert!(shown.contains(&spend), "{spend} in {shown:?}");
         assert!(shown.contains(&compare::delta(o.requests() as f64, 4.0, false)));
+        assert!(shown.contains(&compare::delta(o.spend_usd(), 0.5, true)));
         assert!(shown.contains(&compare::delta(o.sessions() as f64, 1.0, false)));
         assert!(shown.contains(&compare::delta(o.cold_returns().0 as f64, 1.0, false)));
-        assert!(shown.iter().any(|t| t.starts_with("against ")), "the card names the period before");
+        assert!(shown.iter().any(|t| t.starts_with("against ") && !t.contains("incomplete")), "the card names the period before");
+    }
+
+    #[test]
+    fn a_period_before_that_starts_before_an_agent_s_first_data_is_incomplete_and_grey() {
+        let (rt, o) = desk_of(window(), Some(0.5), false, false);
+        let shown = texts(&rt);
+        let first = tokprof_core::fmt::local_time(compare::before(window()).0 + DAY, "%-d %b");
+        assert!(shown.iter().any(|t| t.ends_with(&format!(", incomplete: claude only from {first}"))), "{shown:?}");
+        // The changes are there, but grey.
+        let p = crate::pal::pal(crate::themes::default(true));
+        let cold = compare::delta(o.cold_returns().0 as f64, 1.0, false);
+        assert!(shown.contains(&cold), "the cold returns' change");
+        let t =
+            Totals { gaps: vec![("claude".into(), 0)], causes: [("idle > TTL".to_string(), 1_012.0)].into_iter().collect(), any: true, ..Totals::default() };
+        assert_eq!(cause_cell("idle > TTL", 796.0, &Before::Totals(t), &p).map(|c| c.1), Some(p.ink3));
     }
 
     #[test]

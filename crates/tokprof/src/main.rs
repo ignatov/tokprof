@@ -879,7 +879,7 @@ fn compare_line(catalog: &tokprof_core::catalog::Catalog, select: &Query, pricin
     let from = select.since_ms.context("--compare needs --since: all of history has nothing before it")?;
     let to = select.until_ms.map_or(now_ms(), |u| u.min(now_ms()));
     let (store, _) = tokprof_browse::calendar::update(catalog, &select.agents, pricing, &paths::day_store(), |_, _| {})?;
-    let before = tokprof_core::compare::Totals::of(&store.entries, &tokprof_browse::calendar::filters(select), tokprof_core::compare::before((from, to)));
+    let before = tokprof_core::compare::Totals::before(&store.entries, &tokprof_browse::calendar::filters(select), (from, to));
     Ok(tokprof_core::compare::summary_line(c.spend.priced_usd(), c.avoidable_usd(), &before))
 }
 

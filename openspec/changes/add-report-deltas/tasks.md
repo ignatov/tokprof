@@ -15,6 +15,8 @@
 - [x] 3.2 Give each `Could have been saved` row the dollars before and the change, or `new`. Desk test.
 - [x] 3.3 In `crates/tokprof-desk`, run `cargo fmt && cargo test && cargo clippy --all-targets -- -D warnings`.
 
+- [x] 3.4 Call a comparison incomplete when an agent of the period shown has its first request in the store after the period before starts: note it, grey the changes, and print signed differences in `tokprof summary --compare`. Unit and desk tests.
+
 ## 4. Check on the real logs
 
 - [x] 4.1 Total the store for 2026-09-10 to 2026-10-10, and compare it with `tokprof summary`, the overview of that window, `tokprof misses` and `tokprof share` for the same dates. Record the numbers.
@@ -26,7 +28,8 @@ Recorded 2026-11-09 on the author's logs (days-2 store, 1,962 logs):
   - `tokprof misses` for the same dates gives compaction call $367, idle > TTL $163 + $60.22, model switch $4.41, unknown $2.20 + $0.13, params changed $0.06.
   - The two `cache lifetime` rows are not miss causes and have no comparison.
   - Totalling a window over the store takes 0.5 ms. `tokprof summary` without `--compare` prints the same bytes as before. `tokprof summary --since 2026-10-10 --until 2026-11-09 --compare` reads `compared with 10 Sep – 9 Oct 2026: spend ↑ $6,722 (+127%) · avoidable ↑ $725 (+121%), ↓ 0.3 points of spend`.
-- 4.2: frames ~/tokprof/plans/night-2026-11-08/shots/deltas-{light,dark}.png. The look fix: `vs <dates>` in every tile overflowed the avoidable tile, so the dates moved to the card's note `against …`.
+- 4.3 (incomplete): the store's first Claude Code request is on 29 Sep, since Claude Code deleted older logs before the store existed. So the 30 days before 10 Oct – 9 Nov are incomplete: `compared with 10 Sep – 9 Oct 2026, incomplete (claude only from 29 Sep): spend +$6,722 (+127%) · avoidable +$725 (+121%), −0.3 points of spend`. Seven days are complete: `tokprof summary --since 2026-11-02 --until 2026-11-09 --compare` reads `compared with 26 Oct – 1 Nov 2026: spend ↓ $664 (−26%) · avoidable ↓ $397 (−82%), ↓ 14.5 points of spend`.
+- 4.2: frames ~/tokprof/plans/night-2026-11-08/shots/deltas-30d-{light,dark}.png (incomplete, grey) and deltas-7d-{light,dark}.png (complete, coloured). The look fix: `vs <dates>` in every tile overflowed the avoidable tile, so the dates moved to the card's note `against …`.
 
 ## 5. Finish
 

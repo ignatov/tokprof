@@ -26,6 +26,10 @@ pub struct Totals {
     pub causes: BTreeMap<String, f64>,
     /// Anything of the kept entries falls in the window: a request, a miss or a cold return.
     pub any: bool,
+    /// The agents with requests in the period shown whose first request in the store comes after
+    /// this window starts, with that first request: the window holds only part of their data,
+    /// as when an agent deleted its older logs before the store kept them.
+    pub gaps: Vec<(String, i64)>,
 }
 
 impl Totals {
@@ -55,10 +59,47 @@ impl Totals {
         t
     }
 
+    /// The totals of the window of the same length before `shown`, with the agents whose data
+    /// in the store starts after that window does.
+    pub fn before(entries: &[Entry], filters: &Filters, shown: (i64, i64)) -> Totals {
+        let window = before(shown);
+        let mut t = Totals::of(entries, filters, window);
+        t.gaps = gaps(entries, filters, shown, window.0);
+        t
+    }
+
+    /// The comparison holds only part of some agent's data.
+    pub fn incomplete(&self) -> bool {
+        !self.gaps.is_empty()
+    }
+
+    /// The note of an incomplete comparison: `claude only from 29 Sep`.
+    pub fn gaps_note(&self) -> String {
+        self.gaps.iter().map(|(a, ts)| format!("{a} only from {}", crate::fmt::local_time(*ts, "%-d %b"))).collect::<Vec<_>>().join(", ")
+    }
+
     /// The share of the spend that was avoidable, in percent.
     pub fn share(&self) -> f64 {
         100.0 * self.avoidable / self.spend.max(1e-9)
     }
+}
+
+/// The agents with a request in `shown` whose first request in the store is after `start`, with
+/// that request's time, by name.
+pub fn gaps(entries: &[Entry], filters: &Filters, (from, to): (i64, i64), start: i64) -> Vec<(String, i64)> {
+    let mut first: BTreeMap<&str, i64> = BTreeMap::new();
+    let mut shown: HashSet<&str> = HashSet::new();
+    for e in entries.iter().filter(|e| filters.keeps(e)) {
+        for m in e.minutes.iter().filter(|m| m.requests > 0) {
+            let ts = m.minute * MINUTE_MS;
+            let f = first.entry(e.agent.as_str()).or_insert(ts);
+            *f = (*f).min(ts);
+            if ts >= from && ts < to {
+                shown.insert(e.agent.as_str());
+            }
+        }
+    }
+    first.into_iter().filter(|(a, ts)| shown.contains(a) && *ts > start).map(|(a, ts)| (a.to_string(), ts)).collect()
 }
 
 /// The window of the same length just before `[from, to)`. A window of whole local days, from
@@ -148,17 +189,49 @@ pub fn dates((from, to): (i64, i64), year: bool) -> String {
 /// The summary's `compared with` line: the spend and the avoidable dollars against the window
 /// before, or `no earlier data`.
 pub fn summary_line(spend: f64, avoidable: f64, before: &Totals) -> String {
-    let head = format!("compared with {}:", dates((before.from_ms, before.to_ms), true));
+    let span = dates((before.from_ms, before.to_ms), true);
     if !before.any {
-        return format!("{head} no earlier data");
+        return format!("compared with {span}: no earlier data");
     }
     let share = 100.0 * avoidable / spend.max(1e-9);
+    // An incomplete period before gives the differences only, with no arrows to judge them by.
+    if before.incomplete() {
+        return format!(
+            "compared with {span}, incomplete ({}): spend {} · avoidable {}, {} of spend",
+            before.gaps_note(),
+            signed(spend, before.spend, true),
+            signed(avoidable, before.avoidable, true),
+            signed_points(share, before.share())
+        );
+    }
     format!(
-        "{head} spend {} · avoidable {}, {} of spend",
+        "compared with {span}: spend {} · avoidable {}, {} of spend",
         delta(spend, before.spend, true),
         delta(avoidable, before.avoidable, true),
         points(share, before.share())
     )
+}
+
+/// The change from `was` to `now` as a signed difference, without an arrow: `+$1,203 (+11%)`.
+pub fn signed(now: f64, was: f64, money: bool) -> String {
+    let d = now - was;
+    let amount = |v: f64| if money { usd(v) } else { int(v.round() as u64) };
+    let same = if money { d.abs() < 0.005 } else { d.round() == 0.0 };
+    if same {
+        return format!("= {}", amount(0.0));
+    }
+    let sign = if d > 0.0 { "+" } else { "−" };
+    let percent = if was.abs() > 1e-9 { format!(" ({sign}{:.0}%)", (100.0 * d / was).abs()) } else { String::new() };
+    format!("{sign}{}{percent}", amount(d.abs()))
+}
+
+/// The change of a share in points, signed: `−1.2 points`.
+pub fn signed_points(now: f64, was: f64) -> String {
+    let d = now - was;
+    if d.abs() < 0.05 {
+        return "= 0.0 points".to_string();
+    }
+    format!("{}{:.1} points", if d > 0.0 { "+" } else { "−" }, d.abs())
 }
 
 #[cfg(test)]
@@ -210,6 +283,26 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_whose_data_starts_after_the_period_before_starts_makes_it_incomplete() {
+        // claude's first request is at hour 50, codex's at hour 1; both worked in the period shown.
+        let entries = vec![
+            entry("claude", "a", vec![(50 * 60, 1.0, 0.0, 1), (100 * 60, 1.0, 0.0, 1)], vec![], vec![]),
+            entry("codex", "b", vec![(60, 1.0, 0.0, 1), (100 * 60, 1.0, 0.0, 1)], vec![], vec![]),
+        ];
+        let shown = (90 * H, 130 * H);
+        let t = Totals::before(&entries, &Filters::default(), shown);
+        assert_eq!((t.from_ms, t.to_ms), (50 * H, 90 * H));
+        assert!(!t.incomplete(), "the period before starts at claude's first request");
+        let t = Totals::before(&entries, &Filters::default(), (80 * H, 130 * H));
+        assert_eq!(t.gaps, [("claude".to_string(), 50 * H)]);
+        // An agent that did not work in the period shown does not count.
+        let t = Totals::before(&entries, &Filters { agents: vec!["codex".into()], ..Filters::default() }, (80 * H, 130 * H));
+        assert!(!t.incomplete());
+        assert_eq!(signed(12_203.0, 11_000.0, true), "+$1,203 (+11%)");
+        assert_eq!(signed_points(10.1, 11.3), "−1.2 points");
+    }
+
+    #[test]
     fn changes_read_with_an_arrow_an_amount_and_a_percent() {
         assert_eq!(delta(12_203.0, 11_000.0, true), "↑ $1,203 (+11%)");
         assert_eq!(delta(8.0, 10.0, false), "↓ 2 (−20%)");
@@ -231,6 +324,11 @@ mod tests {
         assert_eq!(
             summary_line(5_500.0, 540.0, &before),
             "compared with 10 Sep – 9 Oct 2026: spend ↑ $216 (+4%) · avoidable ↓ $57.00 (−10%), ↓ 1.5 points of spend"
+        );
+        let partial = Totals { gaps: vec![("claude".into(), midnight(2026, 9, 29) + 10 * H)], ..before.clone() };
+        assert_eq!(
+            summary_line(5_500.0, 540.0, &partial),
+            "compared with 10 Sep – 9 Oct 2026, incomplete (claude only from 29 Sep): spend +$216 (+4%) · avoidable −$57.00 (−10%), −1.5 points of spend"
         );
         let empty = Totals { any: false, ..before };
         assert_eq!(summary_line(5_500.0, 540.0, &empty), "compared with 10 Sep – 9 Oct 2026: no earlier data");

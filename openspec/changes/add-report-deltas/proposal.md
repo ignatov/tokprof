@@ -12,6 +12,7 @@
   - The cold returns compare their count; the store keeps no avoidable dollars of cold returns.
 - **Reports, `Could have been saved`.** Each cause row gets its dollars in the period before and the change, as in `idle > TTL $796 · was $1,012 · ↓ 21%`. A cause without dollars before reads `new`.
 - **No earlier data.** When the store holds nothing of the period before (it is before the first log), there is no delta, and the key numbers card says `no earlier data`.
+- **An incomplete period before.** When an agent with data in the period shown has no data in the store before some day inside the period before (its older logs were deleted before the store kept them), the comparison is incomplete. The card notes `incomplete: claude only from 29 Sep`, and every change is grey. `tokprof summary --compare` names it too and prints signed differences without arrows.
 - **Console first.** `tokprof summary --since <date> --compare` prints, after the `Total priced` line, a `compared with` line with the same deltas for the spend and the avoidable dollars. Without `--compare` the summary is unchanged, byte for byte.
 
 ## Capabilities
@@ -20,8 +21,8 @@
 None.
 
 ### Modified Capabilities
-- `desk-window`: adds `Key numbers against the period before` and `Causes against the period before`.
-- `cost-attribution`: adds `Summary against the period before`.
+- `desk-window`: adds `Key numbers against the period before`, `Causes against the period before`, `An incomplete period before` and `A week of Reports in a frame without a window`.
+- `cost-attribution`: adds `Summary against the period before` and `Incomplete summary comparison`.
 
 ## Impact
 

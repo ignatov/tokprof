@@ -24,3 +24,10 @@
 #### Scenario: Without the flag
 - **WHEN** the user runs `tokprof summary --since 30d`
 - **THEN** the output is byte for byte what it was before this option
+
+### Requirement: Incomplete summary comparison
+`tokprof summary --compare` SHALL call the comparison incomplete by the rule of desk-window's An incomplete period before. An incomplete line names the agents and gives the changes as signed differences with no arrows: `compared with <dates>, incomplete (<agent> only from <day>): spend +<change> (<percent>) · avoidable −<change> (<percent>), −<points> points of spend`.
+
+#### Scenario: Claude Code's logs before 29 Sep are gone
+- **WHEN** the window before is 10 Sep – 9 Oct 2026 and the store's first Claude Code request is on 29 Sep
+- **THEN** the line reads `compared with 10 Sep – 9 Oct 2026, incomplete (claude only from 29 Sep): spend +$216 (+4%) · avoidable −$57.00 (−10%), −1.5 points of spend`
