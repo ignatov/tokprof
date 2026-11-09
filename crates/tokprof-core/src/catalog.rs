@@ -132,6 +132,12 @@ impl Catalog {
         }
     }
 
+    /// When a session first did something, in epoch ms, as its source reads it from the start of
+    /// the log; `None` when the source cannot tell.
+    pub fn first_active(&self, s: &SessionRef) -> Option<i64> {
+        self.source(s).first_active(s)
+    }
+
     pub fn subagents(&self, s: &SessionRef) -> Vec<SessionRef> {
         self.source(s).subagents(s)
     }

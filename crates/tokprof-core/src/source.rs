@@ -415,6 +415,12 @@ pub trait LogSource: Send + Sync {
     fn last_active(&self, _s: &SessionRef) -> Option<i64> {
         None
     }
+    /// When the session first did something, in epoch ms: the time of the first record in its
+    /// log that carries one, read from the start of the log. A log rewritten later, as one
+    /// compressed afterwards, is born after its first record; `None` means the source cannot tell.
+    fn first_active(&self, _s: &SessionRef) -> Option<i64> {
+        None
+    }
     /// The logs of the subagents a main session started, and of the ones they started in turn.
     fn subagents(&self, s: &SessionRef) -> Vec<SessionRef>;
     fn open(&self, s: &SessionRef) -> Result<Box<dyn Records>>;

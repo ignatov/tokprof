@@ -6,8 +6,8 @@
 Under each key number, Reports SHALL compare it with the period of the same length just before the one shown, from the day store (see activity-calendar). The comparison reads `<arrow> <change> (<percent>)`, or `= <zero>` when the number did not change, and the card's title notes `against <first day> – <last day>`. The avoidable dollars, their share of the spend in points, and the cold returns are green when they fall and red when they rise. Spend, sessions and requests have no colour.
 
 #### Scenario: More spend
-- **WHEN** the last 30 days cost $12,203 and the 30 days before cost $11,000, from 10 Sep to 9 Oct
-- **THEN** the spend reads `↑ $1,203 (+11%)` in the text's colour, and the card notes `against 10 Sep – 9 Oct 2026`
+- **WHEN** on 9 Nov the last 30 days cost $12,203 and the 30 days before them cost $11,000
+- **THEN** the spend reads `↑ $1,203 (+11%)` in the text's colour, and the card notes `against 10 Sep – 10 Oct 2026`: the period before ends at the hour the period shown starts
 
 #### Scenario: Fewer misses
 - **WHEN** the avoidable dollars fell from $640 to $597, and their share from 12.5% to 11.3% of spend
@@ -37,7 +37,7 @@ Each row of `Could have been saved` SHALL give, after its dollars, the cause's a
 - **THEN** its row reads `new`
 
 ### Requirement: An incomplete period before
-The comparison SHALL be incomplete when, for an agent with requests in the period shown, the store's first request of that agent comes after the period before starts, as when the agent deleted its older logs before the store kept them. Then the key numbers card notes `against <dates>, incomplete: <agent> only from <day>`, and every change of the key numbers and of the causes is grey, judging nothing.
+The comparison SHALL be incomplete when an agent with requests in the period shown, and at least 10% of its spend, has its first request in the whole store after the period before starts, as when the agent deleted its older logs before the store kept them. The project and session filters do not move that first request. Then the card notes `against <dates>, incomplete: <agent> only from <day>`, and every change of the key numbers and causes is grey.
 
 #### Scenario: Logs deleted before the store
 - **WHEN** Reports shows 10 Oct – 9 Nov, and the store's first Claude Code request is on 29 Sep
@@ -46,6 +46,17 @@ The comparison SHALL be incomplete when, for an agent with requests in the perio
 #### Scenario: A complete period before
 - **WHEN** Reports shows 7 days from 2 Nov, and every agent's data in the store starts before 26 Oct
 - **THEN** the card notes only `against 26 Oct – 2 Nov 2026`, and the changes are coloured
+
+#### Scenario: A new project
+- **WHEN** Reports shows 7 days with `--project ~/src/new`, the project's first request is on 1 Nov, and the store's first Claude Code request is on 29 Sep
+- **THEN** the comparison is complete and coloured
+
+### Requirement: A small agent in the period before
+An agent whose data starts after the period before starts, but that has less than 10% of the period shown's spend (of its requests, when nothing is priced), SHALL NOT make the comparison incomplete. The card names it after the dates: `; <agent> only from <day>, <share>% of spend, not judged`.
+
+#### Scenario: Trying a new agent
+- **WHEN** Codex's first request in the store is on 5 Nov and it has 3% of the last 7 days' spend
+- **THEN** the card notes `against 26 Oct – 2 Nov 2026; codex only from 5 Nov, 3% of spend, not judged`, and the changes stay coloured
 
 ### Requirement: A week of Reports in a frame without a window
 `--scene reports-week` SHALL draw the frame in Reports on the last 7 days, waiting up to 120 seconds for the report and for the day store, as `--scene reports` does for 30 days.

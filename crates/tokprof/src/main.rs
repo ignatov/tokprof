@@ -353,6 +353,7 @@ fn main() -> Result<()> {
         if cli.client.is_some() {
             bail!("--compare cannot filter by client; drop --client");
         }
+        compare_window(select.since_ms, select.until_ms, now_ms())?;
     }
     let filtered = cli.project.is_some() || cli.session.is_some() || cli.since.is_some() || cli.until.is_some() || cli.client.is_some();
     let none_found = || if filtered { "no session logs found for these filters" } else { "no session logs found" };
@@ -871,10 +872,31 @@ fn host_name() -> Option<String> {
 
 /// The summary's `compared with` line: the store brought up to date, and the window of the same
 /// length before the summary's totalled from it.
+/// The window `--compare` compares, checked before any log is read: `--since` before `--until`
+/// (or now), and a window before it that dates can hold.
+fn compare_window(since: Option<i64>, until: Option<i64>, now: i64) -> Result<(i64, i64)> {
+    let from = since.context("--compare needs --since: all of history has nothing before it")?;
+    let to = until.map_or(now, |u| u.min(now));
+    if to <= from {
+        bail!("--compare needs --since before --until and before now");
+    }
+    if tokprof_core::compare::try_before((from, to)).is_none() {
+        bail!("--compare cannot go back that far: the window before --since is out of range");
+    }
+    Ok((from, to))
+}
+
 fn compare_line(catalog: &tokprof_core::catalog::Catalog, select: &Query, pricing: &tokprof_core::pricing::Pricing, c: &Collector) -> Result<String> {
-    let from = select.since_ms.context("--compare needs --since: all of history has nothing before it")?;
-    let to = select.until_ms.map_or(now_ms(), |u| u.min(now_ms()));
-    let (store, _) = tokprof_browse::calendar::update(catalog, &select.agents, pricing, &paths::day_store(), |_, _| {})?;
+    let (from, to) = compare_window(select.since_ms, select.until_ms, now_ms())?;
+    let started = Instant::now();
+    let path = paths::day_store();
+    let (store, refreshed) = tokprof_browse::calendar::update(catalog, &select.agents, pricing, &path, |_, _| {})?;
+    // What the store read, and what went wrong with it, as the calendar says it.
+    eprintln!("{}", calendar::read_line(catalog, &refreshed, started.elapsed().as_secs_f64(), &path));
+    warn(&refreshed.unreadable);
+    for w in &refreshed.warnings {
+        eprintln!("{w}");
+    }
     let before = tokprof_core::compare::Totals::before(&store.entries, &tokprof_browse::calendar::filters(select), (from, to));
     // The causes the summary's table lists, as their names and dollars.
     let mut shown: std::collections::HashMap<&str, f64> = std::collections::HashMap::new();
@@ -952,6 +974,16 @@ mod tests {
             "Spend by model\n\nTotal priced: $5   avoidable on cache misses: $1 (20.0%)\ncompared with x: no earlier data\nClaude Code's own cost counter\n"
         );
         assert_eq!(with_line_after(text, "Nothing: ", "x"), text);
+    }
+
+    #[test]
+    fn compare_needs_a_window_with_a_start_before_its_end() {
+        let day = 86_400_000;
+        assert!(compare_window(None, None, 10 * day).unwrap_err().to_string().starts_with("--compare needs --since"));
+        assert_eq!(compare_window(Some(5 * day), Some(day), 10 * day).unwrap_err().to_string(), "--compare needs --since before --until and before now");
+        assert!(compare_window(Some(11 * day), None, 10 * day).is_err(), "a start after now");
+        assert!(compare_window(Some(i64::MIN + 5), Some(i64::MAX - 5), i64::MAX).unwrap_err().to_string().contains("out of range"));
+        assert_eq!(compare_window(Some(day), Some(5 * day), 10 * day).unwrap(), (day, 5 * day));
     }
 
     #[test]

@@ -30,8 +30,16 @@ impl Before {
             Before::Waiting => Some("comparing with the period before…".into()),
             Before::Client => Some("no comparison with --client".into()),
             Before::NoData(_) => Some("no earlier data".into()),
-            Before::Totals(t) if t.incomplete() => Some(format!("against {}, incomplete: {}", compare::dates((t.from_ms, t.to_ms), true), t.gaps_note())),
-            Before::Totals(t) => Some(format!("against {}", compare::dates((t.from_ms, t.to_ms), true))),
+            Before::Totals(t) => {
+                let mut note = format!("against {}", compare::dates((t.from_ms, t.to_ms), true));
+                if t.incomplete() {
+                    note += &format!(", incomplete: {}", t.gaps_note());
+                }
+                if !t.minor.is_empty() {
+                    note += &format!("; {}", t.minor_note());
+                }
+                Some(note)
+            }
         }
     }
 
@@ -227,6 +235,15 @@ mod tests {
         assert!(!shown.contains(&compare::delta(o.spend_usd(), 0.0, true)));
         let (rt, _) = desk(window(), Some(0.5), true);
         assert!(texts(&rt).iter().any(|t| t == "no comparison with --client"));
+    }
+
+    #[test]
+    fn a_small_agent_is_named_on_the_card_but_judges_nothing() {
+        let (from, to) = (1_794_200_000_000 - 7 * DAY, 1_794_200_000_000);
+        let t = Totals { from_ms: from, to_ms: to, any: true, minor: vec![("codex".into(), to - DAY, 0.03)], ..Totals::default() };
+        let note = Before::Totals(t.clone()).note().unwrap();
+        assert!(!t.incomplete());
+        assert!(note.starts_with("against ") && note.ends_with(", 3% of spend, not judged") && note.contains("; codex only from "), "{note}");
     }
 
     #[test]

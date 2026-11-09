@@ -26,11 +26,26 @@
 - **THEN** the output is byte for byte what it was before this option
 
 ### Requirement: Incomplete summary comparison
-`tokprof summary --compare` SHALL call the comparison incomplete by the rule of desk-window's An incomplete period before. An incomplete line names the agents and gives the changes as signed differences with no arrows: `compared with <dates>, incomplete (<agent> only from <day>): spend +<change> (<percent>) · avoidable −<change> (<percent>), −<points> points of spend`.
+`tokprof summary --compare` SHALL judge a comparison as desk-window's An incomplete period before and A small agent in the period before do. An incomplete line names the agents and gives signed differences with no arrows: `compared with <dates>, incomplete (<agent> only from <day>): spend +<change> (<percent>) · …`. A small agent is named in parentheses after the dates.
 
 #### Scenario: Claude Code's logs before 29 Sep are gone
 - **WHEN** the window before is 10 Sep – 9 Oct 2026 and the store's first Claude Code request is on 29 Sep
 - **THEN** the line reads `compared with 10 Sep – 9 Oct 2026, incomplete (claude only from 29 Sep): spend +$216 (+4%) · avoidable −$57.00 (−10%), −1.5 points of spend`
+
+#### Scenario: A small new agent
+- **WHEN** Codex's first request is on 5 Nov and it has 3% of the week's spend
+- **THEN** the line starts `compared with 26 Oct – 1 Nov 2026 (codex only from 5 Nov, 3% of spend, not judged): spend ↑` or `↓`, judged as usual
+
+### Requirement: The window the summary compares
+`tokprof summary --compare` SHALL check, before it reads any log, that `--since` comes before `--until` and before now, and that the window before it can be written as dates. After the store is brought up to date, it prints to stderr the calendar's line about what it read and the store's warnings.
+
+#### Scenario: Since after until
+- **WHEN** the user runs `tokprof --since 2026-11-05 --until 2026-11-01 summary --compare`
+- **THEN** it fails at once with `--compare needs --since before --until and before now`
+
+#### Scenario: An unreadable store
+- **WHEN** the store cannot be read
+- **THEN** the comparison is made from the logs read into memory, and its warning is printed to stderr
 
 ### Requirement: Causes gone in the summary comparison
 When miss causes had avoidable dollars in the window before and none in the window shown, the `compared with` line SHALL end with `; gone:` and each such cause with its dollars before, most first, comma separated.

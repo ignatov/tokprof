@@ -35,7 +35,11 @@ The day view SHALL print `agents` after `sittings`: the agent-hours, the time at
 
 #### Scenario: The logs read
 - **WHEN** `tokprof day 2026-11-02` runs
-- **THEN** it reads the main logs whose last line with a time is at or after 18:00 on 2026-11-01, and that were created before 12:00 on 2026-11-03
+- **THEN** it reads the main logs whose last line with a time is at or after 18:00 on 2026-11-01, and whose first line with a time is before 12:00 on 2026-11-03
+
+#### Scenario: A log compressed later
+- **WHEN** a Codex rollout of 18–20 Sep was compressed on 23 Sep, so that its file was created then
+- **THEN** `tokprof day 2026-09-20` reads it by the times of its lines, and its `agents` line agrees with the calendar's `agent` metric for that day
 
 #### Scenario: The logs of a day
 - **WHEN** a main log was created on 2026-10-20, its last line with a time is at 2026-11-02 09:00, and the IDE appended lines without a time to it on 2026-11-03

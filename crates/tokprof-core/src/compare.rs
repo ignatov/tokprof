@@ -30,7 +30,14 @@ pub struct Totals {
     /// this window starts, with that first request: the window holds only part of their data,
     /// as when an agent deleted its older logs before the store kept them.
     pub gaps: Vec<(String, i64)>,
+    /// The same for agents with less than `MIN_SHARE` of the period shown's spend: named, but they
+    /// do not make the comparison incomplete, with their share of that spend.
+    pub minor: Vec<(String, i64, f64)>,
 }
+
+/// The least share of the period shown's spend (or of its requests, without prices) an agent must
+/// have for its missing data to make a comparison incomplete.
+pub const MIN_SHARE: f64 = 0.10;
 
 impl Totals {
     /// The totals of `[from, to)` of the entries `filters` keeps; its own window is not used.
@@ -39,7 +46,8 @@ impl Totals {
         let inside = |ts: i64| ts >= from && ts < to;
         let mut sessions: HashSet<(&str, &str)> = HashSet::new();
         for e in entries.iter().filter(|e| filters.keeps(e)) {
-            for m in e.minutes.iter().filter(|m| inside(m.minute * MINUTE_MS)) {
+            // Requests without a time (minute 0 or before) are in no window, as in the calendar.
+            for m in e.minutes.iter().filter(|m| m.minute > 0 && inside(m.minute * MINUTE_MS)) {
                 t.spend += m.usd;
                 t.avoidable += m.avoidable_usd;
                 t.requests += m.requests as u64;
@@ -64,7 +72,9 @@ impl Totals {
     pub fn before(entries: &[Entry], filters: &Filters, shown: (i64, i64)) -> Totals {
         let window = before(shown);
         let mut t = Totals::of(entries, filters, window);
-        t.gaps = gaps(entries, filters, shown, window.0);
+        let all = all_gaps(entries, filters, shown, window.0);
+        t.gaps = all.iter().filter(|g| g.2 >= MIN_SHARE).map(|g| (g.0.clone(), g.1)).collect();
+        t.minor = all.into_iter().filter(|g| g.2 < MIN_SHARE).collect();
         t
     }
 
@@ -78,43 +88,83 @@ impl Totals {
         self.gaps.iter().map(|(a, ts)| format!("{a} only from {}", crate::fmt::local_time(*ts, "%-d %b"))).collect::<Vec<_>>().join(", ")
     }
 
+    /// The note of the agents that are cut but too small to judge by: `codex only from 5 Nov, 3%
+    /// of spend, not judged`.
+    pub fn minor_note(&self) -> String {
+        self.minor
+            .iter()
+            .map(|(a, ts, share)| format!("{a} only from {}, {:.0}% of spend, not judged", crate::fmt::local_time(*ts, "%-d %b"), 100.0 * share))
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
     /// The share of the spend that was avoidable, in percent.
     pub fn share(&self) -> f64 {
         100.0 * self.avoidable / self.spend.max(1e-9)
     }
 }
 
-/// The agents with a request in `shown` whose first request in the store is after `start`, with
-/// that request's time, by name.
-pub fn gaps(entries: &[Entry], filters: &Filters, (from, to): (i64, i64), start: i64) -> Vec<(String, i64)> {
+/// The agents with a request in `shown` whose first request in the whole store comes after
+/// `start`, with that request's time, by name, that have at least `MIN_SHARE` of the shown
+/// period's spend: the agents whose missing history makes a comparison incomplete.
+pub fn gaps(entries: &[Entry], filters: &Filters, shown: (i64, i64), start: i64) -> Vec<(String, i64)> {
+    all_gaps(entries, filters, shown, start).into_iter().filter(|g| g.2 >= MIN_SHARE).map(|g| (g.0, g.1)).collect()
+}
+
+/// Every agent with a request in `shown` (among the entries `filters` keeps) whose first request
+/// in the store comes after `start`, with that time and its share of the shown period's spend.
+/// The first request is the store's own: the project and session filters do not move it, since
+/// the gap is in the store's history, not in a project's.
+fn all_gaps(entries: &[Entry], filters: &Filters, (from, to): (i64, i64), start: i64) -> Vec<(String, i64, f64)> {
+    let timed = |m: &&crate::daystore::Minute| m.requests > 0 && m.minute > 0;
     let mut first: BTreeMap<&str, i64> = BTreeMap::new();
-    let mut shown: HashSet<&str> = HashSet::new();
-    for e in entries.iter().filter(|e| filters.keeps(e)) {
-        for m in e.minutes.iter().filter(|m| m.requests > 0) {
+    let agent_kept = |e: &Entry| filters.agents.is_empty() || filters.agents.contains(&e.agent);
+    for e in entries.iter().filter(|e| agent_kept(e)) {
+        for m in e.minutes.iter().filter(timed) {
             let ts = m.minute * MINUTE_MS;
             let f = first.entry(e.agent.as_str()).or_insert(ts);
             *f = (*f).min(ts);
-            if ts >= from && ts < to {
-                shown.insert(e.agent.as_str());
-            }
         }
     }
-    first.into_iter().filter(|(a, ts)| shown.contains(a) && *ts > start).map(|(a, ts)| (a.to_string(), ts)).collect()
+    // The shown period's spend and requests of each agent, as the filters keep them.
+    let mut shown: BTreeMap<&str, (f64, u64)> = BTreeMap::new();
+    for e in entries.iter().filter(|e| filters.keeps(e)) {
+        for m in e.minutes.iter().filter(timed).filter(|m| m.minute * MINUTE_MS >= from && m.minute * MINUTE_MS < to) {
+            let s = shown.entry(e.agent.as_str()).or_default();
+            s.0 += m.usd;
+            s.1 += m.requests as u64;
+        }
+    }
+    let (usd, requests): (f64, u64) = shown.values().fold((0.0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    let share = |s: (f64, u64)| if usd > 0.005 { s.0 / usd } else { s.1 as f64 / requests.max(1) as f64 };
+    first.into_iter().filter(|(a, ts)| shown.contains_key(a) && *ts > start).map(|(a, ts)| (a.to_string(), ts, share(shown[a]))).collect()
 }
 
 /// The window of the same length just before `[from, to)`. A window of whole local days, from
 /// one local midnight to another, gets as many local days before it, whatever the clocks did.
-pub fn before((from, to): (i64, i64)) -> (i64, i64) {
+/// An empty window, or one whose window before cannot be written, gives `(from, from)`.
+pub fn before(window: (i64, i64)) -> (i64, i64) {
+    try_before(window).unwrap_or((window.0, window.0))
+}
+
+/// `before`, or `None` when the window is empty (`to` not after `from`) or the window before
+/// falls outside the times a date can hold.
+pub fn try_before((from, to): (i64, i64)) -> Option<(i64, i64)> {
     use chrono::{Local, TimeZone};
+    if to <= from {
+        return None;
+    }
     let midnight = |ts: i64| Local.timestamp_millis_opt(ts).single().map(|t| t.time() == chrono::NaiveTime::MIN).unwrap_or(false);
     if midnight(from) && midnight(to) {
-        let days = ((to - from) as f64 / 86_400_000.0).round() as i64;
-        let start = Local.timestamp_millis_opt(from).single().map(|t| t.date_naive() - chrono::Days::new(days as u64));
+        let days = ((to as f64 - from as f64) / 86_400_000.0).round() as u64;
+        let start = Local.timestamp_millis_opt(from).single().and_then(|t| t.date_naive().checked_sub_days(chrono::Days::new(days)));
         if let Some(ms) = start.and_then(|d| d.and_hms_opt(0, 0, 0)).and_then(|t| t.and_local_timezone(Local).earliest()).map(|t| t.timestamp_millis()) {
-            return (ms, from);
+            return Some((ms, from));
         }
     }
-    (from - (to - from), from)
+    let start = from.checked_sub(to.checked_sub(from)?)?;
+    Local.timestamp_millis_opt(start).single()?;
+    Some((start, from))
 }
 
 /// Whether a number is better when it falls, worse when it rises, or neither.
@@ -215,16 +265,18 @@ fn summary_head(spend: f64, avoidable: f64, before: &Totals) -> String {
         return format!("compared with {span}: no earlier data");
     }
     let share = 100.0 * avoidable / spend.max(1e-9);
+    let minor = before.minor_note();
     // An incomplete period before gives the differences only, with no arrows to judge them by.
     if before.incomplete() {
+        let note = if minor.is_empty() { before.gaps_note() } else { format!("{}; {minor}", before.gaps_note()) };
         return format!(
-            "compared with {span}, incomplete ({}): spend {} · avoidable {}, {} of spend",
-            before.gaps_note(),
+            "compared with {span}, incomplete ({note}): spend {} · avoidable {}, {} of spend",
             signed(spend, before.spend, true),
             signed(avoidable, before.avoidable, true),
             signed_points(share, before.share())
         );
     }
+    let span = if minor.is_empty() { span } else { format!("{span} ({minor})") };
     format!(
         "compared with {span}: spend {} · avoidable {}, {} of spend",
         delta(spend, before.spend, true),
@@ -321,6 +373,41 @@ mod tests {
         assert!(!t.incomplete());
         assert_eq!(signed(12_203.0, 11_000.0, true), "+$1,203 (+11%)");
         assert_eq!(signed_points(10.1, 11.3), "−1.2 points");
+    }
+
+    #[test]
+    fn the_store_s_history_decides_and_a_small_agent_is_named_but_not_judged() {
+        // claude's store history starts at hour 1 in another project; in ~/src/new it starts at 50.
+        let mut entries = vec![
+            entry("claude", "a", vec![(60, 1.0, 0.0, 1)], vec![], vec![]),
+            entry("claude", "b", vec![(50 * 60, 1.0, 0.0, 1), (100 * 60, 9.7, 0.0, 1)], vec![], vec![]),
+            entry("codex", "c", vec![(95 * 60, 0.3, 0.0, 1)], vec![], vec![]),
+        ];
+        entries[0].project = "~/src/old".into();
+        entries[1].project = "~/src/new".into();
+        let shown = (80 * H, 130 * H);
+        let project = Filters { project: Some("~/src/new".into()), ..Filters::default() };
+        let t = Totals::before(&entries, &project, shown);
+        assert!(!t.incomplete() && t.minor.is_empty(), "a new project is no gap in the store: {t:?}");
+        // codex, new in the shown period with 3% of its spend, is named but judged not.
+        let t = Totals::before(&entries, &Filters::default(), shown);
+        assert!(!t.incomplete(), "{t:?}");
+        assert_eq!(t.minor.len(), 1);
+        assert!(t.minor_note().starts_with("codex only from ") && t.minor_note().ends_with(", 3% of spend, not judged"), "{}", t.minor_note());
+        // With codex at half the spend, the gap counts.
+        entries[2].minutes[0].usd = 9.7;
+        assert_eq!(gaps(&entries, &Filters::default(), shown, before(shown).0), [("codex".to_string(), 95 * H)]);
+    }
+
+    #[test]
+    fn an_empty_window_or_one_out_of_range_has_no_window_before() {
+        assert_eq!(try_before((midnight(2026, 11, 5), midnight(2026, 11, 1))), None);
+        assert_eq!(try_before((10, 10)), None);
+        assert_eq!(try_before((i64::MIN + 10, i64::MAX)), None);
+        assert_eq!(before((midnight(2026, 11, 5), midnight(2026, 11, 1))), (midnight(2026, 11, 5), midnight(2026, 11, 5)));
+        let untimed = vec![entry("claude", "a", vec![(0, 5.0, 1.0, 3)], vec![], vec![])];
+        let t = Totals::of(&untimed, &Filters::default(), (i64::MIN / 2, i64::MAX / 2));
+        assert_eq!((t.spend, t.requests, t.any), (0.0, 0, false), "requests without a time are in no window");
     }
 
     #[test]

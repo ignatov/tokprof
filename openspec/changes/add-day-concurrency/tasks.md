@@ -26,6 +26,9 @@ Recorded 2026-11-09 on the author's logs:
 - 4.1: "some agent at work" equals the calendar's `agent` value, to the minute: 2026-11-01 610 min (10.2h), 11-02 499 (8.3h), 11-03 750 (12.5h), 11-06 634 (10.6h). Agent-hours: 19.3, 11.4, 25.6 and 14.5. Peaks: 11 at 17:08, 3 at 12:49, 5 at 17:42 and 4 at 19:58. Each equals a direct count of the sessions whose work holds that moment, and of the shown lanes with work then. On 11-06, 12 sessions worked but only 10 had lanes: two worked with no action of the user that day.
 - 4.2: `tokprof day` for the four days prints the same bytes as a build of dc00621, but for the one `agents` line after `sittings`.
 - 4.3: frames in ~/tokprof/plans/night-2026-11-08/shots/concurrency-2026-11-0{1,3}-{light,dark}.png. 2026-11-01 shows 40 sessions with actions; the 62 include those left out. The look fixes: a 26 pt lane made the count read as noise, so the lane is 40 pt and shows the most at once in each 5 minutes as stepped bars.
+- 4.4 (code review 2): the day view now picks a log by the times of its own lines, so a log compressed later counts. Its first line with a time is read only for logs born after the day.
+  - "Some agent at work" equals the calendar's `agent` to the minute: 20 Sep 1,473 min (it was 21 min, with 3 logs read; now 14), 24 Oct 254, 25 Oct (DST) 805, 3 Nov 750, 7 Nov 413.
+  - `tokprof day` for 3 Nov and 7 Nov prints the same bytes as a build of 9f9c9dc, in 0.43–0.46 s against 0.46–0.49 s.
 
 ## 5. Finish
 

@@ -41,15 +41,25 @@ pub fn logs_around(catalog: &Catalog, select: &Query, window: (i64, i64), known:
         Some(known) => known.to_vec(),
         None => catalog.discover(&select.agents),
     };
-    logs.into_iter().filter(|f| !f.subagent && select.holds(f) && around(f.modified_ms(), f.created_ms, || catalog.last_active(f), window)).collect()
+    logs.into_iter()
+        .filter(|f| !f.subagent && select.holds(f) && around(f.modified_ms(), f.created_ms, || catalog.first_active(f), || catalog.last_active(f), window))
+        .collect()
 }
 
-/// Whether a log is read for a window: last written at or after its start, created before its
-/// end when the file system keeps a creation time, and with its last line with a time at or after
-/// its start. The last line with a time is read from the end of the log, and only for the logs
-/// that pass the other two.
-fn around(modified_ms: i64, created_ms: Option<i64>, last_active: impl FnOnce() -> i64, (from, to): (i64, i64)) -> bool {
-    modified_ms >= from && created_ms.is_none_or(|c| c < to) && last_active() >= from
+/// Whether a log is read for a window, by the times of its own lines: last written at or after
+/// its start, with its first line with a time before its end and its last at or after its start.
+/// A log created before the end needs no look at its first line; one created after it (a log
+/// compressed or copied later is born after its first line) is read from its start, and is left
+/// out only when its first line with a time is after the end. The last line with a time is read
+/// from the end of the log, and only for the logs that pass the rest.
+fn around(
+    modified_ms: i64,
+    created_ms: Option<i64>,
+    first_active: impl FnOnce() -> Option<i64>,
+    last_active: impl FnOnce() -> i64,
+    (from, to): (i64, i64),
+) -> bool {
+    modified_ms >= from && (created_ms.is_none_or(|c| c < to) || first_active().is_some_and(|f| f < to)) && last_active() >= from
 }
 
 /// The window of logs around a day: from 18:00 the day before to 12:00 the day after. Without a
@@ -191,11 +201,22 @@ mod tests {
         let nov3 = window(Some(rhythm::date_of(at(36), &off)), 0, &off);
         // Created on 10-20, last line with a time at 11-02 09:00, untimed lines on 11-03 10:00.
         let (modified, created, last) = (at(34), Some(at(-13 * 24)), at(9));
-        assert!(around(modified, created, || last, nov2));
-        assert!(!around(modified, created, || last, nov3), "the IDE's untimed lines do not make it active");
-        // Created on 11-03 at 13:00: not read for 11-02.
-        assert!(!around(at(37), Some(at(37)), || at(37), nov2));
-        // The end of a log is read only when its write time and creation pass.
-        assert!(!around(at(-48), created, || unreachable!(), nov2));
+        let first = || -> Option<i64> { unreachable!("a log created before the end needs no look at its start") };
+        assert!(around(modified, created, first, || last, nov2));
+        assert!(!around(modified, created, first, || last, nov3), "the IDE's untimed lines do not make it active");
+        // Created on 11-03 at 13:00 with its first line then: not read for 11-02.
+        assert!(!around(at(37), Some(at(37)), || Some(at(37)), || at(37), nov2));
+        // The end of a log is read only when its write time and its start pass.
+        assert!(!around(at(-48), created, first, || unreachable!(), nov2));
+    }
+
+    #[test]
+    fn a_log_compressed_later_counts_by_its_first_line_with_a_time() {
+        let at = |h: i64| MIDNIGHT + h * HOUR_MS;
+        let nov2 = window(Some(rhythm::date_of(at(12), &off)), 0, &off);
+        // Born on 11-05 when it was compressed, its first line at 11-02 08:00, its last at 18:00.
+        assert!(around(at(24 * 3), Some(at(24 * 3)), || Some(at(8)), || at(18), nov2));
+        // A source that cannot tell its first line keeps the creation time's verdict.
+        assert!(!around(at(24 * 3), Some(at(24 * 3)), || None, || at(18), nov2));
     }
 }

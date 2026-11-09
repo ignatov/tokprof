@@ -596,6 +596,19 @@ impl LogSource for ClaudeCode {
     fn last_active(&self, s: &SessionRef) -> Option<i64> {
         last_timestamp(s.path())
     }
+
+    fn first_active(&self, s: &SessionRef) -> Option<i64> {
+        first_timestamp(s.path())
+    }
+}
+
+/// The time of the first of the log's first 500 lines with a top-level `timestamp`.
+fn first_timestamp(path: &Path) -> Option<i64> {
+    let reader = tokprof_logio::open(path).ok()?;
+    reader.lines().take(500).map_while(Result::ok).filter(|l| l.contains("\"timestamp\"")).find_map(|l| {
+        let v: Value = serde_json::from_str(&l).ok()?;
+        tokprof_logio::parse_ts_ms(v.get("timestamp"))
+    })
 }
 
 /// The time of the last line of a transcript with a top-level `timestamp`. Claude Code writes

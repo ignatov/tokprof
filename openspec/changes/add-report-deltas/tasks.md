@@ -17,6 +17,14 @@
 
 - [x] 3.4 Call a comparison incomplete when an agent of the period shown has its first request in the store after the period before starts: note it, grey the changes, and print signed differences in `tokprof summary --compare`. Unit and desk tests.
 - [x] 3.5 List the causes of the period before that are gone, at the end of `Could have been saved`, and name them in `tokprof summary --compare`. Unit and desk tests.
+- [x] 3.6 After code review 2:
+  - the store's own first request decides an incomplete comparison, whatever the project and session filters;
+  - an agent with under 10% of the shown spend is named, not judged;
+  - `--compare` checks its window before reading any log;
+  - it prints the store's read line and warnings;
+  - requests without a time are in no window.
+
+  Unit and desk tests for each.
 
 ## 4. Check on the real logs
 
@@ -31,6 +39,7 @@ Recorded 2026-11-09 on the author's logs (days-2 store, 1,962 logs):
   - Totalling a window over the store takes 0.5 ms. `tokprof summary` without `--compare` prints the same bytes as before. `tokprof summary --since 2026-10-10 --until 2026-11-09 --compare` reads `compared with 10 Sep – 9 Oct 2026: spend ↑ $6,722 (+127%) · avoidable ↑ $725 (+121%), ↓ 0.3 points of spend`.
 - 4.3 (incomplete): the store's first Claude Code request is on 29 Sep, since Claude Code deleted older logs before the store existed. So the 30 days before 10 Oct – 9 Nov are incomplete: `compared with 10 Sep – 9 Oct 2026, incomplete (claude only from 29 Sep): spend +$6,722 (+127%) · avoidable +$725 (+121%), −0.3 points of spend`. Seven days are complete: `tokprof summary --since 2026-11-02 --until 2026-11-09 --compare` reads `compared with 26 Oct – 1 Nov 2026: spend ↓ $664 (−26%) · avoidable ↓ $397 (−82%), ↓ 14.5 points of spend`.
 - 4.4 (gone): for 2 Nov – 9 Nov, three causes of the week before are gone: images removed $28.22, unknown (server side?) $7.36 and model switch $0.33. `tokprof summary --since 2026-11-02 --until 2026-11-09 --compare` ends with `; gone: images removed $28.22, unknown (server side?) $7.36, model switch $0.33`, and Reports lists the same three at the end of `Could have been saved` in green.
+- 4.5 (code review 2): `--project ~/src/json-profiler --since 7d summary --compare` is complete now and judged as usual (`compared with 26 Oct – 2 Nov 2026: spend ↑ $869 (+324%) …`). Before, it was `incomplete (claude only from 1 Nov)`, a new project and not a gap in the store. `--since 2026-11-05 --until 2026-11-01 summary --compare` fails in 0.36 s with `--compare needs --since before --until and before now`, where it panicked after 26 s before. The store's line `read claude 1 files (0.0 GB) in 0.1s; 1,962 logs from the store (…)` now goes to stderr.
 - 4.2: frames ~/tokprof/plans/night-2026-11-08/shots/deltas-30d-{light,dark}.png (incomplete, grey) and deltas-7d-{light,dark}.png (complete, coloured). The look fix: `vs <dates>` in every tile overflowed the avoidable tile, so the dates moved to the card's note `against …`.
 
 ## 5. Finish

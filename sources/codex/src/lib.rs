@@ -288,6 +288,10 @@ impl LogSource for Codex {
         }
     }
 
+    fn first_active(&self, s: &SessionRef) -> Option<i64> {
+        first_timestamp(s.path())
+    }
+
     fn head(&self, s: &SessionRef) -> Head {
         let (mut project, mut id, mut client) = (String::new(), String::new(), None);
         if let Ok(reader) = tokprof_logio::open(s.path()) {
@@ -470,6 +474,15 @@ fn read_thread(path: &Path) -> (Option<Thread>, bool) {
     let thread = str_at(payload, "id").map(|id| (id.to_string(), str_at(payload, "parent_thread_id").map(str::to_string)));
     let settled = thread.is_some() || line.ends_with('\n');
     (thread, settled)
+}
+
+/// The time of the first of the log's first 500 lines with a top-level `timestamp`.
+fn first_timestamp(path: &Path) -> Option<i64> {
+    let reader = tokprof_logio::open(path).ok()?;
+    reader.lines().take(500).map_while(Result::ok).filter(|l| l.contains("\"timestamp\"")).find_map(|l| {
+        let v: Value = serde_json::from_str(&l).ok()?;
+        tokprof_logio::parse_ts_ms(v.get("timestamp"))
+    })
 }
 
 #[cfg(test)]
