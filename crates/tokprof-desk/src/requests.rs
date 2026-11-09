@@ -207,7 +207,8 @@ fn chart(s: &Desk, x: &XRay, cx: &Cx<Desk>, sel: usize, range: Option<(usize, us
     let dollars = dollars(s, x);
     let cols = columns(&x.points, xs, dollars);
     let next = f.next.filter(|_| dollars);
-    let top = cols.iter().map(Column::total).fold(0.0, f64::max).max(next.unwrap_or(0.0)).max(1e-9);
+    // The requests set the scale; a next request taller than it is cut, with a mark.
+    let top = cols.iter().map(Column::total).fold(0.0, f64::max).max(1e-9);
     let window = x.context.as_ref().and_then(|c| c.window_tokens).filter(|&w| w > 0);
     let ctx_top = window.map_or_else(|| x.points.iter().map(|q| q.prompt_tokens).max().unwrap_or(1).max(1) as f64, |w| w as f64);
     let h = |v: f64| (v / top) as f32 * CHART_H;
@@ -259,28 +260,44 @@ fn chart(s: &Desk, x: &XRay, cx: &Cx<Desk>, sel: usize, range: Option<(usize, us
     }
     chart = chart.child(canvas(shape).key("columns").absolute(0.0, 0.0).w(w).h(CHART_H + 2.0));
     // The miss and compaction lines.
-    let mut labels: Vec<(f32, String, Color)> = Vec::new();
+    // Each label with its weight: a miss's avoidable dollars; a compaction weighs least.
+    let mut labels: Vec<(f32, String, Color, f64)> = Vec::new();
     for (i, q) in x.points.iter().enumerate() {
         let Some(m) = q.miss.as_ref().filter(|m| !m.cause.expected()) else { continue };
-        let at = cols.iter().find(|c| c.holds(i)).map_or(xs(q.ts_ms), |c| c.x() + (SLOT - 1.0) / 2.0);
+        let col = cols.iter().find(|c| c.holds(i));
+        let at = col.map_or(xs(q.ts_ms), |c| c.x() + (SLOT - 1.0) / 2.0);
         let color = if red(m) { p.cold } else { p.write };
-        chart = chart.child(el().key(format!("miss-{i}")).absolute(at - 0.75, 0.0).w(1.5).h(CHART_H).fill(color.alpha(0.9)));
-        labels.push((at, m.cause.name().to_string(), color));
+        // The line stands over the column only, so that the column's height reads.
+        let bar_top = CHART_H - col.map_or(0.0, |c| h(c.total()));
+        let line_h = (bar_top - 3.0).max(0.0);
+        if line_h > 0.0 {
+            chart = chart.child(el().key(format!("miss-{i}")).absolute(at - 0.5, 0.0).w(1.0).h(line_h).fill(color.alpha(0.8)));
+        }
+        labels.push((at, m.cause.name().to_string(), color, m.premium_usd.unwrap_or(0.0)));
     }
     for (i, m) in x.marks.iter().enumerate() {
         if let MarkKind::Compaction(kind) = &m.kind {
             let at = xs(m.ts_ms);
             chart = chart.child(el().key(format!("compaction-{i}")).absolute(at - 0.5, 0.0).w(1.0).h(CHART_H).border(1.0, p.ink2).border_dash(3.0, 3.0));
-            labels.push((at, kind.as_ref().map_or_else(|| "compacted".to_string(), |k| format!("compacted ({k})")), p.ink2));
+            labels.push((at, kind.as_ref().map_or_else(|| "compacted".to_string(), |k| format!("compacted ({k})")), p.ink2, -1.0));
         }
     }
-    // The next request, dashed, at now.
+    // The next request, dashed, at now, with its cost over it; cut at the chart's top with a mark
+    // when it is taller than the requests' scale.
     if let Some(n) = next {
         let c = if cold { p.cold } else { p.warm };
-        let nh = h(n).max(2.0);
+        let nh = h(n).clamp(2.0, CHART_H);
+        let x0 = (xs(f.now) - 7.0).min(plot(w) - 14.0);
+        if h(n) > CHART_H {
+            chart = chart.child(text("▲").key("next-clipped").font(pal::HOURS).color(c).single_line().absolute(x0 + 3.0, 1.0));
+        }
+        let lw = pal::text_w(&usd(n), pal::SMALL_STRONG) + 4.0;
+        chart = chart.child(
+            text(usd(n)).key("next-value").font(pal::SMALL_STRONG).color(c).single_line().absolute((x0 + 7.0 - lw).max(0.0), (CHART_H - nh - 16.0).max(14.0)),
+        );
         chart = chart.child(
             el().key("next-request")
-                .absolute(xs(f.now) - 7.0, CHART_H - nh)
+                .absolute(x0, CHART_H - nh)
                 .w(14.0)
                 .h(nh)
                 .radius(3.0)
@@ -324,17 +341,11 @@ fn chart(s: &Desk, x: &XRay, cx: &Cx<Desk>, sel: usize, range: Option<(usize, us
         })
         .on_drag(|s: &mut Desk, d: &mut Drag, tx| drag(s, d, tx));
 
-    // The labels of the lines, each where it keeps clear of the one before.
-    labels.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // The labels of the lines, the costliest miss first and compactions last, each where it
+    // keeps clear of every label placed.
     let mut label_row = el().key("marker-labels").w_full().h(16.0);
-    let mut end = f32::MIN;
-    for (at, t, color) in labels {
-        let tw = pal::text_w(&t, pal::SMALL) + 4.0;
-        let x0 = (at - 2.0).min(w - tw).max(0.0);
-        if x0 >= end + LABEL_GAP {
-            label_row = label_row.child(text(t).font(pal::SMALL).color(color).single_line().absolute(x0, 1.0));
-            end = x0 + tw;
-        }
+    for (x0, t, color) in place_labels(labels, w) {
+        label_row = label_row.child(text(t).font(pal::SMALL).color(color).single_line().absolute(x0, 1.0));
     }
     // The small marks: typed messages, stops, failure streaks and commits.
     let mut marks = el().key("event-marks").w_full().h(12.0);
@@ -346,10 +357,12 @@ fn chart(s: &Desk, x: &XRay, cx: &Cx<Desk>, sel: usize, range: Option<(usize, us
             MarkKind::Compaction(_) => {}
         }
     }
+    // The commits on their own row just above the axis, as diamonds.
+    let mut commits = el().key("commit-marks").w_full().h(11.0);
     for (i, q) in x.points.iter().enumerate() {
         let at = xs(q.ts_ms);
         if q.commits > 0 {
-            marks = marks.child(el().key(format!("commit-{i}")).absolute(at - 3.0, 3.0).w(6.0).h(6.0).radius(3.0).fill(p.warm).border(1.0, p.bg));
+            commits = commits.child(text("◆").key(format!("commit-{i}")).font(pal::HOURS).color(p.ink).single_line().absolute(at - 3.5, -1.0));
         }
         if q.streak {
             marks = marks.child(text("▲").key(format!("streak-{i}")).font(pal::HOURS).color(p.cold).single_line().absolute(at - 4.0, -1.0));
@@ -373,23 +386,25 @@ fn chart(s: &Desk, x: &XRay, cx: &Cx<Desk>, sel: usize, range: Option<(usize, us
     // The cache's band along the axis, and the times under it.
     let mut axis_row = el().w_full().h(30.0 + inspector::BAND_H).child(inspector::cache_band(&f.axis, plot(w), p).absolute(0.0, 0.0));
     let first = x.points[0].ts_ms;
+    // In the order of their claim to room: the start, the last request, then the cache.
     let times = vec![
         (xs(first), local_time(first, "%H:%M"), "start"),
         (xs(f.last), local_time(f.last, "%H:%M"), "last request"),
         (xs(f.cold_at), local_time(f.cold_at, "%H:%M"), if cold { "cache cold" } else { "cold then" }),
     ];
-    axis_row = axis_row.children(inspector::axis_times(times, plot(w), p));
-    axis_row = axis_row.child(
-        col()
-            .absolute(w - 120.0, 3.0 + inspector::BAND_H)
-            .w(120.0)
-            .items_end()
-            .child(text(local_time(f.now, "%H:%M")).font(pal::SMALL_STRONG).color(p.ink).single_line())
-            .child(text("now, next request").font(pal::SMALL).color(p.ink2).single_line()),
-    );
-    let body =
-        col().w_full().child(label_row).child(marks).child(chart).child(band).child(el().w_full().h(1.0).fill(p.line)).child(axis_row).child(legend(x, p));
-    let aside = format!("{} of the main conversation, {} to now", count(x.points.len() as u64, "request", "requests"), local_time(f.axis.begin, "%H:%M"));
+    axis_row = axis_row.children(inspector::axis_times(times, w - inspector::now_w(f.now, f.last), p));
+    axis_row = axis_row.child(inspector::now_el(f.now, f.last, w, p));
+    let body = col()
+        .w_full()
+        .child(label_row)
+        .child(marks)
+        .child(chart)
+        .child(band)
+        .child(commits)
+        .child(el().w_full().h(1.0).fill(p.line))
+        .child(axis_row)
+        .child(legend(x, p));
+    let aside = format!("{} of the main conversation, {} to now", count(x.points.len() as u64, "request", "requests"), local_time(first, "%H:%M"));
     let head = row()
         .w_full()
         .gap(8.0)
@@ -406,6 +421,24 @@ fn chart(s: &Desk, x: &XRay, cx: &Cx<Desk>, sel: usize, range: Option<(usize, us
             .child(head)
             .child(col().w_full().padding(14.0).gap(6.0).radius(R_GROUP).fill(p.bar).child(body).children(hover)),
     )
+}
+
+/// Where the labels of the lines go: by weight, heaviest first, each over its line or left of
+/// the chart's end, where it keeps `LABEL_GAP` clear of every label placed; a label without room
+/// is left out. Each label is its place, its text, its color and its weight.
+pub fn place_labels(mut labels: Vec<(f32, String, Color, f64)>, w: f32) -> Vec<(f32, String, Color)> {
+    labels.sort_by(|a, b| b.3.total_cmp(&a.3).then(a.0.total_cmp(&b.0)));
+    let mut placed: Vec<(f32, f32)> = Vec::new();
+    let mut out = Vec::new();
+    for (at, t, color, _) in labels {
+        let tw = pal::text_w(&t, pal::SMALL) + 4.0;
+        let x0 = (at - 2.0).min(w - tw).max(0.0);
+        if placed.iter().all(|&(a, b)| x0 + tw + LABEL_GAP <= a || x0 >= b + LABEL_GAP) {
+            placed.push((x0, x0 + tw));
+            out.push((x0, t, color));
+        }
+    }
+    out
 }
 
 /// Whether a miss is red: its avoidable premium is at least `RED_USD`.
@@ -458,18 +491,55 @@ fn legend(x: &XRay, p: &Pal) -> El {
             .child(el().w(1.0).h(10.0).border(1.0, p.ink2).border_dash(2.0, 2.0))
             .child(text("compaction").font(pal::SMALL).color(p.ink2).single_line()),
     );
-    out = out.child(row().gap(5.0).center_y().child(crate::view::dot(p.message, 5.0)).child(text("you typed").font(pal::SMALL).color(p.ink2).single_line()));
-    out = out.child(
-        row().gap(5.0).center_y().child(el().w(5.0).h(5.0).radius(1.0).fill(p.stop)).child(text("you stopped it").font(pal::SMALL).color(p.ink2).single_line()),
-    );
+    let has = |k: fn(&MarkKind) -> bool| x.marks.iter().any(|m| k(&m.kind));
+    if has(|k| matches!(k, MarkKind::Typed)) {
+        out =
+            out.child(row().gap(5.0).center_y().child(crate::view::dot(p.message, 5.0)).child(text("you typed").font(pal::SMALL).color(p.ink2).single_line()));
+    }
+    if has(|k| matches!(k, MarkKind::Interrupt)) {
+        out = out.child(
+            row()
+                .gap(5.0)
+                .center_y()
+                .child(el().w(5.0).h(5.0).radius(1.0).fill(p.stop))
+                .child(text("you stopped it").font(pal::SMALL).color(p.ink2).single_line()),
+        );
+    }
+    if x.points.iter().any(|q| q.streak) {
+        out = out.child(
+            row()
+                .gap(5.0)
+                .center_y()
+                .child(text("▲").font(pal::HOURS).color(p.cold).single_line())
+                .child(text("3 failed calls in a row").font(pal::SMALL).color(p.ink2).single_line()),
+        );
+    }
+    if x.points.iter().any(|q| q.commits > 0) {
+        out = out.child(
+            row()
+                .gap(5.0)
+                .center_y()
+                .child(text("◆").font(pal::HOURS).color(p.ink).single_line())
+                .child(text("commit").font(pal::SMALL).color(p.ink2).single_line()),
+        );
+    }
+    // The time after the last request: the cache's band and the next request.
     out = out.child(
         row()
             .gap(5.0)
             .center_y()
-            .child(text("▲").font(pal::HOURS).color(p.cold).single_line())
-            .child(text("3 failed calls in a row").font(pal::SMALL).color(p.ink2).single_line()),
+            .child(row().child(el().w(9.0).h(5.0).radius(1.5).fill(p.warm.alpha(0.75))).child(el().w(9.0).h(5.0).radius(1.5).fill(p.cold.alpha(0.75))))
+            .child(text("cache warm, then cold, after the last request").font(pal::SMALL).color(p.ink2).single_line()),
     );
-    out = out.child(row().gap(5.0).center_y().child(crate::view::dot(p.warm, 6.0)).child(text("commit").font(pal::SMALL).color(p.ink2).single_line()));
+    if x.priced {
+        out = out.child(
+            row()
+                .gap(5.0)
+                .center_y()
+                .child(el().w(9.0).h(10.0).radius(2.0).border(1.2, p.ink2).border_dash(2.0, 2.0))
+                .child(text("next request, estimated").font(pal::SMALL).color(p.ink2).single_line()),
+        );
+    }
     if !x.subagent_spans.is_empty() {
         out = out.child(
             row()
@@ -603,7 +673,17 @@ fn request_card(x: &XRay, i: usize, _dollars: bool, p: &Pal) -> El {
         aside += " · advisor";
     }
     let missed_red = q.miss.as_ref().is_some_and(|m| !m.cause.expected() && red(m));
-    let why = text(timeline::sentence(q)).key("why").font(pal::STRONG).color(if missed_red { p.cold } else { p.ink }).wrap().selectable(true);
+    // One lead sentence, red for a costly miss, and the rest of the account in plain ink.
+    let sentence = timeline::sentence(q);
+    let (lead, rest) = match sentence.split_once(". ") {
+        Some((a, b)) => (format!("{a}."), b.to_string()),
+        None => (sentence, String::new()),
+    };
+    let why = col()
+        .w_full()
+        .gap(2.0)
+        .child(text(lead).key("why").font(pal::STRONG).color(if missed_red { p.cold } else { p.ink }).wrap().selectable(true))
+        .children((!rest.is_empty()).then(|| text(rest).key("why-rest").font(pal::BODY).color(p.ink2).wrap().selectable(true)));
     let cost = if q.priced { usd(q.usd) } else { format!("{} tok", tokens(q.total(false))) };
     let parts: Vec<(usize, f64, f64)> = (0..5).map(|k| (k, q.parts[k].tokens, q.parts[k].usd)).collect();
     let left = col()
@@ -645,7 +725,8 @@ fn request_card(x: &XRay, i: usize, _dollars: bool, p: &Pal) -> El {
     }
     let mut changes: Vec<(String, bool)> = q.changes.iter().map(|c| (change_text(c), false)).collect();
     if let Some(g) = timeline::gap_text(q) {
-        changes.push((g, q.past_ttl()));
+        // The lead sentence already says it in red; here it stays in ink.
+        changes.push((g, false));
     }
     if !changes.is_empty() {
         right = right.child(el().h(4.0)).child(text("What changed since the previous request").font(pal::SMALL_STRONG).color(p.ink2).single_line());
@@ -1037,8 +1118,13 @@ mod tests {
             assert!((q.total(true) - q.usd).abs() < 1e-9);
         }
         // The why comes first, in plain words.
-        let why = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("why")).and_then(|e| e.text).unwrap();
-        assert_eq!(why, timeline::sentence(&x.points[first]));
+        let text_of = |k: &str| rt.elements().into_iter().find(|e| e.key.as_deref() == Some(k)).and_then(|e| e.text);
+        let why = text_of("why").unwrap();
+        let whole = match text_of("why-rest") {
+            Some(rest) => format!("{why} {rest}"),
+            None => why,
+        };
+        assert_eq!(whole, timeline::sentence(&x.points[first]));
         let back = if first == 0 { RuneKey::Right } else { RuneKey::Left };
         key(&mut rt, back.clone(), false);
         let to = if first == 0 { 1 } else { first - 1 };
@@ -1093,5 +1179,34 @@ mod tests {
             settle(&mut rt);
             assert_eq!(title(&rt), format!("Requests 1–{}", x.points.len()));
         }
+    }
+
+    #[test]
+    fn the_costliest_miss_keeps_its_label_and_a_compaction_gives_way() {
+        let c = Color::BLACK;
+        let labels = vec![(100.0, "compacted".to_string(), c, -1.0), (130.0, "tools changed".to_string(), c, 0.12), (160.0, "idle > TTL".to_string(), c, 6.73)];
+        let kept: Vec<String> = place_labels(labels, 900.0).into_iter().map(|l| l.1).collect();
+        assert_eq!(kept, ["idle > TTL"], "the dearest first; the others collide with it");
+        let apart = vec![(100.0, "compacted".to_string(), c, -1.0), (400.0, "idle > TTL".to_string(), c, 6.73)];
+        assert_eq!(place_labels(apart, 900.0).len(), 2, "labels with room all show");
+    }
+
+    #[test]
+    fn now_carries_its_day_when_the_last_request_was_on_another() {
+        let day = 86_400_000;
+        let last = 1_794_000_000_000;
+        assert_eq!(inspector::now_label(last + 600_000, last).1, "now, next request");
+        let (time, what) = inspector::now_label(last + 5 * day + 9 * 3_600_000, last);
+        assert_eq!(what, "now, 5.4d later");
+        assert_eq!(time, local_time(last + 5 * day + 9 * 3_600_000, "%a %-d %b %H:%M"));
+    }
+
+    #[test]
+    fn the_last_request_keeps_its_label_before_the_cold_cache() {
+        // An axis 953 pt wide whose last request sits just before the break, as at 1400 pt.
+        let p = crate::pal::pal(crate::themes::default(false));
+        let marks = vec![(0.0, "11:21".to_string(), "start"), (816.0, "18:27".to_string(), "last request"), (850.0, "19:27".to_string(), "cold then")];
+        let labels = inspector::axis_times(marks, 953.0 - 110.0, &p);
+        assert_eq!(labels.len(), 2, "start and the last request; the cold time gives way");
     }
 }

@@ -33,7 +33,7 @@ The timeline SHALL draw each request's context as a line on a second scale at it
 - **THEN** the right scale goes up to the largest context and reads `largest` at its top
 
 ### Requirement: Miss and compaction markers
-The timeline SHALL draw a line at each unexpected cache miss of the main conversation, labelled by the name of its cause. The line is red when the miss's avoidable premium is $0.50 or more, and in the cache write's color otherwise. A compaction of the main log is a dashed line labelled `compacted` with its kind. An expected rebuild has no miss line. A label is drawn when it keeps 8 pt clear of the label before it.
+The timeline SHALL draw a thin line at each unexpected cache miss of the main conversation, from the label row down to just above its column, labelled by the name of its cause. The line is red when the miss's avoidable premium is $0.50 or more, and in the cache write's color otherwise. A compaction of the main log is a dashed line labelled `compacted` with its kind. An expected rebuild has no miss line.
 
 #### Scenario: A costly idle miss
 - **WHEN** a request at 14:00 missed after 1.0h idle on a 1h cache, with $3.82 avoidable
@@ -42,6 +42,14 @@ The timeline SHALL draw a line at each unexpected cache miss of the main convers
 #### Scenario: A small miss
 - **WHEN** a request missed because its tools changed, with $0.12 avoidable
 - **THEN** its line is in the cache write's color, labelled `tools changed`
+
+#### Scenario: Which labels show
+- **WHEN** labels of lines would come closer than 8 pt
+- **THEN** they are placed costliest miss first and compactions last, and a label that cannot keep 8 pt clear of every label placed is left out
+
+#### Scenario: Labels that collide
+- **WHEN** a compaction at 16:28 stands 60 pt from a miss with $6.73 avoidable, and a $0.12 miss sits between them
+- **THEN** only the $6.73 miss's label shows, and its line stops above its column so that the column's height reads
 
 #### Scenario: Expected rebuilds
 - **WHEN** the conversation compacted at 16:49 and the next request rebuilt its prompt
@@ -53,10 +61,11 @@ The timeline SHALL draw a line at each unexpected cache miss of the main convers
 
 ### Requirement: Event markers
 A row of small marks above the columns SHALL show, from the main log:
-- each message the user typed, in the message color;
+- each message the user typed, as a dot in the message color;
 - each time the user stopped the agent, in the stop color;
-- each failure streak, as a red triangle at the request that read the third failed result. A streak is 3 or more tool calls in a row whose results failed; refused and denied calls neither count nor break it;
-- each agent's commit, a shell call that ran `git commit` and worked, in green.
+- each failure streak, as a red triangle at the request that read the third failed result. A streak is 3 or more tool calls in a row whose results failed; refused and denied calls neither count nor break it.
+
+The agent's commits are diamonds on a row of their own just above the axis.
 
 #### Scenario: A streak
 - **WHEN** three `Read` calls in a row failed, then one worked
@@ -64,7 +73,27 @@ A row of small marks above the columns SHALL show, from the main log:
 
 #### Scenario: A commit
 - **WHEN** the agent ran `git commit` and it worked
-- **THEN** a green mark stands at the request that made the call
+- **THEN** a diamond in ink stands on the commits' row at the request that made the call, apart from the typed messages' dots, in every theme
+- **AND** a commit is a shell call that ran `git commit` and worked
+
+#### Scenario: The legend lists what is there
+- **WHEN** the session has no stop and no failure streak
+- **THEN** the legend names neither
+
+### Requirement: The time after the last request
+The timeline and Summary's track SHALL keep the time from the last request to now to a tail of at most 8% of the axis, behind a break, with the cache's band along the axis (warm, then cold). The requests set the dollar scale. The next request is a dashed box at now with its cost over it, cut at the top with a mark when it is taller. Under the axis, now's label holds its time, and its day when the last request was on another day.
+
+#### Scenario: Days later
+- **WHEN** the last request was on Tue 3 Nov at 18:27 and it is Mon 9 Nov 03:41
+- **THEN** now's label reads `Mon 9 Nov 03:41` over `now, 5.4d later`, and `18:27 last request` keeps its label before the cache's times do
+
+#### Scenario: A dear next request
+- **WHEN** the next request would cost $4.90 and the dearest column $1.20
+- **THEN** the scale reads `$1.20`, the box reaches the top with a mark, and `$4.90` stands over it
+
+#### Scenario: The legend
+- **WHEN** the timeline is drawn
+- **THEN** its legend names `cache warm, then cold, after the last request` and `next request, estimated`
 
 ### Requirement: Subagent band
 A band under the columns SHALL show each subagent's span, from its first request to its last, with the subagent's task as its hover. The subagents' requests are not columns of the timeline.

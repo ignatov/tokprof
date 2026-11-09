@@ -523,21 +523,55 @@ pub fn cache_band(axis: &Axis, width: f32, p: &Pal) -> El {
 
 /// The times under an axis, each where there is room: from its place on, or, near the end, up to
 /// it, keeping clear of now's label at the end.
-pub fn axis_times(marks: Vec<(f32, String, &'static str)>, width: f32, p: &Pal) -> Vec<El> {
+pub fn axis_times(marks: Vec<(f32, String, &'static str)>, now_at: f32, p: &Pal) -> Vec<El> {
+    // The labels in the order given, the first first: each right of its moment, else left of
+    // it, where it keeps 12 pt clear of every label placed and of now's label from `now_at`.
+    let mut placed: Vec<(f32, f32)> = vec![(now_at, f32::MAX)];
     let mut out = Vec::new();
-    let mut taken = f32::MIN;
     for (x0, t, what) in marks {
+        let w = pal::text_w(&t, pal::SMALL_STRONG).max(pal::text_w(what, pal::SMALL)) + 4.0;
         let label =
             |c: El| c.child(text(t.clone()).font(pal::SMALL_STRONG).color(p.ink).single_line()).child(text(what).font(pal::SMALL).color(p.ink2).single_line());
-        if x0 - taken >= 84.0 && x0 <= width - 150.0 {
+        let clear = |a: f32, b: f32| a >= 0.0 && placed.iter().all(|&(pa, pb)| b + 12.0 <= pa || a >= pb + 12.0);
+        if clear(x0, x0 + w) {
             out.push(label(col().absolute(x0, 3.0 + BAND_H)));
-            taken = x0;
-        } else if x0 - 102.0 - taken >= 12.0 && x0 - 6.0 <= width - 108.0 {
-            out.push(label(col().absolute(x0 - 102.0, 3.0 + BAND_H).w(96.0).items_end()));
-            taken = x0;
+            placed.push((x0, x0 + w));
+        } else if clear(x0 - 6.0 - w, x0 - 6.0) {
+            out.push(label(col().absolute(x0 - 6.0 - w, 3.0 + BAND_H).w(w).items_end()));
+            placed.push((x0 - 6.0 - w, x0 - 6.0));
         }
     }
     out
+}
+
+/// About how wide now's label is, in points.
+pub fn now_w(now: i64, last: i64) -> f32 {
+    let (time, what) = now_label(now, last);
+    pal::text_w(&time, pal::SMALL_STRONG).max(pal::text_w(&what, pal::SMALL)) + 4.0
+}
+
+/// Now's label: its time and `now, next request`, or, when the last request was on another
+/// day, now's day and time and how long after the last request it is.
+pub fn now_label(now: i64, last: i64) -> (String, String) {
+    if local_time(now, "%Y-%m-%d") == local_time(last, "%Y-%m-%d") {
+        return (local_time(now, "%H:%M"), "now, next request".to_string());
+    }
+    let gap = (now - last).max(0) as f64 / 1000.0;
+    let later = if gap >= 86_400.0 { format!("{:.1}d later", gap / 86_400.0) } else { format!("{} later", human_duration(gap)) };
+    (local_time(now, "%a %-d %b %H:%M"), format!("now, {later}"))
+}
+
+/// Now's label at the right end of an axis `width` wide.
+pub fn now_el(now: i64, last: i64, width: f32, p: &Pal) -> El {
+    let (time, what) = now_label(now, last);
+    let w = now_w(now, last);
+    col()
+        .key("now-label")
+        .absolute(width - w, 3.0 + BAND_H)
+        .w(w)
+        .items_end()
+        .child(text(time).font(pal::SMALL_STRONG).color(p.ink).single_line())
+        .child(text(what).font(pal::SMALL).color(p.ink2).single_line())
 }
 
 /// The height of the cache band under an axis.
@@ -557,7 +591,8 @@ fn request_track(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal, tall: f32) -> Optio
     let axis = Axis::of(first, last, cold_at, now);
     let width = cx.layout_size(TRACK).map_or(640.0, |sz| sz[0]).max(100.0);
     let xs = |ts: i64| axis.at(ts) * width;
-    let top = x.points.iter().map(|q| q.usd).fold(0.0, f64::max).max(next.unwrap_or(0.0)).max(1e-9);
+    // The requests set the scale; a next request taller than it is cut, with a mark.
+    let top = x.points.iter().map(|q| q.usd).fold(0.0, f64::max).max(1e-9);
     let height = |usd: f64| ((usd / top) as f32 * tall).max(2.0);
     let cold = now >= cold_at;
     let mut track = el().key(TRACK).w_full().h(tall + 18.0);
@@ -573,9 +608,12 @@ fn request_track(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal, tall: f32) -> Optio
     // Where the next request's label sits, so that the largest request's label keeps clear of it.
     let mut next_label: Option<(f32, f32)> = None;
     if let Some(n) = next {
-        let h = height(n);
+        let h = height(n).min(tall);
         let c = if cold { p.cold } else { p.warm };
         let x0 = xs(now);
+        if height(n) > tall {
+            track = track.child(text("▲").key("next-clipped").font(pal::HOURS).color(c).single_line().absolute(x0 - 4.0, 19.0));
+        }
         track = track
             .child(
                 el().key("next-request")
@@ -603,16 +641,9 @@ fn request_track(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal, tall: f32) -> Optio
     marks.push((xs(cold_at), local_time(cold_at, "%H:%M"), if cold { "cache cold" } else { "cold then" }));
     // The cache's band along the axis, and the times under it.
     let mut axis_row = el().w_full().h(30.0 + BAND_H).child(cache_band(&axis, width, p).absolute(0.0, 0.0));
-    axis_row = axis_row.children(axis_times(marks, width, p));
-    axis_row = axis_row.child(
-        col()
-            .absolute(width - 120.0, 3.0 + BAND_H)
-            .w(120.0)
-            .items_end()
-            .child(text(local_time(now, "%H:%M")).font(pal::SMALL_STRONG).color(p.ink).single_line())
-            .child(text("now, next request").font(pal::SMALL).color(p.ink2).single_line()),
-    );
-    let since = format!("{} to now", local_time(axis.begin, "%H:%M"));
+    axis_row = axis_row.children(axis_times(marks, width - now_w(now, last), p));
+    axis_row = axis_row.child(now_el(now, last, width, p));
+    let since = format!("{} to now", local_time(first, "%H:%M"));
     let body = col().w_full().child(track).child(el().w_full().h(1.0).fill(p.line)).child(axis_row);
     Some(boxed("requests-track", "Requests and the cache", Some(since), body, p))
 }
