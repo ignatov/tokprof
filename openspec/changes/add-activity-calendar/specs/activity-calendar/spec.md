@@ -1,5 +1,8 @@
 # Spec Delta
 
+## Purpose
+Shows months of work with the agents at a glance, as a calendar of days with streaks and a punchcard, from a day store that answers in a second and keeps the days of logs the agents have deleted.
+
 ## ADDED Requirements
 
 ### Requirement: Day store

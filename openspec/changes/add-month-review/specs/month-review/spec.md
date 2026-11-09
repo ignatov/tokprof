@@ -1,5 +1,8 @@
 # Spec Delta
 
+## Purpose
+Sums one month of the day store into a card someone would post: dollars, hours, the cache and one thing to change, with no project in it.
+
 ## ADDED Requirements
 
 ### Requirement: The month's window
