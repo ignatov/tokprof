@@ -16,7 +16,11 @@ Under the `You` lane, the lanes SHALL have an `Agents at work` lane: a stepped a
 ## MODIFIED Requirements
 
 ### Requirement: Day lanes
-The lanes SHALL show the day as work-rhythm's Day strip with shapes, at the times of the log: a `You` lane with the sittings, the `Agents at work` lane, then one lane per session with actions that day, most actions first, labeled with its project and title. Work and waits for the user's answer are bars from their start to their end, at least 1 point wide, and the user's messages, the agent's questions and the user's stops are marks at their moment, in work-rhythm's colors. The selected session's lane is highlighted.
+The lanes SHALL show the day as work-rhythm's Day strip with shapes, at the times of the log: a `You` lane with the sittings, the `Agents at work` lane, then a lane per session with actions that day, most actions first, labeled with its project and title. Its bars and marks take work-rhythm's colors, and the selected session's lane is highlighted.
+
+#### Scenario: Bars and marks
+- **WHEN** a session's agent worked, waited for the user's answer, asked a question, and the user typed and stopped it
+- **THEN** the work and the wait are bars from their start to their end, at least 1 point wide, and the message, the question and the stop are marks at their moment
 
 #### Scenario: A short piece of work
 - **WHEN** the agent worked from 14:32:10 to 14:32:50

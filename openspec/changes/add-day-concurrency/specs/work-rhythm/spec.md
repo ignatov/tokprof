@@ -31,7 +31,11 @@ The day view SHALL print `agents` after `sittings`: the agent-hours, the time at
 ## MODIFIED Requirements
 
 ### Requirement: Day view
-`tokprof day [DATE]` SHALL show one day: the day of the user's latest action, or the day of DATE (YYYY-MM-DD). It reads the main logs whose last line with a time is at or after 18:00 the day before, and that were created before 12:00 the day after. It applies the project, session and client filters, and prints the title `tokprof · day`, a `day` line, the `night` line, the `left out` line when there is one, the strip, the rhythm lines with the `agents` line after `sittings`, the `cache` line and the advice.
+`tokprof day [DATE]` SHALL show one day: the day of the user's latest action, or the day of DATE (YYYY-MM-DD), with the project, session and client filters. It prints the title `tokprof · day`, a `day` line, the `night` line, the `left out` line when there is one, the strip, the rhythm lines with the `agents` line after `sittings`, the `cache` line and the advice.
+
+#### Scenario: The logs read
+- **WHEN** `tokprof day 2026-11-02` runs
+- **THEN** it reads the main logs whose last line with a time is at or after 18:00 on 2026-11-01, and that were created before 12:00 on 2026-11-03
 
 #### Scenario: The logs of a day
 - **WHEN** a main log was created on 2026-10-20, its last line with a time is at 2026-11-02 09:00, and the IDE appended lines without a time to it on 2026-11-03
