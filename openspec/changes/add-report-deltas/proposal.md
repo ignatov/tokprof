@@ -6,7 +6,7 @@
 
 ## What Changes
 
-- **Reports, key numbers.** Each key number gets a line comparing it with the period of the same length just before it, e.g. `↑ $1,203 (+11%) vs 10 Sep – 9 Oct`.
+- **Reports, key numbers.** Each key number gets a line comparing it with the period of the same length just before it, e.g. `↑ $1,203 (+11%)`, and the card notes `against 10 Sep – 9 Oct 2026`.
   - A fall is green and a rise red for the avoidable dollars, their share of the spend, and the cold returns.
   - Spend, sessions and requests stay uncoloured: more spend is not bad by itself.
   - The cold returns compare their count; the store keeps no avoidable dollars of cold returns.

@@ -14,6 +14,7 @@ pub mod bench;
 pub mod busy;
 pub mod calendar;
 pub mod catalog;
+pub mod compare;
 pub mod daystore;
 pub mod export;
 pub mod fmt;

@@ -6,6 +6,7 @@ mod ansi;
 mod calendar;
 mod changes;
 mod day;
+mod deltas;
 mod flame;
 mod inspector;
 mod keys;
@@ -984,6 +985,8 @@ const SCENES: &[Scene] = &[
         reports::show(s, reports::Mode::Reports);
         let (days, changes) = (s.reports.days, s.browser.changes());
         s.reports.data.settle(days, changes, Duration::from_secs(120));
+        // The day store, for the period before.
+        s.calendar.data.settle(changes, Duration::from_secs(120));
     }),
     ("reports-advice", |s| {
         reports::show(s, reports::Mode::Reports);

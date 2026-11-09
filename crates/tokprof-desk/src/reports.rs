@@ -130,10 +130,15 @@ pub fn poll(s: &mut Desk, tx: &mut Tx) -> bool {
     if let Some(at) = s.reports.data.next_due(days, changes) {
         tx.wake_after(at.saturating_duration_since(std::time::Instant::now()).max(std::time::Duration::from_millis(1)));
     }
+    // The day store, for the period before, from the calendar's worker.
+    let stored = s.calendar.data.tick(changes);
+    if let Some(at) = s.calendar.data.next_due(changes) {
+        tx.wake_after(at.saturating_duration_since(std::time::Instant::now()).max(std::time::Duration::from_millis(1)));
+    }
     let progress = s.reports.data.progress();
     let moved = progress != s.reports.seen;
     s.reports.seen = progress;
-    arrived || moved
+    arrived || moved || stored
 }
 
 /// Shows Day, Reports or Calendar.
@@ -315,8 +320,10 @@ pub fn view(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
     let r = &s.reports;
     let report = r.report();
     let identity = report.map(|x| (x.arrived, x.overview.as_ref().map(|o| std::sync::Arc::as_ptr(o) as usize).ok()));
-    let version =
-        view::hash_of((r.days, r.part, r.day, r.row, r.hover, &r.open, identity, r.data.reading(r.days), r.seen, &s.theme.get().id, cx.system_dark()));
+    let version = view::hash_of((
+        (r.days, r.part, r.day, r.row, r.hover, &r.open, identity, r.data.reading(r.days), r.seen, &s.theme.get().id, cx.system_dark()),
+        crate::deltas::version(s),
+    ));
     // The memo takes its id as its key, so the viewport is outside it, keyed for the scrolls.
     col().key(PANE).w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(rune::memo("reports-body", version, || body(s, p)))
 }
@@ -328,8 +335,9 @@ fn body(s: &Desk, p: &Pal) -> El {
         None => cards = cards.child(computing(s, p)),
         Some(Report { overview: Err(e), .. }) => cards = cards.child(note(format!("error: {e}"), p)),
         Some(report @ Report { overview: Ok(o), .. }) => {
+            let before = crate::deltas::before(s, report);
             cards = cards
-                .child(card(None, "Key numbers", None, key_numbers(o, p), r, p))
+                .child(card(None, "Key numbers", before.note(), key_numbers(o, &before, p), r, p))
                 .child(crate::changes::cards(s, &o.changes, p))
                 .child(card(Some(Part::Days), "Spend by day", Some("a click opens the day".into()), day_chart(s, report, o, p), r, p))
                 .child(
@@ -461,8 +469,9 @@ fn component_color(c: Component, p: &Pal) -> Color {
     }
 }
 
-/// A key number: what it is, the number, and a line under it.
-fn tile(key: &'static str, label: &str, value: String, sub: String, color: Color, p: &Pal) -> El {
+/// A key number: what it is, the number, a line under it, and its comparison with the period
+/// before.
+fn tile(key: &'static str, label: &str, value: String, sub: String, color: Color, delta: Option<El>, p: &Pal) -> El {
     col()
         .key(key)
         .grow(1.0)
@@ -475,9 +484,12 @@ fn tile(key: &'static str, label: &str, value: String, sub: String, color: Color
         .child(text(label.to_string()).font(pal::SMALL_STRONG).color(p.ink2).single_line())
         .child(text(value).key("value").font(pal::KPI).color(color).single_line())
         .child(text(sub).key("sub").w_full().wrap().max_lines(2).font(pal::SMALL).color(p.ink3))
+        .children(delta)
 }
 
-fn key_numbers(o: &Overview, p: &Pal) -> El {
+fn key_numbers(o: &Overview, before: &crate::deltas::Before, p: &Pal) -> El {
+    let mut lines = crate::deltas::key_lines(o, before, p).into_iter();
+    let mut next = || lines.next().flatten();
     let spend = o.spend_usd();
     let (avoidable, share) = o.avoidable();
     let (returns, premium) = o.cold_returns();
@@ -485,11 +497,11 @@ fn key_numbers(o: &Overview, p: &Pal) -> El {
     row()
         .w_full()
         .gap(10.0)
-        .child(tile("kpi-spend", "Spend", usd(spend), "API-equivalent".into(), p.ink, p))
-        .child(tile("kpi-avoidable", "Avoidable on cache misses", usd(avoidable), format!("{share:.1}% of spend"), p.cold, p))
-        .child(tile("kpi-returns", "Cold returns", int(returns as u64), format!("{} avoidable · {}", usd(premium), per_agent.join(", ")), p.ink, p))
-        .child(tile("kpi-sessions", "Sessions", int(o.sessions() as u64), "with a request in the period".into(), p.ink, p))
-        .child(tile("kpi-requests", "Requests", int(o.requests()), "counted".into(), p.ink, p))
+        .child(tile("kpi-spend", "Spend", usd(spend), "API-equivalent".into(), p.ink, next(), p))
+        .child(tile("kpi-avoidable", "Avoidable on cache misses", usd(avoidable), format!("{share:.1}% of spend"), p.cold, next(), p))
+        .child(tile("kpi-returns", "Cold returns", int(returns as u64), format!("{} avoidable · {}", usd(premium), per_agent.join(", ")), p.ink, next(), p))
+        .child(tile("kpi-sessions", "Sessions", int(o.sessions() as u64), "with a request in the period".into(), p.ink, next(), p))
+        .child(tile("kpi-requests", "Requests", int(o.requests()), "counted".into(), p.ink, next(), p))
 }
 
 /// A round step for an axis up to `max`: 1, 2 or 5 times a power of ten, so that three to six

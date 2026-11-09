@@ -99,7 +99,12 @@ enum Command {
         cost: bool,
     },
     /// Spend by model and cost component, and cache misses by cause.
-    Summary,
+    Summary {
+        /// Compare the spend and the avoidable dollars with the window of the same length just
+        /// before, from the day store; needs --since.
+        #[arg(long)]
+        compare: bool,
+    },
     /// Cache misses by cause and the most expensive ones.
     Misses {
         #[arg(long, default_value_t = 20)]
@@ -340,6 +345,15 @@ fn main() -> Result<()> {
         client: cli.client.clone(),
     };
     let filter = select.window();
+    // The comparison's checks come before any log is read.
+    if let Command::Summary { compare: true } = &command {
+        if select.since_ms.is_none() {
+            bail!("--compare needs --since: all of history has nothing before it");
+        }
+        if cli.client.is_some() {
+            bail!("--compare cannot filter by client; drop --client");
+        }
+    }
     let filtered = cli.project.is_some() || cli.session.is_some() || cli.since.is_some() || cli.until.is_some() || cli.client.is_some();
     let none_found = || if filtered { "no session logs found for these filters" } else { "no session logs found" };
     match &command {
@@ -716,7 +730,14 @@ fn main() -> Result<()> {
         | Command::Pool { .. } => {
             unreachable!("handled before reading logs")
         }
-        Command::Summary => print!("{}", render_report::summary(&collector, &filter, &paths::user_prices())),
+        Command::Summary { compare } => {
+            let mut text = render_report::summary(&collector, &filter, &paths::user_prices());
+            if compare {
+                let line = compare_line(&catalog, &select, &pricing, &collector)?;
+                text = with_line_after(&text, "Total priced: ", &line);
+            }
+            print!("{text}");
+        }
         Command::Misses { top, expected } => print!("{}", render_report::misses(&collector, top, expected)),
         Command::Whatif => print!("{}", render_report::whatif(&collector, &catalog.agents())),
         Command::Tools { by } => {
@@ -852,6 +873,31 @@ fn host_name() -> Option<String> {
     (out.status.success() && !name.is_empty()).then_some(name)
 }
 
+/// The summary's `compared with` line: the store brought up to date, and the window of the same
+/// length before the summary's totalled from it.
+fn compare_line(catalog: &tokprof_core::catalog::Catalog, select: &Query, pricing: &tokprof_core::pricing::Pricing, c: &Collector) -> Result<String> {
+    let from = select.since_ms.context("--compare needs --since: all of history has nothing before it")?;
+    let to = select.until_ms.map_or(now_ms(), |u| u.min(now_ms()));
+    let (store, _) = tokprof_browse::calendar::update(catalog, &select.agents, pricing, &paths::day_store(), |_, _| {})?;
+    let before = tokprof_core::compare::Totals::of(&store.entries, &tokprof_browse::calendar::filters(select), tokprof_core::compare::before((from, to)));
+    Ok(tokprof_core::compare::summary_line(c.spend.priced_usd(), c.avoidable_usd(), &before))
+}
+
+/// `text` with `line` after its first line that starts with `start`.
+fn with_line_after(text: &str, start: &str, line: &str) -> String {
+    let mut out = String::with_capacity(text.len() + line.len() + 1);
+    let mut done = false;
+    for l in text.split_inclusive('\n') {
+        out.push_str(l);
+        if !done && l.starts_with(start) {
+            out.push_str(line);
+            out.push('\n');
+            done = true;
+        }
+    }
+    out
+}
+
 fn day_takes_no_time_filter(cli: &Cli) -> Result<()> {
     if cli.since.is_some() || cli.until.is_some() {
         bail!("day picks its time by DATE; drop --since and --until");
@@ -881,6 +927,23 @@ fn parse_duration(s: &str) -> Result<i64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_comparison_follows_the_total_priced_line_and_nothing_else_moves() {
+        let text = "Spend by model\n\nTotal priced: $5   avoidable on cache misses: $1 (20.0%)\nClaude Code's own cost counter\n";
+        assert_eq!(
+            with_line_after(text, "Total priced: ", "compared with x: no earlier data"),
+            "Spend by model\n\nTotal priced: $5   avoidable on cache misses: $1 (20.0%)\ncompared with x: no earlier data\nClaude Code's own cost counter\n"
+        );
+        assert_eq!(with_line_after(text, "Nothing: ", "x"), text);
+    }
+
+    #[test]
+    fn compare_needs_a_start_and_no_client() {
+        let cli = |args: &[&str]| Cli::try_parse_from(args).unwrap();
+        assert!(matches!(cli(&["tokprof", "summary", "--compare"]).command, Some(Command::Summary { compare: true })));
+        assert!(matches!(cli(&["tokprof", "summary"]).command, Some(Command::Summary { compare: false })));
+    }
 
     fn name(args: &[&str], value: Value) -> String {
         default_name(&Cli::parse_from(std::iter::once("tokprof").chain(args.iter().copied())), value)

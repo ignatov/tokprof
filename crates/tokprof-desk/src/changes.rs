@@ -147,7 +147,11 @@ fn amount_cell(t: String, w: f32, color: Color, font: rune::TextStyle) -> El {
 /// A row with its bar, its amounts and the advice under it, and its sessions under that while it
 /// is open.
 /// The savings carry their dollars per active hour; the habits do not.
-fn money_row(s: &Desk, c: &Changes, part: Part, at: usize, r: &Row, first: f64, p: &Pal) -> (El, usize) {
+/// The width of the column of the period before.
+const BEFORE_W: f32 = 150.0;
+
+#[allow(clippy::too_many_arguments)]
+fn money_row(s: &Desk, c: &Changes, part: Part, at: usize, r: &Row, first: f64, before: Option<&crate::deltas::Before>, p: &Pal) -> (El, usize) {
     let rate = part == Part::Saved;
     let st = &s.reports;
     let split = c.sessions_of(&r.name).is_some_and(|l| !l.is_empty());
@@ -173,6 +177,10 @@ fn money_row(s: &Desk, c: &Changes, part: Part, at: usize, r: &Row, first: f64, 
         .child(amount_cell(usd(r.usd), 70.0, p.accent, pal::STRONG_NUM));
     if rate {
         line = line.child(amount_cell(r.per_hour.map_or("–".into(), usd), 104.0, p.ink2, pal::BODY_NUM));
+    }
+    if let Some(b) = before.filter(|b| b.totals().is_some()) {
+        let (t, color) = crate::deltas::cause_cell(&r.name, r.usd, b, p).unwrap_or_else(|| ("–".into(), p.ink3));
+        line = line.child(amount_cell(t, BEFORE_W, color, pal::BODY_NUM).key("before"));
     }
     let mut line = reports::cursor_row(line, part, at, s, p).role("button").label(r.name.clone());
     if split {
@@ -239,10 +247,15 @@ fn saved(s: &Desk, c: &Changes, p: &Pal) -> El {
         return text("No cache misses that could have been saved.").font(pal::BODY).color(p.ink2).single_line();
     }
     let first = c.saved.first().map_or(0.0, |r| r.usd);
-    let mut out = col().w_full().gap(2.0).child(head(&[("cause", 0.0), ("share", 52.0), ("avoidable", 70.0), ("per active hour", 104.0)], p));
+    let before = s.reports.report().map_or(crate::deltas::Before::Waiting, |r| crate::deltas::before(s, r));
+    let mut cols = vec![("cause", 0.0), ("share", 52.0), ("avoidable", 70.0), ("per active hour", 104.0)];
+    if before.totals().is_some() {
+        cols.push(("period before", BEFORE_W));
+    }
+    let mut out = col().w_full().gap(2.0).child(head(&cols, p));
     let mut at = 0;
     for r in &c.saved {
-        let (e, used) = money_row(s, c, Part::Saved, at, r, first, p);
+        let (e, used) = money_row(s, c, Part::Saved, at, r, first, Some(&before), p);
         out = out.child(e);
         at += used;
     }
@@ -264,7 +277,7 @@ fn habits(s: &Desk, c: &Changes, p: &Pal) -> El {
     let mut out = col().w_full().gap(2.0).child(head(&[("habit", 0.0), ("share", 52.0), ("cost", 70.0)], p));
     let mut at = 0;
     for r in &c.habits {
-        let (e, used) = money_row(s, c, Part::Habits, at, r, first, p);
+        let (e, used) = money_row(s, c, Part::Habits, at, r, first, None, p);
         out = out.child(e);
         at += used;
     }

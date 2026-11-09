@@ -7,7 +7,7 @@
 
 #### Scenario: A month against the month before
 - **WHEN** the user runs `tokprof summary --since 2026-10-10 --until 2026-11-09 --compare`, the month cost $5,500 with $540 avoidable, and the 30 days before cost $5,284 with $597 avoidable
-- **THEN** after `Total priced` it prints `compared with 10 Sep – 9 Oct 2026: spend ↑ $216 (+4%) · avoidable ↓ $57 (−10%), ↓ 1.5 points of spend`
+- **THEN** after `Total priced` it prints `compared with 10 Sep – 9 Oct 2026: spend ↑ $216 (+4%) · avoidable ↓ $57.00 (−10%), ↓ 1.5 points of spend`
 
 #### Scenario: No earlier data
 - **WHEN** the store holds nothing of the window before
