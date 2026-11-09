@@ -1111,6 +1111,8 @@ pub struct StripLanes {
     pub hours: Vec<(i64, i64)>,
     pub you: Vec<(i64, i64)>,
     pub lanes: Vec<StripLane>,
+    /// How many agents worked at each moment of the day, every kept session counted.
+    pub agents: crate::agents::Agents,
 }
 
 impl StripLanes {
@@ -1119,6 +1121,7 @@ impl StripLanes {
     /// hour at or before `from`.
     pub fn of(lanes: &[(&Timeline, &Lane)], summary: &Summary, (from, to): (i64, i64), days: &Days, axis: Option<i64>, offset: Offset) -> Option<StripLanes> {
         summary.sittings.first()?;
+        let lanes_in = lanes;
         let local = |ts: i64| ts + offset(ts);
         let begin = axis.unwrap_or_else(|| from - local(from).rem_euclid(HOUR));
         let end = begin + DAY;
@@ -1158,7 +1161,8 @@ impl StripLanes {
                 StripLane { id: t.id.clone(), label: format!("{id} {}", t.title.as_deref().unwrap_or("")), marks }
             })
             .collect();
-        Some(StripLanes { begin, end, hours, you, lanes })
+        let agents = crate::agents::Agents::of(lanes_in, &summary.sittings, summary.keyboard_ms(), (from, to));
+        Some(StripLanes { begin, end, hours, you, lanes, agents })
     }
 
     /// The most telling mark of lane `lane` at `ts`, or of the `you` lane for `None`: a span

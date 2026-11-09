@@ -7,6 +7,7 @@
 //! environment variable and no clock: paths and the time come from the caller.
 
 pub mod advice;
+pub mod agents;
 pub mod analysis;
 pub mod api;
 pub mod bench;

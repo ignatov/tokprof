@@ -258,6 +258,7 @@ fn synthetic_day() -> tokprof_browse::render_rhythm::DayParts {
             label: "id3 Инфографика прерываний".into(),
             marks: vec![(at(14, 0), at(14, 30), Mark::Work), (at(14, 40), at(14, 40), Mark::Message)],
         }],
+        agents: Default::default(),
     };
     let strip = tokprof_core::rhythm::Strip { lines: vec!["(the strip in characters)".into()] };
     let below = "\nsittings  1, 50m at the keyboard\nanswers   the agent's turn took a median 30m\nqueue     no answer while another session waited\ncache     no cold returns\n";

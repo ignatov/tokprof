@@ -81,8 +81,14 @@ pub fn day_parts(
     }
     above.push('\n');
     let mut below = String::from("\n");
-    for line in summary.lines() {
+    for (i, line) in summary.lines().into_iter().enumerate() {
         let _ = writeln!(below, "{line}");
+        // The agents at work follow the sittings.
+        if i == 0
+            && let Some((_, lanes)) = &strip
+        {
+            let _ = writeln!(below, "{}", lanes.agents.line());
+        }
     }
     let _ = writeln!(below, "{}", cache_line(returns, priced));
     let advice = summary.advice(&rhythm::Returns::of(returns, priced), &view.instruction_files((from, to)));
@@ -192,6 +198,8 @@ mod tests {
         let (strip, lanes) = parts.strip.as_ref().expect("the day has a strip");
         assert!(parts.above.starts_with("tokprof · day\nday       ") && parts.above.ends_with("\n\n"), "the lines above, then a blank line: {:?}", parts.above);
         assert!(parts.below.starts_with("\nsittings  "), "a blank line, then the rhythm lines: {:?}", parts.below);
+        // The agents at work follow the sittings, as the strip's lanes count them.
+        assert_eq!(parts.below.lines().nth(2), Some(lanes.agents.line().as_str()), "{:?}", parts.below);
         let text = format!("{}{}\n{}", parts.above, strip.lines.join("\n"), parts.below);
         assert_eq!(text, day_of_colored(&view, &returns()), "above, the strip and below make the day's text");
         assert_eq!(parts.text(), text);
@@ -219,6 +227,7 @@ mod tests {
     fn the_advice_of_the_pause_report_follows_the_rhythm_lines() {
         let r = rhythm::Returns::of(&returns(), true);
         let text = section(&session(2, 3), (i64::MIN, i64::MAX), &|_| 0, &r, &fmt::Style::with_color(false));
+        assert!(!text.contains("agents    "), "the pause report's rhythm section has no agents line");
         let lines: Vec<&str> = text.lines().collect();
         let stops = lines.iter().position(|l| l.starts_with("stops     ")).expect(&text);
         assert!(lines[stops + 1].starts_with("advice    ▸ 3 returns after the cache expired "), "{text}");

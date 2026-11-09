@@ -1,9 +1,10 @@
 //! The day's lanes in the window: an hours row, the `You` lane with the sittings, a lane per
 //! session with its work, waits, messages, questions and stops at the times of the log, a tail as
 //! long as its cache stays warm, the now line, and under them the legend, the line about the time
-//! under the pointer and the day's `sittings`, `answers`, `queue` and `cache` lines.
+//! under the pointer and the day's `sittings`, `agents`, `answers`, `queue` and `cache` lines; the
+//! `Agents at work` lane under `You` counts the sessions whose agents worked at each moment.
 
-use rune::{Color, Cx, El, ScrollSpec, col, el, row, spacer, text};
+use rune::{Color, Cx, El, ScrollSpec, Shape, canvas, col, el, row, spacer, text};
 use tokprof_browse::browser::now_ms;
 use tokprof_browse::render_rhythm::DayParts;
 use tokprof_core::fmt::local_time;
@@ -27,9 +28,11 @@ const RIGHT: f32 = 16.0;
 /// The key of the hours row's scale, whose width every lane's track has.
 pub const SCALE: &str = "scale";
 const HOUR_MS: i64 = 3_600_000;
-/// The height under the lanes: the legend with the pointer's line (24), the day's four lines
+/// The height under the lanes: the legend with the pointer's line (24), the day's five lines
 /// (16 each, 2 apart), the room under them and the line under the lanes.
-const UNDER: f32 = 24.0 + 4.0 * DAY_LINE + 3.0 * 2.0 + 8.0 + 1.0;
+const UNDER: f32 = 24.0 + 5.0 * DAY_LINE + 4.0 * 2.0 + 8.0 + 1.0;
+/// The pointer's lane over the `Agents at work` lane: no session has this id.
+pub const AGENTS: &str = "\u{0}agents";
 const DAY_LINE: f32 = 16.0;
 
 /// Where the pointer rests over the lanes: the lane's session, `None` for the `You` lane, and how
@@ -133,6 +136,9 @@ fn mark_key(m: Mark) -> &'static str {
 pub fn pointer_text(lanes: &StripLanes, lives: &[Option<(i64, i64)>], range: Range, pointer: &Pointer, width: f32) -> String {
     let ts = range.ts(pointer.x, width);
     let slack = ((range.end - range.begin) as f64 * 2.0 / width.max(1.0) as f64) as i64;
+    if pointer.lane.as_deref() == Some(AGENTS) {
+        return agents_text(lanes, ts);
+    }
     let (name, index) = match &pointer.lane {
         None => ("you".to_string(), None),
         Some(id) => match lanes.lanes.iter().position(|l| &l.id == id) {
@@ -148,6 +154,28 @@ pub fn pointer_text(lanes: &StripLanes, lives: &[Option<(i64, i64)>], range: Ran
         out.push_str(m);
     }
     out
+}
+
+/// The pointer's line over the `Agents at work` lane: `14:20 · 3 agents at work: ecad11 …, …`, the
+/// sessions in the lanes' order.
+pub fn agents_text(lanes: &StripLanes, ts: i64) -> String {
+    let a = &lanes.agents;
+    let at = local_time(ts, "%H:%M");
+    let mut working: Vec<(usize, &str)> = a
+        .sessions
+        .iter()
+        .filter(|(_, _, spans)| spans.iter().any(|&(x, y)| x <= ts && ts < y))
+        .map(|(id, label, _)| (lanes.lanes.iter().position(|l| &l.id == id).unwrap_or(usize::MAX), label.as_str()))
+        .collect();
+    working.sort_by_key(|w| w.0);
+    match working.len() {
+        0 => format!("{at} · no agent at work"),
+        n => format!(
+            "{at} · {n} {} at work: {}",
+            if n == 1 { "agent" } else { "agents" },
+            working.iter().map(|w| tokprof_core::fmt::clip_end(w.1, 22)).collect::<Vec<_>>().join(", ")
+        ),
+    }
 }
 
 /// Whether a lane shows: while a filter is set, only the lanes of the sessions it lists.
@@ -227,7 +255,7 @@ pub fn lanes_of(s: &Desk, parts: &DayParts, cx: &Cx<Desk>, p: &Pal, max_h: f32) 
     let tails: Vec<(i64, i64)> = lives.iter().flatten().copied().collect();
     let range = range(lanes, &tails, now_in, s.fit);
     let grid = Grid { range, width, now: now_in.filter(|&n| range.holds(n)) };
-    let mut body = col().key("lanes-body").w_full().child(ruler(lanes, &grid, keys, p)).child(you_lane(lanes, &grid, p));
+    let mut body = col().key("lanes-body").w_full().child(ruler(lanes, &grid, keys, p)).child(you_lane(lanes, &grid, p)).child(agents_lane(lanes, &grid, p));
     let selected = b.selected().map(|r| b.session(r).to_string());
     let mut shown = 0;
     for (lane, life) in lanes.lanes.iter().zip(&lives) {
@@ -242,11 +270,12 @@ pub fn lanes_of(s: &Desk, parts: &DayParts, cx: &Cx<Desk>, p: &Pal, max_h: f32) 
         body = body
             .child(row().key("lanes-none").w_full().h(LANE).pl(LABEL_WIDTH + 14.0).center_y().child(text(note).font(pal::BODY).color(p.ink2).single_line()));
     }
-    // The lanes the room holds, whole: the You lane, the sessions' and the line when none is
+    // The lanes the room holds, whole: the You and Agents at work lanes, the sessions' and the line when none is
     // listed; those that do not fit scroll, and a line under them says how many there are.
-    let rows = 1 + shown.max(usize::from(!lanes.lanes.is_empty()));
-    let (fit, more) = lanes_fit(max_h, rows);
-    let scroller = col().key("lanes-scroll").w_full().max_h(RULER + fit as f32 * LANE).scroll(ScrollSpec { stick_bottom: false }).child(body);
+    let rows = 2 + shown.max(usize::from(!lanes.lanes.is_empty()));
+    // The Agents at work lane is taller than a lane.
+    let (fit, more) = lanes_fit(max_h - (AGENTS_H - LANE), rows);
+    let scroller = col().key("lanes-scroll").w_full().max_h(RULER + fit as f32 * LANE + AGENTS_H - LANE).scroll(ScrollSpec { stick_bottom: false }).child(body);
     let scroller = col().w_full().child(scroller).children((more > 0).then(|| {
         let line = format!("{more} more {} · scroll to see {}", if more == 1 { "lane" } else { "lanes" }, if more == 1 { "it" } else { "them" });
         row().key("lanes-more").w_full().h(MORE_H).pl(LABEL_WIDTH + 14.0).center_y().child(text(line).font(pal::SMALL).color(p.ink3).single_line())
@@ -292,21 +321,26 @@ impl Grid {
 
     /// A lane's track: the hour lines, the time after now shaded, the now line, and `marks`.
     fn track(&self, key: String, lanes: &StripLanes, marks: Vec<El>, p: &Pal) -> El {
-        let mut t = el().key(key).grow(1.0).min_w(0.0).h(LANE).mr(RIGHT);
+        self.track_of(key, lanes, marks, LANE, p)
+    }
+
+    /// A track `lane` points high.
+    fn track_of(&self, key: String, lanes: &StripLanes, marks: Vec<El>, lane: f32, p: &Pal) -> El {
+        let mut t = el().key(key).grow(1.0).min_w(0.0).h(lane).mr(RIGHT);
         for (h, _) in self.hours(lanes) {
             let x = self.range.x(h, self.width);
-            t = t.child(el().absolute(x, 0.0).w(1.0).h(LANE).fill(p.hour));
+            t = t.child(el().absolute(x, 0.0).w(1.0).h(lane).fill(p.hour));
             if self.halves() {
-                t = t.child(el().absolute(self.range.x(h + HOUR_MS / 2, self.width), LANE * 0.3).w(1.0).h(LANE * 0.4).fill(p.hour));
+                t = t.child(el().absolute(self.range.x(h + HOUR_MS / 2, self.width), lane * 0.3).w(1.0).h(lane * 0.4).fill(p.hour));
             }
         }
         if let Some(now) = self.now {
             let x = self.range.x(now, self.width);
-            t = t.child(el().absolute(x, 0.0).w((self.width - x).max(0.0)).h(LANE).fill(p.later));
+            t = t.child(el().absolute(x, 0.0).w((self.width - x).max(0.0)).h(lane).fill(p.later));
         }
         t = t.children(marks);
         if let Some(now) = self.now {
-            t = t.child(el().key("now").absolute(self.range.x(now, self.width) - 0.75, 0.0).w(1.5).h(LANE).fill(p.now));
+            t = t.child(el().key("now").absolute(self.range.x(now, self.width) - 0.75, 0.0).w(1.5).h(lane).fill(p.now));
         }
         t
     }
@@ -441,6 +475,41 @@ fn hover(track: El, lane: Option<String>) -> El {
     )
 }
 
+/// The `Agents at work` lane: stepped bars as high as the most agents at work in each stretch
+/// of 5 minutes (or of 2 points, when that is longer), the peak their full height.
+fn agents_lane(lanes: &StripLanes, g: &Grid, p: &Pal) -> El {
+    let a = &lanes.agents;
+    let peak = a.peak.map_or(1, |(n, _)| n).max(1) as f32;
+    let (top, foot) = (3.0, AGENTS_H - 2.0);
+    let span = (g.range.end - g.range.begin).max(1);
+    let bucket = (5 * 60_000).max((span as f64 * 2.0 / g.width.max(1.0) as f64) as i64);
+    let n = (span + bucket - 1) / bucket;
+    let mut most = vec![0u32; n as usize];
+    for (i, &(ts, c)) in a.steps.iter().enumerate() {
+        let end = a.steps.get(i + 1).map_or(ts, |s| s.0);
+        let (from, to) = (ts.max(g.range.begin), end.min(g.range.end));
+        if c == 0 || to <= from {
+            continue;
+        }
+        for k in (from - g.range.begin) / bucket..=((to - 1 - g.range.begin) / bucket).min(n - 1) {
+            most[k as usize] = most[k as usize].max(c);
+        }
+    }
+    let mut shape = Shape::new();
+    for (k, &c) in most.iter().enumerate().filter(|(_, c)| **c > 0) {
+        let t0 = g.range.begin + k as i64 * bucket;
+        let (x0, x1) = (g.range.x(t0, g.width), g.range.x(t0 + bucket, g.width) - 0.5);
+        let y = foot - (foot - top) * c as f32 / peak;
+        shape = shape.fill(vec![[x0, y], [x1, y], [x1, foot], [x0, foot]], p.work.alpha(0.85));
+    }
+    let area = canvas(shape).key("agents-area").absolute(0.0, 0.0).w(g.width).h(AGENTS_H);
+    let track = hover(g.track_of("track-agents".into(), lanes, vec![area], AGENTS_H, p), Some(AGENTS.to_string()));
+    row().key("lane-agents").w_full().h(AGENTS_H).child(label("Agents at work".into(), a.peak_text(), None, p).h(AGENTS_H)).child(track)
+}
+
+/// The height of the `Agents at work` lane.
+const AGENTS_H: f32 = 40.0;
+
 fn you_lane(lanes: &StripLanes, g: &Grid, p: &Pal) -> El {
     let marks =
         lanes.you.iter().enumerate().filter_map(|(i, &(a, b))| g.bar("present", a, b, BAR - 1.0, p.you).map(|e| e.key(format!("present-{i}")))).collect();
@@ -523,12 +592,12 @@ fn legend(pointer: String, lead: f32, p: &Pal) -> El {
     line.child(spacer().grow(1.0)).child(text(pointer).key("pointer-text").font(pal::SMALL_NUM).color(p.ink2).single_line().truncate().shrink().min_w(0.0))
 }
 
-/// The day's `sittings`, `answers`, `queue` and `cache` lines, one under the other, each after its label;
+/// The day's `sittings`, `agents`, `answers`, `queue` and `cache` lines, one under the other, each after its label;
 /// in the cache line the count of cold returns and the dollars in the cold color when the day had
 /// cold returns.
 fn day_lines(below: &str, lead: f32, p: &Pal) -> El {
     let mut lines = col().key("day-lines").w_full().pl(lead).pr(RIGHT).gap(2.0);
-    for label in ["sittings", "answers", "queue", "cache"] {
+    for label in ["sittings", "agents", "answers", "queue", "cache"] {
         if let Some(rest) = line_of(below, label) {
             let cold = label == "cache" && rest.contains("cold return") && !rest.starts_with("no ");
             let mut line = row()
@@ -606,6 +675,7 @@ mod tests {
                 label: "ecad11 Инфографика прерываний".into(),
                 marks: vec![(10 * HOUR_MS, 10 * HOUR_MS + 30 * MIN, Mark::Work), (10 * HOUR_MS + 40 * MIN, 10 * HOUR_MS + 40 * MIN, Mark::Message)],
             }],
+            agents: Default::default(),
         }
     }
 
@@ -676,13 +746,33 @@ mod tests {
     }
 
     #[test]
+    fn the_agents_lane_names_the_sessions_at_work_under_the_pointer_in_the_lanes_order() {
+        let mut day = lanes();
+        day.lanes.push(StripLane { id: "230043e6".into(), label: "230043 Ордер".into(), marks: Vec::new() });
+        day.agents = tokprof_core::agents::Agents {
+            steps: vec![(10 * HOUR_MS, 1), (10 * HOUR_MS + 10 * MIN, 2), (10 * HOUR_MS + 30 * MIN, 0)],
+            sessions: vec![
+                ("230043e6".into(), "230043 Ордер".into(), vec![(10 * HOUR_MS + 10 * MIN, 10 * HOUR_MS + 30 * MIN)]),
+                ("ecad11b9".into(), "ecad11 Инфографика прерываний".into(), vec![(10 * HOUR_MS, 10 * HOUR_MS + 30 * MIN)]),
+            ],
+            peak: Some((2, 10 * HOUR_MS + 10 * MIN)),
+            ..Default::default()
+        };
+        let at = |m: i64| local_time(10 * HOUR_MS + m * MIN, "%H:%M");
+        assert_eq!(agents_text(&day, 10 * HOUR_MS + 20 * MIN), format!("{} · 2 agents at work: ecad11 Инфографика пр…, 230043 Ордер", at(20)));
+        assert_eq!(agents_text(&day, 10 * HOUR_MS + 5 * MIN), format!("{} · 1 agent at work: ecad11 Инфографика пр…", at(5)));
+        assert_eq!(agents_text(&day, 11 * HOUR_MS), format!("{} · no agent at work", at(60)));
+        assert_eq!(day.agents.peak_text(), format!("peak 2 at {}", at(10)));
+    }
+
+    #[test]
     fn the_lanes_show_whole_and_say_how_many_more_scroll() {
-        // 900 points high: 384 for the lanes, 103 under them, 26 for the hours: 9 lanes of 26.
+        // 900 points high: 384 for the lanes, 121 under them, 26 for the hours: 9 lanes of 26.
         let max_h = (900.0 - 46.0) * 0.45;
         assert_eq!(lanes_fit(max_h, 8), (8, 0), "all fit");
         assert_eq!(lanes_fit(max_h, 9), (9, 0));
-        assert_eq!(lanes_fit(max_h, 10), (9, 1));
-        assert_eq!(lanes_fit(max_h, 12), (9, 3), "the line under them takes the room of one");
+        assert_eq!(lanes_fit(max_h, 10), (8, 2), "the line under them takes the room of one");
+        assert_eq!(lanes_fit(max_h, 12), (8, 4));
         let (fit, _) = lanes_fit(max_h, 30);
         assert!(RULER + fit as f32 * LANE + MORE_H + UNDER <= max_h + 0.01, "whole lanes and the line within the room");
         assert_eq!(lanes_fit(100.0, 5), (2, 3), "two at least");
