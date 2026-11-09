@@ -137,6 +137,8 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
             k(&["←", "→", "h", "l"], "week before, after"),
             k(&["Home", "End"], "the first, the last day"),
             k(&["m", "⇧M"], "next, previous metric"),
+            k(&["r"], "month in review of the cursor's month"),
+            k(&["s"], "in the month in review: save the image"),
             k(&["⏎"], "open the day"),
             k(&["esc", "⌘1"], "back to Day"),
         ],

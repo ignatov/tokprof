@@ -42,13 +42,15 @@ pub struct State {
     pub data: Calendars,
     /// The window filters by client, which the calendar cannot.
     pub client_ignored: bool,
+    /// The window's filters, for the month in review.
+    pub select: tokprof_core::query::Query,
     /// The worker's progress as the last poll saw it.
     seen: Option<(usize, usize)>,
 }
 
 impl State {
     pub fn new(data: Calendars) -> State {
-        State { metric: Metric::Spend, cursor: None, hover: None, data, client_ignored: false, seen: None }
+        State { metric: Metric::Spend, cursor: None, hover: None, data, client_ignored: false, select: tokprof_core::query::Query::default(), seen: None }
     }
 
     /// The calendar, once computed.
@@ -105,6 +107,7 @@ pub fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
         (RuneKey::Escape, _) => show(s, Mode::Day),
         (_, Some("m")) => pick_metric(s, next_metric(s.calendar.metric, false)),
         (_, Some("M")) => pick_metric(s, next_metric(s.calendar.metric, true)),
+        (_, Some("r")) => crate::month::open(s, None),
         (RuneKey::Enter, _) => {
             if let Some(date) = cursor_date(s) {
                 crate::reports::open_day(s, date, tx);
@@ -174,7 +177,23 @@ fn head(s: &Desk, p: &Pal) -> El {
             .on_press(move |s: &mut Desk| pick_metric(s, m))
             .child(text(m.title()).font(pal::STRONG).color(if chosen { p.on_accent } else { p.ink2 }).single_line())
     }));
+    let review = row()
+        .key("month-review")
+        .h(28.0)
+        .px(14.0)
+        .center_y()
+        .radius(PILL)
+        .fill(p.bar)
+        .border(1.0, p.row_line)
+        .hover(p.hover)
+        .role("button")
+        .label("Month in review")
+        .on_press(|s: &mut Desk| crate::month::open(s, None))
+        .child(text("Month in review").font(pal::STRONG).color(p.ink).single_line());
     let mut head = row().w_full().gap(14.0).center_y().child(pills).child(spacer().grow(1.0));
+    if c.data.get().is_some_and(|x| x.store.is_some()) {
+        head = head.child(review);
+    }
     let aside = match c.data.get() {
         _ if c.data.reading() && c.data.get().is_some() => "updating…".to_string(),
         Some(x) if x.calendar.is_ok() => {
@@ -184,6 +203,12 @@ fn head(s: &Desk, p: &Pal) -> El {
         _ => String::new(),
     };
     head = head.child(text(aside).key("cal-read").font(pal::SMALL).color(p.ink3).single_line());
+    // What went wrong with the store: unreadable, reset, or not written.
+    if let Some(w) = c.data.get().and_then(|x| x.warnings.first()) {
+        head = head.child(
+            text(w.trim_start_matches("warning: ").to_string()).key("cal-warning").font(pal::SMALL).color(p.cold).single_line().truncate().shrink().min_w(0.0),
+        );
+    }
     if c.client_ignored {
         head = head.child(text("--client is not applied: the store keeps no clients").font(pal::SMALL).color(p.cold).single_line());
     }
@@ -384,6 +409,14 @@ fn numbers(cal: &Calendar, m: Metric, p: &Pal) -> El {
                 "come only from the store: the agents deleted their logs".to_string()
             },
         ))
+        .children((cal.untimed.0 > 0).then(|| {
+            line(
+                "cal-untimed",
+                "Without a time",
+                format!("{} {}", int(cal.untimed.0), if cal.untimed.0 == 1 { "request" } else { "requests" }),
+                format!("in no day: their logs give no time ({})", usd(cal.untimed.1)),
+            )
+        }))
 }
 
 /// Every metric of a day, in a small card.
@@ -511,6 +544,7 @@ mod tests {
                 commits: 3,
                 pushes: 1,
                 pull_requests: 0,
+                ..Default::default()
             },
             sessions: 8,
             live: false,

@@ -35,6 +35,12 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     let p = pal::pal(theme);
     *s.slots.borrow_mut() = slots(s);
     let height = window_size(s, cx).1;
+    // The image of a month in review: the card alone, filling the frame.
+    if s.month.alone
+        && let Some(card) = &s.month.card
+    {
+        return col().key("root").w_full().h_full().fill(p.bg).child(crate::month::card_el(&card.month, &p, false));
+    }
     let mut root = col()
         .key("root")
         .w_full()
@@ -67,6 +73,9 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     }
     if s.help {
         root = root.child(crate::keys::view(&p, height));
+    }
+    if let Some(card) = s.month.card.as_ref().filter(|_| s.reports.mode == crate::reports::Mode::Calendar) {
+        root = root.child(crate::month::view(card, &p));
     }
     root
 }

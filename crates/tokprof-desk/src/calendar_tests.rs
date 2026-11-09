@@ -21,9 +21,10 @@ fn calendar_desk() -> (Desk, Calendar) {
     }
     entry.actions.sort_unstable();
     entry.minutes.sort_by_key(|m| m.minute);
-    let cal = Calendar::of(&[entry], &Filters::default(), now, &rhythm::local_offset);
+    let cal = Calendar::of(std::slice::from_ref(&entry), &Filters::default(), now, &rhythm::local_offset);
     let mut desk = desk_of(3);
-    desk.calendar.data.put(cal.clone(), 0);
+    let store = tokprof_core::daystore::Store { entries: vec![entry], ..Default::default() };
+    desk.calendar.data.put_with(cal.clone(), store, 0);
     (desk, cal)
 }
 
@@ -135,4 +136,51 @@ fn the_first_look_reads_the_logs_into_the_store() {
     command(&mut rt, '3');
     settle(&mut rt);
     assert_eq!(text_of(&rt, "cal-progress"), "reading the logs into the store…");
+}
+
+#[test]
+fn r_opens_the_month_in_review_of_the_cursor_and_its_keys_stay_with_it() {
+    let (desk, cal) = calendar_desk();
+    let mut rt = runtime(desk, (1400.0, 900.0));
+    command(&mut rt, '3');
+    settle(&mut rt);
+    assert!(rt.presented("month-review").is_some(), "the button by the metric pills");
+    typed(&mut rt, "r");
+    let ym = tokprof_core::month::Ym::of_date(cal.last);
+    assert_eq!(rt.state.month.card.as_ref().and_then(|c| c.month.ym), Some(ym));
+    assert!(rt.presented("month-card").is_some() && rt.presented("month-save").is_some());
+    let shown = texts(&rt);
+    assert!(shown.contains(&ym.name()), "{shown:?}");
+    for private in ["~/", "/a", "s1"] {
+        assert!(!shown.iter().any(|t| t.contains(private) && t.contains("month")), "{private}");
+    }
+    // Keys stay with the card: q does nothing, ← shows the month before, esc closes it.
+    typed(&mut rt, "qm");
+    assert_eq!(rt.shell_request, None);
+    assert_eq!(rt.state.calendar.metric, Metric::Spend, "m does not reach the calendar");
+    press(&mut rt, RuneKey::Left);
+    assert_eq!(rt.state.month.card.as_ref().and_then(|c| c.month.ym), Some(ym.previous()));
+    press(&mut rt, RuneKey::Right);
+    press(&mut rt, RuneKey::Right);
+    assert_eq!(rt.state.month.card.as_ref().and_then(|c| c.month.ym), Some(ym), "never past this month");
+    press(&mut rt, RuneKey::Escape);
+    assert!(rt.state.month.card.is_none() && rt.state.reports.mode == reports::Mode::Calendar);
+    // A click on the button opens it too, and the palette offers it.
+    click(&mut rt, "month-review");
+    settle(&mut rt);
+    assert!(rt.state.month.card.is_some());
+    press(&mut rt, RuneKey::Escape);
+    let titles: Vec<String> = palette::entries(&rt.state, "month").into_iter().map(|e| e.title).collect();
+    assert!(titles.contains(&"Month in review".to_string()), "{titles:?}");
+}
+
+#[test]
+fn a_store_that_was_reset_says_so_in_the_window() {
+    let (mut desk, _) = calendar_desk();
+    let warning = "warning: the day store could not be parsed; it was kept as ~/Library/Caches/tokprof/days-2.json.broken-20261109T010000Z and started anew";
+    desk.calendar.data.get_mut().unwrap().warnings.push(warning.into());
+    let mut rt = runtime(desk, (1400.0, 900.0));
+    command(&mut rt, '3');
+    settle(&mut rt);
+    assert_eq!(text_of(&rt, "cal-warning"), warning.trim_start_matches("warning: "));
 }

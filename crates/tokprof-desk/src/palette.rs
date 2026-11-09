@@ -66,6 +66,7 @@ pub enum Action {
     Calendar,
     /// Calendar with one of its metrics.
     CalendarOf(tokprof_core::calendar::Metric),
+    MonthReview,
     Handoff,
     Jfr,
     Html,
@@ -91,7 +92,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 36] = [
+    pub const ALL: [Action; 37] = [
         Action::Settings,
         Action::KeyHelp,
         Action::DayView,
@@ -106,6 +107,7 @@ impl Action {
         Action::CalendarOf(Metric::Messages),
         Action::CalendarOf(Metric::Commits),
         Action::CalendarOf(Metric::Avoidable),
+        Action::MonthReview,
         Action::Handoff,
         Action::Jfr,
         Action::Html,
@@ -133,6 +135,7 @@ impl Action {
     pub fn title(self) -> &'static str {
         match self {
             Action::Calendar => "Calendar",
+            Action::MonthReview => "Month in review",
             Action::CalendarOf(m) => match m {
                 Metric::Spend => "Calendar: spend",
                 Metric::Agent => "Calendar: agent time",
@@ -183,6 +186,7 @@ impl Action {
             Action::Period7 | Action::Period30 | Action::Period90 => &[],
             Action::Calendar => &["⌘3"],
             Action::CalendarOf(_) => &[],
+            Action::MonthReview => &["r"],
             Action::Handoff => &["c"],
             Action::Jfr => &["f"],
             Action::Html => &["o"],
@@ -216,6 +220,7 @@ impl Action {
                 | Action::Period90
                 | Action::Calendar
                 | Action::CalendarOf(_)
+                | Action::MonthReview
                 | Action::Handoff
                 | Action::Jfr
                 | Action::Html
@@ -236,6 +241,7 @@ impl Action {
             Action::DayView => s.reports.mode != Mode::Day,
             Action::Reports => s.reports.mode != Mode::Reports,
             Action::Calendar => s.reports.mode != Mode::Calendar,
+            Action::MonthReview => s.calendar.data.get().is_some_and(|c| c.store.is_some()),
             _ => true,
         }
     }
@@ -637,6 +643,10 @@ impl Desk {
             Action::DayView => crate::reports::show(self, Mode::Day),
             Action::Reports => crate::reports::show(self, Mode::Reports),
             Action::Calendar => crate::reports::show(self, Mode::Calendar),
+            Action::MonthReview => {
+                crate::reports::show(self, Mode::Calendar);
+                crate::month::open(self, None);
+            }
             Action::CalendarOf(m) => {
                 crate::reports::show(self, Mode::Calendar);
                 crate::calendar::pick_metric(self, m);

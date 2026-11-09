@@ -10,6 +10,7 @@ mod flame;
 mod inspector;
 mod keys;
 mod menubar;
+mod month;
 mod overlay;
 mod pal;
 mod palette;
@@ -84,6 +85,10 @@ struct Cli {
     /// avoidable), as `tokprof calendar --metric` takes it.
     #[arg(long)]
     metric: Option<String>,
+    /// With --snap or --tree: the month of the month in review (YYYY-MM), for the scenes `month`
+    /// and `month-card`.
+    #[arg(long)]
+    month: Option<String>,
     /// Stay in the terminal until the window closes, instead of starting it on its own.
     #[arg(long)]
     wait: bool,
@@ -235,6 +240,8 @@ pub struct Desk {
     pub reports: reports::State,
     /// The state of Calendar.
     pub calendar: calendar::State,
+    /// The month in review over Calendar.
+    pub month: month::State,
     /// The cache countdown in the macOS menu bar.
     pub menu_bar: menubar::MenuBar,
     /// The `Requests` tab's selection, range, hover and unit.
@@ -302,6 +309,7 @@ impl Desk {
             flame_w: 0.0,
             reports: reports::State::new(tokprof_browse::reports::Reports::detached()),
             calendar: calendar::State::new(tokprof_browse::calendar::Calendars::detached()),
+            month: month::State::default(),
             menu_bar: menubar::MenuBar::default(),
             requests: requests::State::default(),
         }
@@ -559,7 +567,7 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
     if s.status_shown() {
         tx.wake_after(Duration::from_secs(view::STATUS_SECS).saturating_sub(s.status.1.elapsed()) + Duration::from_millis(5));
     }
-    let reported = reports::poll(s, tx) | calendar::poll(s, tx);
+    let reported = reports::poll(s, tx) | calendar::poll(s, tx) | month::poll(s);
     // The menu bar counts down whether the window shows or not; it draws nothing in the window.
     menubar::poll(s, now, tx);
     arrived || cooled || waited || counting || turned || reported
@@ -634,6 +642,10 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
     if e.is_command('q') {
         tx.quit();
         return true;
+    }
+    // The month in review over Calendar takes every other key while it is open.
+    if s.month.card.is_some() && s.reports.mode == reports::Mode::Calendar {
+        return month::on_key(s, e, tx);
     }
     // ⌘K and ⌘, open and close the palette and the settings, as their menu items do where the
     // menu does not take them first; while a card is open, every other key is its own.
@@ -803,7 +815,9 @@ fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk>
     let catalog = Arc::new(catalog);
     let (select, pricing, tab) = checked(cli, &catalog)?;
     let reports = tokprof_browse::reports::Reports::start(catalog.clone(), pricing.clone(), select.clone(), wake.clone());
-    let calendars = tokprof_browse::calendar::Calendars::start(catalog.clone(), pricing.clone(), select.clone(), paths::day_store(), wake.clone());
+    let desk_select = select.clone();
+    let calendars =
+        tokprof_browse::calendar::Calendars::start(catalog.clone(), pricing.clone(), cli.prices.clone(), select.clone(), paths::day_store(), wake.clone());
     let client_ignored = select.client.is_some();
     let browser = Browser::start(catalog, pricing, select, !headless, wake, frontend())?;
     let mut desk = Desk::new(browser, !headless);
@@ -812,9 +826,16 @@ fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk>
     desk.calendar.data = calendars;
     desk.calendar.client_ignored = client_ignored;
     desk.calendar.metric = metric(cli)?.unwrap_or(tokprof_core::calendar::Metric::Spend);
+    desk.calendar.select = Query { since_ms: None, until_ms: None, ..desk_select.clone() };
+    desk.month.wanted = month_of(cli)?;
+    desk.month.args = filter_args(cli);
     if headless {
         if let Some(t) = colors(cli)? {
             desk.settings = settings::Settings::of_theme(t);
+        }
+        // The image of a month in review needs no session, no X-ray and no day.
+        if std::env::args().any(|a| a == "month-card") {
+            return Ok(desk);
         }
         desk.browser.settle();
         if let Some(date) = cli.day.as_deref() {
@@ -841,7 +862,34 @@ fn checked(cli: &Cli, catalog: &Catalog) -> Result<(Query, tokprof_core::pricing
     };
     colors(cli)?;
     metric(cli)?;
+    month_of(cli)?;
     Ok((select, pricing, tab))
+}
+
+/// The month `--month` names, if it names one.
+fn month_of(cli: &Cli) -> Result<Option<tokprof_core::month::Ym>> {
+    let Some(m) = cli.month.as_deref() else { return Ok(None) };
+    match tokprof_core::month::Ym::parse(m) {
+        Some(ym) => Ok(Some(ym)),
+        None => bail!("--month takes YYYY-MM"),
+    }
+}
+
+/// The filters of the command line, as the program that draws an image takes them again.
+fn filter_args(cli: &Cli) -> Vec<String> {
+    let mut out = Vec::new();
+    if !cli.agent.is_empty() {
+        out.extend(["--agent".to_string(), cli.agent.join(",")]);
+    }
+    for (flag, value) in [("--project", &cli.project), ("--session", &cli.session)] {
+        if let Some(v) = value {
+            out.extend([flag.to_string(), v.clone()]);
+        }
+    }
+    if let Some(p) = &cli.prices {
+        out.extend(["--prices".to_string(), p.to_string_lossy().to_string()]);
+    }
+    out
 }
 
 /// The metric `--metric` names, if it names one.
@@ -951,6 +999,19 @@ const SCENES: &[Scene] = &[
         reports::show(s, reports::Mode::Calendar);
         let changes = s.browser.changes();
         s.calendar.data.settle(changes, Duration::from_secs(120));
+    }),
+    ("month", |s| {
+        reports::show(s, reports::Mode::Calendar);
+        let changes = s.browser.changes();
+        s.calendar.data.settle(changes, Duration::from_secs(120));
+        month::open(s, s.month.wanted);
+    }),
+    ("month-card", |s| {
+        reports::show(s, reports::Mode::Calendar);
+        let changes = s.browser.changes();
+        s.calendar.data.settle(changes, Duration::from_secs(120));
+        month::open(s, s.month.wanted);
+        s.month.alone = true;
     }),
     ("calendar-day", |s| {
         reports::show(s, reports::Mode::Calendar);
