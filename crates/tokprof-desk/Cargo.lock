@@ -3309,7 +3309,7 @@ dependencies = [
 
 [[package]]
 name = "tokprof-browse"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3320,7 +3320,7 @@ dependencies = [
 
 [[package]]
 name = "tokprof-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3336,7 +3336,7 @@ dependencies = [
 
 [[package]]
 name = "tokprof-desk"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -3356,7 +3356,7 @@ dependencies = [
 
 [[package]]
 name = "tokprof-logio"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3367,7 +3367,7 @@ dependencies = [
 
 [[package]]
 name = "tokprof-source-claude-code"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -3377,7 +3377,7 @@ dependencies = [
 
 [[package]]
 name = "tokprof-source-codex"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -3387,7 +3387,7 @@ dependencies = [
 
 [[package]]
 name = "tokprof-sources"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "tokprof-core",
  "tokprof-source-claude-code",
