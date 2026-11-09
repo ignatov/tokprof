@@ -243,11 +243,12 @@ fn session_line(s: &Desk, part: Part, at: usize, x: &SessionCost, p: &Pal) -> El
 }
 
 fn saved(s: &Desk, c: &Changes, p: &Pal) -> El {
-    if c.saved.is_empty() {
+    let before = s.reports.report().map_or(crate::deltas::Before::Waiting, |r| crate::deltas::before(s, r));
+    let gone = crate::deltas::gone_rows(c, &before, p);
+    if c.saved.is_empty() && gone.is_empty() {
         return text("No cache misses that could have been saved.").font(pal::BODY).color(p.ink2).single_line();
     }
     let first = c.saved.first().map_or(0.0, |r| r.usd);
-    let before = s.reports.report().map_or(crate::deltas::Before::Waiting, |r| crate::deltas::before(s, r));
     let mut cols = vec![("cause", 0.0), ("share", 52.0), ("avoidable", 70.0), ("per active hour", 104.0)];
     if before.totals().is_some() {
         cols.push(("period before", BEFORE_W));
@@ -258,6 +259,25 @@ fn saved(s: &Desk, c: &Changes, p: &Pal) -> El {
         let (e, used) = money_row(s, c, Part::Saved, at, r, first, Some(&before), p);
         out = out.child(e);
         at += used;
+    }
+    // The causes of the period before that are gone, at the end, with nothing to open.
+    for (i, (name, change, color)) in gone.into_iter().enumerate() {
+        out = out.child(
+            row()
+                .key(format!("gone-{i}"))
+                .w_full()
+                .h(26.0)
+                .px(6.0)
+                .gap(10.0)
+                .center_y()
+                .child(row().w(12.0))
+                .child(text(name).key("label").font(pal::BODY).color(p.ink2).single_line().truncate().w(NAME_W - 22.0))
+                .child(crate::overlay::meter(0.0, p.accent.alpha(0.75), p, 6.0))
+                .child(amount_cell("0.0%".into(), 52.0, p.ink3, pal::BODY_NUM))
+                .child(amount_cell(usd(0.0), 70.0, p.ink3, pal::STRONG_NUM))
+                .child(amount_cell("–".into(), 104.0, p.ink3, pal::BODY_NUM))
+                .child(amount_cell(change, BEFORE_W, color, pal::BODY_NUM).key("before")),
+        );
     }
     out.child(
         text(format!("over {} active hours; a row with ▸ opens its top sessions", int(c.active_hours.round() as u64)))

@@ -53,3 +53,10 @@ The comparison SHALL be incomplete when, for an agent with requests in the perio
 #### Scenario: The frame
 - **WHEN** the user runs `tokprof-desk --snap out.png --scene reports-week`
 - **THEN** `out.png` shows Reports on the last 7 days, compared with the 7 days before
+
+### Requirement: Causes gone since the period before
+After its rows, `Could have been saved` SHALL list each miss cause that had avoidable dollars in the period before and none in the period shown, most first. Such a row has `$0.00`, no share bar, nothing to open, and reads `was <dollars> · gone`: green, or grey when the comparison is incomplete.
+
+#### Scenario: Compaction calls stopped
+- **WHEN** compaction calls could have saved $367 in the 7 days before and nothing in the last 7 days
+- **THEN** the last row reads `compaction call` `$0.00` `was $367 · gone` in green

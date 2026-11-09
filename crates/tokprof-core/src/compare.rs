@@ -167,6 +167,19 @@ pub fn points(now: f64, was: f64) -> String {
     format!("{} {:.1} points", if d > 0.0 { "↑" } else { "↓" }, d.abs())
 }
 
+/// The causes that had avoidable dollars in the period before and none in the period shown,
+/// most first: `shown` gives the shown period's dollars of a cause by its name.
+pub fn gone(before: &Totals, shown: impl Fn(&str) -> f64) -> Vec<(String, f64)> {
+    let mut out: Vec<(String, f64)> = before.causes.iter().filter(|(c, v)| **v >= 0.005 && shown(c) < 0.005).map(|(c, v)| (c.clone(), *v)).collect();
+    out.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    out
+}
+
+/// A gone cause's change: `was $367 · gone`.
+pub fn gone_change(was: f64) -> String {
+    format!("was {} · gone", usd(was))
+}
+
 /// A cause row's change: `was $1,012 · ↓ 21%`, `new` when it had none before.
 pub fn cause_change(now: f64, was: Option<f64>) -> String {
     match was.filter(|w| *w >= 0.005) {
@@ -188,7 +201,15 @@ pub fn dates((from, to): (i64, i64), year: bool) -> String {
 
 /// The summary's `compared with` line: the spend and the avoidable dollars against the window
 /// before, or `no earlier data`.
-pub fn summary_line(spend: f64, avoidable: f64, before: &Totals) -> String {
+pub fn summary_line(spend: f64, avoidable: f64, before: &Totals, gone: &[(String, f64)]) -> String {
+    let line = summary_head(spend, avoidable, before);
+    if !before.any || gone.is_empty() {
+        return line;
+    }
+    format!("{line}; gone: {}", gone.iter().map(|(c, v)| format!("{c} {}", usd(*v))).collect::<Vec<_>>().join(", "))
+}
+
+fn summary_head(spend: f64, avoidable: f64, before: &Totals) -> String {
     let span = dates((before.from_ms, before.to_ms), true);
     if !before.any {
         return format!("compared with {span}: no earlier data");
@@ -322,15 +343,29 @@ mod tests {
         let to = midnight(2026, 10, 10);
         let before = Totals { from_ms: from, to_ms: to, spend: 5_284.0, avoidable: 597.0, any: true, ..Totals::default() };
         assert_eq!(
-            summary_line(5_500.0, 540.0, &before),
+            summary_line(5_500.0, 540.0, &before, &[]),
             "compared with 10 Sep – 9 Oct 2026: spend ↑ $216 (+4%) · avoidable ↓ $57.00 (−10%), ↓ 1.5 points of spend"
         );
+        let gone_rows = vec![("compaction call".to_string(), 367.17)];
+        assert!(summary_line(5_500.0, 540.0, &before, &gone_rows).ends_with("↓ 1.5 points of spend; gone: compaction call $367"));
         let partial = Totals { gaps: vec![("claude".into(), midnight(2026, 9, 29) + 10 * H)], ..before.clone() };
         assert_eq!(
-            summary_line(5_500.0, 540.0, &partial),
+            summary_line(5_500.0, 540.0, &partial, &[]),
             "compared with 10 Sep – 9 Oct 2026, incomplete (claude only from 29 Sep): spend +$216 (+4%) · avoidable −$57.00 (−10%), −1.5 points of spend"
         );
         let empty = Totals { any: false, ..before };
-        assert_eq!(summary_line(5_500.0, 540.0, &empty), "compared with 10 Sep – 9 Oct 2026: no earlier data");
+        assert_eq!(summary_line(5_500.0, 540.0, &empty, &gone_rows), "compared with 10 Sep – 9 Oct 2026: no earlier data");
+    }
+
+    #[test]
+    fn a_cause_with_dollars_before_and_none_now_is_gone() {
+        let before = Totals {
+            causes: [("compaction call".to_string(), 367.17), ("idle > TTL".to_string(), 248.0), ("params changed".to_string(), 0.001)].into_iter().collect(),
+            any: true,
+            ..Totals::default()
+        };
+        let shown = |c: &str| if c == "idle > TTL" { 85.13 } else { 0.0 };
+        assert_eq!(gone(&before, shown), [("compaction call".to_string(), 367.17)], "idle > TTL is still there, params changed was nothing");
+        assert_eq!(gone_change(367.17), "was $367 · gone");
     }
 }

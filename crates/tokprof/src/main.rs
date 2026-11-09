@@ -880,7 +880,13 @@ fn compare_line(catalog: &tokprof_core::catalog::Catalog, select: &Query, pricin
     let to = select.until_ms.map_or(now_ms(), |u| u.min(now_ms()));
     let (store, _) = tokprof_browse::calendar::update(catalog, &select.agents, pricing, &paths::day_store(), |_, _| {})?;
     let before = tokprof_core::compare::Totals::before(&store.entries, &tokprof_browse::calendar::filters(select), (from, to));
-    Ok(tokprof_core::compare::summary_line(c.spend.priced_usd(), c.avoidable_usd(), &before))
+    // The causes the summary's table lists, as their names and dollars.
+    let mut shown: std::collections::HashMap<&str, f64> = std::collections::HashMap::new();
+    for m in c.misses.iter().filter(|m| !m.cause.expected()) {
+        *shown.entry(m.cause.name()).or_default() += m.premium_usd.unwrap_or(0.0);
+    }
+    let gone = tokprof_core::compare::gone(&before, |name| shown.get(name).copied().unwrap_or(0.0));
+    Ok(tokprof_core::compare::summary_line(c.spend.priced_usd(), c.avoidable_usd(), &before, &gone))
 }
 
 /// `text` with `line` after its first line that starts with `start`.

@@ -93,6 +93,15 @@ pub fn key_lines(o: &Overview, before: &Before, p: &Pal) -> Vec<Option<El>> {
     ]
 }
 
+/// The causes of the period before that have no avoidable dollars in the period shown, most
+/// first, each with `was $367 · gone`, green, or grey when the comparison is incomplete.
+pub fn gone_rows(c: &tokprof_core::savings::Changes, before: &Before, p: &Pal) -> Vec<(String, String, Color)> {
+    let Some(b) = before.totals() else { return Vec::new() };
+    let shown = |name: &str| c.saved.iter().filter(|r| r.name == name).map(|r| r.usd).sum::<f64>();
+    let color = if b.incomplete() { p.ink3 } else { p.warm };
+    compare::gone(b, shown).into_iter().map(|(name, was)| (name, compare::gone_change(was), color)).collect()
+}
+
 /// The comparison of a `Could have been saved` row: `was $1,012 · ↓ 21%`, or `new`; nothing for a
 /// row that is not a miss cause, or without a period before.
 pub fn cause_cell(name: &str, usd: f64, before: &Before, p: &Pal) -> Option<(String, Color)> {
@@ -229,5 +238,11 @@ mod tests {
         assert_eq!(cause_cell("tools changed", 12.0, &b, &p), Some(("new".to_string(), p.cold)));
         assert_eq!(cause_cell("cache lifetime: main", 1.0, &b, &p), None, "not a miss cause");
         assert_eq!(cause_cell("idle > TTL", 796.0, &Before::Waiting, &p), None);
+        // A cause of the period before with nothing now is gone, at the end.
+        let t = Totals { causes: [("compaction call".to_string(), 367.17)].into_iter().collect(), any: true, ..Totals::default() };
+        let rows = gone_rows(&tokprof_core::savings::Changes::default(), &Before::Totals(t.clone()), &p);
+        assert_eq!(rows, [("compaction call".to_string(), "was $367 · gone".to_string(), p.warm)]);
+        let partial = Totals { gaps: vec![("claude".into(), 0)], ..t };
+        assert_eq!(gone_rows(&tokprof_core::savings::Changes::default(), &Before::Totals(partial), &p)[0].2, p.ink3);
     }
 }

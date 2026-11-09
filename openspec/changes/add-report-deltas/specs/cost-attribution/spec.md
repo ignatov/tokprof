@@ -31,3 +31,10 @@
 #### Scenario: Claude Code's logs before 29 Sep are gone
 - **WHEN** the window before is 10 Sep – 9 Oct 2026 and the store's first Claude Code request is on 29 Sep
 - **THEN** the line reads `compared with 10 Sep – 9 Oct 2026, incomplete (claude only from 29 Sep): spend +$216 (+4%) · avoidable −$57.00 (−10%), −1.5 points of spend`
+
+### Requirement: Causes gone in the summary comparison
+When miss causes had avoidable dollars in the window before and none in the window shown, the `compared with` line SHALL end with `; gone:` and each such cause with its dollars before, most first, comma separated.
+
+#### Scenario: A cause gone
+- **WHEN** compaction calls could have saved $367 in the window before and nothing in the window shown
+- **THEN** the line ends with `; gone: compaction call $367`
