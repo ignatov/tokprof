@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::analysis::{self, Fact, Filter, MissEvent, RequestRecord, Sink};
 use crate::catalog::Catalog;
 use crate::model::{Outcome, Session};
+use crate::pauses::Pauses;
 use crate::pricing::Pricing;
 use crate::query::Query;
 use crate::rhythm::{Lane, Timeline};
@@ -25,11 +26,12 @@ use crate::source::{AgentId, Locator, SessionRef};
 use crate::tools::ToolShare;
 
 /// The store's format, in its file name and its header.
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 /// The store's file name in the cache folder.
-pub const FILE_NAME: &str = "days-1.json";
+pub const FILE_NAME: &str = "days-2.json";
 
 const MINUTE_MS: i64 = 60_000;
+const HOUR_MS: i64 = 3_600_000;
 
 /// What the requests of one minute of a log hold.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -43,20 +45,28 @@ pub struct Minute {
     pub commits: u32,
     pub pushes: u32,
     pub pull_requests: u32,
+    /// The prompt tokens the requests read from the cache, and all their prompt tokens.
+    pub read_tokens: u64,
+    pub prompt_tokens: u64,
+    /// What the cache reads saved against sending the same tokens uncached: the tokens read
+    /// times the difference between the uncached input price and the cache read price.
+    pub saved_usd: f64,
+    /// The requests whose model has no price.
+    pub unpriced: u32,
 }
 
 /// A minute as the file writes it: an array, so that the store stays small.
-type MinuteRow = (i64, f64, f64, u32, u32, u32, u32);
+type MinuteRow = (i64, f64, f64, u32, u32, u32, u32, u64, u64, f64, u32);
 
 impl From<MinuteRow> for Minute {
-    fn from((minute, usd, avoidable_usd, requests, commits, pushes, pull_requests): MinuteRow) -> Minute {
-        Minute { minute, usd, avoidable_usd, requests, commits, pushes, pull_requests }
+    fn from((minute, usd, avoidable_usd, requests, commits, pushes, pull_requests, read_tokens, prompt_tokens, saved_usd, unpriced): MinuteRow) -> Minute {
+        Minute { minute, usd, avoidable_usd, requests, commits, pushes, pull_requests, read_tokens, prompt_tokens, saved_usd, unpriced }
     }
 }
 
 impl From<Minute> for MinuteRow {
     fn from(m: Minute) -> MinuteRow {
-        (m.minute, m.usd, m.avoidable_usd, m.requests, m.commits, m.pushes, m.pull_requests)
+        (m.minute, m.usd, m.avoidable_usd, m.requests, m.commits, m.pushes, m.pull_requests, m.read_tokens, m.prompt_tokens, m.saved_usd, m.unpriced)
     }
 }
 
@@ -85,16 +95,32 @@ pub struct Entry {
     /// The user's actions in time order, in epoch ms, and whether each is a message; only for a
     /// main log.
     pub actions: Vec<(i64, bool)>,
+    /// Per hour since 1970-01-01 00:00 UTC, the avoidable premium of each miss cause that is not
+    /// expected, by the cause's name.
+    pub misses: Vec<(i64, String, f64)>,
+    /// Per hour, the spend of each model.
+    pub models: Vec<(i64, String, f64)>,
+    /// When the cold returns of the log were sent (see pause-report).
+    pub cold: Vec<i64>,
     /// The log was not found in this run; set by the refresh, not kept in the file.
     #[serde(skip)]
     pub gone: bool,
 }
 
-/// The fingerprint of the numbers an entry holds: the tokprof version and the prices in use.
+/// The build the numbers come from: the tokprof version and the git commit it was built from,
+/// or the version alone where it was built without git.
+pub fn build_id() -> String {
+    match env!("TOKPROF_COMMIT") {
+        "" => format!("tokprof {}", env!("CARGO_PKG_VERSION")),
+        commit => format!("tokprof {} ({commit})", env!("CARGO_PKG_VERSION")),
+    }
+}
+
+/// The fingerprint of the numbers an entry holds: the build and the prices in use.
 pub fn fingerprint(pricing: &Pricing) -> String {
     let digest = Sha256::digest(format!("{:?}", pricing.entries()).as_bytes());
     let hex: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
-    format!("tokprof {}; prices {hex}", env!("CARGO_PKG_VERSION"))
+    format!("{}; prices {hex}", build_id())
 }
 
 /// The key of a log in the store.
@@ -108,8 +134,12 @@ pub fn key_of(f: &SessionRef) -> String {
 /// The entry of one parsed log. `temp` lists the temporary folders whose sessions the rhythm
 /// leaves out.
 pub fn entry_of(s: &Session, f: &SessionRef, pricing: &Pricing, temp: &[String], fingerprint: &str) -> Entry {
-    let mut sink = Minutes::default();
+    let mut sink = (Minutes::default(), Pauses::new(Filter::default()));
     analysis::analyze(s, pricing, &Filter::default(), &mut sink);
+    let (sink, mut pauses) = sink;
+    pauses.finish();
+    let mut cold: Vec<i64> = pauses.agents.values().flat_map(|a| a.returns.iter().map(|r| r.ts_ms)).collect();
+    cold.sort_unstable();
     let mut entry = Entry {
         key: key_of(f),
         len: f.size,
@@ -121,6 +151,9 @@ pub fn entry_of(s: &Session, f: &SessionRef, pricing: &Pricing, temp: &[String],
         subagent: f.subagent,
         project: s.project.clone(),
         minutes: sink.rows.into_values().collect(),
+        misses: sink.misses.into_iter().map(|((h, c), usd)| (h, c.to_string(), usd)).collect(),
+        models: sink.models.into_iter().map(|((h, m), usd)| (h, m, usd)).collect(),
+        cold,
         ..Entry::default()
     };
     if !f.subagent {
@@ -149,6 +182,8 @@ pub fn work_bits(work: &[(i64, i64)]) -> Vec<(i64, u64)> {
 #[derive(Default)]
 struct Minutes {
     rows: BTreeMap<i64, Minute>,
+    misses: BTreeMap<(i64, &'static str), f64>,
+    models: BTreeMap<(i64, String), f64>,
     /// The minute of the request being analyzed, for the calls and the miss that follow it.
     current: Option<i64>,
 }
@@ -165,9 +200,17 @@ impl Sink for Minutes {
     fn request(&mut self, r: &RequestRecord) {
         let minute = r.ts_ms.div_euclid(MINUTE_MS);
         let usd = r.price.map_or(0.0, |p| p.cost(&r.usage));
+        let saved = r.price.map_or(0.0, |p| r.usage.cache_read as f64 * (p.input - p.read) / 1e6);
         let row = self.row(minute);
         row.requests += 1;
         row.usd += usd;
+        row.read_tokens += r.usage.cache_read;
+        row.prompt_tokens += r.usage.prompt();
+        row.saved_usd += saved;
+        row.unpriced += u32::from(r.price.is_none());
+        if r.price.is_some() {
+            *self.models.entry((r.ts_ms.div_euclid(HOUR_MS), r.model.to_string())).or_default() += usd;
+        }
         self.current = Some(minute);
     }
 
@@ -177,6 +220,7 @@ impl Sink for Minutes {
         }
         if let Some(p) = m.premium_usd {
             self.row(m.ts_ms.div_euclid(MINUTE_MS)).avoidable_usd += p;
+            *self.misses.entry((m.ts_ms.div_euclid(HOUR_MS), m.cause.name())).or_default() += p;
         }
     }
 
@@ -210,20 +254,40 @@ pub struct Store {
     pub entries: Vec<Entry>,
     /// The file could not be parsed and was moved aside to this path.
     pub broken: Option<PathBuf>,
+    /// The file exists but could not be read, and why: this store is in memory only and must
+    /// not be written over it.
+    pub unreadable: Option<String>,
 }
 
 impl Store {
-    /// The store at `path`; empty when the file does not exist. A file that cannot be parsed is
-    /// renamed to `<name>.broken` and the store starts empty.
-    pub fn load(path: &Path) -> Store {
+    /// The store at `path`; empty when the file does not exist. A file that exists but cannot
+    /// be read gives an empty store marked `unreadable`, which is never written. A file that
+    /// cannot be parsed is kept as `<name>.broken-<UTC time of now_ms>`, never over an earlier
+    /// one, and the store starts empty.
+    pub fn load(path: &Path, now_ms: i64) -> Store {
         let mut store = Store { path: path.to_path_buf(), ..Store::default() };
-        let Ok(bytes) = std::fs::read(path) else { return store };
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return store,
+            Err(e) => {
+                store.unreadable = Some(e.to_string());
+                return store;
+            }
+        };
         match serde_json::from_slice::<File>(&bytes) {
             Ok(f) if f.format == FORMAT => store.entries = f.logs,
             _ => {
-                let aside = path.with_file_name(format!("{}.broken", path.file_name().map_or_else(|| FILE_NAME.into(), |n| n.to_string_lossy())));
-                if std::fs::rename(path, &aside).is_ok() {
-                    store.broken = Some(aside);
+                let name = path.file_name().map_or_else(|| FILE_NAME.into(), |n| n.to_string_lossy().to_string());
+                let stamp = chrono::DateTime::from_timestamp_millis(now_ms).map_or_else(String::new, |t| t.format("%Y%m%dT%H%M%SZ").to_string());
+                let first = path.with_file_name(format!("{name}.broken-{stamp}"));
+                let aside = std::iter::once(first.clone())
+                    .chain((2..).map(|n| path.with_file_name(format!("{name}.broken-{stamp}-{n}"))))
+                    .find(|p| !p.exists())
+                    .unwrap_or(first);
+                match std::fs::rename(path, &aside) {
+                    Ok(()) => store.broken = Some(aside),
+                    // A file that cannot be moved aside is not written over either.
+                    Err(e) => store.unreadable = Some(format!("it could not be parsed or moved aside: {e}")),
                 }
             }
         }
@@ -240,7 +304,17 @@ impl Store {
         let tmp = dir.join(format!("{name}.{}.{}.tmp", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed)));
         let file = File { format: FORMAT, logs: self.entries.clone() };
         let bytes = serde_json::to_vec(&file)?;
-        std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
+        // The new file is whole on disk before it takes the old one's name.
+        let written = (|| -> std::io::Result<()> {
+            use std::io::Write as _;
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(&bytes)?;
+            f.sync_all()
+        })();
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e).with_context(|| format!("writing {}", tmp.display()));
+        }
         if let Err(e) = std::fs::rename(&tmp, &self.path) {
             let _ = std::fs::remove_file(&tmp);
             return Err(e).with_context(|| format!("writing {}", self.path.display()));
@@ -262,6 +336,8 @@ pub struct Refreshed {
     pub unreadable: Vec<String>,
     /// Whether any entry changed, so that the store must be written.
     pub changed: bool,
+    /// What went wrong with the store itself: unreadable, reset, or not written.
+    pub warnings: Vec<String>,
 }
 
 /// Brings the entries of `agents` up to date with their logs: an entry is kept while its log has
@@ -287,10 +363,8 @@ pub fn refresh(
     let mut stale = Vec::new();
     let mut out = Refreshed::default();
     let mut live: HashSet<String> = HashSet::new();
-    let mut ids: HashSet<(String, String, String)> = HashSet::new();
     for f in &logs {
         let key = key_of(f);
-        ids.insert((f.agent.name().to_string(), f.session_id.clone(), f.main_id.clone()));
         let fresh = by_key.get(&key).map(|&i| &store.entries[i]).is_some_and(|e| e.len == f.size && e.mtime_ns == f.modified_ns as i64 && e.fingerprint == fp);
         if fresh {
             out.from_store += 1;
@@ -327,7 +401,10 @@ pub fn refresh(
         }
     }
     out.read = stale;
-    // The entries of the logs not found: moved ones go, the others stay as the only record.
+    // The entries of the logs not found: moved ones go, once the log at the new key has an entry
+    // of its own; the others stay as the only record.
+    let ids: HashSet<(String, String, String)> =
+        store.entries.iter().filter(|e| live.contains(&e.key)).map(|e| (e.agent.clone(), e.session.clone(), e.main.clone())).collect();
     let before = store.entries.len();
     store.entries.retain(|e| {
         let refreshed = names.contains(e.agent.as_str());
@@ -358,9 +435,19 @@ mod tests {
 
     #[test]
     fn minutes_are_written_as_arrays() {
-        let m = Minute { minute: 7, usd: 0.5, avoidable_usd: 0.25, requests: 2, commits: 1, pushes: 0, pull_requests: 0 };
+        let m = Minute {
+            minute: 7,
+            usd: 0.5,
+            avoidable_usd: 0.25,
+            requests: 2,
+            commits: 1,
+            read_tokens: 90,
+            prompt_tokens: 100,
+            saved_usd: 0.125,
+            ..Minute::default()
+        };
         let text = serde_json::to_string(&m).unwrap();
-        assert_eq!(text, "[7,0.5,0.25,2,1,0,0]");
+        assert_eq!(text, "[7,0.5,0.25,2,1,0,0,90,100,0.125,0]");
         assert_eq!(serde_json::from_str::<Minute>(&text).unwrap(), m);
     }
 
@@ -369,7 +456,13 @@ mod tests {
         let a = fingerprint(&Pricing::defaults());
         let mut p = Pricing::defaults();
         p.add_layer("test", None, "[models.\"claude-opus-5-5\"]\ninput = 1.0\noutput = 2.0\n").unwrap();
-        assert!(a.starts_with(&format!("tokprof {}; prices ", env!("CARGO_PKG_VERSION"))));
+        assert!(a.starts_with(&format!("{}; prices ", build_id())));
+        assert!(build_id().starts_with(&format!("tokprof {}", env!("CARGO_PKG_VERSION"))));
+        // Built in a git checkout, the commit is part of it, so another build reads the logs
+        // again.
+        if !env!("TOKPROF_COMMIT").is_empty() {
+            assert!(build_id().contains(env!("TOKPROF_COMMIT")) && env!("TOKPROF_COMMIT").len() == 12);
+        }
         assert_ne!(a, fingerprint(&p));
         assert_eq!(a, fingerprint(&Pricing::defaults()));
     }
@@ -386,7 +479,7 @@ mod tests {
         let d = dir("save");
         let path = d.join(FILE_NAME);
         let entry = Entry { key: "/a.jsonl".into(), len: 3, actions: vec![(5, true)], ..Entry::default() };
-        let store = Store { path: path.clone(), entries: vec![entry.clone()], broken: None };
+        let store = Store { path: path.clone(), entries: vec![entry.clone()], ..Store::default() };
         store.save().unwrap();
         // Two writers at once: each renames a whole file, and the last one wins.
         let other = Store { entries: vec![Entry { key: "/b.jsonl".into(), ..Entry::default() }], ..store.clone() };
@@ -394,10 +487,39 @@ mod tests {
             s.spawn(|| store.save().unwrap());
             s.spawn(|| other.save().unwrap());
         });
-        let back = Store::load(&path);
+        let back = Store::load(&path, 0);
         assert!(back.entries == vec![entry] || back.entries == other.entries, "one whole store");
         let left: Vec<_> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(left.len(), 1, "no temporary file stays: {left:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_store_that_cannot_be_read_is_not_replaced() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir("unreadable");
+        let path = d.join(FILE_NAME);
+        std::fs::write(&path, "{\"format\":2,\"logs\":[]}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let store = Store::load(&path, 0);
+        // Root reads anything; the rule only shows for a user the file shuts out.
+        if std::fs::read(&path).is_err() {
+            assert!(store.unreadable.is_some() && store.broken.is_none());
+        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"format\":2,\"logs\":[]}", "left as it was");
+    }
+
+    #[test]
+    fn a_failed_write_leaves_no_temporary_file() {
+        let d = dir("failed");
+        // The path is a folder, so the rename over it fails.
+        let path = d.join(FILE_NAME);
+        std::fs::create_dir_all(path.join("x")).unwrap();
+        let store = Store { path: path.clone(), ..Store::default() };
+        assert!(store.save().is_err());
+        let left: Vec<_> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left.len(), 1, "only the folder: {left:?}");
     }
 
     #[test]
@@ -405,15 +527,18 @@ mod tests {
         let d = dir("broken");
         let path = d.join(FILE_NAME);
         std::fs::write(&path, "{not json").unwrap();
-        let store = Store::load(&path);
+        let store = Store::load(&path, 0);
         assert!(store.entries.is_empty());
-        assert_eq!(store.broken, Some(d.join("days-1.json.broken")));
-        assert!(!path.exists() && d.join("days-1.json.broken").exists());
-        // A store of another format is not read either.
-        std::fs::write(&path, "{\"format\":2,\"logs\":[]}").unwrap();
-        assert!(Store::load(&path).broken.is_some());
+        let first = d.join("days-2.json.broken-19700101T000000Z");
+        assert_eq!(store.broken.as_ref(), Some(&first));
+        assert!(!path.exists() && first.exists());
+        // A store of another format is not read either, and its backup does not replace the
+        // first one.
+        std::fs::write(&path, "{\"format\":1,\"logs\":[]}").unwrap();
+        assert_eq!(Store::load(&path, 0).broken, Some(d.join("days-2.json.broken-19700101T000000Z-2")));
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "{not json");
         // No file: an empty store, nothing moved.
-        let none = Store::load(&d.join("none.json"));
+        let none = Store::load(&d.join("none.json"), 0);
         assert!(none.entries.is_empty() && none.broken.is_none());
     }
 }

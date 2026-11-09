@@ -637,9 +637,45 @@ Mon  █ ▒ ▒ ▒ ▒ ░ ░ ░ ░ ▓ ░ ▓ ▓ █ █ ▒ ▓ ▓ ▓
 
 A cell is a day as `tokprof day` has it, from the middle of one night to the middle of the next, so a night's work counts in the day before it, and a cell's messages and time at the keyboard are those `tokprof day <date>` prints.
 
-The numbers come from a day store, `~/Library/Caches/tokprof/days-1.json` on macOS (`~/.cache/tokprof/` elsewhere, `$TOKPROF_CACHE_DIR` to move it). It keeps, for each log, its spend, misses, requests, commits, the minutes the agent worked and the times of your actions, by hour; no text. The first run reads every log; later runs read only the logs that changed and answer in about a second. When an agent deletes old logs (Claude Code does after `cleanupPeriodDays`, 30 days by default), the store keeps their days, and the `kept` line says how many days come only from it.
+The numbers come from a day store, `~/Library/Caches/tokprof/days-2.json` on macOS (`~/.cache/tokprof/` elsewhere, `$TOKPROF_CACHE_DIR` to move it). It keeps, for each log, its spend, misses, requests, commits, the minutes the agent worked and the times of your actions, by hour; no text. The first run reads every log; later runs read only the logs that changed and answer in about a second. When an agent deletes old logs (Claude Code does after `cleanupPeriodDays`, 30 days by default), the store keeps their days, and the `kept` line says how many days come only from it.
 
 In the window, ⌘3 shows the same calendar, larger, with a tooltip on each day that names all its numbers and whether it comes from the store alone; a click or ⏎ opens that day. `--client` does not apply: the store does not keep the client of each request.
+
+The store's numbers are tied to the build: when tokprof is built from another git commit or the prices change, every log that still exists is read again once (about 45 s on 9 GB of logs), so a fix to the numbers reaches the old days too. The days of logs that are gone keep the numbers they were made with. A store that cannot be read is never written over, and one that cannot be parsed is kept as `days-2.json.broken-<time>`.
+
+## Your month in review
+
+`tokprof month` sums one month of the day store into a card to post: the last complete month by default, `tokprof month 2026-10` for another, `tokprof month this` for this month so far. It names no project, title or path.
+
+```
+$ tokprof month 2026-10
+tokprof · month · October 2026 with agents
+
+Marathon
+31 days in a row with the agents; the title takes 28 or more
+
+$11,632 spent           221h agents worked      78h at the keyboard
+388 sessions            1,431 messages          486 commits by agents
+
+     Mo Tu We Th Fr Sa Su
+               ▓  ▓  ▓  ▒
+      ░  ▒  ░  ░  ░  ░  ▓
+...
+busiest day    Sun 25 Oct, $1,221
+busiest hour   23:00–00:00, 7% of agent time
+late nights    31% of agent time between 22:00 and 05:00
+longest streak 31 days in a row, Thu 1 Oct – Sat 31 Oct
+top model      claude-opus-5-5, $8,392, 72% of spend
+cache          98% of input read from cache, $87,329 saved by cache reads, $1,452 (12.5%) avoidable on misses, 262 cold returns
+vs September   spend ↑ $7,903 (+212%), agent time ↑ 111h (+100%), avoidable share ↑ 1.0 points (12.5%, was 11.5%)
+next month     $873 went to idle > TTL. Compact or wrap up a big session before a long break.
+```
+
+The month runs from local midnight on its first day to the next month's, so its spend and avoidable dollars equal `tokprof summary --since 2026-10-01 --until 2026-11-01`. "Saved by cache reads" is the tokens read from the cache times the difference between the uncached input price and the cache read price; requests without a price are not counted, and the card says how many.
+
+The title is the first of these whose rule holds, with the rule printed under it: **Night owl** (33% or more of agent time between 22:00 and 05:00), **Early bird** (20% or more of your keyboard time between 05:00 and 09:00), **Conductor** (25% or more of agent time with 3 or more sessions at once), **Marathon** (28 or more days in a row), **Cache keeper** (under 5% of spend avoidable), **Shipper** (0.75 or more commits per agent hour).
+
+In the window, Calendar's `Month in review` button, `r`, or the palette opens the card for the month under the cursor; ← and → step months. `Save image` writes it as a 1080×1350 PNG to `~/Downloads/tokprof-2026-10.png` (or `-2`, `-3`… when that exists). Nothing is uploaded.
 
 ## Flame graphs and profiles
 

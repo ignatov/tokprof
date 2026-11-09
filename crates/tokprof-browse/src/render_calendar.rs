@@ -153,6 +153,14 @@ pub fn numbers(cal: &Calendar, metric: Metric) -> Vec<String> {
     if let Some((w, v)) = cal.busiest_weekday(metric) {
         out.push(format!("weekday   {}, {}", weekday_plural(w), amount(v, unit)));
     }
+    if cal.untimed.0 > 0 {
+        out.push(format!(
+            "untimed   {} without a time {} in no day ({})",
+            fmt::count(cal.untimed.0, "request", "requests"),
+            if cal.untimed.0 == 1 { "is" } else { "are" },
+            fmt::usd(cal.untimed.1)
+        ));
+    }
     match cal.only_kept() {
         0 => out.push("kept      no day comes only from the store yet; it keeps the days of logs the agents delete".to_string()),
         n => out.push(format!("kept      {} only from the store: their logs are gone", fmt::count(n as u64, "day comes", "days come"))),

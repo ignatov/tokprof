@@ -8,7 +8,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use tokprof_browse::day::{self, keeps_client, temp_folders};
 use tokprof_browse::filters::{normalize_project, parse_date, parse_since};
 use tokprof_browse::reading::{sources, warnings};
-use tokprof_browse::{calendar, clipboard, paths, render_calendar, render_requests, render_rhythm, render_sessions, render_xray};
+use tokprof_browse::{calendar, clipboard, paths, render_calendar, render_month, render_requests, render_rhythm, render_sessions, render_xray};
 use tokprof_core::analysis::{self, Component};
 use tokprof_core::calendar::Metric;
 use tokprof_core::export;
@@ -201,6 +201,14 @@ enum Command {
         /// the keyboard), messages, commits (by the agents) or avoidable (lost to cache misses).
         #[arg(long, default_value = "spend", value_parser = parse_metric)]
         metric: Metric,
+    },
+    /// A month in review, as a card to post: spend, agent hours, your hours at the keyboard,
+    /// sessions, messages and commits, the month's days, its busiest day and hour, the cache,
+    /// the top model, the change from the month before, a title, and one thing to change. It
+    /// names no project. From the day store, as `tokprof calendar`.
+    Month {
+        /// YYYY-MM, or `this` for this month so far; by default the last complete month.
+        month: Option<String>,
     },
     /// Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent
     /// do (trips), with a hint per row.
@@ -415,11 +423,37 @@ fn main() -> Result<()> {
         };
         let (store, refreshed) = calendar::update(&catalog, &agents, &pricing, &path, progress)?;
         eprintln!("{}", calendar::read_line(&catalog, &refreshed, started.elapsed().as_secs_f64(), &path));
-        if let Some(aside) = &store.broken {
-            eprintln!("warning: the day store could not be read; it was moved to {}", display_path(&aside.to_string_lossy(), None, catalog.home()));
-        }
         warn(&refreshed.unreadable);
         print!("{}", render_calendar::text(&calendar::compute(&store, &select, now_ms()), *metric, &style));
+        // What went wrong with the store comes after the calendar, which it did not stop.
+        for w in &refreshed.warnings {
+            eprintln!("{w}");
+        }
+        return Ok(());
+    }
+    if let Command::Month { month } = &command {
+        if cli.client.is_some() {
+            bail!("month cannot filter by client; drop --client");
+        }
+        if cli.since.is_some() || cli.until.is_some() {
+            bail!("month picks its time by YYYY-MM; drop --since and --until");
+        }
+        let now = now_ms();
+        let this = tokprof_core::month::Ym::of_date(rhythm::date_of(now, &rhythm::local_offset));
+        let ym = match month.as_deref() {
+            None => this.previous(),
+            Some("this") => this,
+            Some(m) => tokprof_core::month::Ym::parse(m).with_context(|| format!("bad month {m:?}, expected YYYY-MM or this"))?,
+        };
+        let started = Instant::now();
+        let path = paths::day_store();
+        let (store, refreshed) = calendar::update(&catalog, &agents, &pricing, &path, |_, _| {})?;
+        eprintln!("{}", calendar::read_line(&catalog, &refreshed, started.elapsed().as_secs_f64(), &path));
+        warn(&refreshed.unreadable);
+        print!("{}", render_month::text(&calendar::month(&store, &select, ym, now), &style));
+        for w in &refreshed.warnings {
+            eprintln!("{w}");
+        }
         return Ok(());
     }
     if let Command::Bench { requests, min_context, keep_warm, svg } = &command {
@@ -676,6 +710,7 @@ fn main() -> Result<()> {
         | Command::Bench { .. }
         | Command::Day { .. }
         | Command::Calendar { .. }
+        | Command::Month { .. }
         | Command::Pauses
         | Command::Share { .. }
         | Command::Pool { .. } => {

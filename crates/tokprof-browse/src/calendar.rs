@@ -20,12 +20,16 @@ use tokprof_core::source::AgentId;
 
 use crate::browser::{Wake, now_ms};
 
-/// The least the calendar waits before it is computed again after the logs changed.
-const PAUSE: Duration = Duration::from_secs(20);
+/// The least the calendar waits before it is computed again after the logs changed: each time
+/// reads the grown logs whole and writes the store.
+const PAUSE: Duration = Duration::from_secs(60);
 const WAKE_EVERY: Duration = Duration::from_millis(250);
 
-/// The store at `path`, brought up to date with the logs of `agents` and written back when it
-/// changed. `progress(done, total)` follows the logs read.
+/// The store at `path`, brought up to date with the logs of `agents` and written back when an
+/// entry changed. A store that exists but cannot be read is used in memory and never written; a
+/// store that could not be parsed was kept aside; a write that fails leaves the old store. Each
+/// says so in the refresh's warnings, which do not stop the calendar. `progress(done, total)`
+/// follows the logs read.
 pub fn update(
     catalog: &Catalog,
     agents: &[AgentId],
@@ -33,12 +37,53 @@ pub fn update(
     path: &Path,
     progress: impl Fn(usize, usize) + Sync + Send,
 ) -> Result<(Store, Refreshed)> {
-    let mut store = Store::load(path);
-    let refreshed = daystore::refresh(&mut store, catalog, agents, pricing, &crate::day::temp_folders(), progress)?;
-    if refreshed.changed || store.broken.is_some() {
-        store.save()?;
+    let mut store = Store::load(path, now_ms());
+    let mut refreshed = daystore::refresh(&mut store, catalog, agents, pricing, &crate::day::temp_folders(), progress)?;
+    let shown = |p: &Path| display_path(&p.to_string_lossy(), None, catalog.home());
+    if let Some(e) = &store.unreadable {
+        refreshed.warnings.push(format!("warning: the day store {} could not be read ({e}); this run keeps it in memory and does not write it", shown(path)));
+    } else if (refreshed.changed || store.broken.is_some())
+        && let Err(e) = store.save()
+    {
+        refreshed.warnings.push(format!("warning: the day store could not be written: {e:#}"));
+    }
+    if let Some(aside) = &store.broken {
+        refreshed.warnings.push(format!("warning: the day store could not be parsed; it was kept as {} and started anew", shown(aside)));
     }
     Ok((store, refreshed))
+}
+
+/// The prices of the window, read again when the user's price file or `--prices` changed, so
+/// that the window and the command line make the same fingerprint.
+pub struct PriceWatch {
+    explicit: Option<std::path::PathBuf>,
+    stamps: Vec<Option<std::time::SystemTime>>,
+    pricing: Pricing,
+}
+
+impl PriceWatch {
+    pub fn new(pricing: Pricing, explicit: Option<std::path::PathBuf>) -> PriceWatch {
+        let mut w = PriceWatch { explicit, stamps: Vec::new(), pricing };
+        w.stamps = w.stamps_now();
+        w
+    }
+
+    fn stamps_now(&self) -> Vec<Option<std::time::SystemTime>> {
+        std::iter::once(crate::paths::user_prices()).chain(self.explicit.clone()).map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok()).collect()
+    }
+
+    /// The prices, read again if a price file changed since; a file that fails to read keeps
+    /// the prices before.
+    pub fn current(&mut self) -> &Pricing {
+        let now = self.stamps_now();
+        if now != self.stamps {
+            self.stamps = now;
+            if let Ok(p) = crate::paths::pricing(self.explicit.as_deref()) {
+                self.pricing = p;
+            }
+        }
+        &self.pricing
+    }
 }
 
 /// The calendar's filters from the command line's.
@@ -57,6 +102,13 @@ pub fn compute(store: &Store, select: &Query, now_ms: i64) -> Calendar {
     Calendar::of(&store.entries, &filters(select), now_ms, &rhythm::local_offset)
 }
 
+/// The month `ym` of the store's entries that `select` keeps, whatever its time window, as of
+/// `now_ms`, in the machine's time zone.
+pub fn month(store: &Store, select: &Query, ym: tokprof_core::month::Ym, now_ms: i64) -> tokprof_core::month::Month {
+    let f = Filters { since_ms: None, until_ms: None, ..filters(select) };
+    tokprof_core::month::Month::of(&store.entries, &f, ym, now_ms, &rhythm::local_offset)
+}
+
 /// The line on what the refresh read: the logs read again as other commands name them, the logs
 /// taken from the store, and those that are gone.
 pub fn read_line(catalog: &Catalog, r: &Refreshed, secs: f64, path: &Path) -> String {
@@ -73,6 +125,10 @@ pub fn read_line(catalog: &Catalog, r: &Refreshed, secs: f64, path: &Path) -> St
 /// A calendar the worker computed.
 pub struct Computed {
     pub calendar: Result<Arc<Calendar>, String>,
+    /// The store it was computed from, for the month in review.
+    pub store: Option<Arc<Store>>,
+    /// What went wrong with the store: unreadable, reset, or not written.
+    pub warnings: Vec<String>,
     /// The logs whose days come from the store alone.
     pub gone: usize,
     pub changes: u32,
@@ -89,6 +145,8 @@ impl Computed {
 struct Done {
     changes: u32,
     calendar: Result<Calendar, String>,
+    store: Option<Arc<Store>>,
+    warnings: Vec<String>,
     gone: usize,
     took: Duration,
 }
@@ -111,7 +169,15 @@ pub struct Calendars {
 impl Calendars {
     /// Starts the worker over the logs `select` selects, with the store at `path`. It reads
     /// nothing until the calendar is asked for.
-    pub fn start(catalog: Arc<Catalog>, pricing: Pricing, select: Query, path: std::path::PathBuf, wake: Wake) -> Calendars {
+    pub fn start(
+        catalog: Arc<Catalog>,
+        pricing: Pricing,
+        prices: Option<std::path::PathBuf>,
+        select: Query,
+        path: std::path::PathBuf,
+        wake: Wake,
+    ) -> Calendars {
+        let mut watch = PriceWatch::new(pricing, prices);
         let (jobs, rx) = mpsc::channel::<u32>();
         let (tx, notes) = mpsc::channel();
         let shared = Arc::new(Shared::default());
@@ -135,11 +201,11 @@ impl Calendars {
                             wake();
                         }
                     };
-                    let (calendar, gone) = match update(&catalog, &select.agents, &pricing, &path, progress) {
-                        Ok((store, r)) => (Ok(compute(&store, &select, now_ms())), r.gone),
-                        Err(e) => (Err(format!("{e:#}")), 0),
+                    let (calendar, gone, store, warnings) = match update(&catalog, &select.agents, watch.current(), &path, progress) {
+                        Ok((store, r)) => (Ok(compute(&store, &select, now_ms())), r.gone, Some(Arc::new(store)), r.warnings),
+                        Err(e) => (Err(format!("{e:#}")), 0, None, Vec::new()),
                     };
-                    if tx.send(Done { changes, calendar, gone, took: started.elapsed() }).is_err() {
+                    if tx.send(Done { changes, calendar, store, gone, warnings, took: started.elapsed() }).is_err() {
                         return;
                     }
                     wake();
@@ -156,7 +222,23 @@ impl Calendars {
     }
 
     pub fn put(&mut self, calendar: Calendar, changes: u32) {
-        self.kept = Some(Computed { calendar: Ok(Arc::new(calendar)), gone: 0, changes, took: Duration::ZERO, arrived: Instant::now() });
+        self.kept = Some(Computed {
+            calendar: Ok(Arc::new(calendar)),
+            store: None,
+            warnings: Vec::new(),
+            gone: 0,
+            changes,
+            took: Duration::ZERO,
+            arrived: Instant::now(),
+        });
+    }
+
+    /// `put`, with the store it came from.
+    pub fn put_with(&mut self, calendar: Calendar, store: Store, changes: u32) {
+        self.put(calendar, changes);
+        if let Some(c) = &mut self.kept {
+            c.store = Some(Arc::new(store));
+        }
     }
 
     /// Takes in what the worker computed, and asks for the calendar when there is none, or when
@@ -175,7 +257,15 @@ impl Calendars {
             if self.pending == Some(d.changes) {
                 self.pending = None;
             }
-            self.kept = Some(Computed { calendar: d.calendar.map(Arc::new), gone: d.gone, changes: d.changes, took: d.took, arrived: Instant::now() });
+            self.kept = Some(Computed {
+                calendar: d.calendar.map(Arc::new),
+                store: d.store,
+                warnings: d.warnings,
+                gone: d.gone,
+                changes: d.changes,
+                took: d.took,
+                arrived: Instant::now(),
+            });
         }
         arrived
     }
@@ -204,6 +294,11 @@ impl Calendars {
 
     pub fn get(&self) -> Option<&Computed> {
         self.kept.as_ref()
+    }
+
+    /// The calendar computed last, to change, as a test sets what the worker would have sent.
+    pub fn get_mut(&mut self) -> Option<&mut Computed> {
+        self.kept.as_mut()
     }
 
     /// Whether it is being computed, a first time or again.
@@ -362,7 +457,7 @@ mod tests {
         let catalog = catalog_at(&fixtures());
         let select = Query { agents: catalog.agents(), ..Query::default() };
         let path = scratch("worker").join(daystore::FILE_NAME);
-        let mut c = Calendars::start(catalog, Pricing::defaults(), select, path, Arc::new(|| {}));
+        let mut c = Calendars::start(catalog, Pricing::defaults(), None, select, path, Arc::new(|| {}));
         assert!(c.get().is_none() && c.progress().is_none(), "nothing before it is asked for");
         c.settle(0, Duration::from_secs(20));
         assert!(c.get().is_some_and(|x| x.calendar.is_ok()));
@@ -371,6 +466,61 @@ mod tests {
         c.tick(1);
         assert!(!c.reading(), "it waits for its pause");
         assert!(c.next_due(1).unwrap() >= c.get().unwrap().arrived + PAUSE);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_moved_log_that_cannot_be_read_keeps_its_old_entry() {
+        let dir = scratch("moved-unreadable");
+        let logs = dir.join("projects");
+        copy_dir(&fixtures(), &logs);
+        let path = dir.join(daystore::FILE_NAME);
+        let pricing = Pricing::defaults();
+        let catalog = catalog_at(&logs);
+        let agents = catalog.agents();
+        let (first, _) = update(&catalog, &agents, &pricing, &path, |_, _| {}).unwrap();
+        let one = PathBuf::from(&first.entries.iter().find(|e| !e.subagent && !e.key.contains("subagents")).unwrap().key);
+        let moved = one.parent().unwrap().parent().unwrap().join("moved-project");
+        std::fs::create_dir_all(&moved).unwrap();
+        let to = moved.join(one.file_name().unwrap());
+        std::fs::rename(&one, &to).unwrap();
+        // The log at the new place cannot be read: the old entry stays, as the only record.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let (store, r) = update(&catalog, &agents, &pricing, &path, |_, _| {}).unwrap();
+        std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o644)).unwrap();
+        if r.unreadable.is_empty() {
+            return; // root reads anything; the rule only shows for a user the file shuts out
+        }
+        assert!(store.entries.iter().any(|e| e.key == one.to_string_lossy()), "the old entry stays");
+        assert_eq!(store.entries.len(), first.entries.len());
+    }
+
+    #[test]
+    fn a_store_that_cannot_be_written_still_gives_the_calendar() {
+        let dir = scratch("unwritable");
+        // The store's path is a folder: the rename over it fails.
+        let path = dir.join(daystore::FILE_NAME);
+        std::fs::create_dir_all(path.join("x")).unwrap();
+        let catalog = catalog_at(&fixtures());
+        let (store, r) = update(&catalog, &catalog.agents(), &Pricing::defaults(), &path, |_, _| {}).unwrap();
+        assert!(!store.entries.is_empty());
+        assert!(r.warnings.iter().any(|w| w.starts_with("warning: the day store")), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn the_window_reads_the_prices_again_when_their_file_changes() {
+        let dir = scratch("prices");
+        let file = dir.join("prices.toml");
+        std::fs::write(&file, "[models.\"claude-opus-5-5\"]\ninput = 1.0\noutput = 2.0\n").unwrap();
+        let first = crate::paths::pricing(Some(&file)).unwrap();
+        let mut watch = PriceWatch::new(first, Some(file.clone()));
+        let before = daystore::fingerprint(watch.current());
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&file, "[models.\"claude-opus-5-5\"]\ninput = 3.0\noutput = 2.0\n").unwrap();
+        let t = std::time::SystemTime::now() + Duration::from_secs(5);
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(t).unwrap();
+        assert_ne!(daystore::fingerprint(watch.current()), before);
     }
 
     #[test]

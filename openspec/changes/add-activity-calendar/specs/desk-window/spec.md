@@ -67,7 +67,7 @@ In Calendar, a cursor SHALL ring one day, the last day to start with. ↑ and �
 - **THEN** it shows the time at the keyboard
 
 ### Requirement: Calendar computation
-The calendar SHALL be computed on a worker; no frame waits for it. It refreshes the day store (see activity-calendar) and computes every metric at once. While the store is being filled it reads `reading the logs into the store… <n> of <m> logs`. When the logs change while Calendar is shown, it is computed again with the back-off of Report computation, with `updating…` by the pills. While Calendar is not shown, nothing is computed for it.
+The calendar SHALL be computed on a worker; no frame waits for it. It refreshes the day store (see activity-calendar) and computes every metric at once. While the store is being filled it reads `reading the logs into the store… <n> of <m> logs`. When the logs change while Calendar is shown, it is computed again once 4 times its last computation and at least 60 seconds passed, with `updating…` by the pills. While Calendar is not shown, nothing is computed for it.
 
 #### Scenario: The first look
 - **WHEN** the user opens Calendar for the first time with no store on disk
@@ -76,6 +76,14 @@ The calendar SHALL be computed on a worker; no frame waits for it. It refreshes 
 #### Scenario: At rest
 - **WHEN** the calendar has arrived and the logs do not change
 - **THEN** the window draws no more frames for it
+
+#### Scenario: The store was reset
+- **WHEN** the store could not be parsed, or could not be read or written (see activity-calendar, Writing the store)
+- **THEN** the line by the pills says so, as the command line warns
+
+#### Scenario: Prices edited while the window runs
+- **WHEN** the user edits `~/.config/tokprof/prices.toml` while Calendar is shown
+- **THEN** the next computation reads the price files again and uses the new prices, so the window and `tokprof calendar` make the same fingerprint and do not read each other's logs again
 
 ### Requirement: Calendar in a frame without a window
 `--scene calendar` SHALL draw the frame in Calendar, waiting up to 120 seconds for it, and `--scene calendar-day` the same with the cursor a week before the last day and its tooltip. `--metric <name>` picks the metric by the names of `tokprof calendar --metric`.

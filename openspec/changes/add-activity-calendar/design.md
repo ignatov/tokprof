@@ -36,7 +36,7 @@ Size, estimated from the author's logs (≈ 92k requests in 30 days, ≈ 2,000 l
 
 ### The format
 
-One JSON file, `days-1.json`: `{ "format": 1, "fingerprint": "...", "logs": [entry...] }`. An entry: `path`, `len`, `mtime_ns`, `fingerprint`, `agent`, `session`, `main`, `subagent`, `project`, `left_out`, `minutes` (`[[minute since epoch, usd, avoidable_usd, requests, commits, pushes, pull_requests], ...]`), `work` (`[[hour since epoch, minute bits], ...]`) and `actions` (`[[ms, 1 when a message else 0], ...]`). Spend stays `f64`, so sums equal the summary's sums up to the order of addition. serde with derive, as the share file uses.
+One JSON file, `days-2.json`: `{ "format": 2, "fingerprint": "...", "logs": [entry...] }`. An entry: `path`, `len`, `mtime_ns`, `fingerprint`, `agent`, `session`, `main`, `subagent`, `project`, `left_out`, `minutes` (`[[minute since epoch, usd, avoidable_usd, requests, commits, pushes, pull_requests], ...]`), `work` (`[[hour since epoch, minute bits], ...]`) and `actions` (`[[ms, 1 when a message else 0], ...]`). Format 2 (from add-month-review, before any release) adds to each minute the tokens read from the cache, all prompt tokens, the dollars the cache reads saved and the unpriced requests, and to each entry the avoidable premium by miss cause and the spend by model per hour, and the times of its cold returns. Spend stays `f64`, so sums equal the summary's sums up to the order of addition. serde with derive, as the share file uses.
 
 The fingerprint is `tokprof <version>; prices <sha-256 of the price entries in use>`, the version of the workspace and the `Debug` text of every price entry and period after all layers are applied. The temp folders that decide `left_out` are not in it: they change only with the machine.
 
@@ -47,11 +47,11 @@ The fingerprint is `tokprof <version>; prices <sha-256 of the price entries in u
 2. Keep each entry whose key (the log's path, or `db#id` for a log in a database) has the same `len` and `mtime_ns` and the current fingerprint.
 3. Parse the others with `scan_counted`, one entry per log, and replace or add them. A log that fails to parse keeps its old entry.
 4. For an entry whose log was not discovered: if its agent was refreshed and a discovered log has the same agent, session id and main id, drop it (the log moved); else keep it, flagged gone for this run.
-5. If any entry changed or was dropped, write the store: serialize to `days-1.json.<pid>.<n>.tmp` in the same folder and rename over `days-1.json`.
+5. If any entry changed or was dropped, write the store: serialize to `days-2.json.<pid>.<n>.tmp` in the same folder and rename over `days-2.json`.
 
 Two writers: each starts from the store it loaded and renames a whole file; the last one wins, and what the other added is read again next time. No lock: losing a refresh costs one re-read, while a stale lock could block the window.
 
-An unparsable or wrong-format store is replaced with an empty one, after its file is renamed to `days-1.json.broken`, so a format bug does not destroy history silently.
+An unparsable or wrong-format store is replaced with an empty one, after its file is renamed to `days-2.json.broken`, so a format bug does not destroy history silently.
 
 ### The calendar
 

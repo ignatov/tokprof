@@ -93,6 +93,13 @@ pub struct Amounts {
     pub commits: u64,
     pub pushes: u64,
     pub pull_requests: u64,
+    /// Prompt tokens read from the cache, and all prompt tokens.
+    pub read_tokens: u64,
+    pub prompt_tokens: u64,
+    /// What the cache reads saved (see the day store).
+    pub saved_usd: f64,
+    /// Requests whose model has no price.
+    pub unpriced: u64,
 }
 
 impl Amounts {
@@ -186,6 +193,8 @@ pub struct Calendar {
     pub punch: Vec<[Amounts; 24]>,
     /// Nothing was kept: no request and no action.
     pub empty: bool,
+    /// Requests whose log gives no time, which no day holds, and their spend.
+    pub untimed: (u64, f64),
 }
 
 /// Monday 0 to Sunday 6 of a local date; 1970-01-01 was a Thursday.
@@ -238,7 +247,7 @@ impl Calendar {
         let end = filters.until_ms.map_or(now_ms, |u| u.min(now_ms));
         let kept: Vec<&Entry> = entries.iter().filter(|e| filters.keeps(e)).collect();
         let rhythm: Vec<&Entry> = kept.iter().copied().filter(|e| !e.subagent && !e.left_out).collect();
-        let mut all_actions: Vec<i64> = rhythm.iter().flat_map(|e| e.actions.iter().map(|a| a.0)).collect();
+        let mut all_actions: Vec<i64> = rhythm.iter().flat_map(|e| e.actions.iter().map(|a| a.0)).filter(|&t| t > 0).collect();
         all_actions.sort_unstable();
         all_actions.dedup();
         let rule = DayRule::of(&all_actions, end, offset);
@@ -249,12 +258,12 @@ impl Calendar {
         let mut first_data: Option<i64> = None;
         let mut seen = |d: i64| first_data = Some(first_data.map_or(d, |f: i64| f.min(d)));
         for e in &kept {
-            for m in e.minutes.iter().filter(|m| filters.inside(m.minute * MINUTE_MS)) {
+            for m in e.minutes.iter().filter(|m| m.minute > 0 && filters.inside(m.minute * MINUTE_MS)) {
                 seen(day(m.minute * MINUTE_MS));
             }
         }
         for e in &rhythm {
-            for &(ts, _) in e.actions.iter().filter(|a| filters.inside(a.0)) {
+            for &(ts, _) in e.actions.iter().filter(|a| a.0 > 0 && filters.inside(a.0)) {
                 seen(day(ts));
             }
         }
@@ -268,6 +277,7 @@ impl Calendar {
             days: (first_monday..=last).map(|date| Day { date, ..Day::default() }).collect(),
             punch: vec![Default::default(); 7],
             empty: first_data.is_none(),
+            untimed: (0, 0.0),
         };
         let index = |date: i64| (date >= first_monday && date <= last).then(|| (date - first_monday) as usize);
 
@@ -276,6 +286,14 @@ impl Calendar {
         for e in &kept {
             for m in &e.minutes {
                 let ts = m.minute * MINUTE_MS;
+                // A request whose log gives no time is in no day.
+                if m.minute <= 0 {
+                    if filters.since_ms.is_none() && filters.until_ms.is_none() {
+                        cal.untimed.0 += m.requests as u64;
+                        cal.untimed.1 += m.usd;
+                    }
+                    continue;
+                }
                 if !filters.inside(ts) {
                     continue;
                 }
@@ -311,7 +329,7 @@ impl Calendar {
                     continue;
                 }
                 let ts = (hour * 60 + m) * MINUTE_MS;
-                if !filters.inside(ts) {
+                if ts <= 0 || !filters.inside(ts) {
                     continue;
                 }
                 let Some(i) = index(day(ts)) else { continue };
@@ -324,7 +342,7 @@ impl Calendar {
         // Messages and sittings, from the actions of each day.
         let mut by_day: HashMap<usize, Vec<i64>> = HashMap::new();
         for e in &rhythm {
-            for &(ts, message) in e.actions.iter().filter(|a| filters.inside(a.0)) {
+            for &(ts, message) in e.actions.iter().filter(|a| a.0 > 0 && filters.inside(a.0)) {
                 let Some(i) = index(day(ts)) else { continue };
                 by_day.entry(i).or_default().push(ts);
                 let d = &mut cal.days[i];
@@ -442,13 +460,17 @@ impl Calendar {
     }
 }
 
-fn add_minute(a: &mut Amounts, m: &crate::daystore::Minute) {
+pub(crate) fn add_minute(a: &mut Amounts, m: &crate::daystore::Minute) {
     a.usd += m.usd;
     a.avoidable_usd += m.avoidable_usd;
     a.requests += m.requests as u64;
     a.commits += m.commits as u64;
     a.pushes += m.pushes as u64;
     a.pull_requests += m.pull_requests as u64;
+    a.read_tokens += m.read_tokens;
+    a.prompt_tokens += m.prompt_tokens;
+    a.saved_usd += m.saved_usd;
+    a.unpriced += m.unpriced as u64;
 }
 
 /// A sitting's time over the local hours it spans; one shorter than a minute counts a minute in
@@ -679,6 +701,17 @@ mod tests {
         assert_eq!(cal.total(Metric::Spend), 3.0);
         assert_eq!(cal.only_kept(), 1);
         assert!(cal.day(NOV2 - 3).unwrap().only_kept());
+    }
+
+    #[test]
+    fn a_request_without_a_time_is_in_no_day() {
+        // A week of data and one request of a log without a time.
+        let mut e = main_log(&[at(0, 10, 0)], vec![minute(at(0, 10, 0), 1.0)]);
+        e.minutes.insert(0, Minute { minute: 0, usd: 5.0, requests: 1, ..Minute::default() });
+        let cal = Calendar::of(&[e], &Filters::default(), at(0, 20, 0), &off);
+        assert_eq!(cal.weeks(), 13, "the grid does not stretch to 1970");
+        assert_eq!((cal.total(Metric::Spend), cal.untimed), (1.0, (1, 5.0)));
+        assert_eq!(cal.active(), (1, 1));
     }
 
     #[test]

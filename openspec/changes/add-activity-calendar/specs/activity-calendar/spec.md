@@ -3,15 +3,15 @@
 ## ADDED Requirements
 
 ### Requirement: Day store
-tokprof SHALL keep a day store: one file `days-1.json` in its cache folder, `~/Library/Caches/tokprof/` on macOS, `%LOCALAPPDATA%\tokprof\` on Windows, else `$XDG_CACHE_HOME/tokprof/` or `~/.cache/tokprof/`; `$TOKPROF_CACHE_DIR` replaces the folder. The `1` is the store's format. The store holds an entry per log. It holds numbers, times, ids and project paths, and no text of a message, a prompt, a tool call or a title.
+tokprof SHALL keep a day store: one file `days-2.json` in its cache folder, `~/Library/Caches/tokprof/` on macOS, `%LOCALAPPDATA%\tokprof\` on Windows, else `$XDG_CACHE_HOME/tokprof/` or `~/.cache/tokprof/`; `$TOKPROF_CACHE_DIR` replaces the folder. The `2` is the store's format. The store holds an entry per log. It holds numbers, times, ids and project paths, and no text of a message, a prompt, a tool call or a title.
 
 #### Scenario: The first run
 - **WHEN** `tokprof calendar` runs and no store exists
-- **THEN** it reads every log of the agents asked for, writes `~/Library/Caches/tokprof/days-1.json`, and prints the calendar
+- **THEN** it reads every log of the agents asked for, writes `~/Library/Caches/tokprof/days-2.json`, and prints the calendar
 
 #### Scenario: Another format
-- **WHEN** the cache folder holds a store of another format, such as `days-2.json`
-- **THEN** that file is left as it is, and `days-1.json` is used or started anew
+- **WHEN** the cache folder holds a store of another format, such as `days-1.json`, which an earlier build wrote
+- **THEN** that file is left as it is, and `days-2.json` is used or started anew
 
 ### Requirement: What an entry names
 An entry SHALL name its log's path, length and modification time, the fingerprint it was made with, the log's agent, its session id and the id of its main session, whether it is a subagent's log, its project, and whether the rhythm leaves its session out (see work-rhythm, Sessions left out).
@@ -50,7 +50,7 @@ The agent SHALL count as working in a minute when some work of its main conversa
 - **THEN** minutes 10:00, 10:01 and 10:02 count as worked
 
 ### Requirement: When a log is read again
-On each run, tokprof SHALL list the logs of the agents asked for and use an entry while its log has the same path, length and modification time and the entry's fingerprint is the current one. The fingerprint names the tokprof version and the prices in use. Every other log is read again, in parallel, and its entry replaced. A log that cannot be read keeps its old entry and is named as other commands name unreadable logs. A store whose entries changed is written again.
+On each run, tokprof SHALL use an entry while its log has the same path, length and modification time and the entry's fingerprint is the current one. The fingerprint names the tokprof version, the git commit it was built from (the version alone for a build without git), and the prices in use. Every other log is read again, in parallel, and its entry replaced, or kept when the log cannot be read.
 
 #### Scenario: Unchanged logs
 - **WHEN** no log changed since the last run
@@ -64,8 +64,12 @@ On each run, tokprof SHALL list the logs of the agents asked for and use an entr
 - **WHEN** the user changed `~/.config/tokprof/prices.toml`, or a new tokprof version runs
 - **THEN** every log that still exists is read again
 
+#### Scenario: A build from main
+- **WHEN** the author installs tokprof from a newer commit with the same version number
+- **THEN** every log that still exists is read again once, about 45 s on the author's logs, so that a fix to the numbers reaches the old days too
+
 ### Requirement: Logs that are gone
-An entry whose log no longer exists SHALL stay in the store, whatever its fingerprint, and count in the calendar. When a log of the same agent with the same session id and main session id exists at another path, the entry of the old path is dropped. The calendar says how many of its days come only from logs that are gone.
+An entry whose log no longer exists SHALL stay in the store, whatever its fingerprint, and count in the calendar. When a log of the same agent with the same session id and main session id was read at another path, the entry of the old path is dropped; while that log cannot be read, the old entry stays. The calendar says how many of its days come only from logs that are gone.
 
 #### Scenario: Claude Code deleted old logs
 - **WHEN** Claude Code deleted the logs of September after 30 days, and the store has their entries
@@ -76,7 +80,15 @@ An entry whose log no longer exists SHALL stay in the store, whatever its finger
 - **THEN** its days count once
 
 ### Requirement: Writing the store
-tokprof SHALL write the store to a new file in the cache folder and rename it over the old one, so that a reader sees the old store or the new one, never a part. When two programs write at once, the last rename wins. A store that cannot be parsed is renamed to `days-1.json.broken` and started anew.
+tokprof SHALL write the store only when an entry changed: to a new file in the cache folder, flushed to disk, then renamed over the old one, so that a reader sees the old store or the new one. The last of two writers wins. A failed write removes its new file and warns after the output. A store that cannot be parsed is kept as `days-2.json.broken-<UTC time>`, never over an earlier one, and started anew.
+
+#### Scenario: A store that cannot be read
+- **WHEN** `days-2.json` exists but cannot be read, as with no read permission
+- **THEN** the run counts from an empty store in memory, warns that it does, and does not write over the file
+
+#### Scenario: Two broken stores
+- **WHEN** the store is broken on one run and again on a later one
+- **THEN** both are kept, as `days-2.json.broken-20261109T011500Z` and a later name, and the warning names the file
 
 #### Scenario: The CLI and the window at once
 - **WHEN** `tokprof calendar` and `tokprof-desk` refresh the store at the same moment
@@ -119,6 +131,10 @@ The calendar SHALL count the entries whose log `tokprof summary` would read with
 #### Scenario: The same total as the summary
 - **WHEN** the user runs `tokprof calendar --since 2026-10-09 --until 2026-11-08` and `tokprof summary --since 2026-10-09 --until 2026-11-08` on logs that were not deleted
 - **THEN** the calendar's total equals `Total priced`, to the cent
+
+#### Scenario: Requests without a time
+- **WHEN** a log gives no time for 3 requests that cost $5
+- **THEN** no day holds them, the grid is not stretched for them, and the numbers end with `untimed   3 requests without a time are in no day ($5.00)`
 
 #### Scenario: A day cut by the window
 - **WHEN** `--since 2026-10-09` is local midnight and the day of 2026-10-08 runs until 04:30 on 2026-10-09
@@ -204,4 +220,4 @@ On logs that did not change since the last run, `tokprof calendar` SHALL read no
 
 #### Scenario: The second run
 - **WHEN** `tokprof calendar` runs twice and no log changed in between
-- **THEN** the second run reads no log and its stderr line reads like `read no log in 0.3s; 1,958 logs from the store, 31 gone from disk (~/Library/Caches/tokprof/days-1.json)`
+- **THEN** the second run reads no log and its stderr line reads like `read no log in 0.3s; 1,958 logs from the store, 31 gone from disk (~/Library/Caches/tokprof/days-2.json)`

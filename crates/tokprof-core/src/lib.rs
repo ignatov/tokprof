@@ -23,6 +23,7 @@ pub mod jfr;
 mod kept;
 pub mod labels;
 pub mod model;
+pub mod month;
 pub mod overview;
 pub mod pauses;
 pub mod pool;
