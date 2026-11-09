@@ -102,7 +102,7 @@ pub fn deltas(m: &Month) -> Option<(String, Vec<String>)> {
             "="
         }
     };
-    let rel = |d: f64, base: f64| if base > 0.0 { format!(" ({:+.0}%)", 100.0 * d / base) } else { String::new() };
+    let rel = |d: f64, base: f64| if base > 0.0 { format!(" ({:+.0}%)", 100.0 * d / base).replace('-', "−") } else { String::new() };
     let mut out = Vec::new();
     let d = m.total.usd - p.usd;
     out.push(format!("spend {} {}{}", arrow(d), usd(d.abs()), rel(d, p.usd)));
@@ -112,7 +112,16 @@ pub fn deltas(m: &Month) -> Option<(String, Vec<String>)> {
         let d = 100.0 * (now - was);
         out.push(format!("avoidable share {} {:.1} points ({:.1}%, was {:.1}%)", arrow(d), d.abs(), 100.0 * now, 100.0 * was));
     }
-    Some((p.ym.month_name(), out))
+    Some((before_name(p), out))
+}
+
+/// What the month compares with: `September`, or for a month in progress the same days of the
+/// month before, `1–9 Oct`.
+pub fn before_name(p: &tokprof_core::month::Brief) -> String {
+    match p.to_ms {
+        Some(t) => format!("1–{}", fmt::local_time(t - 1, "%-d %b")),
+        None => p.ym.month_name(),
+    }
 }
 
 /// The deltas as a card shows them: the month before's name, and per number its change and
@@ -138,7 +147,7 @@ pub fn delta_cells(m: &Month) -> Option<(String, Vec<(String, String)>)> {
         let d = 100.0 * (now - was);
         out.push((format!("{} {:.1} pt", arrow(d), d.abs()), format!("avoidable, {:.1}% from {:.1}%", 100.0 * now, 100.0 * was)));
     }
-    Some((p.ym.month_name(), out))
+    Some((before_name(p), out))
 }
 
 /// What the month cannot say: no comparison when an agent's logs start inside the month before,
@@ -328,7 +337,7 @@ mod tests {
             longest: Some(Streak { from: first, to: first + 3 }),
             top_model: Some(("claude-opus-5-5".into(), 8_882.0, 0.74)),
             top_cause: Some((Cause::IdleTtl, 749.0)),
-            previous: Some(Brief { ym: Ym { year: 2026, month: 9 }, usd: 9_859.2, agent_minutes: 10_940, avoidable_share: Some(0.123) }),
+            previous: Some(Brief { ym: Ym { year: 2026, month: 9 }, to_ms: None, usd: 9_859.2, agent_minutes: 10_940, avoidable_share: Some(0.123) }),
             title: Some(Title { name: "Night owl", rule: "34% of agent time 22:00–05:00 (title from 33%)".into() }),
             ..Month::default()
         }
@@ -387,6 +396,17 @@ mod tests {
         // A streak from the first day the store holds may have begun before it.
         let m = Month { first_stored: m.longest.map(|s| s.from), ..m };
         assert!(facts(&m).iter().any(|(l, v)| *l == "longest streak" && v.ends_with("when the logs start")));
+    }
+
+    #[test]
+    fn a_month_so_far_names_the_days_it_compares_with() {
+        let mut m = october();
+        let p = m.previous.as_mut().unwrap();
+        p.to_ms = Some(tokprof_core::month::Ym { year: 2026, month: 9 }.first_date() * 86_400_000 + 8 * 86_400_000 + 12 * 3_600_000);
+        let (name, _) = deltas(&m).unwrap();
+        assert!(name.starts_with("1–") && name.ends_with(" Sep"), "{name}");
+        let text = text(&m, &Style::with_color(false));
+        assert!(text.contains(&format!("\nvs {name}")));
     }
 
     #[test]

@@ -96,6 +96,9 @@ pub struct Title {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Brief {
     pub ym: Ym,
+    /// For a month in progress, the end of the same days of the month before that it compares
+    /// with; `None` for the whole month.
+    pub to_ms: Option<i64>,
     pub usd: f64,
     pub agent_minutes: u64,
     pub avoidable_share: Option<f64>,
@@ -175,24 +178,34 @@ impl Month {
     /// The month of `ym` in the entries the filters keep (their time window is replaced by the
     /// month's), as of `now_ms`, with the previous month's numbers beside it.
     pub fn of(entries: &[Entry], filters: &Filters, ym: Ym, now_ms: i64, offset: Offset) -> Month {
-        let mut m = Month::alone(entries, filters, ym, now_ms, offset);
-        let prev = Month::alone(entries, filters, ym.previous(), now_ms, offset);
+        let mut m = Month::alone(entries, filters, ym, None, now_ms, offset);
+        // A month in progress compares with the same stretch of the month before, never with
+        // all of it.
+        let prev_from = rhythm::midnight(ym.previous().first_date(), offset);
+        let same = (!m.complete).then(|| (prev_from + (m.to_ms - m.from_ms)).min(m.from_ms));
+        let prev = Month::alone(entries, filters, ym.previous(), same, now_ms, offset);
         // As Reports judge a period before: incomplete when an agent's data starts inside it.
         m.before_gaps = crate::compare::gaps(entries, filters, (m.from_ms, m.to_ms), prev.from_ms);
         m.own_gaps = crate::compare::gaps(entries, filters, (m.from_ms, m.to_ms), m.from_ms);
         m.before_any = prev.any();
         if prev.any() && m.before_gaps.is_empty() {
-            m.previous =
-                Some(Brief { ym: ym.previous(), usd: prev.total.usd, agent_minutes: prev.total.agent_minutes, avoidable_share: prev.avoidable_share() });
+            m.previous = Some(Brief {
+                ym: ym.previous(),
+                to_ms: same,
+                usd: prev.total.usd,
+                agent_minutes: prev.total.agent_minutes,
+                avoidable_share: prev.avoidable_share(),
+            });
         }
         m
     }
 
-    fn alone(entries: &[Entry], filters: &Filters, ym: Ym, now_ms: i64, offset: Offset) -> Month {
+    /// The month alone, up to `until` when given, else to its end or now.
+    fn alone(entries: &[Entry], filters: &Filters, ym: Ym, until: Option<i64>, now_ms: i64, offset: Offset) -> Month {
         let (first, next) = (ym.first_date(), ym.next().first_date());
         let from_ms = rhythm::midnight(first, offset);
         let end = rhythm::midnight(next, offset);
-        let to_ms = end.min(now_ms).max(from_ms);
+        let to_ms = until.unwrap_or(end).min(end).min(now_ms).max(from_ms);
         let window = Filters { since_ms: Some(from_ms), until_ms: Some(to_ms), ..filters.clone() };
         let cal = Calendar::of(entries, &window, now_ms.max(from_ms + 1), offset);
         let mut m = Month { ym: Some(ym), from_ms, to_ms, complete: end <= now_ms, ..Month::default() };
@@ -317,15 +330,23 @@ fn pct(x: f64) -> String {
     format!("{:.0}%", 100.0 * x)
 }
 
-/// The first title whose rule the month meets, in a fixed order.
+/// A share as the card prints it, in whole percent.
+fn shown_pct(x: f64) -> f64 {
+    (100.0 * x).round()
+}
+
+/// The first title whose rule the month meets, in a fixed order. Each rule compares the value as
+/// the card prints it: a share in whole percent (in tenths for the cache keeper), commits per
+/// hour in hundredths, so that a printed `33%` meets `from 33%` and a printed `5.0%` is not
+/// `under 5%`.
 pub fn title(m: &Month) -> Option<Title> {
-    if let Some(s) = m.night_share.filter(|&s| s >= NIGHT_OWL_SHARE) {
+    if let Some(s) = m.night_share.filter(|&s| shown_pct(s) >= shown_pct(NIGHT_OWL_SHARE)) {
         return Some(Title { name: "Night owl", rule: format!("{} of agent time 22:00–05:00 (title from {})", pct(s), pct(NIGHT_OWL_SHARE)) });
     }
-    if let Some(s) = m.morning_share.filter(|&s| s >= EARLY_BIRD_SHARE) {
+    if let Some(s) = m.morning_share.filter(|&s| shown_pct(s) >= shown_pct(EARLY_BIRD_SHARE)) {
         return Some(Title { name: "Early bird", rule: format!("{} of your keyboard time 05:00–09:00 (title from {})", pct(s), pct(EARLY_BIRD_SHARE)) });
     }
-    if let Some(s) = m.parallel_share.filter(|&s| s >= CONDUCTOR_SHARE) {
+    if let Some(s) = m.parallel_share.filter(|&s| shown_pct(s) >= shown_pct(CONDUCTOR_SHARE)) {
         return Some(Title {
             name: "Conductor",
             rule: format!("{} of agent time with {CONDUCTED_SESSIONS} or more sessions at once (title from {})", pct(s), pct(CONDUCTOR_SHARE)),
@@ -334,13 +355,13 @@ pub fn title(m: &Month) -> Option<Title> {
     if let Some(s) = m.longest.filter(|s| s.days() >= MARATHON_DAYS) {
         return Some(Title { name: "Marathon", rule: format!("{} days in a row with the agents (title from {MARATHON_DAYS})", s.days()) });
     }
-    if let Some(s) = m.avoidable_share().filter(|&s| s < CACHE_KEEPER_SHARE) {
+    if let Some(s) = m.avoidable_share().filter(|&s| (1000.0 * s).round() / 10.0 < 100.0 * CACHE_KEEPER_SHARE) {
         return Some(Title {
             name: "Cache keeper",
             rule: format!("{:.1}% of spend lost to cache misses (title under {})", 100.0 * s, pct(CACHE_KEEPER_SHARE)),
         });
     }
-    if let Some(r) = m.commits_per_hour().filter(|&r| r >= SHIPPER_PER_HOUR) {
+    if let Some(r) = m.commits_per_hour().filter(|&r| (100.0 * r).round() >= (100.0 * SHIPPER_PER_HOUR).round()) {
         return Some(Title { name: "Shipper", rule: format!("{r:.2} commits per agent hour (title from {SHIPPER_PER_HOUR:.2})") });
     }
     None
@@ -423,6 +444,42 @@ mod tests {
         // With codex alone, September is whole and October compares with it.
         let whole = Month::of(&[codex], &Filters::default(), Ym { year: 2026, month: 10 }, oct1() + 40 * day, &off);
         assert!(whole.previous.is_some() && whole.before_gaps.is_empty());
+    }
+
+    #[test]
+    fn titles_compare_the_value_as_printed() {
+        // 32.6% prints as 33%, so it meets "from 33%".
+        let m = Month { night_share: Some(0.326), ..Month::default() };
+        assert_eq!(title(&m).unwrap().name, "Night owl");
+        assert!(title(&Month { night_share: Some(0.324), ..Month::default() }).is_none(), "32% is under");
+        // 4.96% prints as 5.0%, which is not under 5%.
+        let m = Month { total: Amounts { usd: 100.0, avoidable_usd: 4.96, ..Amounts::default() }, ..Month::default() };
+        assert!(title(&m).is_none());
+        let m = Month { total: Amounts { usd: 100.0, avoidable_usd: 4.94, ..Amounts::default() }, ..Month::default() };
+        assert_eq!(title(&m).unwrap().name, "Cache keeper");
+        // 0.746 commits per agent hour print as 0.75.
+        let m = Month { total: Amounts { usd: 100.0, avoidable_usd: 10.0, agent_minutes: 1000, commits: 12, ..Amounts::default() }, ..Month::default() };
+        assert!((m.commits_per_hour().unwrap() - 0.72).abs() < 1e-9);
+        assert!(title(&m).is_none());
+        let m = Month { total: Amounts { commits: 50, agent_minutes: 4020, ..m.total }, ..m };
+        assert_eq!(format!("{:.2}", m.commits_per_hour().unwrap()), "0.75");
+        assert_eq!(title(&m).unwrap().name, "Shipper");
+    }
+
+    #[test]
+    fn a_month_in_progress_compares_with_the_same_days_before() {
+        let day = 86_400_000;
+        let e = entry(vec![
+            minute(oct1() - 35 * day, 0.5),   // August, so the store holds all of September
+            minute(oct1() - 28 * day, 4.0),   // 3 September
+            minute(oct1() - 20 * day, 100.0), // 11 September: after the same days
+            minute(oct1() + 2 * day, 3.0),    // 3 October
+        ]);
+        let now = oct1() + 8 * day + 5 * HOUR_MS;
+        let m = Month::of(&[e], &Filters::default(), Ym { year: 2026, month: 10 }, now, &off);
+        let p = m.previous.expect("September is whole in the store");
+        assert_eq!(p.usd, 4.0, "1 to 9 September, not all of it");
+        assert_eq!(p.to_ms, Some(rhythm::midnight(Ym { year: 2026, month: 9 }.first_date(), &off) + 8 * day + 5 * HOUR_MS));
     }
 
     #[test]

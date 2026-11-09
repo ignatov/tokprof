@@ -454,11 +454,7 @@ fn main() -> Result<()> {
         }
         let now = now_ms();
         let this = tokprof_core::month::Ym::of_date(rhythm::date_of(now, &rhythm::local_offset));
-        let ym = match month.as_deref() {
-            None => this.previous(),
-            Some("this") => this,
-            Some(m) => tokprof_core::month::Ym::parse(m).with_context(|| format!("bad month {m:?}, expected YYYY-MM or this"))?,
-        };
+        let ym = pick_month(month.as_deref(), this)?;
         let started = Instant::now();
         let path = paths::day_store();
         let (store, refreshed) = calendar::update(&catalog, &agents, &pricing, &path, |_, _| {})?;
@@ -916,6 +912,20 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+/// The month `tokprof month` shows: the last complete one by default, `this` so far, or a
+/// YYYY-MM that has begun.
+fn pick_month(arg: Option<&str>, this: tokprof_core::month::Ym) -> Result<tokprof_core::month::Ym> {
+    let ym = match arg {
+        None => this.previous(),
+        Some("this") => this,
+        Some(m) => tokprof_core::month::Ym::parse(m).with_context(|| format!("bad month {m:?}, expected YYYY-MM or this"))?,
+    };
+    if ym > this {
+        bail!("{} has not begun; tokprof month this shows {} so far", ym.name(), this.name());
+    }
+    Ok(ym)
+}
+
 /// A metric of `tokprof calendar`.
 fn parse_metric(s: &str) -> Result<Metric, String> {
     Metric::parse(s).ok_or_else(|| format!("unknown metric {s:?}; use {}", Metric::NAMES))
@@ -971,6 +981,17 @@ mod tests {
         let mut cli = Cli::parse_from(["tokprof", "--project", "~/src/billing/", "--since", "7d", "flame"]);
         cli.project = cli.project.as_deref().map(normalize_project);
         assert_eq!(default_name(&cli, Value::Cost), "billing-since-7d.jfr");
+    }
+
+    #[test]
+    fn a_month_that_has_not_begun_is_refused() {
+        use tokprof_core::month::Ym;
+        let nov = Ym { year: 2026, month: 11 };
+        assert_eq!(pick_month(None, nov).unwrap(), Ym { year: 2026, month: 10 }, "the last complete month");
+        assert_eq!(pick_month(Some("this"), nov).unwrap(), nov);
+        let err = pick_month(Some("2027-05"), nov).unwrap_err().to_string();
+        assert_eq!(err, "May 2027 has not begun; tokprof month this shows November 2026 so far");
+        assert!(pick_month(Some("october"), nov).is_err());
     }
 
     #[test]

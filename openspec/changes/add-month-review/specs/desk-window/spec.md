@@ -3,11 +3,15 @@
 ## ADDED Requirements
 
 ### Requirement: Month in review in the window
-Calendar SHALL offer `Month in review` as a button after the metric pills, as the key `r` and as a palette entry. Each opens the card of month-review for the month of the cell cursor, or of the last day, over the window dimmed and blurred. ← and → show the month before and after, never past this month. esc, `Close` or a click outside close it. While it is open, every key but ⌘Q is its own.
+Calendar SHALL offer `Month in review` as a button after the metric pills, as the key `r` and as a palette entry. Each opens the card of month-review over the window dimmed and blurred: for the month of a cell cursor a key moved, else for the last complete month, as `tokprof month`. ← and → show the month before and after, never past this month. esc, `Close` or a click outside close it. While it is open, every key but ⌘Q is its own.
 
 #### Scenario: Opening the card
 - **WHEN** Calendar shows the last day of October under the cursor and the user presses `r`
 - **THEN** the card of October 2026 opens over Calendar
+
+#### Scenario: Another month
+- **WHEN** the card shows October and the user presses ←
+- **THEN** September is computed in the background, and the card shows October until September arrives
 
 #### Scenario: Keys stay with the card
 - **WHEN** the card is open and the user types `q` and `m`
@@ -33,7 +37,15 @@ The card SHALL be 540 by 675 points, a 4:5 shape, in the theme's colors on its c
 - **THEN** the card uses that theme's canvas, ink and accent, and every text stays inside it
 
 ### Requirement: Saving the card
-`Save image` and `s` SHALL write the card alone as a 1080×1350 PNG to `~/Downloads/tokprof-<YYYY-MM>.png`, drawn in the window's theme without a window, with the window's filters. A file of that name is never overwritten: the next free of `-2`, `-3`… is used. The card and the bar then say `saved ~/Downloads/tokprof-2026-10.png`, or why it could not be saved. Nothing is sent anywhere.
+`Save image` and `s` SHALL write the card alone as a 1080×1350 PNG to `~/Downloads/tokprof-<YYYY-MM>.png`, drawn in the window's theme without a window, with the window's filters, from the day store as it is and without listing any session. A file of that name is never overwritten: the next free of `-2`, `-3`… is used. The card and the bar then say `saved ~/Downloads/tokprof-2026-10.png`, or why it could not be saved. Nothing is sent anywhere.
+
+#### Scenario: A card that cannot be drawn
+- **WHEN** the day store cannot be read or is empty when the image is drawn
+- **THEN** no file is written, and the card says `could not save the image: could not draw the month card: …`; no other picture is ever saved under the card's name
+
+#### Scenario: A save that hangs
+- **WHEN** drawing the image takes more than 60 seconds
+- **THEN** it is stopped, the card says `could not save the image: it took more than 60 s, so it was stopped`, and `Save image` works again
 
 #### Scenario: A second save
 - **WHEN** `~/Downloads/tokprof-2026-10.png` exists and the user saves October again

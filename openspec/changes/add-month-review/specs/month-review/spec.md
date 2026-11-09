@@ -47,7 +47,11 @@ The month SHALL give the share of prompt tokens read from the cache, the dollars
 - **THEN** the card says `1,947 requests without a price are not counted in dollars`
 
 ### Requirement: The month before
-The month SHALL compare its spend, agent hours and avoidable share with the month before, as an arrow and the difference, with the relative change for spend and agent hours. It shows no comparison when the month before has no request and no message.
+The month SHALL compare its spend, agent hours and avoidable share with the month before, as an arrow and the difference, with the relative change for spend and agent hours. A month in progress compares with the same stretch of the month before, from its first day for as long as this month has run, and names it, as `vs 1–9 Oct`; never with all of it. There is no comparison when the month before has no request and no message.
+
+#### Scenario: A month in progress
+- **WHEN** `tokprof month this` runs on 9 November at 05:00
+- **THEN** it compares November so far with 1 October 00:00 to 9 October 05:00, and the line reads `vs 1–9 Oct   spend …`
 
 #### Scenario: An incomplete month before
 - **WHEN** the store holds claude's logs only from 29 September, and October is shown
@@ -64,6 +68,10 @@ The month SHALL compare its spend, agent hours and avoidable share with the mont
 
 ### Requirement: Titles
 The month SHALL take the first title whose rule holds, in this order: `Night owl` (33% or more of agent time between 22:00 and 05:00), `Early bird` (20% or more of the time at the keyboard between 05:00 and 09:00), `Conductor` (25% or more of agent time with 3 or more sessions working at once), `Marathon` (28 or more days in a row with a request), `Cache keeper` (under 5% of spend avoidable), `Shipper` (0.75 or more commits per agent hour). Else it has none.
+
+#### Scenario: At a threshold
+- **WHEN** 32.6% of agent time fell at night, printed `33%`, or 4.96% of spend was avoidable, printed `5.0%`
+- **THEN** the first earns `Night owl` (from 33%) and the second does not earn `Cache keeper` (under 5%): each rule compares the value as the card prints it
 
 #### Scenario: No rule holds
 - **WHEN** no rule of the six holds for a month
@@ -105,6 +113,10 @@ A month in review SHALL name no project, session id, session title, path or user
 #### Scenario: This month
 - **WHEN** the user runs `tokprof month this` on 9 November
 - **THEN** the headline reads `November 2026 with agents, so far`
+
+#### Scenario: A month that has not begun
+- **WHEN** the user runs `tokprof month 2027-05` in November 2026
+- **THEN** it fails with `May 2027 has not begun; tokprof month this shows November 2026 so far`
 
 #### Scenario: A bad month
 - **WHEN** the user runs `tokprof month october`
