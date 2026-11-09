@@ -666,7 +666,7 @@ busiest hour   23:00–00:00, 7% of agent time
 late nights    31% of agent time between 22:00 and 05:00
 longest streak 31 days in a row, Thu 1 Oct – Sat 31 Oct
 top model      claude-opus-5-5, $8,392, 72% of spend
-cache          98% of input read from cache, $87,329 saved by cache reads, $1,452 (12.5%) avoidable on misses, 262 cold returns
+cache          98% of input read from cache, $87,329 saved by the cache, $1,452 (12.5%) avoidable on misses, 262 cold returns
 vs September   spend ↑ $7,903 (+212%), agent time ↑ 111h (+100%), avoidable share ↑ 1.0 points (12.5%, was 11.5%)
 next month     $873 went to idle > TTL. Compact or wrap up a big session before a long break.
 ```

@@ -20,7 +20,7 @@ pub const PANE: &str = "calendar";
 /// The grid's squares: the room between them, the least and the most a square takes.
 const GAP: f32 = 4.0;
 const MIN_SQUARE: f32 = 11.0;
-const MAX_SQUARE: f32 = 30.0;
+const MAX_SQUARE: f32 = 44.0;
 /// The room for the weekday labels left of the grid and the month labels above it.
 const LABEL_W: f32 = 34.0;
 const MONTH_H: f32 = 20.0;
@@ -283,7 +283,7 @@ fn grid_card(s: &Desk, cal: &Calendar, p: &Pal) -> El {
                 .absolute(LABEL_W + w as f32 * step, MONTH_H + wd as f32 * step)
                 .w(sq)
                 .h(sq)
-                .radius((sq / 5.0).clamp(2.0, 5.0))
+                .radius((sq / 5.0).clamp(2.0, 8.0))
                 .fill(level_color(lvl, p))
                 .role("button")
                 .label(day_name(date))

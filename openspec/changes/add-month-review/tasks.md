@@ -2,7 +2,7 @@
 
 ## 1. The store, format 2
 
-- [x] 1.1 Add to each minute the tokens read from the cache, the prompt tokens, the dollars saved by cache reads and the requests without a price. Add to each entry the avoidable premium by cause and the spend by model per hour, and the cold returns. Rename the file to `days-2.json`. Unit-test the minute's array and the moved, grown and gone logs again.
+- [x] 1.1 Add to each minute the tokens read from the cache, the prompt tokens, the dollars saved by the cache and the requests without a price. Add to each entry the avoidable premium by cause and the spend by model per hour, and the cold returns. Rename the file to `days-2.json`. Unit-test the minute's array and the moved, grown and gone logs again.
 
 ## 2. Hardening the store (code review 1, PM decisions)
 
@@ -41,3 +41,9 @@
   - `month-10-light.png`, `month-10-dark.png`, `month-09-light.png`, `month-09-dark.png`, `month-08-light.png`, `month-08-dark.png`: the 1080×1350 cards;
   - `month-window-dark.png` (October) and `month-window-light.png` (September): the card over Calendar;
   - `~/Downloads/tokprof-2026-10.png`, written by the command `Save image` runs, with a copy at `month-saved-2026-10.png`: 1080×1350, 3.3 s.
+
+## 6. Polish after the PM's look
+
+- [x] 6.1 The line for next month skips the unknown cause, which has no advice. August now reads `$135 went to idle > TTL. …`. Test: a larger unknown premium is passed over.
+- [x] 6.2 "saved by cache reads" now reads "saved by the cache" in the CLI, on the card and in the README.
+- [x] 6.3 The Calendar grid's squares grow to 44 pt to use the card's room: 14 weeks at 1400 pt fill most of the width, with the numbers beside them (`calendar-light.png`).

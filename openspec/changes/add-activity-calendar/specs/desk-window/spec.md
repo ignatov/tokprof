@@ -20,6 +20,10 @@
 ### Requirement: Calendar grid in the window
 The grid SHALL draw each day as a rounded square, a column per week and a row per weekday, labeled `Mon`, `Wed` and `Fri`, with the month labels of the CLI above. Levels 1 to 4 are the accent mixed into the card's background at 30%, 55%, 80% and 100%, and level none is the theme's subtle stroke. The legend reads `less`, the five squares and `more`, with the cuts.
 
+#### Scenario: Squares that use the room
+- **WHEN** the grid has 14 weeks in a window 1400 points wide
+- **THEN** each square is 44 points, the most a square takes, with the numbers beside the grid; with more weeks the squares shrink to fit, down to 11 points, and the numbers go under the grid when squares beside them would be under 14 points
+
 #### Scenario: A dark theme
 - **WHEN** the window is drawn in Merino Dark
 - **THEN** the squares go from the subtle stroke through the accent mixed into the dark card to the accent

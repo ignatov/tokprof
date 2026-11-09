@@ -71,7 +71,7 @@ pub fn cache(m: &Month) -> (Vec<(String, &'static str)>, Option<String>) {
     if let Some(s) = m.read_share() {
         out.push((pct(s), "of input read from cache"));
     }
-    out.push((usd(t.saved_usd), "saved by cache reads"));
+    out.push((usd(t.saved_usd), "saved by the cache"));
     let share = m.avoidable_share().map_or(String::new(), |s| format!(" ({:.1}%)", 100.0 * s));
     out.push((format!("{}{share}", usd(t.avoidable_usd)), "avoidable on misses"));
     out.push((int(m.cold_returns as u64), if m.cold_returns == 1 { "cold return" } else { "cold returns" }));
@@ -287,9 +287,7 @@ mod tests {
         assert!(text.contains("\nbusiest hour   15:00–16:00, 8% of agent time\n"));
         assert!(text.contains("\nlongest streak 4 days in a row, Thu 1 Oct – Sun 4 Oct\n"));
         assert!(
-            text.contains(
-                "\ncache          93% of input read from cache, $41,200 saved by cache reads, $1,328 (11.1%) avoidable on misses, 218 cold returns\n"
-            )
+            text.contains("\ncache          93% of input read from cache, $41,200 saved by the cache, $1,328 (11.1%) avoidable on misses, 218 cold returns\n")
         );
         assert!(text.contains("\nvs September   spend ↑ $2,100 (+21%), agent time ↑ 30h (+16%), avoidable share ↓ 1.2 points (11.1%, was 12.3%)\n"), "{text}");
         assert!(text.contains("\nnext month     $749 went to idle > TTL. Compact or wrap up a big session before a long break.\n"));

@@ -129,7 +129,8 @@ pub struct Month {
     pub longest: Option<Streak>,
     /// The model with the most spend, its spend and share of the priced spend.
     pub top_model: Option<(String, f64, f64)>,
-    /// The miss cause with the most avoidable premium, and that premium.
+    /// The miss cause with the most avoidable premium that tokprof has advice for (every cause but
+    /// the unknown one), and that premium.
     pub top_cause: Option<(Cause, f64)>,
     pub previous: Option<Brief>,
     pub title: Option<Title>,
@@ -261,6 +262,8 @@ impl Month {
         m.top_cause = causes
             .into_iter()
             .filter_map(|(name, v)| Cause::ALL.iter().find(|c| c.name() == name).map(|&c| (c, v)))
+            // A cause tokprof has no advice for gives no line for next month.
+            .filter(|(c, _)| *c != Cause::Unknown)
             .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.name().cmp(a.0.name())))
             .filter(|(_, v)| *v > 0.0);
         m.title = title(&m);
@@ -413,7 +416,7 @@ mod tests {
         let h = |d: i64| (oct1() + d * HOUR_MS) / HOUR_MS;
         let mut a = entry(vec![minute(oct1() + HOUR_MS, 5.0)]);
         a.models = vec![(h(1), "opus".into(), 4.0), (h(2), "haiku".into(), 1.0), (h(-5), "sonnet".into(), 99.0)];
-        a.misses = vec![(h(1), "idle > TTL".into(), 2.0), (h(1), "model switch".into(), 0.5)];
+        a.misses = vec![(h(1), "idle > TTL".into(), 2.0), (h(1), "model switch".into(), 0.5), (h(1), Cause::Unknown.name().into(), 9.0)];
         a.cold = vec![oct1() + HOUR_MS, oct1() - HOUR_MS];
         // Three sessions work in the same 10 minutes, then one alone for 10 more.
         let bits = (1u64 << 10) - 1;

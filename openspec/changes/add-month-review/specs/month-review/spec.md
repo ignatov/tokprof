@@ -40,7 +40,7 @@ The month SHALL sum spend, agent hours, hours at the keyboard, messages and the 
 - **THEN** the card reads `23:00–00:00, 7% of agent time`
 
 ### Requirement: The month's cache and model
-The month SHALL give the share of prompt tokens read from the cache, the dollars saved by cache reads, the avoidable dollars with their share of spend, the cold returns, and the model with the most spend with its share of the priced spend.
+The month SHALL give the share of prompt tokens read from the cache, the dollars saved by the cache, the avoidable dollars with their share of spend, the cold returns, and the model with the most spend with its share of the priced spend.
 
 #### Scenario: Requests without a price
 - **WHEN** 1,947 requests of the month have no price
@@ -69,7 +69,11 @@ The month SHALL take the first title whose rule holds, in this order: `Night owl
 - **THEN** its title is `Marathon`
 
 ### Requirement: The line for next month
-The month SHALL end with the miss cause that lost the most avoidable dollars, as `$873 went to idle > TTL. Compact or wrap up a big session before a long break.`, where the sentence is tokprof's advice for that cause (see cache-misses). The line is left out when no miss was avoidable.
+The month SHALL end with the miss cause that lost the most avoidable dollars among those tokprof has advice for, every cause but the unknown one, as `$873 went to idle > TTL. Compact or wrap up a big session before a long break.`, where the sentence is tokprof's advice for that cause (see cache-misses). The line is left out when no miss was avoidable.
+
+#### Scenario: An unknown cause first
+- **WHEN** misses of unknown cause lost $475 in August and compaction calls $120
+- **THEN** the line names compaction calls and their $120
 
 #### Scenario: Compaction calls
 - **WHEN** compaction calls lost $347 in September, more than any other cause

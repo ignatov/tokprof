@@ -281,7 +281,7 @@ pub fn card_el(m: &Month, p: &Pal, rounded: bool) -> El {
     let short = |what: &'static str| -> &'static str {
         match what {
             "of input read from cache" => "read from cache",
-            "saved by cache reads" => "saved by reads",
+            "saved by the cache" => "saved by the cache",
             "avoidable on misses" => "lost to misses",
             w => w,
         }
