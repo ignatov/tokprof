@@ -92,7 +92,11 @@ pub fn window_size(s: &Desk, cx: &Cx<Desk>) -> (f32, f32) {
 
 /// The most the lanes take with what is under them, in a window `height` points high.
 pub fn lanes_max_h(height: f32) -> f32 {
-    (height - BAR_H) * LANES_SHARE
+    // 45% of the room under the bar, or more, up to 55%, to show 8 session lanes at 900 points
+    // high and 3 at 640, and in between as many as a straight line between them gives.
+    let room = height - BAR_H;
+    let sessions = (3.0 + (height - 640.0) / 260.0 * 5.0).floor().clamp(3.0, 8.0) as usize;
+    (room * LANES_SHARE).max(crate::day::height_for(sessions)).min(room * 0.55)
 }
 
 /// The window's size when it opens, in points.

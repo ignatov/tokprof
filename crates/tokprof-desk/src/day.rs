@@ -18,8 +18,8 @@ use crate::{Desk, ansi};
 /// The width of the lane labels, the height of a lane and of the hours row, and of the bars,
 /// marks and tails in a lane.
 pub const LABEL_WIDTH: f32 = 236.0;
-pub const LANE: f32 = 26.0;
-const RULER: f32 = 26.0;
+pub const LANE: f32 = 24.0;
+const RULER: f32 = 24.0;
 const BAR: f32 = 11.0;
 const TICK: (f32, f32) = (2.0, 15.0);
 const TAIL: f32 = 5.0;
@@ -28,12 +28,12 @@ const RIGHT: f32 = 16.0;
 /// The key of the hours row's scale, whose width every lane's track has.
 pub const SCALE: &str = "scale";
 const HOUR_MS: i64 = 3_600_000;
-/// The height under the lanes: the legend with the pointer's line (24), the day's five lines
-/// (16 each, 2 apart), the room under them and the line under the lanes.
-const UNDER: f32 = 24.0 + 5.0 * DAY_LINE + 4.0 * 2.0 + 8.0 + 1.0;
+/// The height under the lanes: the legend with the pointer's line (22), the day's five lines
+/// (15 each, 1 apart), the room under them and the line under the lanes.
+const UNDER: f32 = 22.0 + 5.0 * DAY_LINE + 4.0 + 8.0 + 1.0;
 /// The pointer's lane over the `Agents at work` lane: no session has this id.
 pub const AGENTS: &str = "\u{0}agents";
-const DAY_LINE: f32 = 16.0;
+const DAY_LINE: f32 = 15.0;
 
 /// Where the pointer rests over the lanes: the lane's session, `None` for the `You` lane, and how
 /// far into the track, in points.
@@ -255,7 +255,12 @@ pub fn lanes_of(s: &Desk, parts: &DayParts, cx: &Cx<Desk>, p: &Pal, max_h: f32) 
     let tails: Vec<(i64, i64)> = lives.iter().flatten().copied().collect();
     let range = range(lanes, &tails, now_in, s.fit);
     let grid = Grid { range, width, now: now_in.filter(|&n| range.holds(n)) };
-    let mut body = col().key("lanes-body").w_full().child(ruler(lanes, &grid, keys, p)).child(you_lane(lanes, &grid, p)).child(agents_lane(lanes, &grid, p));
+    // The Agents at work lane shows on a day when two or more sessions worked at once.
+    let agents = lanes.agents.peak.is_some_and(|(n, _)| n > 1);
+    let mut body = col().key("lanes-body").w_full().child(ruler(lanes, &grid, keys, p)).child(you_lane(lanes, &grid, p));
+    if agents {
+        body = body.child(agents_lane(lanes, &grid, p));
+    }
     let selected = b.selected().map(|r| b.session(r).to_string());
     let mut shown = 0;
     for (lane, life) in lanes.lanes.iter().zip(&lives) {
@@ -272,10 +277,11 @@ pub fn lanes_of(s: &Desk, parts: &DayParts, cx: &Cx<Desk>, p: &Pal, max_h: f32) 
     }
     // The lanes the room holds, whole: the You and Agents at work lanes, the sessions' and the line when none is
     // listed; those that do not fit scroll, and a line under them says how many there are.
-    let rows = 2 + shown.max(usize::from(!lanes.lanes.is_empty()));
+    let rows = 1 + usize::from(agents) + shown.max(usize::from(!lanes.lanes.is_empty()));
     // The Agents at work lane is taller than a lane.
-    let (fit, more) = lanes_fit(max_h - (AGENTS_H - LANE), rows);
-    let scroller = col().key("lanes-scroll").w_full().max_h(RULER + fit as f32 * LANE + AGENTS_H - LANE).scroll(ScrollSpec { stick_bottom: false }).child(body);
+    let extra = if agents { AGENTS_H - LANE } else { 0.0 };
+    let (fit, more) = lanes_fit(max_h - extra, rows);
+    let scroller = col().key("lanes-scroll").w_full().max_h(RULER + fit as f32 * LANE + extra).scroll(ScrollSpec { stick_bottom: false }).child(body);
     let scroller = col().w_full().child(scroller).children((more > 0).then(|| {
         let line = format!("{more} more {} · scroll to see {}", if more == 1 { "lane" } else { "lanes" }, if more == 1 { "it" } else { "them" });
         row().key("lanes-more").w_full().h(MORE_H).pl(LABEL_WIDTH + 14.0).center_y().child(text(line).font(pal::SMALL).color(p.ink3).single_line())
@@ -287,7 +293,13 @@ pub fn lanes_of(s: &Desk, parts: &DayParts, cx: &Cx<Desk>, p: &Pal, max_h: f32) 
 }
 
 /// The height of the line under the lanes that says how many more there are.
-const MORE_H: f32 = 18.0;
+const MORE_H: f32 = 16.0;
+
+/// The height the lanes take to show `sessions` session lanes whole, with the hours, the You
+/// and Agents at work lanes, the line that says how many more there are, and what is under them.
+pub fn height_for(sessions: usize) -> f32 {
+    RULER + LANE + AGENTS_H + sessions as f32 * LANE + MORE_H + UNDER
+}
 
 /// How many of `rows` lanes show whole in lanes at most `max_h` high with what is under them,
 /// and how many more scroll; when some do, the line that says so takes room too. At least two.
@@ -479,7 +491,8 @@ fn hover(track: El, lane: Option<String>) -> El {
 /// of 5 minutes (or of 2 points, when that is longer), the peak their full height.
 fn agents_lane(lanes: &StripLanes, g: &Grid, p: &Pal) -> El {
     let a = &lanes.agents;
-    let peak = a.peak.map_or(1, |(n, _)| n).max(1) as f32;
+    // Against at least 4, so that a few agents are a low band and days compare.
+    let peak = a.peak.map_or(1, |(n, _)| n).max(4) as f32;
     let (top, foot) = (3.0, AGENTS_H - 2.0);
     let span = (g.range.end - g.range.begin).max(1);
     let bucket = (5 * 60_000).max((span as f64 * 2.0 / g.width.max(1.0) as f64) as i64);
@@ -508,7 +521,7 @@ fn agents_lane(lanes: &StripLanes, g: &Grid, p: &Pal) -> El {
 }
 
 /// The height of the `Agents at work` lane.
-const AGENTS_H: f32 = 40.0;
+const AGENTS_H: f32 = 28.0;
 
 fn you_lane(lanes: &StripLanes, g: &Grid, p: &Pal) -> El {
     let marks =
@@ -579,7 +592,7 @@ fn session_lane(
 }
 
 fn legend(pointer: String, lead: f32, p: &Pal) -> El {
-    let mut line = row().key("legend").w_full().h(24.0).pl(lead).pr(RIGHT).gap(14.0).center_y();
+    let mut line = row().key("legend").w_full().h(22.0).pl(lead).pr(RIGHT).gap(14.0).center_y();
     for m in [Mark::Work, Mark::Wait, Mark::Message, Mark::Question, Mark::Interrupt, Mark::Present] {
         let swatch = match m {
             Mark::Work | Mark::Wait | Mark::Present => el().w(10.0).h(10.0).radius(R_MARK).fill(mark_color(m, p)),
@@ -596,7 +609,7 @@ fn legend(pointer: String, lead: f32, p: &Pal) -> El {
 /// in the cache line the count of cold returns and the dollars in the cold color when the day had
 /// cold returns.
 fn day_lines(below: &str, lead: f32, p: &Pal) -> El {
-    let mut lines = col().key("day-lines").w_full().pl(lead).pr(RIGHT).gap(2.0);
+    let mut lines = col().key("day-lines").w_full().pl(lead).pr(RIGHT).gap(1.0);
     for label in ["sittings", "agents", "answers", "queue", "cache"] {
         if let Some(rest) = line_of(below, label) {
             let cold = label == "cache" && rest.contains("cold return") && !rest.starts_with("no ");
@@ -767,15 +780,23 @@ mod tests {
 
     #[test]
     fn the_lanes_show_whole_and_say_how_many_more_scroll() {
-        // 900 points high: 384 for the lanes, 121 under them, 26 for the hours: 9 lanes of 26.
+        // 900 points high: 384 for the lanes, 110 under them, 24 for the hours: 10 lanes of 24.
         let max_h = (900.0 - 46.0) * 0.45;
-        assert_eq!(lanes_fit(max_h, 8), (8, 0), "all fit");
-        assert_eq!(lanes_fit(max_h, 9), (9, 0));
-        assert_eq!(lanes_fit(max_h, 10), (8, 2), "the line under them takes the room of one");
-        assert_eq!(lanes_fit(max_h, 12), (8, 4));
+        assert_eq!(lanes_fit(max_h, 9), (9, 0), "all fit");
+        assert_eq!(lanes_fit(max_h, 10), (10, 0));
+        assert_eq!(lanes_fit(max_h, 11), (9, 2), "the line under them takes room");
+        assert_eq!(lanes_fit(max_h, 14), (9, 5));
         let (fit, _) = lanes_fit(max_h, 30);
         assert!(RULER + fit as f32 * LANE + MORE_H + UNDER <= max_h + 0.01, "whole lanes and the line within the room");
         assert_eq!(lanes_fit(100.0, 5), (2, 3), "two at least");
+        // The room the window gives: 8 session lanes at 900 points, 3 at 640, with You and Agents
+        // at work over them and the line under them.
+        for (height, sessions) in [(900.0, 8), (640.0, 3)] {
+            let max_h = crate::view::lanes_max_h(height);
+            let (fit, _) = lanes_fit(max_h - (AGENTS_H - LANE), 2 + 40);
+            assert!(fit >= 2 + sessions, "{height}: {fit} rows");
+            assert!(max_h <= (height - 46.0) * 0.55);
+        }
     }
 
     #[test]

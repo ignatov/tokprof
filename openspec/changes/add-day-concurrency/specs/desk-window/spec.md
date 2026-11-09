@@ -3,15 +3,34 @@
 ## ADDED Requirements
 
 ### Requirement: Agents at work lane
-Under the `You` lane, the lanes SHALL have an `Agents at work` lane: a stepped area in the work color, as high at each moment as work-rhythm's number of agents at work, its full height the peak. Its label says `Agents at work`, and under it `peak <n> at <HH:MM>`, or `none` on a day without work.
+Under the `You` lane, on a day when two or more sessions worked at once, the lanes SHALL have an `Agents at work` lane, 28 points high: a stepped area in the work color, as high at each moment as work-rhythm's number of agents at work, its full height the peak or 4, whichever is more. Its label says `Agents at work` and `peak <n> at <HH:MM>`.
 
 #### Scenario: A peak of seven
 - **WHEN** seven sessions worked at once at 14:20, and never more
 - **THEN** the area reaches its full height at 14:20, and the label reads `peak 7 at 14:20`
 
+#### Scenario: One session at a time
+- **WHEN** at most one session worked at any moment of the day
+- **THEN** the day has no `Agents at work` lane, and the `agents` line stays under the lanes
+
+#### Scenario: A few agents
+- **WHEN** at most two agents worked at once
+- **THEN** the area reaches half of the lane's height, so that days compare when stepping with ← and →
+
 #### Scenario: Not a session
 - **WHEN** the user clicks the `Agents at work` lane
 - **THEN** the selection stays where it was
+
+### Requirement: Room for the lanes
+The lanes and what is under them SHALL take 45% of the window's height under the bar, or more, up to 55%, when that shows fewer session lanes than 8 in a window 900 points high and 3 in one 640 high, and in between as many as a straight line between them gives. Lanes are 24 points high, and the day's lines under them 15.
+
+#### Scenario: A busy day
+- **WHEN** the window is 1400 by 900 and the day of 2026-11-01 has 40 sessions
+- **THEN** 8 session lanes show whole under `You` and `Agents at work`, and the line under them says how many more scroll
+
+#### Scenario: The smallest window
+- **WHEN** the window is 960 by 640 on the same day
+- **THEN** 3 session lanes show whole
 
 ## MODIFIED Requirements
 
