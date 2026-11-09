@@ -653,7 +653,7 @@ $ tokprof month 2026-10
 tokprof · month · October 2026 with agents
 
 Marathon
-31 days in a row with the agents; the title takes 28 or more
+31 days in a row with the agents (title from 28)
 
 $11,632 spent           221h agents worked      78h at the keyboard
 388 sessions            1,431 messages          486 commits by agents

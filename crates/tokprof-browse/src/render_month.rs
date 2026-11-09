@@ -5,6 +5,7 @@
 use std::fmt::Write;
 
 use tokprof_core::advice::miss_hint;
+use tokprof_core::analysis::cache::Cause;
 use tokprof_core::calendar::{Unit, level, weekday};
 use tokprof_core::fmt::{self, Style, int, usd};
 use tokprof_core::month::Month;
@@ -141,6 +142,37 @@ pub fn next_month(m: &Month) -> Option<String> {
     Some(format!("{} went to {}. {hint}.", usd(v), cause.name()))
 }
 
+/// A miss cause in plain words, for the card someone posts: what happened, not tokprof's name.
+pub fn plain_cause(cause: Cause) -> &'static str {
+    match cause {
+        Cause::IdleTtl => "coming back after the cache expired",
+        Cause::CompactionCall => "compaction rewriting the context",
+        Cause::ModelSwitch => "switching models in the middle of a session",
+        Cause::ParamsChanged => "changing effort or settings in the middle of a session",
+        Cause::AgentUpdated => "updating the agent in the middle of a session",
+        Cause::ToolsChanged => "tools changing in the middle of a session",
+        Cause::SystemChanged => "the system prompt changing in the middle of a session",
+        Cause::ImagesRemoved => "images dropped from the history",
+        Cause::ThinkingDropped => "thinking dropped from the history",
+        Cause::HistoryEdited => "earlier messages being rewritten",
+        Cause::Lookback => "steps too long for the cache to look back over",
+        Cause::Compaction => "compaction",
+        Cause::ToolResultsCleared => "old tool results being cleared",
+        _ => "misses of no known cause",
+    }
+}
+
+/// The line for next month on the card: the cause in plain words, its dollars and tokprof's
+/// advice, as `Coming back after the cache expired cost $873. Compact or wrap up…`.
+pub fn next_month_plain(m: &Month) -> Option<String> {
+    let (cause, v) = m.top_cause?;
+    let upper = |t: &str| {
+        let mut c = t.chars();
+        c.next().map_or(String::new(), |f| f.to_uppercase().collect::<String>() + c.as_str())
+    };
+    Some(format!("{} cost {}. {}.", upper(plain_cause(cause)), usd(v), upper(miss_hint(cause))))
+}
+
 /// The weeks of the month for its mini calendar: rows of seven local dates, Monday first, with
 /// `None` before the first day and after the last.
 pub fn weeks(m: &Month) -> Vec<[Option<usize>; 7]> {
@@ -232,7 +264,6 @@ pub fn text(m: &Month, style: &Style) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokprof_core::analysis::cache::Cause;
     use tokprof_core::calendar::{Amounts, Day, Streak};
     use tokprof_core::month::{Brief, Title, Ym};
 
@@ -268,7 +299,7 @@ mod tests {
             top_model: Some(("claude-opus-5-5".into(), 8_882.0, 0.74)),
             top_cause: Some((Cause::IdleTtl, 749.0)),
             previous: Some(Brief { ym: Ym { year: 2026, month: 9 }, usd: 9_859.2, agent_minutes: 10_940, avoidable_share: Some(0.123) }),
-            title: Some(Title { name: "Night owl", rule: "34% of agent time between 22:00 and 05:00; the title takes 33% or more".into() }),
+            title: Some(Title { name: "Night owl", rule: "34% of agent time 22:00–05:00 (title from 33%)".into() }),
             ..Month::default()
         }
     }
@@ -278,7 +309,7 @@ mod tests {
         let text = text(&october(), &Style::with_color(false));
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "tokprof · month · October 2026 with agents");
-        assert_eq!((lines[2], lines[3]), ("Night owl", "34% of agent time between 22:00 and 05:00; the title takes 33% or more"));
+        assert_eq!((lines[2], lines[3]), ("Night owl", "34% of agent time 22:00–05:00 (title from 33%)"));
         assert_eq!(lines[5], "$11,959 spent           212h agents worked      98h at the keyboard");
         assert_eq!(lines[6], "301 sessions            1,796 messages          412 commits by agents");
         assert_eq!(lines[8], "     Mo Tu We Th Fr Sa Su");
@@ -294,6 +325,18 @@ mod tests {
         for private in ["~/", "/Users", "json-profiler"] {
             assert!(!text.contains(private));
         }
+    }
+
+    #[test]
+    fn the_card_says_the_cause_in_plain_words() {
+        assert_eq!(
+            next_month_plain(&october()).unwrap(),
+            "Coming back after the cache expired cost $749. Compact or wrap up a big session before a long break."
+        );
+        let m = Month { top_cause: Some((Cause::CompactionCall, 347.0)), ..october() };
+        assert!(next_month_plain(&m).unwrap().starts_with("Compaction rewriting the context cost $347. "));
+        // The command line keeps tokprof's names.
+        assert!(next_month(&october()).unwrap().starts_with("$749 went to idle > TTL."));
     }
 
     #[test]

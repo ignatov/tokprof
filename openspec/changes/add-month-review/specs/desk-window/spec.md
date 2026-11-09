@@ -16,6 +16,18 @@ Calendar SHALL offer `Month in review` as a button after the metric pills, as th
 ### Requirement: The card's look
 The card SHALL be 540 by 675 points, a 4:5 shape, in the theme's colors on its canvas. It shows the headline in large type, the title as an accent badge beside its rule, the big numbers three by two, and the month's days as squares in the calendar's levels of spend beside the facts. Then come the cache and the comparison as rows of small numbers, and the line for next month in a tinted box. The busiest day's square is ringed.
 
+#### Scenario: The days' legend
+- **WHEN** the card is drawn
+- **THEN** under the month's squares a legend reads `spend per day · less`, the five squares, `more`, and `cuts at $121, $269, $591`
+
+#### Scenario: No month before
+- **WHEN** the month before has no data
+- **THEN** the room of the comparison goes between the card's parts, and no empty band stands above the line for next month
+
+#### Scenario: Plain words
+- **WHEN** coming back after a cold cache lost $873, more than any other cause
+- **THEN** the card's line reads `Coming back after the cache expired cost $873. Compact or wrap up a big session before a long break.`, while `tokprof month` keeps `$873 went to idle > TTL.`; requests without a price are a footnote
+
 #### Scenario: Light and dark
 - **WHEN** the window is drawn in Merino Light or Merino Dark
 - **THEN** the card uses that theme's canvas, ink and accent, and every text stays inside it

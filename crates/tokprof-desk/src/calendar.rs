@@ -5,8 +5,8 @@
 
 use rune::{Color, Cx, El, Key as RuneKey, KeyEvent, ScrollSpec, Tx, col, el, row, spacer, text};
 use tokprof_browse::calendar::{Calendars, Computed};
-use tokprof_browse::render_calendar::{amount, day_name, months, naive, weekday_plural};
-use tokprof_core::calendar::{Calendar, Day, Metric, level, weekday};
+use tokprof_browse::render_calendar::{amount, cut_amount, day_name, days_with, months, naive, weekday_plural, with_unit};
+use tokprof_core::calendar::{Calendar, Day, Metric, level};
 use tokprof_core::fmt::{count, int, usd};
 use tokprof_core::rhythm;
 
@@ -151,7 +151,14 @@ fn body(s: &Desk, p: &Pal) -> El {
         Some(Computed { calendar: Ok(cal), .. }) if cal.empty => cards = cards.child(note("No requests and no messages in this time.".into(), p)),
         Some(Computed { calendar: Ok(cal), .. }) => {
             cards = cards.child(crate::reports::card(None, "Days", Some("a click opens the day".into()), grid_card(s, cal, p), &s.reports, p));
-            cards = cards.child(crate::reports::card(None, "By weekday and hour", Some("local time".into()), punchcard(cal, c.metric, p), &s.reports, p));
+            cards = cards.child(crate::reports::card(
+                None,
+                "By weekday and hour",
+                Some("local time".into()),
+                punchcard(cal, c.metric, p, if s.window.0 > 0.0 { s.window.0 } else { crate::view::WINDOW.0 }),
+                &s.reports,
+                p,
+            ));
         }
     }
     cards
@@ -160,23 +167,15 @@ fn body(s: &Desk, p: &Pal) -> El {
 /// The head: the metric's pills, and what the store read or is reading again.
 fn head(s: &Desk, p: &Pal) -> El {
     let c = &s.calendar;
-    let pills = row().key("cal-metrics").gap(6.0).center_y().children(Metric::ALL.iter().map(|&m| {
-        let chosen = m == c.metric;
-        row()
-            .key(format!("metric-{}", m.name()))
-            .h(28.0)
-            .px(14.0)
-            .center_y()
-            .radius(PILL)
-            .fill(if chosen { p.accent } else { p.bar })
-            .border(1.0, if chosen { p.accent } else { p.row_line })
-            .hover(if chosen { p.accent.alpha(0.88) } else { p.hover })
-            .role("radio")
-            .checked(chosen)
-            .label(m.title())
-            .on_press(move |s: &mut Desk| pick_metric(s, m))
-            .child(text(m.title()).font(pal::STRONG).color(if chosen { p.on_accent } else { p.ink2 }).single_line())
-    }));
+    // The metrics as one segmented group, as the window's other choices of one value.
+    let pills = crate::view::segments(
+        "cal-metrics",
+        Metric::ALL
+            .iter()
+            .map(|&m| crate::view::segment(format!("metric-{}", m.name()), m.title(), m == c.metric, p).on_press(move |s: &mut Desk| pick_metric(s, m)))
+            .collect(),
+        p.panel,
+    );
     let review = row()
         .key("month-review")
         .h(28.0)
@@ -196,10 +195,7 @@ fn head(s: &Desk, p: &Pal) -> El {
     }
     let aside = match c.data.get() {
         _ if c.data.reading() && c.data.get().is_some() => "updating…".to_string(),
-        Some(x) if x.calendar.is_ok() => {
-            let gone = if x.gone > 0 { format!(" · {} logs gone from disk", int(x.gone as u64)) } else { String::new() };
-            format!("from the day store in {:.1} s{gone}", x.took.as_secs_f64())
-        }
+        Some(x) if x.calendar.is_ok() && x.gone > 0 => format!("{} logs gone from disk, kept by the store", int(x.gone as u64)),
         _ => String::new(),
     };
     head = head.child(text(aside).key("cal-read").font(pal::SMALL).color(p.ink3).single_line());
@@ -237,10 +233,22 @@ fn note(t: String, p: &Pal) -> El {
     text(t).key("cal-note").w_full().wrap().font(pal::BODY).color(p.ink2).selectable(true)
 }
 
-/// The color of a level: the subtle stroke for none, else the accent mixed into the card's
-/// background.
-pub fn level_color(lvl: usize, p: &Pal) -> Color {
-    if lvl == 0 { p.row_line } else { pal::mix_srgb(p.bar, p.accent, RAMP[lvl - 1]) }
+/// The color of a level: the subtle stroke for none, else the metric's color mixed into the
+/// card's background.
+pub fn level_color(lvl: usize, top: Color, p: &Pal) -> Color {
+    if lvl == 0 { p.row_line } else { pal::mix_srgb(p.bar, top, RAMP[lvl - 1]) }
+}
+
+/// The color a metric's levels go up to: the cold color for avoidable spend, else the accent.
+pub fn metric_color(m: Metric, p: &Pal) -> Color {
+    if m == Metric::Avoidable { p.cold } else { p.accent }
+}
+
+/// A cell of a level, `w` by `h` with corners of `r`: filled, or in a dark theme, at level none,
+/// an empty cell with a hairline, so that the first level always differs from nothing.
+pub fn cell(lvl: usize, top: Color, p: &Pal, w: f32, h: f32, r: f32) -> El {
+    let e = el().w(w).h(h).radius(r);
+    if lvl == 0 && p.dark { e.border(1.0, p.row_line) } else { e.fill(level_color(lvl, top, p)) }
 }
 
 /// The side of a square for a grid of `weeks` in a card as wide as the window allows, with the
@@ -263,6 +271,7 @@ fn grid_card(s: &Desk, cal: &Calendar, p: &Pal) -> El {
     let grid_w = LABEL_W + weeks as f32 * step;
     let grid_h = MONTH_H + 7.0 * step;
     let cursor = cursor_date(s);
+    let top = metric_color(m, p);
     let mut grid = el().key("cal-grid").w(grid_w).h(grid_h);
     for (at, name) in months(cal, 1) {
         grid = grid.child(text(name).font(pal::HOURS).color(p.ink3).single_line().absolute(LABEL_W + at as f32 * step, 2.0));
@@ -278,13 +287,9 @@ fn grid_card(s: &Desk, cal: &Calendar, p: &Pal) -> El {
             }
             let d = cal.day(date);
             let lvl = if date < cal.shown_from { 0 } else { d.map_or(0, |d| level(d.amounts.value(m), cuts)) };
-            let mut square = el()
+            let mut square = cell(lvl, top, p, sq, sq, (sq / 5.0).clamp(2.0, 8.0))
                 .key(format!("cal-day-{date}"))
                 .absolute(LABEL_W + w as f32 * step, MONTH_H + wd as f32 * step)
-                .w(sq)
-                .h(sq)
-                .radius((sq / 5.0).clamp(2.0, 8.0))
-                .fill(level_color(lvl, p))
                 .role("button")
                 .label(day_name(date))
                 .on_hover_change(move |s: &mut Desk, inside, _| {
@@ -297,10 +302,13 @@ fn grid_card(s: &Desk, cal: &Calendar, p: &Pal) -> El {
                 .on_press_tx(move |s: &mut Desk, tx| crate::reports::open_day(s, date, tx));
             if cursor == Some(date) && s.calendar.cursor.is_some() {
                 square = square.outline(2.0, 1.5, p.accent);
-            } else if date == cal.last {
-                square = square.border(1.5, p.ink);
             }
             grid = grid.child(square);
+            // The last day: a dot under its cell; rings are for the cursor.
+            if date == cal.last {
+                let at = LABEL_W + w as f32 * step + sq / 2.0 - 2.0;
+                grid = grid.child(crate::view::dot(p.ink, 5.0).key("cal-today").absolute(at - 0.5, MONTH_H + wd as f32 * step + sq - 9.0));
+            }
         }
     }
     let left = col().gap(10.0).child(grid).child(legend(cuts, m, p, sq.min(16.0)));
@@ -313,18 +321,19 @@ fn grid_card(s: &Desk, cal: &Calendar, p: &Pal) -> El {
     if let Some(date) = marked
         && let Some(d) = cal.day(date)
     {
-        let w = ((date - cal.first_monday) / 7) as f32;
-        let wd = weekday(date) as f32;
-        let right = LABEL_W + (w + 1.0) * step + 6.0;
-        let x = if right + TIP_W <= window_w - 100.0 { right } else { (LABEL_W + w * step - TIP_W - 6.0).max(0.0) };
-        card = card.child(tooltip(d, p).absolute(x, (MONTH_H + wd * step - 8.0).max(0.0)));
+        // Beside the grid, over the numbers, at the day's row, so that it covers no other day;
+        // under the grid when the numbers are under it.
+        let wd = tokprof_core::calendar::weekday(date) as f32;
+        let (x, y) = if beside { (grid_w + 12.0, (MONTH_H + wd * step - 8.0).min(grid_h - 200.0).max(0.0)) } else { (LABEL_W, grid_h + 4.0) };
+        card = card.child(tooltip(d, p).absolute(x, y));
     }
     card
 }
 
 /// `less`, the five squares and `more`, with the cuts.
 fn legend(cuts: Option<[f64; 3]>, m: Metric, p: &Pal, sq: f32) -> El {
-    let square = |lvl: usize| el().w(sq).h(sq).radius(3.0).fill(level_color(lvl, p));
+    let top = metric_color(m, p);
+    let square = |lvl: usize| cell(lvl, top, p, sq, sq, 3.0);
     let scale = row()
         .gap(4.0)
         .center_y()
@@ -340,9 +349,9 @@ fn legend(cuts: Option<[f64; 3]>, m: Metric, p: &Pal, sq: f32) -> El {
                 .key("cal-cuts")
                 .gap(12.0)
                 .center_y()
-                .child(cut(1, format!("up to {}", amount(c[0], m.unit()))))
-                .child(cut(2, format!("up to {}", amount(c[1], m.unit()))))
-                .child(cut(3, format!("up to {}", amount(c[2], m.unit()))))
+                .child(cut(1, format!("up to {}", cut_amount(c[0], m.unit()))))
+                .child(cut(2, format!("up to {}", cut_amount(c[1], m.unit()))))
+                .child(cut(3, format!("up to {}", cut_amount(c[2], m.unit()))))
                 .child(cut(4, "more".into())),
         );
     }
@@ -350,9 +359,9 @@ fn legend(cuts: Option<[f64; 3]>, m: Metric, p: &Pal, sq: f32) -> El {
 }
 
 /// The numbers of the CLI: total, active days, streaks, the busiest day and weekday, and the
-/// days that come only from the store.
+/// days that come only from the store, each in the metric's unit; active days and streaks are
+/// the days whose metric is above zero.
 fn numbers(cal: &Calendar, m: Metric, p: &Pal) -> El {
-    let unit = m.unit();
     let shown = cal.shown();
     let line = |key: &'static str, label: &str, value: String, sub: String| {
         col()
@@ -369,8 +378,11 @@ fn numbers(cal: &Calendar, m: Metric, p: &Pal) -> El {
         }
         _ => String::new(),
     };
-    let (active, all) = cal.active();
-    let (current, longest) = cal.streaks();
+    let (active, all) = cal.active(m);
+    let (current, longest) = cal.streaks(m);
+    let label = days_with(m);
+    let mut head = label.chars();
+    let title = head.next().map_or(String::new(), |c| c.to_uppercase().collect::<String>() + head.as_str());
     let days = |n: i64| count(n as u64, "day", "days");
     let busiest = cal.busiest(m);
     let weekday = cal.busiest_weekday(m);
@@ -379,11 +391,11 @@ fn numbers(cal: &Calendar, m: Metric, p: &Pal) -> El {
         .key("cal-numbers")
         .w(NUMBERS_W)
         .gap(14.0)
-        .child(line("cal-total", "Total", amount(cal.total(m), unit), span))
-        .child(line("cal-active", "Active days", format!("{active} of {all}"), "days with a request".into()))
+        .child(line("cal-total", "Total", with_unit(cal.total(m), m), span))
+        .child(line("cal-active", &title, format!("{active} of {all}"), "of the days shown".to_string()))
         .child(line(
             "cal-streaks",
-            "Streaks",
+            &format!("Streaks of {label}"),
             current.map_or("no current streak".to_string(), |s| format!("{} now", days(s.days()))),
             longest.map_or(String::new(), |s| format!("longest {} ({} – {})", days(s.days()), day_name(s.from), day_name(s.to))),
         ))
@@ -391,13 +403,13 @@ fn numbers(cal: &Calendar, m: Metric, p: &Pal) -> El {
             "cal-busiest",
             "Busiest day",
             busiest.map_or("none".to_string(), |d| day_name(d.date)),
-            busiest.map_or(String::new(), |d| amount(d.amounts.value(m), unit)),
+            busiest.map_or(String::new(), |d| with_unit(d.amounts.value(m), m)),
         ))
         .child(line(
             "cal-weekday",
             "Busiest weekday",
             weekday.map_or("none".to_string(), |(w, _)| weekday_plural(w).to_string()),
-            weekday.map_or(String::new(), |(_, v)| amount(v, unit)),
+            weekday.map_or(String::new(), |(_, v)| with_unit(v, m)),
         ))
         .child(line(
             "cal-kept",
@@ -425,8 +437,21 @@ pub fn tooltip_lines(d: &Day) -> Vec<String> {
     let mut lines = vec![
         naive(d.date).format("%a %-d %b %Y").to_string(),
         format!("{} spent, {} of it avoidable", usd(a.usd), usd(a.avoidable_usd)),
-        format!("{} in {}", num(a.requests, "request", "requests"), num(d.sessions as u64, "session", "sessions")),
+        format!(
+            "{} in {}, {} you typed in",
+            num(a.requests, "request", "requests"),
+            num(d.sessions as u64, "session", "sessions"),
+            int(d.typed_sessions as u64)
+        ),
         if a.agent_minutes > 0 { format!("agents worked {}", rhythm::duration(a.agent_minutes as i64 * 60_000)) } else { "no agent worked".to_string() },
+    ];
+    // A day runs from one night's middle to the next, so it can be longer than 24 hours.
+    let span = d.to_ms - d.from_ms;
+    if span > 24 * 3_600_000 + 30 * 60_000 {
+        let at = |ts: i64| tokprof_core::fmt::local_time(ts, "%a %H:%M");
+        lines.push(format!("the day ran {:.1}h, from {} to {}", span as f64 / 3_600_000.0, at(d.from_ms), at(d.to_ms)));
+    }
+    lines.extend([
         if a.sittings > 0 {
             format!(
                 "{} at the keyboard in {}, {}",
@@ -443,7 +468,7 @@ pub fn tooltip_lines(d: &Day) -> Vec<String> {
             counted(a.pushes, "push", "pushes"),
             counted(a.pull_requests, "pull request", "pull requests")
         ),
-    ];
+    ]);
     if d.only_kept() {
         lines.push("only from the store: its logs are gone".into());
     } else if d.gone {
@@ -481,24 +506,24 @@ fn tooltip(d: &Day, p: &Pal) -> El {
 }
 
 /// The weekday × hour punchcard, with its legend.
-fn punchcard(cal: &Calendar, m: Metric, p: &Pal) -> El {
+fn punchcard(cal: &Calendar, m: Metric, p: &Pal, window_w: f32) -> El {
     let cuts = cal.punch_cuts(m);
-    let step = PUNCH + 3.0;
+    let top = metric_color(m, p);
+    // The 24 hours take the card's width, each cell from 22 to 36 points.
+    let punch = ((window_w - 48.0 - 28.0 - LABEL_W) / 24.0 - 3.0).clamp(PUNCH, 36.0);
+    let step = punch + 3.0;
     let mut grid = el().key("cal-punch").w(LABEL_W + 24.0 * step).h(MONTH_H + 7.0 * step);
     for h in (0..24).step_by(3) {
         grid = grid.child(text(format!("{h:02}")).font(pal::HOURS).color(p.ink3).single_line().absolute(LABEL_W + h as f32 * step, 2.0));
     }
     for (wd, name) in WEEKDAYS.iter().enumerate() {
-        grid = grid.child(text(*name).font(pal::HOURS).color(p.ink3).single_line().absolute(0.0, MONTH_H + wd as f32 * step + (PUNCH - 12.0) / 2.0));
+        grid = grid.child(text(*name).font(pal::HOURS).color(p.ink3).single_line().absolute(0.0, MONTH_H + wd as f32 * step + (punch - 12.0) / 2.0));
         for h in 0..24 {
             let lvl = level(cal.punch[wd][h].value(m), cuts);
             grid = grid.child(
-                el().key(format!("punch-{wd}-{h}"))
+                cell(lvl, top, p, punch, punch, 4.0)
+                    .key(format!("punch-{wd}-{h}"))
                     .absolute(LABEL_W + h as f32 * step, MONTH_H + wd as f32 * step)
-                    .w(PUNCH)
-                    .h(PUNCH)
-                    .radius(4.0)
-                    .fill(level_color(lvl, p))
                     .label(format!("{} {h:02}:00, {}", WEEKDAYS[wd], amount(cal.punch[wd][h].value(m), m.unit()))),
             );
         }
@@ -547,6 +572,9 @@ mod tests {
                 ..Default::default()
             },
             sessions: 8,
+            typed_sessions: 5,
+            from_ms: 1_794_000_000_000,
+            to_ms: 1_794_000_000_000 + 26 * 3_600_000,
             live: false,
             gone: true,
         };
@@ -555,8 +583,13 @@ mod tests {
             [
                 "Thu 5 Nov 2026",
                 "$214 spent, $31.00 of it avoidable",
-                "1,820 requests in 8 sessions",
+                "1,820 requests in 8 sessions, 5 you typed in",
                 "agents worked 6.2h",
+                &format!(
+                    "the day ran 26.0h, from {} to {}",
+                    tokprof_core::fmt::local_time(1_794_000_000_000, "%a %H:%M"),
+                    tokprof_core::fmt::local_time(1_794_000_000_000 + 26 * 3_600_000, "%a %H:%M")
+                ),
                 "2.5h at the keyboard in 14 sittings, 47 messages",
                 "3 commits, 1 push, no pull request",
                 "only from the store: its logs are gone",

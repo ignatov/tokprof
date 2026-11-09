@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use rune::{Color, El, Key as RuneKey, KeyEvent, TextStyle, Tx, col, el, row, spacer, text};
-use tokprof_browse::render_month::{big_numbers, cache, delta_cells, facts, headline, next_month, weeks};
+use tokprof_browse::render_month::{big_numbers, cache, delta_cells, facts, headline, next_month_plain, weeks};
 use tokprof_core::calendar::level;
 use tokprof_core::month::{Month, Ym};
 
-use crate::calendar::level_color;
+use crate::calendar::cell;
 use crate::overlay::{PILL, R_CARD};
 use crate::pal::{self, Pal};
 use crate::{Desk, plain};
@@ -27,6 +27,8 @@ const RULE: TextStyle = TextStyle::new(11.0, 400.0);
 const BIG: TextStyle = TextStyle::new(26.0, 760.0).tracking(-0.6).features("'tnum' 1");
 const LABEL: TextStyle = TextStyle::new(11.0, 500.0);
 const FACT: TextStyle = TextStyle::new(11.5, 400.0).features("'tnum' 1");
+/// For names, such as a model's: tabular figures would space its hyphens out.
+const FACT_PLAIN: TextStyle = TextStyle::new(11.5, 400.0);
 const FACT_HEAD: TextStyle = TextStyle::new(10.0, 700.0).tracking(0.4);
 const NEXT: TextStyle = TextStyle::new(12.0, 500.0);
 const STAT: TextStyle = TextStyle::new(16.0, 720.0).tracking(-0.3).features("'tnum' 1");
@@ -201,7 +203,7 @@ pub fn card_el(m: &Month, p: &Pal, rounded: bool) -> El {
         .child(text(name).key("month-headline").font(HEADLINE).color(p.ink).single_line())
         .child(text(sub).font(SUB).color(p.ink2).single_line().pb(4.0));
     let radius = if rounded { R_CARD } else { 0.0 };
-    let mut body = col().key("month-card").w(CARD.0).h(CARD.1).padding(PAD).gap(13.0).radius(radius).fill(p.bg).clip_rounded(radius).child(head).child(title);
+    let mut body = col().key("month-card").w(CARD.0).h(CARD.1).padding(PAD).gap(11.0).radius(radius).fill(p.bg).clip_rounded(radius).child(head).child(title);
     if !m.any() {
         return body.child(text("No requests and no messages in this month.").font(SUB).color(p.ink2).single_line());
     }
@@ -228,38 +230,53 @@ pub fn card_el(m: &Month, p: &Pal, rounded: bool) -> El {
     // The big numbers, three by two.
     let third = (CARD.0 - 2.0 * PAD - 20.0) / 3.0;
     let big = big_numbers(m);
-    let cell = |(v, what): &(String, &'static str)| {
+    let big_cell = |(v, what): &(String, &'static str)| {
         col().w(third).gap(0.0).child(text(v.clone()).font(BIG).color(p.ink).single_line()).child(text(*what).font(LABEL).color(p.ink2).single_line())
     };
     let grid = col()
         .key("month-big")
         .w_full()
         .gap(8.0)
-        .child(row().w_full().gap(10.0).children(big[..3].iter().map(cell)))
-        .child(row().w_full().gap(10.0).children(big[3..].iter().map(cell)));
+        .child(row().w_full().gap(10.0).children(big[..3].iter().map(big_cell)))
+        .child(row().w_full().gap(10.0).children(big[3..].iter().map(big_cell)));
     body = body.child(grid);
     // The days of the month beside the facts.
-    let (sq, gap) = (20.0, 4.0);
+    let (sq, gap) = (18.0, 4.0);
     let mut cal = col().key("month-days").gap(gap);
     cal = cal.child(row().gap(gap).children(
         ["M", "T", "W", "T", "F", "S", "S"].iter().map(|d| row().w(sq).justify_center().child(text(*d).font(FACT_HEAD).color(p.ink3).single_line())),
     ));
     let busiest = m.busiest_day.map(|b| b.0);
     for week in weeks(m) {
-        cal = cal.child(row().gap(gap).children(week.iter().map(|cell| match cell {
+        cal = cal.child(row().gap(gap).children(week.iter().map(|slot| match slot {
             Some(i) => {
                 let d = &m.days[*i];
-                let sq_el = el().w(sq).h(sq).radius(4.0).fill(level_color(level(d.amounts.usd, m.cuts), p));
+                let sq_el = cell(level(d.amounts.usd, m.cuts), p.accent, p, sq, sq, 4.0);
                 if busiest == Some(d.date) { sq_el.border(1.5, p.ink) } else { sq_el }
             }
             None => el().w(sq).h(sq),
         })));
     }
+    // What the squares say: spend per day, from less to more, and the cuts between.
+    let swatch = |lvl: usize| cell(lvl, p.accent, p, 10.0, 10.0, 2.5);
+    let mut key = col().key("month-days-legend").pt(2.0).gap(2.0).child(
+        row()
+            .gap(3.0)
+            .center_y()
+            .child(text("spend per day · less").font(RULE).color(p.ink3).single_line().pr(2.0))
+            .children((0..5).map(swatch))
+            .child(text("more").font(RULE).color(p.ink3).single_line().pl(2.0)),
+    );
+    if let Some(c) = m.cuts {
+        let cut = |v: f64| tokprof_browse::render_calendar::cut_amount(v, tokprof_core::calendar::Unit::Usd);
+        key = key.child(text(format!("cuts at {}, {}, {}", cut(c[0]), cut(c[1]), cut(c[2]))).font(RULE).color(p.ink3).single_line());
+    }
+    cal = cal.child(key);
     let fact_line = |label: &str, value: String| {
         col()
             .gap(1.0)
             .child(text(label.to_uppercase()).font(FACT_HEAD).color(p.ink3).single_line())
-            .child(text(value).w_full().wrap().max_lines(2).font(FACT).color(p.ink))
+            .child(text(value).w_full().wrap().max_lines(2).font(if label == "top model" { FACT_PLAIN } else { FACT }).color(p.ink))
     };
     let mut side = col().key("month-facts").grow(1.0).min_w(0.0).gap(5.0);
     for (label, value) in facts(m) {
@@ -287,28 +304,36 @@ pub fn card_el(m: &Month, p: &Pal, rounded: bool) -> El {
         }
     };
     let cache: Vec<(String, String)> = cache.into_iter().map(|(v, what)| (v.split(' ').next().unwrap_or("").to_string(), short(what).to_string())).collect();
-    let head = match note {
-        Some(n) => format!("CACHE · {n}"),
-        None => "CACHE".to_string(),
-    };
-    body = body.child(stats("month-cache", head, cache));
-    if let Some((name, cells)) = delta_cells(m) {
+    // Without the month before, the room goes between the parts, not into one empty band.
+    let deltas = delta_cells(m);
+    let spread = deltas.is_none();
+    if spread {
+        body = body.child(spacer().grow(1.0));
+    }
+    body = body.child(stats("month-cache", "CACHE".to_string(), cache));
+    if let Some((name, cells)) = deltas {
+        // A true minus sign for a fall.
+        let cells = cells.into_iter().map(|(v, what)| (v, what.replace(", -", ", −"))).collect();
         body = body.child(stats("month-deltas", format!("VS {}", name.to_uppercase()), cells));
     }
     body = body.child(spacer().grow(1.0));
-    if let Some(line) = next_month(m) {
+    if let Some(line) = next_month_plain(m) {
         body = body.child(
             col()
                 .key("month-next")
                 .w_full()
                 .px(14.0)
-                .py(11.0)
-                .gap(3.0)
+                .py(9.0)
+                .gap(2.0)
                 .radius(12.0)
                 .fill(pal::mix_srgb(p.bg, p.accent, 0.12))
                 .child(text("FOR NEXT MONTH").font(FACT_HEAD).color(p.accent).single_line())
                 .child(text(line).w_full().wrap().max_lines(2).font(NEXT).color(p.ink)),
         );
+    }
+    // The requests without a price, as a footnote.
+    if let Some(n) = note {
+        body = body.child(text(n).key("month-note").font(RULE).color(p.ink3).single_line());
     }
     body
 }

@@ -177,21 +177,21 @@ Each day SHALL be drawn at one of five levels: none for a day whose metric is ze
 - **THEN** it is level 1
 
 ### Requirement: Marks and legend
-The levels SHALL be drawn as `·`, `░`, `▒`, `▓` and `█`. In a terminal that takes color, level none is dim and levels 1 to 4 are greens from dark to bright; without color the marks are the same and no escape code is written. A legend follows the grid with the cuts in the metric's unit.
+The levels SHALL be drawn as `·`, `░`, `▒`, `▓` and `█`. In a terminal that takes color, level none is dim and levels 1 to 4 are greens from dark to bright; without color the marks are the same and no escape code is written. A legend follows the grid with the cuts in the metric's unit, whole dollars from $10 up.
 
 #### Scenario: The legend
 - **WHEN** the cuts are $2, $4 and $6
 - **THEN** the legend reads `less · ░ ▒ ▓ █ more   ░ up to $2.00  ▒ up to $4.00  ▓ up to $6.00  █ more`
 
 ### Requirement: Calendar numbers
-Below the legend, the calendar SHALL print `total`, `active`, `streaks`, `busiest`, `weekday` and `kept` over the days shown: from the first day with a request or an action, or the first column's Monday when that is later, to the last day. A streak is a run of days with a request; the current one ends at the last day, or at the day before when the last day has none. `kept` counts the days whose every amount and action comes from logs that are gone.
+Below the legend, the calendar SHALL print `total`, `active`, `streaks`, `busiest`, `weekday` and `kept` over the days shown: from the first day with a request or an action, or the first column's Monday when that is later, to the last day. `active` and `streaks` count the days whose metric is above zero; the current streak ends at the last day, or at the day before when the last day has none. `kept` counts the days whose every amount and action comes from logs that are gone.
 
 #### Scenario: The lines
 - **WHEN** the calendar of spend shows 98 days from 2026-08-03 to 2026-11-08
 - **THEN** its lines read like
   `total     $11,603 from Mon 3 Aug to Sun 8 Nov 2026, 98 days`
-  `active    87 of 98 days had a request`
-  `streaks   current 34 days, longest 41 days (Mon 7 Sep – Sat 17 Oct)`
+  `active    87 of 98 days with spend`
+  `streaks   of days with spend: current 34 days, longest 41 days (Mon 7 Sep – Sat 17 Oct)`
   `busiest   Tue 14 Oct, $812`
   `weekday   Tuesdays, $2,431`
 
@@ -201,7 +201,11 @@ Below the legend, the calendar SHALL print `total`, `active`, `streaks`, `busies
 
 #### Scenario: Units
 - **WHEN** the metric is `keyboard` or `agent`
-- **THEN** its amounts read as hours with one decimal, as `142.5h`; `messages` and `commits` as whole numbers
+- **THEN** its amounts read as hours with one decimal, as `142.5h`; `messages` and `commits` as whole numbers with their word, as `828 commits`
+
+#### Scenario: Commits
+- **WHEN** the calendar of commits has commits on 46 of 95 days, the latest 8 days in a row
+- **THEN** it reads `active    46 of 95 days with commits` and `streaks   of days with commits: current 8 days, …`, whatever the days with a request
 
 #### Scenario: Nothing
 - **WHEN** the filters keep no request and no action

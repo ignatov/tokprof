@@ -62,7 +62,7 @@ The month SHALL take the first title whose rule holds, in this order: `Night owl
 
 #### Scenario: The rule under the title
 - **WHEN** 34% of a month's agent time fell between 22:00 and 05:00
-- **THEN** its title is `Night owl`, and the rule under it, with the month's number, reads `34% of agent time between 22:00 and 05:00; the title takes 33% or more`
+- **THEN** its title is `Night owl`, and the rule under it, with the month's number, reads `34% of agent time 22:00–05:00 (title from 33%)`
 
 #### Scenario: Two rules
 - **WHEN** a month had a 31-day streak and 0.8 commits per agent hour

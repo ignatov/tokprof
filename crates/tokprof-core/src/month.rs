@@ -295,38 +295,28 @@ fn pct(x: f64) -> String {
 /// The first title whose rule the month meets, in a fixed order.
 pub fn title(m: &Month) -> Option<Title> {
     if let Some(s) = m.night_share.filter(|&s| s >= NIGHT_OWL_SHARE) {
-        return Some(Title {
-            name: "Night owl",
-            rule: format!("{} of agent time between 22:00 and 05:00; the title takes {} or more", pct(s), pct(NIGHT_OWL_SHARE)),
-        });
+        return Some(Title { name: "Night owl", rule: format!("{} of agent time 22:00–05:00 (title from {})", pct(s), pct(NIGHT_OWL_SHARE)) });
     }
     if let Some(s) = m.morning_share.filter(|&s| s >= EARLY_BIRD_SHARE) {
-        return Some(Title {
-            name: "Early bird",
-            rule: format!("{} of your time at the keyboard between 05:00 and 09:00; the title takes {} or more", pct(s), pct(EARLY_BIRD_SHARE)),
-        });
+        return Some(Title { name: "Early bird", rule: format!("{} of your keyboard time 05:00–09:00 (title from {})", pct(s), pct(EARLY_BIRD_SHARE)) });
     }
     if let Some(s) = m.parallel_share.filter(|&s| s >= CONDUCTOR_SHARE) {
         return Some(Title {
             name: "Conductor",
-            rule: format!(
-                "{} of agent time had {CONDUCTED_SESSIONS} or more sessions working at once; the title takes {} or more",
-                pct(s),
-                pct(CONDUCTOR_SHARE)
-            ),
+            rule: format!("{} of agent time with {CONDUCTED_SESSIONS} or more sessions at once (title from {})", pct(s), pct(CONDUCTOR_SHARE)),
         });
     }
     if let Some(s) = m.longest.filter(|s| s.days() >= MARATHON_DAYS) {
-        return Some(Title { name: "Marathon", rule: format!("{} days in a row with the agents; the title takes {MARATHON_DAYS} or more", s.days()) });
+        return Some(Title { name: "Marathon", rule: format!("{} days in a row with the agents (title from {MARATHON_DAYS})", s.days()) });
     }
     if let Some(s) = m.avoidable_share().filter(|&s| s < CACHE_KEEPER_SHARE) {
         return Some(Title {
             name: "Cache keeper",
-            rule: format!("{:.1}% of spend lost to cache misses; the title takes under {}", 100.0 * s, pct(CACHE_KEEPER_SHARE)),
+            rule: format!("{:.1}% of spend lost to cache misses (title under {})", 100.0 * s, pct(CACHE_KEEPER_SHARE)),
         });
     }
     if let Some(r) = m.commits_per_hour().filter(|&r| r >= SHIPPER_PER_HOUR) {
-        return Some(Title { name: "Shipper", rule: format!("{r:.2} commits per hour the agents worked; the title takes {SHIPPER_PER_HOUR:.2} or more") });
+        return Some(Title { name: "Shipper", rule: format!("{r:.2} commits per agent hour (title from {SHIPPER_PER_HOUR:.2})") });
     }
     None
 }
@@ -393,7 +383,7 @@ mod tests {
     fn titles_go_in_their_order() {
         let mut m = Month { night_share: Some(0.34), morning_share: Some(0.5), ..Month::default() };
         assert_eq!(title(&m).unwrap().name, "Night owl");
-        assert_eq!(title(&m).unwrap().rule, "34% of agent time between 22:00 and 05:00; the title takes 33% or more");
+        assert_eq!(title(&m).unwrap().rule, "34% of agent time 22:00–05:00 (title from 33%)");
         m.night_share = Some(0.1);
         assert_eq!(title(&m).unwrap().name, "Early bird");
         m.morning_share = Some(0.1);

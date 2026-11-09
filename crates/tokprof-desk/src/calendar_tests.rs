@@ -111,7 +111,12 @@ fn m_cycles_the_metric_and_the_pills_pick_it() {
     click(&mut rt, "metric-messages");
     settle(&mut rt);
     assert_eq!(rt.state.calendar.metric, Metric::Messages);
-    assert_eq!(text_in(&rt, "cal-total", "value"), "40", "two messages on each of 20 days");
+    assert_eq!(text_in(&rt, "cal-total", "value"), "40 messages", "two messages on each of 20 days");
+    // The days and streaks follow the metric: commits on one day only.
+    click(&mut rt, "metric-commits");
+    settle(&mut rt);
+    assert_eq!(text_in(&rt, "cal-active", "value"), format!("1 of {}", rt.state.calendar.calendar().unwrap().shown().len()));
+    assert_eq!(text_in(&rt, "cal-total", "value"), "2 commits");
 }
 
 #[test]
@@ -183,4 +188,19 @@ fn a_store_that_was_reset_says_so_in_the_window() {
     command(&mut rt, '3');
     settle(&mut rt);
     assert_eq!(text_of(&rt, "cal-warning"), warning.trim_start_matches("warning: "));
+}
+
+#[test]
+fn a_day_without_activity_is_an_empty_cell_in_a_dark_theme() {
+    let dark = crate::pal::pal(crate::themes::find("merino-dark").unwrap());
+    let light = crate::pal::pal(crate::themes::find("merino-light").unwrap());
+    assert!(dark.dark && !light.dark);
+    // Level none has no fill in dark, so the first level always differs from nothing.
+    let none = calendar::level_color(0, dark.accent, &dark);
+    let one = calendar::level_color(1, dark.accent, &dark);
+    assert_ne!(none, one);
+    for id in ["merino-dark", "neon-arcade", "cathode-amber"] {
+        let p = crate::pal::pal(crate::themes::find(id).unwrap());
+        assert!(p.dark, "{id} is dark, so its empty days are outlined");
+    }
 }

@@ -13,6 +13,8 @@ use crate::themes::Theme;
 
 /// The window's colors in one appearance.
 pub struct Pal {
+    /// The theme is dark.
+    pub dark: bool,
     pub bg: Color,
     /// The title bar and the separator rows of the list.
     pub bar: Color,
@@ -72,6 +74,7 @@ pub fn pal(t: &Theme) -> Pal {
     // sRGB, as the eye sees it.
     let fill = |role: &str| if dark { mix_srgb(c("canvas"), c(role), DARK_FILL) } else { c(role) };
     Pal {
+        dark,
         bg: c("canvas"),
         bar: c("surfaceSubtle"),
         track: c("terminalBackground"),

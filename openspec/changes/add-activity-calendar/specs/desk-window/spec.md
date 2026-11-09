@@ -18,7 +18,7 @@
 - **THEN** Calendar shows messages; the palette also offers `Calendar` and each other metric, and the key help lists ⌘3 and the keys of Calendar
 
 ### Requirement: Calendar grid in the window
-The grid SHALL draw each day as a rounded square, a column per week and a row per weekday, labeled `Mon`, `Wed` and `Fri`, with the month labels of the CLI above. Levels 1 to 4 are the accent mixed into the card's background at 30%, 55%, 80% and 100%, and level none is the theme's subtle stroke. The legend reads `less`, the five squares and `more`, with the cuts.
+The grid SHALL draw each day as a rounded square, a column per week and a row per weekday, labeled `Mon`, `Wed` and `Fri`, with the month labels of the CLI above. Levels 1 to 4 are the accent (the cold color for `Avoidable`) mixed into the card's background at 30%, 55%, 80% and 100%. Level none is the subtle stroke, or in a dark theme an empty square with a hairline of it. A dot marks the last day. The legend reads `less`, the squares and `more`, with the cuts.
 
 #### Scenario: Squares that use the room
 - **WHEN** the grid has 14 weeks in a window 1400 points wide
@@ -30,7 +30,15 @@ The grid SHALL draw each day as a rounded square, a column per week and a row pe
 
 #### Scenario: Metric pills
 - **WHEN** Calendar opens
-- **THEN** it shows the pills `Spend`, `Agent time`, `At the keyboard`, `Messages`, `Commits` and `Avoidable`, with `Spend` picked
+- **THEN** it shows one segmented group `Spend`, `Agent time`, `At the keyboard`, `Messages`, `Commits` and `Avoidable`, as the bar's switch, with `Spend` picked
+
+#### Scenario: Nothing and a little in a dark theme
+- **WHEN** the window is drawn in Merino Dark, Neon Arcade or Cathode Amber
+- **THEN** a day without the metric is an empty outlined square, never filled like a day of level 1
+
+#### Scenario: Numbers of the metric
+- **WHEN** Calendar shows commits
+- **THEN** the numbers beside the grid read `828 commits`, `Days with commits 46 of 95`, the streaks of days with commits, and the busiest day with `77 commits`
 
 #### Scenario: Another metric
 - **WHEN** the user clicks `Messages`
@@ -38,18 +46,27 @@ The grid SHALL draw each day as a rounded square, a column per week and a row pe
 
 #### Scenario: Today
 - **WHEN** the grid is drawn
-- **THEN** the last day's square is ringed in the theme's ink
+- **THEN** the last day's square has a small dot in the theme's ink, and only the cursor is ringed
 
 #### Scenario: Kept by the store
 - **WHEN** the calendar is drawn
 - **THEN** beside the grid, or under it in a window too narrow for both, the numbers end with `Kept by the store`: the days that come only from logs that are gone, or `no day yet`
 
 ### Requirement: A day in the calendar
-The pointer over a day's square SHALL show a tooltip beside it with the day's date and weekday and every metric of that day: spend, avoidable, requests, sessions with a request, agent time, time at the keyboard with its sittings, messages, and commits, pushes and pull requests; and whether the day comes only or partly from logs that are gone. A click on a square shows Day with the lanes of that day. A day after the last day has no square.
+The pointer over a day's square SHALL show a tooltip with the day's date and weekday and every metric of that day: spend, avoidable, requests, sessions with a request, agent time, time at the keyboard with its sittings, messages, and commits, pushes and pull requests; and whether the day comes only or partly from logs that are gone. A click on a square shows Day with the lanes of that day. A day after the last day has no square.
 
 #### Scenario: Hovering a day
 - **WHEN** the pointer rests over the square of 5 November
-- **THEN** a tooltip reads like `Thu 5 Nov 2026`, `$214 spent, $31.00 of it avoidable`, `1,820 requests in 8 sessions`, `agents worked 6.2h`, `2.5h at the keyboard in 14 sittings, 47 messages`, `3 commits, 1 push, no pull request`
+- **THEN** a tooltip reads like `Thu 5 Nov 2026`, `$214 spent, $31.00 of it avoidable`, `1,820 requests in 8 sessions, 5 you typed in`, `agents worked 6.2h`, `2.5h at the keyboard in 14 sittings, 47 messages`, `3 commits, 1 push, no pull request`
+- **AND** `you typed in` counts the sessions the Day view counts, those with an action of the user
+
+#### Scenario: Where the tooltip goes
+- **WHEN** the pointer rests over a day of the grid's last column
+- **THEN** the tooltip stands beside the grid at that day's row, over the numbers, or under the grid when the numbers are under it, so that it covers no day
+
+#### Scenario: A day longer than 24 hours
+- **WHEN** the day of 20 September ran from Sun 05:10 to Mon 07:16
+- **THEN** its tooltip adds `the day ran 26.1h, from Sun 05:10 to Mon 07:16`, so that 24.6h of agent time in it reads right
 
 #### Scenario: A day whose logs are gone
 - **WHEN** every log of 5 September is gone and the store keeps its numbers

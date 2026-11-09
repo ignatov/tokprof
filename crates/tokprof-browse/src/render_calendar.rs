@@ -114,44 +114,74 @@ pub fn legend(cuts: Option<[f64; 3]>, unit: Unit, style: &Style) -> String {
             s,
             "   {} up to {}  {} up to {}  {} up to {}  {} more",
             marks[1],
-            amount(c[0], unit),
+            cut_amount(c[0], unit),
             marks[2],
-            amount(c[1], unit),
+            cut_amount(c[1], unit),
             marks[3],
-            amount(c[2], unit),
+            cut_amount(c[2], unit),
             marks[4]
         );
     }
     s
 }
 
-/// The lines under the grid: total, active, streaks, busiest, weekday, kept.
+/// An amount of a metric with its unit: `$812`, `142.5h`, `828 commits`, `1 message`.
+pub fn with_unit(v: f64, m: Metric) -> String {
+    let n = v.round() as u64;
+    match m {
+        Metric::Messages => format!("{} {}", fmt::int(n), if n == 1 { "message" } else { "messages" }),
+        Metric::Commits => format!("{} {}", fmt::int(n), if n == 1 { "commit" } else { "commits" }),
+        _ => amount(v, m.unit()),
+    }
+}
+
+/// What a day with the metric above zero is: `days with commits`.
+pub fn days_with(m: Metric) -> &'static str {
+    match m {
+        Metric::Spend => "days with spend",
+        Metric::Agent => "days with agent time",
+        Metric::Keyboard => "days at the keyboard",
+        Metric::Messages => "days with messages",
+        Metric::Commits => "days with commits",
+        Metric::Avoidable => "days with avoidable spend",
+    }
+}
+
+/// A cut of the legend: whole dollars from $10 up.
+pub fn cut_amount(v: f64, unit: Unit) -> String {
+    match unit {
+        Unit::Usd if v >= 10.0 => format!("${}", fmt::int(v.round() as u64)),
+        _ => amount(v, unit),
+    }
+}
+
+/// The lines under the grid: total, active, streaks, busiest, weekday, kept. Active days and
+/// streaks count the days whose metric is above zero.
 pub fn numbers(cal: &Calendar, metric: Metric) -> Vec<String> {
-    let unit = metric.unit();
     let shown = cal.shown();
     let mut out = Vec::new();
     let (Some(first), Some(last)) = (shown.first(), shown.last()) else { return out };
     out.push(format!(
         "total     {} from {} to {} {}, {}",
-        amount(cal.total(metric), unit),
+        with_unit(cal.total(metric), metric),
         day_name(first.date),
         day_name(last.date),
         naive(last.date).format("%Y"),
         fmt::count(shown.len() as u64, "day", "days")
     ));
-    let (active, all) = cal.active();
-    out.push(format!("active    {active} of {} had a request", fmt::count(all as u64, "day", "days")));
-    let (current, longest) = cal.streaks();
+    let (active, all) = cal.active(metric);
+    out.push(format!("active    {active} of {} {}", all, days_with(metric)));
+    let (current, longest) = cal.streaks(metric);
     let days = |n: i64| fmt::count(n as u64, "day", "days");
     let current = current.map_or("no current streak".to_string(), |s| format!("current {}", days(s.days())));
-    let longest = longest.map_or("no day with a request".to_string(), |s| format!("longest {} ({} – {})", days(s.days()), day_name(s.from), day_name(s.to)));
-    out.push(format!("streaks   {current}, {longest}"));
+    let longest = longest.map_or("no streak".to_string(), |s| format!("longest {} ({} – {})", days(s.days()), day_name(s.from), day_name(s.to)));
+    out.push(format!("streaks   of {}: {current}, {longest}", days_with(metric)));
     out.push(match cal.busiest(metric) {
-        Some(d) => format!("busiest   {}, {}", day_name(d.date), amount(d.amounts.value(metric), unit)),
+        Some(d) => format!("busiest   {}, {}", day_name(d.date), with_unit(d.amounts.value(metric), metric)),
         None => "busiest   no day with any".to_string(),
     });
     if let Some((w, v)) = cal.busiest_weekday(metric) {
-        out.push(format!("weekday   {}, {}", weekday_plural(w), amount(v, unit)));
+        out.push(format!("weekday   {}, {}", weekday_plural(w), with_unit(v, metric)));
     }
     if cal.untimed.0 > 0 {
         out.push(format!(
@@ -230,8 +260,8 @@ mod tests {
         assert_eq!(lines[3], "Tue  · · · · · · · · · · · ░ ·");
         assert_eq!(lines[9], "     less · ░ ▒ ▓ █ more   ░ up to $2.00  ▒ up to $4.00  ▓ up to $6.00  █ more");
         assert_eq!(lines[11], "total     $36.00 from Mon 26 Oct to Sun 8 Nov 2026, 14 days");
-        assert_eq!(lines[12], "active    8 of 14 days had a request");
-        assert_eq!(lines[13], "streaks   no current streak, longest 8 days (Mon 26 Oct – Mon 2 Nov)");
+        assert_eq!(lines[12], "active    8 of 14 days with spend");
+        assert_eq!(lines[13], "streaks   of days with spend: no current streak, longest 8 days (Mon 26 Oct – Mon 2 Nov)");
         assert_eq!(lines[14], "busiest   Mon 2 Nov, $8.00");
         assert_eq!(lines[15], "weekday   Mondays, $9.00");
         assert_eq!(lines[16], "kept      no day comes only from the store yet; it keeps the days of logs the agents delete");

@@ -122,8 +122,13 @@ pub struct Day {
     /// The local date, as days since 1970-01-01.
     pub date: i64,
     pub amounts: Amounts,
-    /// The main sessions with a request that day.
+    /// The main sessions with a request that day, and those of them the user acted in, as the
+    /// Day view counts its sessions.
     pub sessions: usize,
+    pub typed_sessions: usize,
+    /// When the day starts and ends, in epoch ms; the last day ends now.
+    pub from_ms: i64,
+    pub to_ms: i64,
     /// Something of the day comes from a log that exists, or from one that is gone.
     pub live: bool,
     pub gone: bool,
@@ -229,6 +234,14 @@ impl DayRule {
         DayRule { starts }
     }
 
+    /// When the day of `date` starts and ends: its own start, else its midnight, to the next
+    /// start after it, else to `end`.
+    fn bounds(&self, date: i64, end: i64, offset: Offset) -> (i64, i64) {
+        let from = self.starts.iter().find(|s| s.date == date).map_or_else(|| rhythm::midnight(date, offset), |s| s.at);
+        let to = self.starts.iter().map(|s| s.at).find(|&at| at > from).unwrap_or(end).max(from);
+        (from, to.min(end.max(from)))
+    }
+
     fn date_of(&self, ts: i64, offset: Offset) -> i64 {
         let i = self.starts.partition_point(|s| s.at <= ts);
         if i == 0 { rhythm::date_of(ts, offset) } else { self.starts[i - 1].date }
@@ -274,7 +287,12 @@ impl Calendar {
             first_monday,
             last,
             shown_from: first.max(first_monday),
-            days: (first_monday..=last).map(|date| Day { date, ..Day::default() }).collect(),
+            days: (first_monday..=last)
+                .map(|date| {
+                    let (from_ms, to_ms) = rule.bounds(date, end, offset);
+                    Day { date, from_ms, to_ms, ..Day::default() }
+                })
+                .collect(),
             punch: vec![Default::default(); 7],
             empty: first_data.is_none(),
             untimed: (0, 0.0),
@@ -341,9 +359,11 @@ impl Calendar {
 
         // Messages and sittings, from the actions of each day.
         let mut by_day: HashMap<usize, Vec<i64>> = HashMap::new();
+        let mut typed: HashMap<usize, HashSet<(&str, &str)>> = HashMap::new();
         for e in &rhythm {
             for &(ts, message) in e.actions.iter().filter(|a| a.0 > 0 && filters.inside(a.0)) {
                 let Some(i) = index(day(ts)) else { continue };
+                typed.entry(i).or_default().insert((e.agent.as_str(), e.main.as_str()));
                 by_day.entry(i).or_default().push(ts);
                 let d = &mut cal.days[i];
                 if e.gone {
@@ -357,6 +377,9 @@ impl Calendar {
                     cal.punch[w][h].messages += 1;
                 }
             }
+        }
+        for (i, t) in typed {
+            cal.days[i].typed_sessions = t.len();
         }
         for (i, mut actions) in by_day {
             actions.sort_unstable();
@@ -400,14 +423,16 @@ impl Calendar {
     }
 
     /// Days with a request, of the days shown.
-    pub fn active(&self) -> (usize, usize) {
-        (self.shown().iter().filter(|d| d.amounts.requests > 0).count(), self.shown().len())
+    /// Days whose metric is above zero, of the days shown.
+    pub fn active(&self, m: Metric) -> (usize, usize) {
+        (self.shown().iter().filter(|d| d.amounts.value(m) > 0.0).count(), self.shown().len())
     }
 
-    /// The current streak, ending at the last day or the day before it, and the longest one.
-    pub fn streaks(&self) -> (Option<Streak>, Option<Streak>) {
+    /// The current run of days whose metric is above zero, ending at the last day or the day
+    /// before it, and the longest one.
+    pub fn streaks(&self, m: Metric) -> (Option<Streak>, Option<Streak>) {
         let days = self.shown();
-        let active = |d: &Day| d.amounts.requests > 0;
+        let active = |d: &Day| d.amounts.value(m) > 0.0;
         let mut longest: Option<Streak> = None;
         let mut run: Option<Streak> = None;
         for d in days {
@@ -577,6 +602,8 @@ mod tests {
         assert_eq!(nov2.amounts.usd, 3.0, "03:10 and the minute before the start count on the day before");
         assert_eq!(nov3.amounts.usd, 4.0);
         assert_eq!((nov2.amounts.messages, nov3.amounts.messages), (2, 2));
+        assert_eq!((nov3.from_ms, nov2.to_ms), (start, start), "the night's middle ends one day and starts the next");
+        assert_eq!(nov3.typed_sessions, 1);
         assert_eq!(cal.last, NOV2 + 1);
     }
 
@@ -671,17 +698,22 @@ mod tests {
         cal.days = active
             .iter()
             .enumerate()
-            .map(|(i, &a)| Day { date: i as i64, amounts: Amounts { requests: a as u64, ..Amounts::default() }, ..Day::default() })
+            .map(|(i, &a)| Day { date: i as i64, amounts: Amounts { requests: a as u64, usd: f64::from(u8::from(a)), ..Amounts::default() }, ..Day::default() })
             .collect();
-        let (current, longest) = cal.streaks();
+        let (current, longest) = cal.streaks(Metric::Spend);
         assert_eq!(current, Some(Streak { from: 4, to: 8 }), "the last day has no request yet");
         assert_eq!(longest.map(|s| s.days()), Some(5));
-        cal.days[9].amounts.requests = 1;
-        assert_eq!(cal.streaks().0.map(|s| s.days()), Some(6));
-        cal.days[8].amounts.requests = 0;
-        cal.days[9].amounts.requests = 0;
-        assert_eq!(cal.streaks().0, None);
-        assert_eq!(cal.active(), (7, 10));
+        cal.days[9].amounts.usd = 1.0;
+        assert_eq!(cal.streaks(Metric::Spend).0.map(|s| s.days()), Some(6));
+        cal.days[8].amounts.usd = 0.0;
+        cal.days[9].amounts.usd = 0.0;
+        assert_eq!(cal.streaks(Metric::Spend).0, None);
+        assert_eq!(cal.active(Metric::Spend), (7, 10));
+        // Another metric counts its own days: commits on two days in a row.
+        cal.days[2].amounts.commits = 3;
+        cal.days[3].amounts.commits = 1;
+        assert_eq!(cal.active(Metric::Commits), (2, 10));
+        assert_eq!(cal.streaks(Metric::Commits), (None, Some(Streak { from: 2, to: 3 })));
     }
 
     #[test]
@@ -711,7 +743,7 @@ mod tests {
         let cal = Calendar::of(&[e], &Filters::default(), at(0, 20, 0), &off);
         assert_eq!(cal.weeks(), 13, "the grid does not stretch to 1970");
         assert_eq!((cal.total(Metric::Spend), cal.untimed), (1.0, (1, 5.0)));
-        assert_eq!(cal.active(), (1, 1));
+        assert_eq!(cal.active(Metric::Spend), (1, 1));
     }
 
     #[test]
