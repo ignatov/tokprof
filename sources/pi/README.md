@@ -1,0 +1,14 @@
+# tokprof-source-pi
+
+tokprof's source of pi coding agent (`@earendil-works/pi-coding-agent`) session logs.
+
+- **Where:** `$PI_CODING_AGENT_SESSION_DIR`, else `$PI_CODING_AGENT_DIR/sessions`, by default `~/.pi/agent/sessions`; files ending in `.jsonl` at any depth. pi 0.84.2 writes `--<cwd with / as ->--/<time>_<uuid>.jsonl`. The `sessionDir` of pi's `settings.json`, a run's `--session-dir` and pi-durable SQLite stores are not read.
+- **Header:** the first line, `type: "session"`, with `version` (3), `id`, `timestamp`, `cwd` and, for a fork, `parentSession`. The id is `id`, else the UUID after the `_` of the file name; the project is `cwd`.
+- **Requests:** `message` lines whose `message.role` is `assistant` and whose `message.usage` has a non-zero `input`, `output`, `cacheRead` or `cacheWrite`; a reply stopped before its first token (`stopReason` `aborted` or `error`, all zero) is none. `input` is uncached, `cacheRead` read, `cacheWrite` written, of which `cacheWrite1h` (Anthropic only) is long-lifetime; `reasoning` is part of `output`, as pi-ai's `Usage` says. The model is `message.model`, the time the line's `timestamp`, sent `durationMs` before it. `api` `anthropic-messages` gets Anthropic's cache rules, a provider `openai*` OpenAI's, any other provider none.
+- **Branches:** the entries form a tree by `id` and `parentId`; going back with `/tree` adds a branch to the same file. Every line is a call that was made, so all branches count.
+- **Forks:** `/fork` and `/clone` (`createBranchedSession`) copy the path from the root to the chosen entry into a new file, and `--fork` (`forkFrom`) copies every entry, keeping each entry's `id` and `timestamp` (pi 0.84.2 source). An entry of a fork whose `id` and `timestamp` are in the log its `parentSession` names counts there, not in the fork; that log is looked for at its path, then next to the fork. When it is gone, the copies count in the fork.
+- **Compactions:** a `compaction` line marks the next request; its `usage`, and that of a `branch_summary` line, is a compaction call on the model of the latest reply before it, else of the latest `model_change` (`modelId`), else `unknown`. pi logs no trigger.
+- **Own cost:** the sum of `usage.cost.total` over the requests, compared with tokprof's price in `tokprof summary`, never used as a price. A model tokprof has no price for, such as a local one, stays unpriced.
+- **Not read yet:** prompts, tools, triggers, hand-offs, version-control actions, titles; `thinking_level_change`, `label` and `system` messages.
+
+Seen in pi 0.84.2 (two logs of a local Qwen model). `tests/fixtures` holds synthetic logs: an Anthropic session with a tool call, two branches, an aborted reply and a compaction; a fork of it that copies its first entries; and a local model with a reply that failed with no usage.

@@ -8,14 +8,16 @@ repository.workspace = true
 publish.workspace = true
 
 [features]
-default = ["claude-code", "codex"]
+default = ["claude-code", "codex", "pi"]
 claude-code = ["dep:tokprof-source-claude-code"]
 codex = ["dep:tokprof-source-codex"]
+pi = ["dep:tokprof-source-pi"]
 
 [dependencies]
 tokprof-core.workspace = true
 tokprof-source-claude-code = { workspace = true, optional = true }
 tokprof-source-codex = { workspace = true, optional = true }
+tokprof-source-pi = { workspace = true, optional = true }
 
 [dev-dependencies]
 anyhow.workspace = true

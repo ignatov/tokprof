@@ -1,6 +1,6 @@
 # tokprof
 
-A token, cost and prompt-cache profiler for AI coding-agent session logs (Claude Code, Codex).
+A token, cost and prompt-cache profiler for AI coding-agent session logs (Claude Code, Codex, pi).
 It reads the logs the agents already write. It needs no proxy and no account, and nothing leaves the machine.
 
 <picture>
@@ -406,7 +406,7 @@ Every command but `tokprof prices` takes these filters. `tokprof day` takes all 
 
 | Filter | Example |
 |---|---|
-| `--agent` | `claude,codex` |
+| `--agent` | `claude,codex,pi` |
 | `--since` | `2026-10-01`, or `7d` for the last seven days |
 | `--until` | `2026-10-16`, excluded |
 | `--project` | text the project path contains, such as `billing`; a path under the home directory works with or without `~` |
@@ -728,6 +728,7 @@ Coverage depends on what the logs contain:
   - Tool schemas other than `additional_tools` are not logged.
   - `world_state` repeats the messages, so it is not counted.
   - Compressed rollouts (`.jsonl.zst`, in `sessions` and `archived_sessions`) are read too.
+- **pi** logs are read from `$PI_CODING_AGENT_SESSION_DIR`, else `$PI_CODING_AGENT_DIR/sessions`, by default `~/.pi/agent/sessions` (pi 0.84.2). Each reply with usage is a request, on every branch of the session's tree, and each `compaction` is a compaction call; a fork's copies of earlier entries count once, in the log they came from. pi's prompts are not rebuilt, so a miss gets no cause from the prompt. pi's own `cost.total` is compared with tokprof's price, never used as one: a local model stays unpriced. pi-durable SQLite stores are not read.
   - Subagent threads join their parent through `parent_thread_id`, and count under the topmost thread above them, so threads that subagents spawn belong to the same session.
 
 ## Origin and task
