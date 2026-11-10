@@ -25,8 +25,24 @@
 # request is priced by the period in effect when it was sent. Older sessions keep the prices of
 # their time. A model with a gap between its periods has no price inside the gap.
 
-# Anthropic: platform.claude.com/docs/en/about-claude/pricing, checked 2026-11-01.
+# Anthropic: platform.claude.com/docs/en/about-claude/pricing, checked 2026-11-10.
 # Claude 4.6 and later, except Haiku 5.5, bill the full 1M context at these rates.
+
+[models."claude-fable-5-2"]
+input = 8.00
+cache_write = 10.00
+cache_write_long = 16.00
+cache_read = 0.20
+output = 40.00
+context_window = 1_000_000
+
+[models."claude-mythos-5-2"]
+input = 8.00
+cache_write = 10.00
+cache_write_long = 16.00
+cache_read = 0.20
+output = 40.00
+context_window = 1_000_000
 
 [models."claude-fable-5-1"]
 input = 10.00
@@ -188,7 +204,8 @@ cache_read = 0.08
 output = 4.00
 context_window = 200_000
 
-# OpenAI: developers.openai.com/api/docs/pricing, Standard tier, checked 2026-11-01.
+# OpenAI: developers.openai.com/api/docs/pricing, Standard tier, checked 2026-11-10.
+# codex-auto-review, Codex's approval reviewer, is not on the page and stays without a price.
 # Long context means more than 272K input tokens. Fast mode (2x) is not detected in Codex logs.
 # GPT-5.6 and later charge for cache writes (30m and 12h lifetimes); earlier models do not.
 
@@ -232,8 +249,8 @@ cache_read = 0.01
 output = 0.50
 long_context = { above = 272_000, input = 0.20, cache_write = 0.25, cache_write_long = 0.50, cache_read = 0.02, output = 0.75 }
 
-# OpenAI cut GPT-5.6 Sol by 20-33% on 2026-08-21 "for the next 3 months", at least through
-# 2026-11-21 (community.openai.com/t/1391726). Archived copies of the pricing page show the old
+# OpenAI cut GPT-5.6 Sol by 20-33% on 2026-08-21 "for the next 3 months" (community.openai.com/t/1391726);
+# on 2026-11-10 the pricing page says the cut runs until 2026-11-30, without the price after it. Archived copies of the pricing page show the old
 # rates at 2026-08-21 10:30 UTC and the new ones a day later.
 [[models."gpt-5.6-sol"]]
 since = 2026-08-21
@@ -270,6 +287,13 @@ cache_read = 0.02
 output = 1.20
 long_context = { above = 272_000, input = 0.40, cache_write = 0.50, cache_write_long = 1.00, cache_read = 0.04, output = 1.80 }
 
+# The pro models have no cached-input rate. Without entries of their own, "gpt-5.5" and the
+# others would price them as a variant.
+[models."gpt-5.5-pro"]
+input = 30.00
+output = 180.00
+long_context = { above = 272_000, input = 60.00, output = 270.00 }
+
 [models."gpt-5.5"]
 input = 5.00
 cache_read = 0.50
@@ -282,6 +306,11 @@ cache_read = 0.25
 output = 15.00
 long_context = { above = 272_000, input = 5.00, cache_read = 0.50, output = 22.50 }
 
+[models."gpt-5.4-pro"]
+input = 30.00
+output = 180.00
+long_context = { above = 272_000, input = 60.00, output = 270.00 }
+
 [models."gpt-5.4-mini"]
 input = 0.75
 cache_read = 0.075
@@ -291,6 +320,15 @@ output = 4.50
 input = 0.20
 cache_read = 0.02
 output = 1.25
+
+[models."gpt-5.3-codex"]
+input = 1.75
+cache_read = 0.175
+output = 14.00
+
+[models."gpt-5.2-pro"]
+input = 21.00
+output = 168.00
 
 [models."gpt-5.2"]
 input = 1.75
@@ -306,6 +344,10 @@ output = 10.00
 input = 1.25
 cache_read = 0.125
 output = 10.00
+
+[models."gpt-5-pro"]
+input = 15.00
+output = 120.00
 
 [models."gpt-5-mini"]
 input = 0.25

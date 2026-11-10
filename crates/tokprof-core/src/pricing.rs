@@ -277,6 +277,21 @@ mod tests {
         assert_eq!(p.get("gpt-5.1-codex-max", 0, now).unwrap().input, 1.25);
         // No write charge before GPT-5.6: writes cost the input rate.
         assert_eq!(p.get("gpt-5.5", 0, now).unwrap().write_short, 5.0);
+        let fable = p.get("claude-fable-5-2", 0, now).unwrap();
+        assert_eq!((fable.input, fable.write_short, fable.write_long, fable.read, fable.output), (8.0, 10.0, 16.0, 0.20, 40.0));
+        assert_eq!(p.get("claude-mythos-5-2", 0, now).unwrap().read, 0.20);
+        assert_eq!(p.get("gpt-5.3-codex", 0, now).unwrap().output, 14.0);
+    }
+
+    #[test]
+    fn a_pro_model_is_not_priced_as_its_base_model() {
+        let p = Pricing::defaults();
+        let now = crate::TEST_NOW_MS;
+        for (pro, input) in [("gpt-5.5-pro", 30.0), ("gpt-5.4-pro", 30.0), ("gpt-5.2-pro", 21.0), ("gpt-5-pro", 15.0)] {
+            let price = p.get(pro, 0, now).unwrap();
+            assert_eq!((price.input, price.read), (input, input), "{pro}: no cached-input rate");
+        }
+        assert_eq!(p.get("gpt-5.5-pro", 300_000, now).unwrap().output, 270.0);
     }
 
     #[test]
