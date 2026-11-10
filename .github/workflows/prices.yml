@@ -76,7 +76,7 @@ jobs:
           set +e
           timeout --kill-after=30s 20m copilot -p "$prompt" -s --no-ask-user "${model[@]}" \
             --disable-builtin-mcps \
-            --allow-tool="read, write($GITHUB_WORKSPACE/$PRICES), shell(cargo:*)" \
+            --allow-tool="read, write($(pwd -P)/$PRICES), shell(cargo:*)" \
             --allow-url="platform.claude.com, developers.openai.com" \
             --share="$RUNNER_TEMP/out/session.md" \
             > "$RUNNER_TEMP/report.md"

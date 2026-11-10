@@ -31,17 +31,26 @@ and how periods work.
      272K input tokens go to `long_context = { above = 272_000, ... }`. Leave out a field whose
      cell is empty or "–".
    - Set `context_window` only when the page states the model's context window.
-5. A new model goes next to its family, in the order the file already keeps: newer before older.
-6. When a rate of an existing model changed, keep the history. The current entry becomes a
+5. Scope. Every Claude model in Anthropic's table belongs in the file. From OpenAI, only the
+   models Codex runs: the GPT-5 family and later (`gpt-5*`, `gpt-6*` and newer), in the
+   Standard tier tables. Leave out older families (`gpt-4o`, `o3` and the like), specialized
+   models, and `-latest` aliases. Entries already in the file stay.
+6. Mind the prefix. An id also prices every id that adds a date, a variant or a tag to it, so
+   `o3` would price `o3-mini`. Before adding an id, check that no model with a different price
+   on the page starts with it. If one does, it needs an entry of its own too; if it has no
+   price, leave both out and say why in the report.
+7. A new model goes next to its family, in the order the file already keeps: newer before older.
+8. When a rate of an existing model changed, keep the history. The current entry becomes a
    period with `until = <today>`, and a new period with `since = <today>` holds the new rates,
    in the `[[models."id"]]` form that `gpt-5.6-sol` uses. Today is the UTC date given at the end
    of this prompt.
-7. When a model is gone from the page, keep its entry: old sessions still need its price.
-8. Write `checked <today>` in the source comment of a provider only when you changed that
+9. When a model is gone from the page, keep its entry: old sessions still need its price.
+10. Write `checked <today>` in the source comment of a provider only when you changed that
    provider's prices. Leave the other comment alone.
-9. Edit nothing but `crates/tokprof-core/prices.toml`. Keep its comments and layout.
-10. After a change, run `cargo test -p tokprof-core --locked pricing` and fix your edit until it
-    passes.
+11. Edit nothing but `crates/tokprof-core/prices.toml`. Keep its comments and layout.
+12. Edit the file with the file-editing tool, not with shell commands. Shell is allowed only for
+    `cargo`: after a change, run exactly `cargo test -p tokprof-core --locked pricing` from the
+    working directory, with nothing before or after it, and fix your edit until it passes.
 
 ## The answer
 
