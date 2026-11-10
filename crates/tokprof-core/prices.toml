@@ -24,6 +24,10 @@
 # Prices change over time. A model with history is an array of periods, [[models."id"]], and a
 # request is priced by the period in effect when it was sent. Older sessions keep the prices of
 # their time. A model with a gap between its periods has no price inside the gap.
+#
+# Each provider's block names its pricing page. "checked" is the day its prices were last brought
+# in line with that page. .github/workflows/prices.yml compares them with the pages every night,
+# and a model that a page does not list gets no price.
 
 # Anthropic: platform.claude.com/docs/en/about-claude/pricing, checked 2026-11-10.
 # Claude 4.6 and later, except Haiku 5.5, bill the full 1M context at these rates.

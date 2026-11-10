@@ -1,0 +1,217 @@
+# Every night, GitHub Copilot compares the built-in prices (crates/tokprof-core/prices.toml) with
+# the Anthropic and OpenAI pricing pages, following .github/prices-check.md. A change goes to the
+# branch bot/prices and a pull request, which this run merges once the checks of every push pass
+# on its commit. A night without a change leaves nothing behind. See openspec/specs/price-updates.
+#
+# Copilot runs with the secret COPILOT_GITHUB_TOKEN, a fine-grained personal access token with only
+# the Copilot Requests permission, in a job whose GITHUB_TOKEN is read-only. The jobs that push and
+# merge run no model.
+name: Prices
+
+on:
+  schedule:
+    # 02:23 in Berlin in winter, 03:23 in summer; off the hour, scheduled runs start on time.
+    - cron: "23 1 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Show the diff in the run summary and push nothing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prices
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  PRICES: crates/tokprof-core/prices.toml
+  BRANCH: bot/prices
+
+jobs:
+  check:
+    name: Compare with the pricing pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      changed: ${{ steps.guard.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt --no-self-update && rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Install Copilot CLI
+        run: npm install -g @github/copilot@1.0.106
+
+      - name: Ask Copilot
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          MODEL: ${{ vars.COPILOT_MODEL }}
+          COPILOT_AUTO_UPDATE: "false"
+          CI: "true"
+          NO_COLOR: "1"
+        run: |
+          if [ -z "$COPILOT_GITHUB_TOKEN" ]; then
+            echo "::error::The secret COPILOT_GITHUB_TOKEN is not set"
+            exit 1
+          fi
+          prompt="$(cat .github/prices-check.md)"$'\n\n'"Today is $(date -u +%F) (UTC)."
+          model=()
+          if [ -n "$MODEL" ]; then model=(--model "$MODEL"); fi
+          mkdir -p "$RUNNER_TEMP/out"
+          set +e
+          timeout --kill-after=30s 20m copilot -p "$prompt" -s --no-ask-user "${model[@]}" \
+            --disable-builtin-mcps \
+            --allow-tool="read, write($GITHUB_WORKSPACE/$PRICES), shell(cargo:*)" \
+            --allow-url="platform.claude.com, developers.openai.com" \
+            --share="$RUNNER_TEMP/out/session.md" \
+            > "$RUNNER_TEMP/report.md"
+          status=$?
+          set -e
+          cp "$RUNNER_TEMP/report.md" "$RUNNER_TEMP/out/report.md"
+          cat "$RUNNER_TEMP/report.md"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Copilot exited with $status"
+            exit "$status"
+          fi
+
+      - name: Check what changed
+        id: guard
+        run: |
+          result=$(grep -E '^RESULT: ' "$RUNNER_TEMP/report.md" | tail -n 1 || true)
+          files=$(git status --porcelain --untracked-files=all)
+          echo "Copilot: ${result:-no RESULT line}"
+          echo "Files: ${files:-none}"
+          case "$result" in
+            "RESULT: UNCHANGED") want="" ;;
+            "RESULT: CHANGED") want=" M $PRICES" ;;
+            "RESULT: FAILED"*) echo "::error::Copilot could not do the check: ${result#RESULT: FAILED }"; exit 1 ;;
+            *) echo "::error::Copilot's report has no RESULT line"; exit 1 ;;
+          esac
+          if [ "$files" != "$want" ]; then
+            echo "::error::Copilot said '${result#RESULT: }', but the changed files are: ${files:-none}"
+            exit 1
+          fi
+          echo "changed=$([ -n "$files" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Formatting
+        if: steps.guard.outputs.changed == 'true'
+        run: cargo fmt --all --check
+      - name: Core tests
+        if: steps.guard.outputs.changed == 'true'
+        run: cargo test -p tokprof-core --locked
+
+      - name: Summary and pull request body
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          {
+            echo "## Copilot's report"
+            echo
+            cat "$RUNNER_TEMP/report.md" 2>/dev/null || echo "(none)"
+            echo
+            echo "## Diff of \`$PRICES\`"
+            echo
+            echo '```diff'
+            git diff -- "$PRICES"
+            echo '```'
+            echo
+            echo "From the run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}."
+          } > "$RUNNER_TEMP/out/body.md"
+          cat "$RUNNER_TEMP/out/body.md" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$PRICES" ]; then cp "$PRICES" "$RUNNER_TEMP/out/prices.toml"; fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: prices
+          path: ${{ runner.temp }}/out/
+          retention-days: 14
+
+  publish:
+    name: Push and open the pull request
+    needs: check
+    # Only a run on main publishes; a dry run or a run on another branch stops at the summary.
+    if: needs.check.outputs.changed == 'true' && !inputs.dry_run && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      sha: ${{ steps.push.outputs.sha }}
+      pr: ${{ steps.pr.outputs.pr }}
+    steps:
+      # The commit the check read, so a newer prices.toml on main is never overwritten.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: prices
+          path: ${{ runner.temp }}/in
+      - name: Commit and push
+        id: push
+        run: |
+          cp "$RUNNER_TEMP/in/prices.toml" "$PRICES"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$BRANCH"
+          git commit -m "Bring the built-in prices in line with the pricing pages" -m "Checked on $(date -u +%F) by the Prices workflow." -- "$PRICES"
+          git push --force origin "$BRANCH"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Open or update the pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Bring the built-in prices in line with the pricing pages ($(date -u +%F))"
+          pr=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --title "$title" --body-file "$RUNNER_TEMP/in/body.md"
+          else
+            gh pr create --base main --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/in/body.md"
+            pr=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
+          fi
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+
+  ci:
+    name: Checks
+    needs: publish
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.publish.outputs.sha }}
+
+  merge:
+    name: Merge
+    needs: [publish, ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Merge the tested commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ needs.publish.outputs.pr }}
+          SHA: ${{ needs.publish.outputs.sha }}
+        run: |
+          gh pr merge "$PR" -R "${{ github.repository }}" --squash --delete-branch --match-head-commit "$SHA" \
+            --subject "Bring the built-in prices in line with the pricing pages (#$PR)" \
+            --body "Copilot's report and the diff are in the pull request."

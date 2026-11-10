@@ -9,6 +9,11 @@ on:
   pull_request:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      ref:
+        description: The commit to check; the caller's own commit when empty.
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -40,6 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
@@ -55,6 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component clippy,rustfmt --no-self-update && rustup default stable
@@ -71,6 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       # The version the author runs; bump it here when the local one changes.
       - run: npx --yes @fission-ai/openspec@1.16.0 validate --all --strict

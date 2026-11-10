@@ -819,7 +819,9 @@ All of a request's spend goes to its trigger, its output included. Every request
 
 ## Prices
 
-The built-in prices are in [`crates/tokprof-core/prices.toml`](crates/tokprof-core/prices.toml), with sources and dates. To add or override models, put entries in `~/.config/tokprof/prices.toml`:
+The built-in prices are in [`crates/tokprof-core/prices.toml`](crates/tokprof-core/prices.toml), with sources and dates. Every night, the [`Prices`](.github/workflows/prices.yml) workflow has GitHub Copilot compare them with the Anthropic and OpenAI pricing pages. A new model or a changed price becomes a pull request, which is merged once the tests pass. A model that neither page lists, such as `codex-auto-review`, stays without a price. A downloaded binary carries the prices of its release.
+
+To add or override models, put entries in `~/.config/tokprof/prices.toml`:
 
 ```toml
 [models."codex-auto-review"]
