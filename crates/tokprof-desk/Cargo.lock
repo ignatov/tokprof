@@ -3386,12 +3386,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokprof-source-pi"
+version = "0.1.6"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "tokprof-core",
+ "tokprof-logio",
+]
+
+[[package]]
 name = "tokprof-sources"
 version = "0.1.6"
 dependencies = [
  "tokprof-core",
  "tokprof-source-claude-code",
  "tokprof-source-codex",
+ "tokprof-source-pi",
 ]
 
 [[package]]
