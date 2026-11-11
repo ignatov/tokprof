@@ -155,3 +155,64 @@ fn a_session_new_to_the_store_is_changed() {
         other => panic!("{other:?}"),
     }
 }
+
+/// A data directory with the stores of `tests/conform`, of the paths `tests/fixtures` lacks, kept
+/// apart from it, since other tests read it.
+fn paths_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("tokprof-opencode-paths-{name}-{}", std::process::id())).join("opencode");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for entry in std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/conform")).unwrap().flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(store) = name.strip_suffix(".sql") else { continue };
+        rusqlite::Connection::open(dir.join(store)).unwrap().execute_batch(&std::fs::read_to_string(entry.path()).unwrap()).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn the_path_fixtures_conform() {
+    tokprof_core::testkit::conform(&OpenCode::at(paths_dir("conform"), Path::new("/h"))).unwrap();
+}
+
+/// A 2.x store without the 1.x tables: a router's model, a failed compaction that is a call, a
+/// finished one without a call, one not finished, a message of another type, an aborted reply,
+/// and subagents two deep, one without a title. A 1.x store without the part table, whose
+/// replies count their own tokens.
+#[test]
+fn the_path_fixtures_hold_each_path() {
+    use tokprof_core::api::ApiId;
+    let s = sessions(&OpenCode::at(paths_dir("count"), Path::new("/h")));
+    let summary: Vec<(&str, bool, &str, usize)> =
+        s.iter().map(|(id, sub, s)| (&id[id.len() - 1..], *sub, s.chains[0].name.as_str(), s.chains[0].requests.len())).collect();
+    assert_eq!(summary, [("e", false, "main", 3), ("e", true, "subagent:explore", 1), ("e", true, "subagent: Check one file", 1), ("g", false, "main", 3)]);
+    let main = &s[0].2;
+    let r = &main.chains[0].requests;
+    let got: Vec<(&str, ApiId, bool, bool)> = r.iter().map(|r| (r.model.as_str(), r.api, r.compaction_call, r.compacted_before)).collect();
+    assert_eq!(
+        got,
+        [
+            ("claude-sonnet-4-5", ApiId::Anthropic, false, false),
+            ("claude-sonnet-4-5", ApiId::Anthropic, true, false),
+            ("claude-sonnet-4-5", ApiId::Anthropic, false, true)
+        ]
+    );
+    assert_eq!(main.compactions.iter().map(|c| c.kind.clone()).collect::<Vec<_>>(), [CompactionTrigger::Auto], "only a finished compaction is one");
+    assert_eq!((s[2].2.id.as_str(), s[2].2.task.as_deref()), (main.id.as_str(), Some("Check one file")), "a subagent's subagent counts under the main session");
+    let old = &s[3].2.chains[0].requests;
+    assert_eq!(
+        old.iter().map(|r| (r.usage.output, r.usage.reasoning, r.compaction_call)).collect::<Vec<_>>(),
+        [(75, 15, false), (200, 0, true), (20, 0, false)]
+    );
+}
+
+/// OpenCode's own cost is within 1.5% of tokprof's for these stores too.
+#[test]
+fn tokprof_s_dollars_agree_with_opencode_s_own_on_every_path() {
+    let pricing = Pricing::defaults();
+    for (id, _, s) in sessions(&OpenCode::at(paths_dir("dollars"), Path::new("/h"))) {
+        let ours: f64 = s.chains[0].requests.iter().map(|r| pricing.get(&r.model, r.usage.prompt(), r.ts_ms).unwrap().cost(&r.usage)).sum();
+        let theirs = s.reported_usd.unwrap();
+        assert!((ours - theirs).abs() <= 0.015 * theirs, "{id}: tokprof ${ours:.6}, OpenCode ${theirs:.6}");
+    }
+}
