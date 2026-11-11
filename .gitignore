@@ -2,3 +2,4 @@
 /crates/tokprof-desk/target
 .DS_Store
 .idea/
+/crates/tokprof-desk/dist/
