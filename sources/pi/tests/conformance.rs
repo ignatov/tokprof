@@ -59,3 +59,64 @@ fn tokprof_s_dollars_agree_with_pi_s_own() {
     }
     assert_eq!((ours(&s[2]), s[2].reported_usd), (None, Some(0.0)));
 }
+
+/// Logs of the paths `tests/fixtures` lacks, kept apart from it, since other tests read it.
+fn paths() -> Pi {
+    Pi::at(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/conform/sessions"), Path::new("/h"))
+}
+
+fn decode_all(source: &Pi) -> Vec<Session> {
+    let mut out: Vec<Session> = source
+        .discover()
+        .iter()
+        .map(|log| {
+            let mut d = source.decoder(log);
+            source.open(log).unwrap().for_each(&mut |r| d.feed(r)).unwrap();
+            d.finish()
+        })
+        .collect();
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+#[test]
+fn the_path_fixtures_conform() {
+    tokprof_core::testkit::conform(&paths()).unwrap();
+}
+
+/// A compaction before the first reply runs on the model of the `model_change`; a long-lifetime
+/// write, an OpenAI reply, a branch summary's call, a reply without usage, and a fork whose log
+/// it came from is gone, so its copies count in it.
+#[test]
+fn the_path_fixtures_hold_each_path() {
+    use tokprof_core::api::ApiId;
+    let s = decode_all(&paths());
+    let main = &s[0].chains[0].requests;
+    let got: Vec<(&str, ApiId, bool, bool)> = main.iter().map(|r| (r.model.as_str(), r.api, r.compaction_call, r.compacted_before)).collect();
+    assert_eq!(
+        got,
+        [
+            ("claude-sonnet-4-5", ApiId::Unknown, true, false),
+            ("claude-sonnet-4-5", ApiId::Anthropic, false, true),
+            ("gpt-5.1", ApiId::OpenAi, false, false),
+            ("gpt-5.1", ApiId::OpenAi, true, false),
+            ("gpt-5.1", ApiId::OpenAi, false, false),
+        ],
+        "a reply without usage is no request; a branch summary is a call but no compaction"
+    );
+    let long = main[1].usage;
+    assert_eq!((long.write_short, long.write_long, long.reasoning), (1000, 2000, 50));
+    assert_eq!(s[0].compactions.len(), 1);
+    assert_eq!(s[1].chains[0].requests.len(), 2, "the fork's copy counts when its log is gone");
+}
+
+/// pi's own cost is within 1.5% of tokprof's for these logs too.
+#[test]
+fn tokprof_s_dollars_agree_with_pi_s_own_on_every_path() {
+    let pricing = Pricing::defaults();
+    for s in decode_all(&paths()) {
+        let ours: f64 = s.chains[0].requests.iter().map(|r| pricing.get(&r.model, r.usage.prompt(), r.ts_ms).unwrap().cost(&r.usage)).sum();
+        let theirs = s.reported_usd.unwrap();
+        assert!((ours - theirs).abs() <= 0.015 * theirs, "{}: tokprof ${ours:.6}, pi ${theirs:.6}", s.id);
+    }
+}
