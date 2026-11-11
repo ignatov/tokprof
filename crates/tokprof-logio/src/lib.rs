@@ -59,6 +59,14 @@ fn read_compressed(path: &Path, ahead: std::io::Result<Ahead>, f: impl FnMut(&st
     }
 }
 
+/// The prefix of the names of the threads the log readers start to help the thread that reads:
+/// the read-ahead thread here, and the threads of a source that reads logs side by side (Codex's
+/// `read_threads` in `sources/codex/src/lib.rs`). A panic on one of them comes back to the thread
+/// that started it, as an error here and as the same panic there, so the panic hook of the
+/// browser's screen keeps it silent: `install_hook` in `crates/tokprof-browse/src/contain.rs`
+/// matches the same prefix, from a copy of its own.
+pub const HELPER_THREAD: &str = "tokprof-helper-";
+
 /// A reader's chunks, read on a thread of its own: the bytes it gave, then the error it stopped
 /// with, if any. The thread reads as `open`'s buffer does, a chunk's worth at a time, so that the
 /// reader gives the same bytes before an error. It stops when the reader ends or fails, or when
@@ -77,11 +85,11 @@ struct Ahead {
 }
 
 impl Ahead {
-    /// Starts the thread; the error is the system's refusal.
+    /// Starts the thread, named with `HELPER_THREAD`; the error is the system's refusal.
     fn spawn(mut reader: impl Read + Send + 'static) -> std::io::Result<Ahead> {
         let (send, chunks) = std::sync::mpsc::sync_channel(AHEAD);
         let (spare, spares) = std::sync::mpsc::channel::<Vec<u8>>();
-        let thread = std::thread::Builder::new().spawn(move || {
+        let thread = std::thread::Builder::new().name(format!("{HELPER_THREAD}decompress")).spawn(move || {
             loop {
                 let mut chunk = spares.try_recv().unwrap_or_else(|_| vec![0u8; CHUNK]);
                 let read = match reader.read(&mut chunk) {

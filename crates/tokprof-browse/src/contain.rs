@@ -5,7 +5,9 @@
 //! Contained work runs on threads marked as such: the thread that runs the job, and the threads of
 //! the pools its parallel work runs on. The panic hook a screen installs (`install_hook`) says
 //! nothing for a marked thread, so that a terminal stays in raw mode and nothing is printed over
-//! the screen; every other panic goes to the hook that was there before.
+//! the screen; every other panic goes to the hook that was there before. It says nothing either
+//! for the helper threads the log readers start, which this crate cannot mark: they are known by
+//! their names (`HELPER`).
 
 use std::any::Any;
 use std::cell::Cell;
@@ -22,6 +24,17 @@ thread_local! {
 
 fn mark(on: bool) {
     let _ = CONTAINED.try_with(|c| c.set(if on { c.get() + 1 } else { c.get().saturating_sub(1) }));
+}
+
+/// The prefix of the names of the helper threads the log readers start: the read-ahead thread of
+/// `tokprof_logio::for_each_line` and Codex's `read_threads` in `sources/codex/src/lib.rs`. It is
+/// `tokprof_logio::HELPER_THREAD` in `crates/tokprof-logio/src/lib.rs`, copied, since this crate
+/// may not depend on that one; a panic on such a thread comes back to the thread that started it.
+const HELPER: &str = "tokprof-helper-";
+
+/// Whether the current thread is a log reader's helper thread, by its name.
+fn helper() -> bool {
+    std::thread::current().name().is_some_and(|name| name.starts_with(HELPER))
 }
 
 /// Whether the current thread runs contained work.
@@ -68,14 +81,15 @@ fn text(payload: &(dyn Any + Send)) -> &str {
     }
 }
 
-/// From now on, a panic in contained work is not reported by the panic hook, since it comes
-/// back as its job's error; any other panic goes to the hook installed before. A screen calls it
+/// From now on, a panic in contained work or on a log reader's helper thread is not reported by
+/// the panic hook, since it comes back as an error; any other panic goes to the hook installed
+/// before. A screen calls it
 /// after it set the terminal up, so that the hook that restores the terminal is the one it keeps
 /// from contained work.
 pub fn install_hook() {
     let previous = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
-        if !contained() {
+        if !contained() && !helper() {
             previous(info);
         }
     }));
@@ -220,5 +234,39 @@ mod tests {
         assert_eq!(run(contained), Ok(true), "the job's thread is marked");
         assert!(!contained(), "the caller is not marked after the job");
         assert_eq!(run_on(None, || 5), Ok(5));
+    }
+
+    #[test]
+    fn a_panic_on_a_helper_thread_does_not_reach_the_previous_hook_and_one_on_a_plain_thread_does() {
+        use std::sync::Mutex;
+        use std::thread::{Builder, ThreadId};
+        const OWN: &str = "a panic of the hook's test";
+        static REACHED: Mutex<Vec<ThreadId>> = Mutex::new(Vec::new());
+        // The other tests' hook first, so that it cannot be set over this one while it is set.
+        testing::quiet();
+        // A previous hook that records the threads whose panics reach it, under the screen's hook;
+        // other panics go on to the hook before it.
+        let before = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            REACHED.lock().unwrap().push(std::thread::current().id());
+            if info.payload_as_str() != Some(OWN) {
+                before(info);
+            }
+        }));
+        install_hook();
+        let panicked = |thread: Builder| {
+            let handle = thread.spawn(|| panic!("{OWN}")).unwrap();
+            let id = handle.thread().id();
+            assert!(handle.join().is_err());
+            REACHED.lock().unwrap().contains(&id)
+        };
+        assert!(!panicked(Builder::new().name(format!("{HELPER}test"))), "a helper thread");
+        assert!(panicked(Builder::new()), "an unnamed thread");
+        assert!(panicked(Builder::new().name("tokprof-other".to_string())), "another name");
+    }
+
+    #[test]
+    fn the_helper_prefix_is_the_one_the_log_readers_name_their_threads_with() {
+        assert_eq!(HELPER, tokprof_logio::HELPER_THREAD);
     }
 }

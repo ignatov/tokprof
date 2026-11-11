@@ -452,13 +452,30 @@ impl Threads {
 /// The first lines of the rollouts, read on plain threads and in order. Not on rayon: this runs
 /// inside the index's `OnceLock`, which rayon workers parsing rollouts wait on, and a rayon worker
 /// that waits for its own jobs could pick up such a parse and wait on itself.
+///
+/// The threads' names start with `tokprof_logio::HELPER_THREAD`, so that the browser's panic hook
+/// (`install_hook` in `crates/tokprof-browse/src/contain.rs`) keeps a panic on one silent. The
+/// panic then goes on in this thread with its own text and without calling the hook again, as a
+/// contained job's error when this runs in one. A part whose thread the system refused is read on
+/// this thread.
 fn read_threads(paths: Vec<PathBuf>) -> Vec<(PathBuf, (Option<Thread>, bool))> {
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
     let chunk = paths.len().div_ceil(workers).max(1);
+    let read = |part: &[PathBuf]| part.iter().map(|path| (path.clone(), read_thread(path))).collect::<Vec<_>>();
     std::thread::scope(|s| {
-        let handles: Vec<_> =
-            paths.chunks(chunk).map(|part| s.spawn(move || part.iter().map(|path| (path.clone(), read_thread(path))).collect::<Vec<_>>())).collect();
-        handles.into_iter().flat_map(|h| h.join().expect("thread index reader")).collect()
+        let started: Vec<_> = paths
+            .chunks(chunk)
+            .map(|part| {
+                (part, std::thread::Builder::new().name(format!("{}codex-index", tokprof_logio::HELPER_THREAD)).spawn_scoped(s, move || read(part)).ok())
+            })
+            .collect();
+        started
+            .into_iter()
+            .flat_map(|(part, thread)| match thread {
+                Some(thread) => thread.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                None => read(part),
+            })
+            .collect()
     })
 }
 

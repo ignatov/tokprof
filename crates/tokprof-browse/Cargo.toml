@@ -15,6 +15,7 @@ notify.workspace = true
 rayon.workspace = true
 
 [dev-dependencies]
+tokprof-logio.workspace = true
 tokprof-source-claude-code.workspace = true
 tokprof-source-opencode.workspace = true
 rusqlite.workspace = true

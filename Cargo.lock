@@ -2008,6 +2008,7 @@ dependencies = [
  "rayon",
  "rusqlite",
  "tokprof-core",
+ "tokprof-logio",
  "tokprof-source-claude-code",
  "tokprof-source-opencode",
 ]
