@@ -1687,8 +1687,8 @@ mod tests {
 
     fn marked() -> (Timeline, Lane) {
         lane(
-            "ecad11b9-0000",
-            "Инфографика прерываний",
+            "3f951d07-0000",
+            "Космическая библиотека",
             &[
                 (t(8, 20), Typed),
                 (t(8, 30), Request),
@@ -1709,7 +1709,7 @@ mod tests {
         // The day starts at 05:00: 24 hours in 72 columns of 20 minutes, three to an hour.
         assert_eq!(lines[0], format!("{:20} 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22 23 00 01 02 03 04", ""));
         let row = &lines[2];
-        assert!(row.starts_with("ecad11 Инфографика…  "), "{row}");
+        assert!(row.starts_with("3f951d Космическая…  "), "{row}");
         let cells: Vec<char> = row.chars().skip(21).collect();
         assert_eq!(&cells[..10], &[' '; 10]);
         assert_eq!(cells[10], '*', "the message at 08:20");
@@ -1739,8 +1739,8 @@ mod tests {
         assert_eq!(plan.hours.len(), 24);
         assert_eq!((plan.hours[0], plan.hours[19]), ((t(5, 0), 5), (t(24, 0), 0)), "each hour with its local hour");
         let ids: Vec<&str> = plan.lanes.iter().map(|l| l.id.as_str()).collect();
-        assert_eq!(ids, ["ecad11b9-0000", "b0000000"], "the most actions first");
-        assert_eq!(plan.lanes[0].label, "ecad11 Инфографика прерываний", "the label before the strip cuts it");
+        assert_eq!(ids, ["3f951d07-0000", "b0000000"], "the most actions first");
+        assert_eq!(plan.lanes[0].label, "3f951d Космическая библиотека", "the label before the strip cuts it");
         let marks = &plan.lanes[0].marks;
         assert!(marks.contains(&(t(8, 20), t(8, 50), Mark::Work)), "work at the times of the log: {marks:?}");
         assert!(marks.contains(&(t(10, 20), t(10, 20), Mark::Interrupt)), "a moment starts and ends at once");

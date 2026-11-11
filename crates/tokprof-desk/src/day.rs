@@ -683,8 +683,8 @@ mod tests {
             hours: (0..24).map(|k| (k * HOUR_MS, (k + 4) % 24)).collect(),
             you: vec![(4 * HOUR_MS + 50 * MIN, 7 * HOUR_MS + 20 * MIN)],
             lanes: vec![StripLane {
-                id: "ecad11b9".into(),
-                label: "ecad11 Инфографика прерываний".into(),
+                id: "3f951d07".into(),
+                label: "3f951d Fix the login redirect".into(),
                 marks: vec![(10 * HOUR_MS, 10 * HOUR_MS + 30 * MIN, Mark::Work), (10 * HOUR_MS + 40 * MIN, 10 * HOUR_MS + 40 * MIN, Mark::Message)],
             }],
             agents: Default::default(),
@@ -738,12 +738,12 @@ mod tests {
         let at = |lane: Option<&str>, ts: i64| pointer_text(&lanes(), &lives, day, &Pointer { lane: lane.map(String::from), x: day.x(ts, width) }, width);
         let hhmm = |ts: i64| local_time(ts, "%H:%M");
         let work = 10 * HOUR_MS + 15 * MIN;
-        assert_eq!(at(Some("ecad11b9"), work), format!("{} · ecad11 Инфографика прерываний · agent working", hhmm(work)));
+        assert_eq!(at(Some("3f951d07"), work), format!("{} · 3f951d Fix the login redirect · agent working", hhmm(work)));
         let message = 10 * HOUR_MS + 40 * MIN;
-        assert_eq!(at(Some("ecad11b9"), message), format!("{} · ecad11 Инфографика прерываний · your message", hhmm(message)));
+        assert_eq!(at(Some("3f951d07"), message), format!("{} · 3f951d Fix the login redirect · your message", hhmm(message)));
         let warm = 11 * HOUR_MS;
-        assert_eq!(at(Some("ecad11b9"), warm), format!("{} · ecad11 Инфографика прерываний · cache warm", hhmm(warm)));
-        assert_eq!(at(Some("ecad11b9"), 2 * HOUR_MS), format!("{} · ecad11 Инфографика прерываний", hhmm(2 * HOUR_MS)), "nothing there");
+        assert_eq!(at(Some("3f951d07"), warm), format!("{} · 3f951d Fix the login redirect · cache warm", hhmm(warm)));
+        assert_eq!(at(Some("3f951d07"), 2 * HOUR_MS), format!("{} · 3f951d Fix the login redirect", hhmm(2 * HOUR_MS)), "nothing there");
         assert_eq!(at(None, 6 * HOUR_MS), format!("{} · you · you were there", hhmm(6 * HOUR_MS)));
         assert_eq!(at(Some("gone"), work), "", "a lane of another day");
     }
@@ -760,19 +760,19 @@ mod tests {
     #[test]
     fn the_agents_lane_names_the_sessions_at_work_under_the_pointer_in_the_lanes_order() {
         let mut day = lanes();
-        day.lanes.push(StripLane { id: "230043e6".into(), label: "230043 Ордер".into(), marks: Vec::new() });
+        day.lanes.push(StripLane { id: "a7c210e4".into(), label: "a7c210 Tidy the docs".into(), marks: Vec::new() });
         day.agents = tokprof_core::agents::Agents {
             steps: vec![(10 * HOUR_MS, 1), (10 * HOUR_MS + 10 * MIN, 2), (10 * HOUR_MS + 30 * MIN, 0)],
             sessions: vec![
-                ("230043e6".into(), "230043 Ордер".into(), vec![(10 * HOUR_MS + 10 * MIN, 10 * HOUR_MS + 30 * MIN)]),
-                ("ecad11b9".into(), "ecad11 Инфографика прерываний".into(), vec![(10 * HOUR_MS, 10 * HOUR_MS + 30 * MIN)]),
+                ("a7c210e4".into(), "a7c210 Tidy the docs".into(), vec![(10 * HOUR_MS + 10 * MIN, 10 * HOUR_MS + 30 * MIN)]),
+                ("3f951d07".into(), "3f951d Fix the login redirect".into(), vec![(10 * HOUR_MS, 10 * HOUR_MS + 30 * MIN)]),
             ],
             peak: Some((2, 10 * HOUR_MS + 10 * MIN)),
             ..Default::default()
         };
         let at = |m: i64| local_time(10 * HOUR_MS + m * MIN, "%H:%M");
-        assert_eq!(agents_text(&day, 10 * HOUR_MS + 20 * MIN), format!("{} · 2 agents at work: ecad11 Инфографика пр…, 230043 Ордер", at(20)));
-        assert_eq!(agents_text(&day, 10 * HOUR_MS + 5 * MIN), format!("{} · 1 agent at work: ecad11 Инфографика пр…", at(5)));
+        assert_eq!(agents_text(&day, 10 * HOUR_MS + 20 * MIN), format!("{} · 2 agents at work: 3f951d Fix the login…, a7c210 Tidy the docs", at(20)));
+        assert_eq!(agents_text(&day, 10 * HOUR_MS + 5 * MIN), format!("{} · 1 agent at work: 3f951d Fix the login…", at(5)));
         assert_eq!(agents_text(&day, 11 * HOUR_MS), format!("{} · no agent at work", at(60)));
         assert_eq!(day.agents.peak_text(), format!("peak 2 at {}", at(10)));
     }
@@ -801,7 +801,7 @@ mod tests {
     #[test]
     fn a_lane_label_keeps_its_head_whole_and_its_title_only_with_room() {
         assert_eq!(label_parts("rex", "Migrate terminal to Rex", true), (None, Some("Migrate terminal to Rex".into())), "a short head as it is");
-        assert_eq!(label_parts("json-profiler", "UI на rune", true), (None, Some("UI на rune".into())));
+        assert_eq!(label_parts("json-profiler", "Fix the login redirect", true), (None, Some("Fix the login redirect".into())));
         assert_eq!(label_parts("json-profiler", "", true).1, None);
         // A head that would leave the title under 60 points takes the room alone, cut to it.
         let (cut, title) = label_parts("fix-spelling-hey-we-ve-never-met-before", "Fix spelling in greeting", true);
