@@ -126,7 +126,13 @@ impl Kept {
             }
         };
         let slot = lock(&self.logs).entry(key.clone()).or_default().clone();
-        let mut kept = lock(&slot);
+        // A read that panicked left its log half fed: it is read whole again, as after an error.
+        let mut kept = slot.lock().unwrap_or_else(|e| {
+            slot.clear_poison();
+            let mut kept = e.into_inner();
+            kept.take();
+            kept
+        });
         let now = Instant::now();
         // Also a log that did not change is read whole now and then: its decoder may read files
         // beside it, such as a subagent's meta file written later.
@@ -181,7 +187,11 @@ impl Kept {
         let now = Instant::now();
         let mut held: Vec<(Instant, u64, Key)> = Vec::new();
         logs.retain(|key, slot| {
-            let Ok(log) = slot.try_lock() else { return true };
+            // One being read stays; one a panicked read left goes.
+            let log = match slot.try_lock() {
+                Ok(log) => log,
+                Err(e) => return matches!(e, std::sync::TryLockError::WouldBlock),
+            };
             match log.as_ref() {
                 Some(log) if now.duration_since(log.used) < UNUSED => {
                     if key != just {
