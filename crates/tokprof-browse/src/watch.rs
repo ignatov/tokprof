@@ -14,7 +14,7 @@ use rayon::prelude::*;
 use std::sync::Arc;
 
 use tokprof_core::catalog::Catalog;
-use tokprof_core::source::{AgentId, SessionRef, Touched};
+use tokprof_core::source::{AgentId, Locator, SessionRef, Touched};
 use tokprof_core::xray::{self, SessionRow};
 
 /// How long changes are gathered after the first one. An agent writes its log many times a
@@ -36,6 +36,9 @@ pub enum Change {
     Gone(PathBuf),
     /// Every session, after the file system dropped changes.
     All(Vec<SessionRow>),
+    /// The main sessions a store that holds many holds now: any other session of the store is
+    /// gone.
+    Held { store: PathBuf, logs: Vec<Locator> },
 }
 
 /// A log directory, and how change events name it.
@@ -111,12 +114,14 @@ fn follow(events: &Receiver<notify::Result<Event>>, catalog: &Catalog, agents: &
             vec![Change::All(rescan(catalog, agents))]
         } else {
             let mut paths = event_paths(roots, &batch);
-            hot.saw(&paths);
             if Instant::now() >= poll_at {
                 paths.extend(hot.written());
                 poll_at = Instant::now() + POLL;
             }
-            changes_at(catalog, &paths)
+            let (changes, logs) = changes_at(catalog, &paths);
+            // Only the logs are looked at again, not the other files that change beside them.
+            hot.saw(&logs);
+            changes
         };
         for change in changes {
             if !send(change) {
@@ -196,26 +201,35 @@ fn event_paths(roots: &[Root], events: &[Event]) -> Vec<(&'static str, PathBuf, 
 /// What a batch of events means for the sessions.
 #[cfg(test)]
 fn changes(catalog: &Catalog, roots: &[Root], events: &[Event]) -> Vec<Change> {
-    changes_at(catalog, &event_paths(roots, events))
+    changes_at(catalog, &event_paths(roots, events)).0
 }
 
-/// What changes at these paths mean for the sessions.
-fn changes_at(catalog: &Catalog, paths: &[(&'static str, PathBuf, bool)]) -> Vec<Change> {
+/// What changes at these paths mean for the sessions, and which of the paths are logs or stores.
+fn changes_at(catalog: &Catalog, paths: &[(&'static str, PathBuf, bool)]) -> (Vec<Change>, Vec<(&'static str, PathBuf, bool)>) {
     let mut sessions = BTreeSet::new();
     let mut gone = BTreeSet::new();
-    // Sessions in stores, by their place in the store, as their sources found them.
-    let mut rows = Vec::new();
+    let mut logs = Vec::new();
+    // Sessions in stores, by their place in the store, as their sources found them, and what
+    // each store holds now.
+    let mut rows: Vec<SessionRef> = Vec::new();
+    let mut held: Vec<(PathBuf, Vec<Locator>)> = Vec::new();
     for (source, path, arrived) in paths {
         let source = *source;
-        match catalog.touched(source, path, *arrived) {
+        let touched = catalog.touched(source, path, *arrived);
+        if !matches!(touched, Touched::Other) {
+            logs.push((source, path.clone(), *arrived));
+        }
+        match touched {
             Touched::Log(main) => sessions.extend(main.map(|m| (source, m))),
             Touched::Logs(mains) => sessions.extend(mains.into_iter().map(|m| (source, m))),
-            Touched::Sessions(found) => {
-                for r in found {
-                    if !rows.iter().any(|s: &SessionRef| s.locator == r.locator) {
+            Touched::Store { db, changed, held: now } => {
+                for r in changed {
+                    if !rows.iter().any(|s| s.locator == r.locator) {
                         rows.push(r);
                     }
                 }
+                held.retain(|(d, _)| *d != db);
+                held.push((db, now));
             }
             Touched::Other if !path.exists() => {
                 gone.insert(path.clone());
@@ -231,8 +245,9 @@ fn changes_at(catalog: &Catalog, paths: &[(&'static str, PathBuf, bool)]) -> Vec
         })
         .collect();
     out.extend(rows.into_iter().map(|r| Change::Session(Box::new(SessionRow::new(catalog, r)))));
+    out.extend(held.into_iter().map(|(store, logs)| Change::Held { store, logs }));
     out.extend(gone.into_iter().map(Change::Gone));
-    out
+    (out, logs)
 }
 
 /// Every session in the log directories.
@@ -285,6 +300,7 @@ mod tests {
                 Change::Session(r) => format!("+{} {}", rel(r.file.path()), r.subagents.len()),
                 Change::Gone(p) => format!("-{}", rel(p)),
                 Change::All(_) => "all".to_string(),
+                Change::Held { .. } => "held".to_string(),
             })
             .collect()
     }
@@ -338,15 +354,15 @@ mod tests {
         let roots = [Root { source: "opencode", path: d.clone(), real: real_path(&d) }];
         let modify = EventKind::Modify(ModifyKind::Any);
         let events: Vec<Event> = ["opencode.db", "opencode.db-wal", "opencode.db-shm"].iter().map(|f| Event::new(modify).add_path(d.join(f))).collect();
-        let mut got: Vec<(String, usize)> = changes(&catalog, &roots, &events)
-            .iter()
-            .map(|c| match c {
-                Change::Session(r) => (r.session_id.clone(), r.subagents.len()),
-                _ => panic!("only sessions"),
-            })
-            .collect();
+        let changes = changes(&catalog, &roots, &events);
+        let mut got: Vec<(String, usize)> =
+            changes.iter().filter_map(|c| if let Change::Session(r) = c { Some((r.session_id.clone(), r.subagents.len())) } else { None }).collect();
         got.sort();
         assert_eq!(got, [("ses_a".to_string(), 1), ("ses_b".to_string(), 0)], "the main sessions written lately, each once");
+        let held: Vec<usize> = changes.iter().filter_map(|c| if let Change::Held { logs, .. } = c { Some(logs.len()) } else { None }).collect();
+        assert_eq!(held, [3], "once, with every main session the store holds");
+        let shm = [Event::new(modify).add_path(d.join("opencode.db-shm"))];
+        assert!(changes_at(&catalog, &event_paths(&roots, &shm)).1.is_empty(), "the index a read writes is no log, and is not looked at again");
         let hot = Hot::of(&catalog, &catalog.agents());
         assert!(hot.0.contains_key(&d.join("opencode.db")), "the store is looked at");
         fs::remove_dir_all(&d).unwrap();

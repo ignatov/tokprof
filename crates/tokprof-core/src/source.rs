@@ -295,9 +295,10 @@ pub enum Touched {
     Log(Option<PathBuf>),
     /// A directory that arrived with logs: the paths of their main sessions' logs.
     Logs(Vec<PathBuf>),
-    /// A store that holds many sessions: the main sessions in it that may have changed, as they
-    /// are now. A session that did not change may be among them.
-    Sessions(Vec<SessionRef>),
+    /// A store that holds many sessions changed: the main sessions in it that may have changed,
+    /// as they are now (one that did not change may be among them), and every main session the
+    /// store holds now, so that the others are known to be gone. A store that is gone holds none.
+    Store { db: PathBuf, changed: Vec<SessionRef>, held: Vec<Locator> },
 }
 
 /// What the first records of a log tell, without reading the rest.

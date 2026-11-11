@@ -706,6 +706,14 @@ impl<T> Browser<T> {
                     changed = true;
                 }
             }
+            Change::Held { store, logs } => {
+                let held: HashSet<&Locator> = logs.iter().collect();
+                let of_store = |l: &Locator| matches!(l, Locator::Row { db, .. } if *db == store);
+                for e in self.entries.iter_mut().filter(|e| !e.gone && of_store(&e.row.file.locator) && !held.contains(&e.row.file.locator)) {
+                    e.gone = true;
+                    changed = true;
+                }
+            }
             Change::All(rows) => {
                 let found: HashSet<&Locator> = rows.iter().map(|r| &r.file.locator).collect();
                 for e in self.entries.iter_mut().filter(|e| !e.gone && !found.contains(&e.row.file.locator)) {
@@ -1519,6 +1527,13 @@ mod tests {
         assert_eq!((a.entries.len(), a.entries[0].version, a.entries[1].version), (2, 2, 1), "only the session that changed");
         take(&mut a, Change::Session(Box::new(stored(2, 20))));
         assert_eq!(a.entries.len(), 3, "a new session of the store joins the list");
+        let held = |ids: &[usize]| ids.iter().map(|i| Locator::Row { db: "/x/store.db".into(), id: format!("id{i}") }).collect();
+        take(&mut a, Change::Held { store: "/x/other.db".into(), logs: Vec::new() });
+        assert!(a.entries.iter().all(|e| !e.gone), "another store's sessions stay");
+        take(&mut a, Change::Held { store: "/x/store.db".into(), logs: held(&[0, 1, 2]) });
+        assert!(a.entries.iter().all(|e| !e.gone));
+        take(&mut a, Change::Held { store: "/x/store.db".into(), logs: held(&[0, 2]) });
+        assert_eq!(a.entries.iter().map(|e| e.gone).collect::<Vec<_>>(), [false, true, false], "a session deleted from its store leaves");
         take(&mut a, Change::All(vec![stored(0, 10), stored(2, 20)]));
         assert_eq!(a.entries.iter().map(|e| e.gone).collect::<Vec<_>>(), [false, true, false], "a rescan leaves out the session no longer there");
     }

@@ -31,6 +31,14 @@ While it runs, `tokprof ui` SHALL follow the agents' log directories and stores:
 - **WHEN** the log directories cannot be watched
 - **THEN** the ui runs without live updates and the footer reads `not following the logs: <reason>`
 
+#### Scenario: A session deleted from its store
+- **WHEN** OpenCode deletes session `S` from a store that holds 10 other sessions, or the store itself is deleted
+- **THEN** `S` leaves the list, or every session of the store does, and the others keep their rows
+
+#### Scenario: A store that cannot be read for a moment
+- **WHEN** a store is locked or cannot be opened while the ui looks at it
+- **THEN** its sessions stay listed as they were
+
 #### Scenario: An OpenCode session at work
 - **WHEN** OpenCode writes a step of session `S` to its store's `-wal` file, and the store holds 10 other sessions
 - **THEN** within about 2 s `S`'s cost and time update, and the 10 other sessions keep their rows and costs

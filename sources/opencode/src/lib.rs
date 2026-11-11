@@ -8,7 +8,7 @@
 mod decoder;
 mod store;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -44,11 +44,12 @@ pub struct OpenCode {
 }
 
 /// The sessions of a store, as it was when its files looked like `stamp`.
+#[derive(Default)]
 struct Listing {
     stamp: Stamp,
     logs: Vec<SessionRef>,
-    /// The latest write of each session's messages.
-    last: HashMap<String, Option<i64>>,
+    /// Each session's row, by id.
+    rows: HashMap<String, SessionRow>,
 }
 
 /// The length and last write of a store and of its journal.
@@ -123,24 +124,33 @@ impl OpenCode {
         out
     }
 
-    /// The logs of a store: every session in it, a subagent's under its topmost session.
-    fn logs_of(&self, db: &Path) -> Vec<SessionRef> {
-        self.listing(db).logs.clone()
-    }
-
-    /// The store as it is now, listed again only when one of its files changed.
-    fn listing(&self, db: &Path) -> Arc<Listing> {
+    /// The store as it is now, listed again only when one of its files changed: every session
+    /// in it, a subagent's under its topmost session. A store that cannot be read gives an error
+    /// and is not kept, so that the next look tries again.
+    fn listing(&self, db: &Path) -> Result<Arc<Listing>> {
         let stamp = stamp_of(db);
         if let Some(l) = self.listed.lock().unwrap_or_else(|e| e.into_inner()).get(db).filter(|l| l.stamp == stamp) {
-            return l.clone();
+            return Ok(l.clone());
         }
-        let sessions = Store::open(db).and_then(|s| s.sessions()).unwrap_or_default();
+        let sessions = Store::open(db).and_then(|s| s.sessions());
+        let sessions = match sessions {
+            Ok(s) => s,
+            Err(e) => {
+                self.listed.lock().unwrap_or_else(|e| e.into_inner()).remove(db);
+                return Err(e);
+            }
+        };
         let parents: HashMap<&str, Option<&str>> = sessions.iter().map(|s| (s.id.as_str(), s.parent_id.as_deref())).collect();
         let logs = sessions.iter().map(|s| self.reference(db, s, root_of(&parents, &s.id))).collect();
-        let last = sessions.iter().map(|s| (s.id.clone(), s.last_message_ms)).collect();
-        let listing = Arc::new(Listing { stamp, logs, last });
+        let rows = sessions.iter().map(|s| (s.id.clone(), s.clone())).collect();
+        let listing = Arc::new(Listing { stamp, logs, rows });
         self.listed.lock().unwrap_or_else(|e| e.into_inner()).insert(db.to_path_buf(), listing.clone());
-        listing
+        Ok(listing)
+    }
+
+    /// The listing of a store, or none when it cannot be read.
+    fn listing_or_empty(&self, db: &Path) -> Arc<Listing> {
+        self.listing(db).unwrap_or_default()
     }
 
     fn reference(&self, db: &Path, s: &SessionRow, root: &str) -> SessionRef {
@@ -157,16 +167,12 @@ impl OpenCode {
         }
     }
 
-    /// The main sessions of a store written since `since_ms`, the session active last first when
-    /// there is no bound.
-    fn mains_of(&self, db: &Path, since_ms: Option<i64>) -> Vec<SessionRef> {
-        let logs = self.logs_of(db);
-        let mut mains: Vec<SessionRef> = logs
-            .iter()
-            .filter(|r| !r.subagent)
-            .filter(|main| since_ms.is_none_or(|since| logs.iter().any(|r| r.main_id == main.session_id && r.modified_ms() >= since)))
-            .cloned()
-            .collect();
+    /// The main sessions of a listing written since `since_ms`, its own logs or its subagents',
+    /// the session written last first.
+    fn mains_of(listing: &Listing, since_ms: Option<i64>) -> Vec<SessionRef> {
+        let written: HashSet<&str> =
+            listing.logs.iter().filter(|r| since_ms.is_none_or(|since| r.modified_ms() >= since)).map(|r| r.main_id.as_str()).collect();
+        let mut mains: Vec<SessionRef> = listing.logs.iter().filter(|r| !r.subagent && written.contains(r.session_id.as_str())).cloned().collect();
         mains.sort_by_key(|r| std::cmp::Reverse(r.modified_ns));
         mains
     }
@@ -179,10 +185,14 @@ impl OpenCode {
         }
     }
 
-    /// The store a changed path belongs to: the store itself or the journal beside it.
+    /// The store a changed path belongs to: the store itself or the journal beside it. The
+    /// `-shm` index beside a store changes when it is read, by tokprof too, so it is none.
     fn store_of(&self, changed: &Path) -> Option<PathBuf> {
         let name = changed.file_name()?.to_str()?;
-        let store = ["-wal", "-shm", "-journal"].iter().find_map(|s| name.strip_suffix(s)).unwrap_or(name);
+        if name.ends_with("-shm") {
+            return None;
+        }
+        let store = ["-wal", "-journal"].iter().find_map(|s| name.strip_suffix(s)).unwrap_or(name);
         let path = changed.with_file_name(store);
         (is_store_name(store) || self.named.as_ref() == Some(&path)).then_some(path)
     }
@@ -224,12 +234,12 @@ impl LogSource for OpenCode {
     }
 
     fn discover(&self) -> Vec<SessionRef> {
-        self.stores().iter().flat_map(|db| self.logs_of(db)).collect()
+        self.stores().iter().flat_map(|db| self.listing_or_empty(db).logs.clone()).collect()
     }
 
-    /// A store given as a path means its main session that was active last.
+    /// A store given as a path means its main session that was written last.
     fn session_at(&self, path: &Path) -> Option<SessionRef> {
-        self.mains_of(path, None).into_iter().next()
+        OpenCode::mains_of(&*self.listing(path).ok()?, None).into_iter().next()
     }
 
     fn claim(&self, path: &Path) -> Claim {
@@ -238,19 +248,23 @@ impl LogSource for OpenCode {
         if (named || name) && Store::open(path).is_ok() { Claim::Yes } else { Claim::No }
     }
 
+    /// The data directory. A store `$OPENCODE_DB` names elsewhere is followed while it is written,
+    /// by the poll of `polled`, since watching its directory would watch all below it.
     fn watched_paths(&self) -> Vec<PathBuf> {
-        let mut out = vec![self.dir.clone()];
-        if let Some(parent) = self.named.as_ref().and_then(|p| p.parent()).filter(|p| *p != self.dir) {
-            out.push(parent.to_path_buf());
-        }
-        out
+        vec![self.dir.clone()]
     }
 
+    /// For a store or its journal: its main sessions written in the last hour, and all it holds.
+    /// A store that is gone holds nothing; one that cannot be read now tells nothing.
     fn touched(&self, changed: &Path, _arrived: bool) -> Touched {
-        match self.store_of(changed) {
-            Some(db) => Touched::Sessions(self.mains_of(&db, Some(now_ms() - RECENT_MS))),
-            None => Touched::Other,
-        }
+        let Some(db) = self.store_of(changed) else { return Touched::Other };
+        let listing = match self.listing(&db) {
+            Ok(l) => l,
+            Err(_) if !db.exists() => Arc::default(),
+            Err(_) => return Touched::Other,
+        };
+        let held = listing.logs.iter().filter(|r| !r.subagent).map(|r| r.locator.clone()).collect();
+        Touched::Store { changed: OpenCode::mains_of(&listing, Some(now_ms() - RECENT_MS)), held, db }
     }
 
     /// The store and the journal SQLite writes first: the store itself changes at checkpoints.
@@ -259,14 +273,14 @@ impl LogSource for OpenCode {
     }
 
     fn head(&self, s: &SessionRef) -> Head {
-        let session = self.row(s).ok().and_then(|(db, id)| Store::open(db).ok()?.session(id).ok().flatten());
-        let project = session.as_ref().map(|r| display_path(&r.directory, None, &self.home)).unwrap_or_default();
+        let directory = self.row(s).ok().and_then(|(db, id)| Some(self.listing(db).ok()?.rows.get(id)?.directory.clone()));
+        let project = directory.map(|d| display_path(&d, None, &self.home)).unwrap_or_default();
         Head { project, session_id: s.session_id.clone(), client: None }
     }
 
     fn last_active(&self, s: &SessionRef) -> Option<i64> {
         let (db, id) = self.row(s).ok()?;
-        *self.listing(db).last.get(id)?
+        self.listing(db).ok()?.rows.get(id)?.last_message_ms
     }
 
     fn first_active(&self, s: &SessionRef) -> Option<i64> {
@@ -275,7 +289,7 @@ impl LogSource for OpenCode {
 
     fn subagents(&self, s: &SessionRef) -> Vec<SessionRef> {
         let Ok((db, _)) = self.row(s) else { return Vec::new() };
-        self.logs_of(db).into_iter().filter(|r| r.subagent && r.main_id == s.session_id).collect()
+        self.listing_or_empty(db).logs.iter().filter(|r| r.subagent && r.main_id == s.session_id).cloned().collect()
     }
 
     fn open(&self, s: &SessionRef) -> Result<Box<dyn Records>> {

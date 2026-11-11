@@ -108,12 +108,23 @@ fn stores_as_logs() {
     assert_eq!(source.polled(&latest), [store.clone(), dir.join("opencode.db-wal")]);
     // The fixtures were written in 2026-11; none is recent now.
     match source.touched(&dir.join("opencode.db-wal"), false) {
-        Touched::Sessions(found) => assert!(found.iter().all(|r| !r.subagent)),
+        Touched::Store { db, changed, held } => {
+            assert_eq!((db, changed.len(), held.len()), (store.clone(), 0, 2), "the fixtures were written in 2026-11; none lately");
+        }
         other => panic!("{other:?}"),
     }
     assert_eq!(source.touched(&dir.join("snapshot/abc"), true), Touched::Other);
+    assert_eq!(source.touched(&dir.join("opencode.db-shm"), false), Touched::Other, "reading a store writes its index");
+    assert_eq!(source.touched(&dir.join("opencode-broken.db"), false), Touched::Other, "a store that cannot be read tells nothing");
 
-    let a = source.activity(main).unwrap();
+    let beta = dir.join("opencode-beta.db");
+    std::fs::remove_file(&beta).unwrap();
+    assert_eq!(source.touched(&beta, false), Touched::Store { db: beta.clone(), changed: Vec::new(), held: Vec::new() }, "a store that is gone holds nothing");
+    assert_eq!(source.discover().len(), 2);
+
+    let main = OpenCode::at(data_dir("activity"), Path::new("/h")).discover().into_iter().find(|l| l.session_id.ends_with('a')).unwrap();
+    let source = OpenCode::at(main.path().parent().unwrap().to_path_buf(), Path::new("/h"));
+    let a = source.activity(&main).unwrap();
     assert_eq!(
         (a.cwd.as_deref(), a.prompts.len(), a.last_text.as_deref()),
         (Some("/h/src/app"), 2, Some("Added sub.")),

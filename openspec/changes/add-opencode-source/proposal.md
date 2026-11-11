@@ -14,14 +14,14 @@ On the author's machine the store holds 2 sessions with usage, 4 requests, all o
 
 - **A new agent `opencode`.** tokprof finds OpenCode's stores and reads each session's requests, tokens, models, times, compactions, subagents and OpenCode's own cost. Every command that takes `--agent` accepts `opencode`, and the default list gains it.
 - **Where the stores are.** `$XDG_DATA_HOME/opencode`, by default `~/.local/share/opencode`: `opencode.db` and the channel stores `opencode-<channel>.db`, but not `opencode-next.db`, which 2.x imports. `$OPENCODE_DB` names another store. A store is opened read-only and never written, also while OpenCode writes it.
-- **A session in a store is a log.** Its size is the size of its rows. Lists, the line about the logs read, the X-ray and the day view show it like a log file; paths printed for it are the store's.
+- **A session in a store is a log.** Its size is the size of its message rows. Lists, the line about the logs read, the X-ray and the day view show it like a log file; paths printed for it are the store's.
 - **Both layouts.** A session in both layouts is one session. Its messages are the union of both by id; where both hold a message, the 1.x row is read, since 2.x's copy drops the usage of compaction calls.
 - **Requests.** A 2.x `assistant` message with non-zero `tokens` is one request; a 1.x assistant message gives one request per `step-finish` part, else one from its own `tokens`. `input` is uncached input, `cache.read` reads, `cache.write` short-lifetime writes, and `output` plus `reasoning` the output.
 - **Compactions.** A 2.x `compaction` message and a 1.x user message with a `compaction` part mark the next request, with the kind `auto` or `manual`. The usage of the compaction is a compaction call.
 - **Subagents.** A session with a `parent_id` is a subagent log of the topmost session above it, as the `task` tool starts one.
 - **Forks.** A fork copies the messages of the session it came from with their times; messages older than the session are left out, as OpenCode's own stats do.
 - **OpenCode's own cost.** The sum of `cost` over the requests is the session's reported cost, compared with tokprof's total in `tokprof summary`, never used as a price.
-- **Live updates.** `tokprof ui` follows the stores: a session OpenCode writes to is costed again, the others in the store keep their rows.
+- **Live updates.** `tokprof ui` follows the stores: a session OpenCode writes to is costed again, the others in the store keep their rows, and a session deleted from its store leaves the list.
 - **The source.** A new log source under `sources/opencode`, with synthetic fixtures built from SQL text at test time, the conformance test and a README that names the stores, the fields and the versions.
 
 ## Capabilities
@@ -46,12 +46,11 @@ None.
 
 - The JSON files of opencode before 1.x (`storage/session`, `storage/message`, `storage/part`): none on this machine to check against, and current opencode no longer reads them.
 - Rebuilt prompts, tools, triggers, hand-offs, interrupts and share names for OpenCode: `cache-misses` reports OpenCode's misses with the cause `unknown (server side?)`.
-- A session deleted in OpenCode while `tokprof ui` runs stays listed until the ui starts again.
 - Title-generation calls, which OpenCode does not store per call.
 
 ## Impact
 
 - New crate `sources/opencode`, with a bundled SQLite library; one feature and one line in `crates/tokprof-sources`.
-- The framework learns sessions that share one file: a log is known by its locator (file, directory or row of a store), not only by its path, in the kept logs, the live watcher and the session browser. File logs behave as before.
+- The framework learns sessions that share one file: a log is known by its locator (file, directory or row of a store), not only by its path, in the kept logs, the live watcher and the session browser; a change of a store names the sessions it changed and all it holds. The watcher looks again only at the files a source called logs. File logs behave as before.
 - `README.md`: OpenCode in the list of agents, with its store location.
 - No change to Claude Code, Codex or pi results.

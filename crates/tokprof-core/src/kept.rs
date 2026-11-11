@@ -12,7 +12,6 @@
 
 use std::collections::HashMap;
 use std::fs::Metadata;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -33,7 +32,7 @@ const WHOLE_AFTER: Duration = Duration::from_secs(10 * 60);
 /// budget, so that one huge log is kept beside the others and never pushes them out.
 const BUDGET: u64 = 1 << 30;
 
-/// The kept logs, by source, path and whether the log is a subagent's, which the decoder depends
+/// The kept logs, by source, log and whether the log is a subagent's, which the decoder depends
 /// on. Each log has a lock of its own, so that logs are read in parallel and a log that two
 /// readers ask for at once is read once.
 pub(crate) struct Kept {
@@ -47,7 +46,7 @@ impl Default for Kept {
     }
 }
 
-type Key = (&'static str, PathBuf, bool);
+type Key = (&'static str, Locator, bool);
 
 struct Log {
     decoder: Box<dyn Decoder>,
@@ -112,11 +111,13 @@ impl Kept {
     /// The session a log gives now: read on from where its last read stopped when it is kept,
     /// else read whole and kept when it is recent and its source can read it on.
     pub(crate) fn parse(&self, source: &dyn LogSource, s: &SessionRef) -> Result<Session> {
-        // A session in a store that holds many is rewritten in place: it is read whole.
+        // A session in a store that holds many is rewritten in place, so it cannot be read on,
+        // and the store's file says nothing about one session: it is read whole, without the
+        // read `read_new` would make only to find that out.
         if matches!(s.locator, Locator::Row { .. }) {
             return read_whole(source, s);
         }
-        let key: Key = (source.name(), s.path().to_path_buf(), s.subagent);
+        let key: Key = (source.name(), s.locator.clone(), s.subagent);
         let stamp = match std::fs::metadata(s.path()) {
             Ok(meta) if Stamp::of(&meta).recent() => Stamp::of(&meta),
             _ => {
@@ -233,7 +234,7 @@ fn read_new(source: &dyn LogSource, s: &SessionRef, stamp: Stamp, now: Instant) 
 mod tests {
     use super::*;
     use crate::source::{Activity, AgentId, Claim, Detail, Head, Locator, Records, Touched};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     /// A source of plain line logs whose session is named by the count of its lines.
     struct Lines;
@@ -337,7 +338,7 @@ mod tests {
     }
 
     fn kept_names(k: &Kept) -> Vec<String> {
-        let mut names: Vec<String> = lock(&k.logs).keys().map(|key| key.1.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        let mut names: Vec<String> = lock(&k.logs).keys().map(|key| key.1.path().file_name().unwrap().to_string_lossy().into_owned()).collect();
         names.sort();
         names
     }

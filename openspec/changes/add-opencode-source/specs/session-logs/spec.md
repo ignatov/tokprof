@@ -118,11 +118,11 @@ A command that has no log to read SHALL fail with an error: `summary`, `misses`,
 ## ADDED Requirements
 
 ### Requirement: OpenCode stores
-OpenCode's sessions SHALL be read from its SQLite stores in `$XDG_DATA_HOME/opencode`, by default `~/.local/share/opencode`: `opencode.db` and `opencode-<channel>.db`, but not `opencode-next.db`, which opencode 2.x imports into `opencode.db`. `$OPENCODE_DB` names one more store, relative to that directory unless absolute. Each session in a store is one log, whose size is the bytes of its rows (seen in opencode 1.18.16, 1.19.3 and 2.2.4).
+OpenCode's sessions SHALL be read from its SQLite stores in `$XDG_DATA_HOME/opencode`, by default `~/.local/share/opencode`: `opencode.db` and `opencode-<channel>.db`, but not `opencode-next.db`, which opencode 2.x imports into `opencode.db`. `$OPENCODE_DB` names one more store, relative to that directory unless absolute. Each session in a store is one log, whose size is the bytes of its message rows in the layout that holds more (seen in opencode 1.18.16, 1.19.3 and 2.2.4).
 
 #### Scenario: The default store
 - **WHEN** `~/.local/share/opencode/opencode.db` holds 2 sessions
-- **THEN** 2 OpenCode logs are found, and the line about the logs read says `opencode 2 files` with their rows' size
+- **THEN** 2 OpenCode logs are found, and the line about the logs read says `opencode 2 files` with the size of their message rows
 
 #### Scenario: Data directory set by the environment
 - **WHEN** `XDG_DATA_HOME=/data` is set

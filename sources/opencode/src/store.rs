@@ -83,28 +83,39 @@ impl Store {
                 }
             }
         }
-        let mut sizes: HashMap<String, (u64, Option<i64>)> = HashMap::new();
-        for table in ["session_message", "message", "part", "session_part"].into_iter().filter(|t| self.has(t)) {
-            let messages = table.ends_with("message");
-            // `octet_length` reads the size of a value, not the value.
-            let mut q = self.db.prepare(&format!("SELECT session_id, SUM(octet_length(data)), MAX(time_updated) FROM {table} GROUP BY session_id"))?;
-            let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<i64>>(2)?)))?;
-            for row in rows {
-                let (id, bytes, last) = row?;
+        // The size and last write of each session's messages, in each layout. The parts of 1.x
+        // messages, which hold most of their text, are left out: summing them reads the whole
+        // `part` table, 0.8 s for 400 MB, on every write OpenCode makes while the ui follows it.
+        let mut sizes: HashMap<String, ([u64; 2], Option<i64>)> = HashMap::new();
+        for (layout, table) in [(0, "message"), (1, "session_message")] {
+            let Some(rows) = self.message_sizes(table) else { continue };
+            for (id, bytes, last) in rows {
                 let e = sizes.entry(id).or_default();
-                e.0 += bytes.unwrap_or(0).max(0) as u64;
-                if messages {
-                    e.1 = e.1.max(last);
-                }
+                e.0[layout] = bytes;
+                e.1 = e.1.max(last);
             }
         }
         for s in &mut out {
             if let Some((bytes, last)) = sizes.get(&s.id) {
-                s.bytes = *bytes;
+                // A session in both layouts holds most of its messages twice: the larger counts.
+                s.bytes = bytes[0].max(bytes[1]);
                 s.last_message_ms = *last;
             }
         }
         Ok(out)
+    }
+
+    /// The bytes and the latest `time_updated` of each session's rows in a message table; `None`
+    /// when the table is not there, lacks a column or cannot be read, which leaves sizes at 0.
+    /// `octet_length` reads the size of a value, not the value.
+    fn message_sizes(&self, table: &str) -> Option<Vec<(String, u64, Option<i64>)>> {
+        if !self.has(table) {
+            return None;
+        }
+        let mut q = self.db.prepare(&format!("SELECT session_id, SUM(octet_length(data)), MAX(time_updated) FROM {table} GROUP BY session_id")).ok()?;
+        let rows =
+            q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0).max(0) as u64, r.get::<_, Option<i64>>(2)?))).ok()?;
+        rows.collect::<rusqlite::Result<_>>().ok()
     }
 
     /// The session with this id, from `session_v2` else `session`.
