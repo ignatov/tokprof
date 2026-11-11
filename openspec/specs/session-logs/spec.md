@@ -1,7 +1,7 @@
 # Session Logs Specification
 
 ## Purpose
-Find the session logs that Claude Code and Codex write on this machine and read them into sessions, chains and requests, with token usage and rebuilt prompts, for every other tokprof capability to analyze. It also owns the global flags that select which logs and requests a report covers.
+Find the session logs that Claude Code, Codex, pi and OpenCode write on this machine (OpenCode's in SQLite stores) and read them into sessions, chains and requests, with token usage and rebuilt prompts, for every other tokprof capability to analyze. It also owns the global flags that select which logs and requests a report covers.
 
 ## Requirements
 

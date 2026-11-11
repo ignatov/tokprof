@@ -4,7 +4,7 @@ schema: spec-driven
 # openspec/specs/, usage in README.md.
 context: |
   Product: tokprof, one profiler of token spend, dollars and prompt-cache misses in the logs that
-  coding agents already write (Claude Code and Codex today; Junie and OpenCode are planned).
+  coding agents already write (Claude Code, Codex, pi and OpenCode today; Junie is planned).
   Cache misses are one dimension of the profile, not a separate tool. Its edge over other tools is
   dollars by cause across all history, subagents included, with advice on what to do next.
 
