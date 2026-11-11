@@ -5,6 +5,7 @@ use std::fs::{File, Metadata};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::ops::ControlFlow;
 use std::path::Path;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
@@ -13,18 +14,108 @@ use sha2::{Digest, Sha256};
 
 /// A log file for reading, decompressed when it ends in `.zst`.
 pub fn open(path: &Path) -> Result<Box<dyn BufRead>> {
-    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    if path.extension().is_some_and(|e| e == "zst") {
-        let decoder = ruzstd::decoding::StreamingDecoder::new(BufReader::new(file)).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-        Ok(Box::new(BufReader::with_capacity(1 << 20, decoder)))
+    if is_compressed(path) {
+        Ok(Box::new(BufReader::with_capacity(CHUNK, open_compressed(path)?)))
     } else {
-        Ok(Box::new(BufReader::with_capacity(1 << 20, file)))
+        Ok(Box::new(BufReader::with_capacity(CHUNK, open_file(path)?)))
     }
 }
 
-/// Calls `f` for every line of a JSONL file, tolerating invalid UTF-8.
-pub fn for_each_line(path: &Path, mut f: impl FnMut(&str)) -> Result<()> {
-    let mut reader = open(path)?;
+/// How much is read from a log at once.
+const CHUNK: usize = 1 << 20;
+
+/// How many chunks of a compressed log are decompressed ahead of the lines handed over.
+const AHEAD: usize = 4;
+
+fn is_compressed(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == "zst")
+}
+
+fn open_file(path: &Path) -> Result<File> {
+    File::open(path).with_context(|| format!("opening {}", path.display()))
+}
+
+type Zstd = ruzstd::decoding::StreamingDecoder<BufReader<File>, ruzstd::decoding::FrameDecoder>;
+
+fn open_compressed(path: &Path) -> Result<Zstd> {
+    ruzstd::decoding::StreamingDecoder::new(BufReader::new(open_file(path)?)).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
+}
+
+/// Calls `f` for every line of a JSONL file, tolerating invalid UTF-8. A compressed file is
+/// decompressed on a thread of its own, a few chunks ahead, so that its lines are handled while
+/// the next ones are decompressed; the lines and any error are the same as `open` gives.
+pub fn for_each_line(path: &Path, f: impl FnMut(&str)) -> Result<()> {
+    if is_compressed(path) { lines(Ahead::spawn(open_compressed(path)?), f) } else { lines(open(path)?, f) }
+}
+
+/// A reader's chunks, read on a thread of its own: the bytes it gave, then the error it stopped
+/// with, if any. The thread reads as `open`'s buffer does, a chunk's worth at a time, so that the
+/// reader gives the same bytes before an error. It stops when the reader ends or fails, or when
+/// nothing reads from it any more. The chunks' buffers go back to it to be filled again.
+struct Ahead {
+    chunks: Receiver<std::io::Result<(Vec<u8>, usize)>>,
+    spare: Sender<Vec<u8>>,
+    /// The chunk being handed over, its length, and how much of it was.
+    chunk: Vec<u8>,
+    len: usize,
+    at: usize,
+}
+
+impl Ahead {
+    fn spawn(mut reader: impl Read + Send + 'static) -> Ahead {
+        let (send, chunks) = std::sync::mpsc::sync_channel(AHEAD);
+        let (spare, spares) = std::sync::mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            loop {
+                let mut chunk = spares.try_recv().unwrap_or_else(|_| vec![0u8; CHUNK]);
+                let read = match reader.read(&mut chunk) {
+                    Ok(0) => return,
+                    Ok(n) => Ok((chunk, n)),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => Err(e),
+                };
+                let failed = read.is_err();
+                if send.send(read).is_err() || failed {
+                    return;
+                }
+            }
+        });
+        Ahead { chunks, spare, chunk: Vec::new(), len: 0, at: 0 }
+    }
+}
+
+impl Read for Ahead {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let held = self.fill_buf()?;
+        let n = held.len().min(out.len());
+        out[..n].copy_from_slice(&held[..n]);
+        self.consume(n);
+        Ok(n)
+    }
+}
+
+impl BufRead for Ahead {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self.at == self.len {
+            let done = std::mem::take(&mut self.chunk);
+            (self.len, self.at) = (0, 0);
+            if !done.is_empty() {
+                let _ = self.spare.send(done);
+            }
+            // A closed channel: the reader ended.
+            if let Ok(read) = self.chunks.recv() {
+                (self.chunk, self.len) = read?;
+            }
+        }
+        Ok(&self.chunk[self.at..self.len])
+    }
+
+    fn consume(&mut self, n: usize) {
+        self.at = (self.at + n).min(self.len);
+    }
+}
+
+fn lines(mut reader: impl BufRead, mut f: impl FnMut(&str)) -> Result<()> {
     let mut buf = Vec::new();
     loop {
         buf.clear();
@@ -309,6 +400,47 @@ mod tests {
     fn compressed_logs_are_not_read_from_the_end() {
         let error = for_each_line_back(Path::new("/x/rollout-1.jsonl.zst"), |_| ControlFlow::Continue(())).unwrap_err();
         assert!(error.to_string().contains("compressed"), "{error}");
+    }
+
+    /// The lines a read hands over, and the error it ends with.
+    fn read_all(read: impl FnOnce(&mut dyn FnMut(&str)) -> Result<()>) -> (Vec<String>, Option<String>) {
+        let mut lines = Vec::new();
+        let end = read(&mut |l| lines.push(l.to_string()));
+        (lines, end.err().map(|e| format!("{e:#}")))
+    }
+
+    #[test]
+    fn a_compressed_log_decompressed_ahead_gives_the_lines_and_the_error_a_plain_read_does() {
+        // Lines of many sizes over several chunks, the last one without a newline.
+        let mut text = String::new();
+        for i in 0..40_000 {
+            text.push_str(&format!("{{\"n\":{i},\"pad\":\"{}\"}}\n", "x".repeat(i % 300)));
+        }
+        text.push_str("{\"last\":true}");
+        assert!(text.len() > 3 * CHUNK);
+        let packed = ruzstd::encoding::compress_to_vec(text.as_bytes(), ruzstd::encoding::CompressionLevel::Fastest);
+        let dir = std::env::temp_dir().join(format!("tokprof-logio-ahead-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("rollout-whole.jsonl.zst");
+        let cut = dir.join("rollout-cut.jsonl.zst");
+        std::fs::write(&whole, &packed).unwrap();
+        std::fs::write(&cut, &packed[..packed.len() * 3 / 5]).unwrap();
+
+        let ahead = read_all(|f| for_each_line(&whole, f));
+        assert_eq!(ahead, read_all(|f| lines(open(&whole)?, f)));
+        assert_eq!(ahead.0.len(), 40_001);
+        assert_eq!(ahead.0.concat(), text);
+
+        // A log cut short: the same lines before the same error.
+        let ahead = read_all(|f| for_each_line(&cut, f));
+        assert!(ahead.1.is_some() && !ahead.0.is_empty(), "{:?}", ahead.1);
+        assert_eq!(ahead, read_all(|f| lines(open(&cut)?, f)));
+
+        // A file that is no zstd frame fails as it opens.
+        let junk = dir.join("rollout-junk.jsonl.zst");
+        std::fs::write(&junk, b"not zstd").unwrap();
+        assert_eq!(read_all(|f| for_each_line(&junk, f)), read_all(|f| lines(open(&junk)?, f)));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
