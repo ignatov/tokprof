@@ -1987,6 +1987,7 @@ dependencies = [
  "clap",
  "ratatui",
  "rayon",
+ "rusqlite",
  "serde_json",
  "tokprof-browse",
  "tokprof-core",

@@ -64,6 +64,29 @@ compaction              3s   0.2%            –
 
 1 of 5 requests took a minute or more (20.0%); the longest took 31m.
 
+OpenCode (opencode)
+
+No typed messages after an earlier request.
+
+Cold returns: requests of main conversations that missed the cache after a pause longer than its lifetime
+
+No cold returns.
+
+Sessions by largest context: the largest prompt of each session's main conversations
+
+largest context  sessions  spend   share  cold returns
+under 100k              3  $0.09  100.0%             0
+
+Where the agent's busy time went: what it waited on in its turns, and while its own background work ran after them
+
+kind        time  share  after turns
+compaction  4.9m  48.2%            –
+nothing     4.8m  47.2%            –
+model        23s   3.9%           7s
+subagents     4s   0.7%            –
+
+0 of 12 requests took a minute or more (0.0%).
+
 pi (pi)
 
 No typed messages after an earlier request.
@@ -87,4 +110,4 @@ model         9s   1.4%           4s
 0 of 7 requests took a minute or more (0.0%).
 
 --- stderr
-read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB) in <time>
+read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB), opencode 4 files (0.0 GB) in <time>

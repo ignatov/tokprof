@@ -1,9 +1,10 @@
 $ tokprof --prices tests/golden/prices.toml flame --value avoidable --stack agent,model,cause -o <home>/m.collapsed
 --- stdout
-wrote 3 stacks to ~/m.collapsed
+wrote 4 stacks to ~/m.collapsed
 --- stderr
-read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB) in <time>
+read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB), opencode 4 files (0.0 GB) in <time>
 --- m.collapsed
 claude_[0];claude-opus-5-5_[0];miss: compaction 34265
 codex_[0];gpt-6-astra_[0];miss: compaction 6480
+opencode_[0];claude-sonnet-4-5_[0];miss: compaction call 21195
 pi_[0];claude-sonnet-4-5_[0];miss: compaction call 12515

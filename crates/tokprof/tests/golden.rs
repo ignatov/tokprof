@@ -1,7 +1,7 @@
 //! What the commands print over the log sources' fixture logs, compared with the expected text in
 //! `tests/golden/<case>.txt`: the command line, its stdout, its stderr and, for `flame`, the file
 //! it wrote. Each case runs the binary on a home of its own (see `common`), over the fixtures of
-//! Claude Code, Codex and pi, and with `--prices tests/golden/prices.toml`, which prices every
+//! Claude Code, Codex, pi and OpenCode, and with `--prices tests/golden/prices.toml`, which prices every
 //! model the fixtures name, so that a change to the built-in prices changes no golden.
 //!
 //! After a change of the printed text, write the files again and review their diff:

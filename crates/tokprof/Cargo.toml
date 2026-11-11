@@ -24,3 +24,4 @@ serde_json.workspace = true
 
 [dev-dependencies]
 tokprof-source-claude-code.workspace = true
+rusqlite.workspace = true

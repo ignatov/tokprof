@@ -10,7 +10,7 @@ Agent                          1           –          –  $0.01  $0.01    100
 AskUserQuestion                1           –          –  $0.00  $0.00    100%
 Bash cargo clippy              1           –          –  $0.01  $0.01      0%
 Bash rm -rf                    1           –          –  $0.01  $0.01      0%
-spend $0.35 · rent of these tools $0.03 · trips of these tools $0.03 (two views of the same money; do not add them)
+spend $0.45 · rent of these tools $0.03 · trips of these tools $0.03 (two views of the same money; do not add them)
 failed 3 calls, after them $0.04 until the tool worked again · you refused 2 · rules denied 1
 --- stderr
-read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB) in <time>
+read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB), opencode 4 files (0.0 GB) in <time>

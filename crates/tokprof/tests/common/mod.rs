@@ -47,15 +47,32 @@ pub fn tokprof(home: &Path) -> Command {
     c
 }
 
-/// tokprof over the log sources' fixture logs: Claude Code's and Codex's, and pi's when `pi`.
-/// OpenCode's fixtures are SQL text, not stores, so no OpenCode store is read.
-pub fn tokprof_fixtures(home: &Path, pi: bool) -> Command {
+/// tokprof over the log sources' fixture logs: Claude Code's and Codex's, and with `all` pi's and
+/// OpenCode's too. OpenCode's fixtures are SQL text; its stores are built from them in the home's
+/// data directory, as its conformance test builds them.
+pub fn tokprof_fixtures(home: &Path, all: bool) -> Command {
     let root = root();
     let mut c = tokprof(home);
     c.env("CLAUDE_CONFIG_DIR", root.join("sources").join("claude-code").join("tests").join("fixtures"))
         .env("CODEX_HOME", root.join("sources").join("codex").join("tests").join("fixtures"));
-    if pi {
+    if all {
         c.env("PI_CODING_AGENT_SESSION_DIR", root.join("sources").join("pi").join("tests").join("fixtures").join("sessions"));
+        opencode_stores(&home.join(".local").join("share").join("opencode"));
     }
     c
+}
+
+/// A store per SQL fixture of OpenCode in `dir`, named as the fixture without `.sql`; a store
+/// built before is built again.
+fn opencode_stores(dir: &Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    let fixtures = root().join("sources").join("opencode").join("tests").join("fixtures");
+    for entry in std::fs::read_dir(&fixtures).unwrap().flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(store) = name.strip_suffix(".sql") else { continue };
+        let path = dir.join(store);
+        let _ = std::fs::remove_file(&path);
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(&std::fs::read_to_string(entry.path()).unwrap()).unwrap();
+    }
 }

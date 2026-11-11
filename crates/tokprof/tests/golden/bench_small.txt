@@ -27,4 +27,4 @@ A compaction re-writes the cold context and outputs 10.0k tokens; a handoff note
 A heartbeat goes out at 5/6 of the cache lifetime, every 50m on a 1h cache, reads the context and outputs 100 tokens.
 Heartbeats, then compaction sends the same pings and, at the next ping time past the window, a compaction while the cache is warm that outputs 10.0k tokens: it writes the context again in pi, whose compaction calls read nothing from the cache.
 --- stderr
-read claude 1 files (0.0 GB), codex 1 files (0.0 GB), pi 3 files (0.0 GB) in <time>
+read claude 1 files (0.0 GB), codex 1 files (0.0 GB), pi 3 files (0.0 GB), opencode 3 files (0.0 GB) in <time>

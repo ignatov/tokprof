@@ -1,8 +1,8 @@
 $ tokprof --prices tests/golden/prices.toml flame -o <home>/f.folded
 --- stdout
-wrote 38 stacks to ~/f.folded
+wrote 55 stacks to ~/f.folded
 --- stderr
-read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB) in <time>
+read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB), opencode 4 files (0.0 GB) in <time>
 --- f.folded
 claude;/w/app;5e5510f0;main;turn 0;assistant text;output 2182
 claude;/w/app;5e5510f0;main;turn 0;thinking;output 9818
@@ -37,6 +37,23 @@ codex;/w/svc;01a19a00-1111-7222;main;turn 2;user prompt;uncached input 1000
 codex;/w/svc;01a19a00-1111-7222;subagent:explorer;assistant text;output 800
 codex;/w/svc;01a19a00-1111-7222;subagent:explorer;turn 1;user prompt;cache read 300
 codex;/w/svc;01a19a00-1111-7222;subagent:explorer;turn 1;user prompt;uncached input 3000
+opencode;/h/src/api;ses_f00000000003cccc;main;assistant text;output 8100
+opencode;/h/src/api;ses_f00000000003cccc;main;unknown;cache read 420
+opencode;/h/src/api;ses_f00000000003cccc;main;unknown;cache write 7875
+opencode;/h/src/api;ses_f00000000003cccc;main;unknown;rewrite after miss 7500
+opencode;/h/src/api;ses_f00000000003cccc;main;unknown;uncached input 12900
+opencode;/h/src/api;ses_f00000000004dddd;main;assistant text;output 75
+opencode;/h/src/api;ses_f00000000004dddd;main;unknown;cache read 450
+opencode;/h/src/api;ses_f00000000004dddd;main;unknown;uncached input 30
+opencode;/h/src/app;ses_f00000000001aaaa;main;assistant text;output 10500
+opencode;/h/src/app;ses_f00000000001aaaa;main;thinking;output 300
+opencode;/h/src/app;ses_f00000000001aaaa;main;unknown;cache read 1500
+opencode;/h/src/app;ses_f00000000001aaaa;main;unknown;cache write 12000
+opencode;/h/src/app;ses_f00000000001aaaa;main;unknown;rewrite after miss 16050
+opencode;/h/src/app;ses_f00000000001aaaa;main;unknown;uncached input 13500
+opencode;/h/src/app;ses_f00000000001aaaa;subagent: List files;assistant text;output 375
+opencode;/h/src/app;ses_f00000000001aaaa;subagent: List files;unknown;cache read 300
+opencode;/h/src/app;ses_f00000000001aaaa;subagent: List files;unknown;uncached input 3060
 pi;/h/src/app;01a1b000-0000-7000;main;assistant text;output 28125
 pi;/h/src/app;01a1b000-0000-7000;main;unknown;cache read 4017
 pi;/h/src/app;01a1b000-0000-7000;main;unknown;cache write 22613
