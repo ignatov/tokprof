@@ -244,7 +244,7 @@ In the list, `↑` or `k` and `↓` or `j` SHALL move the selection by one sessi
 - **THEN** nothing is copied and the footer reads `no clipboard tool (pbcopy, wl-copy, xclip, clip.exe); run: tokprof handoff <id>`
 
 ### Requirement: Live updates
-While it runs, `tokprof ui` SHALL follow the agents' log directories: a new session joins the list, a session whose main or subagent logs change is costed and X-rayed again, and a session whose main log is deleted or moved away leaves the list. Until the new X-ray is ready, the old one stays, with `· updating…` in its title. Where rows go when this happens belongs to Rows in place.
+While it runs, `tokprof ui` SHALL follow the agents' log directories and stores: a new session joins the list, a session whose main or subagent logs change is costed and X-rayed again, and a session whose main log is deleted or moved away leaves the list. A session in a store that holds many is its own row, and the other sessions of the store keep theirs. Until the new X-ray is ready, the old one stays, with `· updating…` in its title. Where rows go when this happens belongs to Rows in place.
 
 #### Scenario: A new session
 - **WHEN** an agent starts a new session
@@ -273,6 +273,18 @@ While it runs, `tokprof ui` SHALL follow the agents' log directories: a new sess
 #### Scenario: The logs cannot be followed
 - **WHEN** the log directories cannot be watched
 - **THEN** the ui runs without live updates and the footer reads `not following the logs: <reason>`
+
+#### Scenario: A session deleted from its store
+- **WHEN** OpenCode deletes session `S` from a store that holds 10 other sessions, or the store itself is deleted
+- **THEN** `S` leaves the list, or every session of the store does, and the others keep their rows
+
+#### Scenario: A store that cannot be read for a moment
+- **WHEN** a store is locked or cannot be opened while the ui looks at it
+- **THEN** its sessions stay listed as they were
+
+#### Scenario: An OpenCode session at work
+- **WHEN** OpenCode writes a step of session `S` to its store's `-wal` file, and the store holds 10 other sessions
+- **THEN** within about 2 s `S`'s cost and time update, and the 10 other sessions keep their rows and costs
 
 ### Requirement: One frame as text
 The hidden option `tokprof ui --dump <width>x<height>` SHALL render one frame of that size as plain text on standard output and exit, without a terminal and without following the logs. It waits up to 20 s for the X-ray of the newest session, then 0.5 s more for costs, and prints every row with trailing spaces trimmed.

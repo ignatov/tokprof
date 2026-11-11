@@ -20,7 +20,7 @@
 - [x] 3.2 Check that tokprof's dollars on the Anthropic fixture are within 1.5% of the sum of `cost`.
 - [x] 3.3 Time `tokprof` with no arguments and the full corpus parse, before and after; record both.
 - [x] 3.4 Run `tokprof ui` on the scratch store while opencode writes to it, and check that the session updates and the other sessions keep their rows.
-- [ ] 3.5 Reinstall the binary with `cargo install --path crates/tokprof --root ~/.local`. Since `tokprof-browse` changes, run the tokprof-desk checks in its folder and lock the new source there.
+- [x] 3.5 Reinstall the binary with `cargo install --path crates/tokprof --root ~/.local`. Since `tokprof-browse` changes, run the tokprof-desk checks in its folder and lock the new source there.
 
 ## 4. Docs and checks
 
