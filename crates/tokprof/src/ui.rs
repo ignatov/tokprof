@@ -77,7 +77,7 @@ fn dump_frame(app: &mut App, width: u16, height: u16) -> Result<()> {
     let buffer = terminal.backend().buffer();
     for y in 0..height {
         let line: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
-        println!("{}", line.trim_end());
+        outln!("{}", line.trim_end());
     }
     Ok(())
 }

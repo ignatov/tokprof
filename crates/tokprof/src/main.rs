@@ -24,6 +24,20 @@ use tokprof_core::share::{self, Share};
 use tokprof_core::source::{AgentId, SessionRef};
 use tokprof_core::{bench, fmt, handoff, xray};
 
+/// `print!` to stdout through [`write_out`].
+macro_rules! out {
+    ($($arg:tt)*) => {
+        $crate::write_out(format_args!($($arg)*))
+    };
+}
+
+/// `println!` to stdout through [`write_out`].
+macro_rules! outln {
+    ($($arg:tt)*) => {
+        $crate::write_out(format_args!("{}\n", format_args!($($arg)*)))
+    };
+}
+
 mod render_bench;
 mod render_pool;
 mod render_report;
@@ -289,7 +303,7 @@ fn main() -> Result<()> {
             Some(d) => Some((parse_date(d)?, d)),
             None => None,
         };
-        print!("{}", render_report::prices(&pricing, at));
+        out!("{}", render_report::prices(&pricing, at));
         return Ok(());
     }
     if let Command::Pool { paths, min_files, by_file, json, where_ } = &command {
@@ -319,9 +333,9 @@ fn main() -> Result<()> {
         let mut p = pool::build(&files, *min_files);
         p.filter = filter;
         if *json {
-            println!("{}", serde_json::to_string_pretty(&p)?);
+            outln!("{}", serde_json::to_string_pretty(&p)?);
         } else {
-            print!("{}", render_pool::text(&p, *by_file));
+            out!("{}", render_pool::text(&p, *by_file));
         }
         return Ok(());
     }
@@ -365,10 +379,10 @@ fn main() -> Result<()> {
             };
             let x = xray::xray(&catalog, &file, &pricing, now_ms())?;
             if *requests {
-                print!("{}", render_requests::text(&x, &style));
+                out!("{}", render_requests::text(&x, &style));
                 return Ok(());
             }
-            print!("{}", render_xray::text(&x, &style, &paths::profile_dir(), catalog.home()));
+            out!("{}", render_xray::text(&x, &style, &paths::profile_dir(), catalog.home()));
             return Ok(());
         }
         Command::Sessions { limit, cost } => {
@@ -376,7 +390,7 @@ fn main() -> Result<()> {
             let now = now_ms();
             let glances: Vec<Option<xray::Glance>> =
                 if *cost { xray::glances(&catalog, &rows, &pricing, now).into_iter().map(Some).collect() } else { vec![None; rows.len()] };
-            print!("{}", render_sessions::sessions(&rows, &glances, *cost, &style, now));
+            out!("{}", render_sessions::sessions(&rows, &glances, *cost, &style, now));
             return Ok(());
         }
         Command::Handoff { target, note } => {
@@ -385,7 +399,7 @@ fn main() -> Result<()> {
                 None => xray::latest(&catalog, &select).context(none_found())?,
             };
             let text = if *note { handoff::with_note(&catalog, &file)? } else { handoff::line(&catalog, &file) };
-            println!("{text}");
+            outln!("{text}");
             if std::io::stdout().is_terminal() {
                 let done = match clipboard::copy(&text) {
                     Some(_) => "copied to the clipboard: paste it into a new session".to_string(),
@@ -415,7 +429,7 @@ fn main() -> Result<()> {
         for line in &day.warnings {
             eprintln!("{line}");
         }
-        print!("{}", day.text);
+        out!("{}", day.text);
         return Ok(());
     }
     if let Command::Calendar { metric } = &command {
@@ -439,7 +453,7 @@ fn main() -> Result<()> {
         let (store, refreshed) = calendar::update(&catalog, &agents, &pricing, &path, progress)?;
         eprintln!("{}", calendar::read_line(&catalog, &refreshed, started.elapsed().as_secs_f64(), &path));
         warn(&refreshed.unreadable);
-        print!("{}", render_calendar::text(&calendar::compute(&store, &select, now_ms()), *metric, &style));
+        out!("{}", render_calendar::text(&calendar::compute(&store, &select, now_ms()), *metric, &style));
         // What went wrong with the store comes after the calendar, which it did not stop.
         for w in &refreshed.warnings {
             eprintln!("{w}");
@@ -461,7 +475,7 @@ fn main() -> Result<()> {
         let (store, refreshed) = calendar::update(&catalog, &agents, &pricing, &path, |_, _| {})?;
         eprintln!("{}", calendar::read_line(&catalog, &refreshed, started.elapsed().as_secs_f64(), &path));
         warn(&refreshed.unreadable);
-        print!("{}", render_month::text(&calendar::month(&store, &select, ym, now), &style));
+        out!("{}", render_month::text(&calendar::month(&store, &select, ym, now), &style));
         for w in &refreshed.warnings {
             eprintln!("{w}");
         }
@@ -486,10 +500,10 @@ fn main() -> Result<()> {
         eprintln!("{}", sources(&catalog, &files, started.elapsed().as_secs_f64()));
         warn(&stats.unreadable);
         let b = bench::replay(found, &pricing, *requests, *min_context, *keep_warm);
-        print!("{}", render_bench::report(&b, &style));
+        out!("{}", render_bench::report(&b, &style));
         if let Some(path) = svg {
             for written in render_bench::write_svg(&b, path)? {
-                println!("wrote {}", display_path(&written.to_string_lossy(), None, catalog.home()));
+                outln!("wrote {}", display_path(&written.to_string_lossy(), None, catalog.home()));
             }
         }
         return Ok(());
@@ -544,12 +558,12 @@ fn main() -> Result<()> {
         }
         eprintln!("{}", sources(&catalog, &files, started.elapsed().as_secs_f64()));
         warn(&stats.unreadable);
-        print!("{}", render_report::pauses(&p));
+        out!("{}", render_report::pauses(&p));
         let offset = &rhythm::local_offset;
         let view = View::new(timelines, filter.until_ms.unwrap_or_else(now_ms), offset);
         let window = (filter.since_ms.unwrap_or(i64::MIN), filter.until_ms.unwrap_or(i64::MAX));
         let returns = rhythm::Returns::within(&p, window);
-        print!("{}", render_rhythm::section(&view, window, offset, &returns, &style));
+        out!("{}", render_rhythm::section(&view, window, offset, &returns, &style));
         return Ok(());
     }
     if let Command::Share { output, survey, mcp_names, dollars, .. } = &command {
@@ -648,12 +662,12 @@ fn main() -> Result<()> {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
         std::fs::write(&path, share::pretty(&share::as_shares(&value, *dollars))).with_context(|| format!("writing {}", path.display()))?;
-        println!("wrote {}", display_path(&path.to_string_lossy(), None, catalog.home()));
+        outln!("wrote {}", display_path(&path.to_string_lossy(), None, catalog.home()));
         let name = path.file_stem().map_or_else(|| "share".to_string(), |n| n.to_string_lossy().to_string());
         let (usd, tokens) = share::totals(&value);
-        print!("\n{}", render_pool::text(&pool::build(&[(name, value)], 1), false));
-        println!("{}", share::totals_line(usd, tokens, *dollars));
-        println!("Nothing was sent anywhere: review the file, then send it yourself.");
+        out!("\n{}", render_pool::text(&pool::build(&[(name, value)], 1), false));
+        outln!("{}", share::totals_line(usd, tokens, *dollars));
+        outln!("Nothing was sent anywhere: review the file, then send it yourself.");
         return Ok(());
     }
 
@@ -733,17 +747,17 @@ fn main() -> Result<()> {
                 let line = compare_line(&catalog, &select, &pricing, &collector)?;
                 text = with_line_after(&text, "Total priced: ", &line);
             }
-            print!("{text}");
+            out!("{text}");
         }
-        Command::Misses { top, expected } => print!("{}", render_report::misses(&collector, top, expected)),
-        Command::Whatif => print!("{}", render_report::whatif(&collector, &catalog.agents())),
+        Command::Misses { top, expected } => out!("{}", render_report::misses(&collector, top, expected)),
+        Command::Whatif => out!("{}", render_report::whatif(&collector, &catalog.agents())),
         Command::Tools { by } => {
             let order = match by {
                 By::Rent => tokprof_core::tools::RowOrder::Rent,
                 By::Trips => tokprof_core::tools::RowOrder::Trips,
                 By::Failed => tokprof_core::tools::RowOrder::Failed,
             };
-            print!("{}", render_report::tools(&collector.tools, order, 25))
+            out!("{}", render_report::tools(&collector.tools, order, 25))
         }
         Command::Flame { output, value, stack, title, highlight, .. } => {
             let output = output.expect("set above");
@@ -759,7 +773,7 @@ fn main() -> Result<()> {
                     Measure::Tokens => format!("{} tokens", w.quantum),
                     _ => format!("${}", w.quantum as f64 / 1e6),
                 };
-                println!(
+                outln!(
                     "wrote {} (1 sample = {per_sample}), {}, {} to {shown}",
                     fmt::count(w.samples as u64, "sample", "samples"),
                     fmt::count(w.threads as u64, "thread", "threads"),
@@ -771,7 +785,7 @@ fn main() -> Result<()> {
             let html = export::HtmlOptions { title: &title, highlight: highlight.as_deref() };
             let n = export::write(&output, &collector.profile.stacks, measure, &html)?;
             let written = if export::has_ext(&output, "html") { fmt::count(n as u64, "frame", "frames") } else { fmt::count(n as u64, "stack", "stacks") };
-            println!("wrote {written} to {shown}");
+            outln!("wrote {written} to {shown}");
         }
     }
     Ok(())
@@ -801,6 +815,19 @@ fn default_name(cli: &Cli, value: Value) -> String {
         Value::Avoidable => parts.push("misses".to_string()),
     }
     format!("{}.jfr", parts.join("-"))
+}
+
+/// Writes to stdout. A reader that went away, as `head` does after its lines, ends tokprof quietly
+/// and with success; any other failure panics, as `print!` does. SIGPIPE stays ignored, as Rust
+/// leaves it: the terminal UI and the clipboard's child share this process.
+fn write_out(args: std::fmt::Arguments) {
+    use std::io::Write;
+    let mut stdout = std::io::stdout().lock();
+    match stdout.write_fmt(args).and_then(|()| stdout.flush()) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
+        Err(e) => panic!("failed printing to stdout: {e}"),
+    }
 }
 
 /// The first logs that could not be read, then how many more there were.
