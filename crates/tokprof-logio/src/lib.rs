@@ -36,10 +36,11 @@ fn open_file(path: &Path) -> Result<File> {
     File::open(path).with_context(|| format!("opening {}", path.display()))
 }
 
-type Zstd = ruzstd::decoding::StreamingDecoder<BufReader<File>, ruzstd::decoding::FrameDecoder>;
+type Zstd = zstd::stream::read::Decoder<'static, BufReader<File>>;
 
+/// A compressed log's decoder, which reads every frame of the file one after the other.
 fn open_compressed(path: &Path) -> Result<Zstd> {
-    ruzstd::decoding::StreamingDecoder::new(BufReader::new(open_file(path)?)).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
+    zstd::stream::read::Decoder::new(open_file(path)?).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
 }
 
 /// Calls `f` for every line of a JSONL file, tolerating invalid UTF-8. A compressed file is
@@ -437,7 +438,7 @@ mod tests {
         }
         text.push_str("{\"last\":true}");
         assert!(text.len() > 3 * CHUNK);
-        let packed = ruzstd::encoding::compress_to_vec(text.as_bytes(), ruzstd::encoding::CompressionLevel::Fastest);
+        let packed = zstd::encode_all(text.as_bytes(), 1).unwrap();
         let dir = std::env::temp_dir().join(format!("tokprof-logio-ahead-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let whole = dir.join("rollout-whole.jsonl.zst");
@@ -460,6 +461,21 @@ mod tests {
         std::fs::write(&junk, b"not zstd").unwrap();
         assert_eq!(read_all(|f| for_each_line(&junk, f)), read_all(|f| lines(open(&junk)?, f)));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_compressed_log_of_several_frames_is_read_to_the_end() {
+        // Frames written one after the other, as a writer that flushes a frame at a time leaves them.
+        let mut packed = Vec::new();
+        for frame in ["{\"a\":1}\n{\"b\":", "2}\n", "", "{\"c\":3}\n"] {
+            packed.extend(zstd::encode_all(frame.as_bytes(), 1).unwrap());
+        }
+        let path = std::env::temp_dir().join(format!("tokprof-logio-{}-frames.jsonl.zst", std::process::id()));
+        std::fs::write(&path, &packed).unwrap();
+        let ahead = read_all(|f| for_each_line(&path, f));
+        assert_eq!(ahead, read_all(|f| lines(open(&path)?, f)));
+        assert_eq!(ahead, (vec!["{\"a\":1}\n".to_string(), "{\"b\":2}\n".to_string(), "{\"c\":3}\n".to_string()], None));
+        std::fs::remove_file(&path).ok();
     }
 
     /// Gives its bytes a few at a time, then panics, or gives them without end; it says when it

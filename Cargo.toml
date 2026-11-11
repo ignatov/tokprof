@@ -31,11 +31,12 @@ ratatui = "0.30"
 rayon = "1.10"
 # The bundled SQLite builds from C on every release target, with no system library.
 rusqlite = { version = "0.41", features = ["bundled"] }
-ruzstd = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 toml = "1"
+# The bundled zstd builds from C on every release target, with no system library.
+zstd = "0.14"
 
 [profile.release]
 debug = "line-tables-only"
