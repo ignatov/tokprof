@@ -25,7 +25,7 @@ use tokprof_core::labels::display_path;
 use tokprof_core::pricing::Pricing;
 use tokprof_core::query::Query;
 use tokprof_core::rhythm;
-use tokprof_core::source::SessionRef;
+use tokprof_core::source::{Locator, SessionRef};
 use tokprof_core::xray::{self, Glance, SessionRow, XRay};
 
 use crate::render_rhythm::DayParts;
@@ -232,8 +232,8 @@ pub struct Browser<T> {
     catalog: Arc<Catalog>,
     frontend: Frontend<T>,
     entries: Vec<Entry<T>>,
-    /// Entries by the path of the session's main log.
-    by_path: HashMap<PathBuf, usize>,
+    /// Entries by the session's main log: its file, or its row in a store that holds many.
+    by_log: HashMap<Locator, usize>,
     pricing: Arc<Pricing>,
     /// The X-ray asked for last.
     pending: Option<(usize, u32)>,
@@ -407,12 +407,12 @@ impl<T> Browser<T> {
         xray_tx: Sender<(usize, u32, SessionRef)>,
         day_tx: Sender<DayAsk>,
     ) -> Browser<T> {
-        let by_path = rows.iter().enumerate().map(|(i, r)| (r.file.path().to_path_buf(), i)).collect();
+        let by_log = rows.iter().enumerate().map(|(i, r)| (r.file.locator.clone(), i)).collect();
         let mut browser = Browser {
             catalog,
             frontend,
             entries: rows.into_iter().map(Entry::new).collect(),
-            by_path,
+            by_log,
             pricing,
             pending: None,
             report_after: Instant::now(),
@@ -707,8 +707,8 @@ impl<T> Browser<T> {
                 }
             }
             Change::All(rows) => {
-                let found: HashSet<&Path> = rows.iter().map(|r| r.file.path()).collect();
-                for e in self.entries.iter_mut().filter(|e| !e.gone && !found.contains(e.row.file.path())) {
+                let found: HashSet<&Locator> = rows.iter().map(|r| &r.file.locator).collect();
+                for e in self.entries.iter_mut().filter(|e| !e.gone && !found.contains(&e.row.file.locator)) {
                     e.gone = true;
                     changed = true;
                 }
@@ -726,15 +726,15 @@ impl<T> Browser<T> {
         // own; it is listed with the session that spawned it.
         let mut changed = false;
         for sub in &row.subagents {
-            if let Some(&j) = self.by_path.get(sub.path())
+            if let Some(&j) = self.by_log.get(&sub.locator)
                 && !self.entries[j].gone
             {
                 self.entries[j].gone = true;
                 changed = true;
             }
         }
-        let Some(&i) = self.by_path.get(row.file.path()) else {
-            self.by_path.insert(row.file.path().to_path_buf(), self.entries.len());
+        let Some(&i) = self.by_log.get(&row.file.locator) else {
+            self.by_log.insert(row.file.locator.clone(), self.entries.len());
             self.entries.push(Entry::new(row));
             return true;
         };
@@ -1502,6 +1502,25 @@ mod tests {
         } else {
             assert_eq!((program, path), ("xdg-open", PathBuf::from("C:/Users/me/tokprof/a.html")));
         }
+    }
+
+    /// Session `i` of a store that holds many, last written `at` seconds after the epoch.
+    fn stored(i: usize, at: u64) -> SessionRow {
+        let mut r = row(i, "~/p", at);
+        r.file.locator = Locator::Row { db: "/x/store.db".into(), id: format!("id{i}") };
+        r
+    }
+
+    #[test]
+    fn sessions_of_one_store_are_rows_of_their_own() {
+        let mut a = app_of(vec![stored(0, 0), stored(1, 5)]);
+        assert_eq!(a.entries.len(), 2);
+        take(&mut a, Change::Session(Box::new(stored(0, 10))));
+        assert_eq!((a.entries.len(), a.entries[0].version, a.entries[1].version), (2, 2, 1), "only the session that changed");
+        take(&mut a, Change::Session(Box::new(stored(2, 20))));
+        assert_eq!(a.entries.len(), 3, "a new session of the store joins the list");
+        take(&mut a, Change::All(vec![stored(0, 10), stored(2, 20)]));
+        assert_eq!(a.entries.iter().map(|e| e.gone).collect::<Vec<_>>(), [false, true, false], "a rescan leaves out the session no longer there");
     }
 
     #[test]

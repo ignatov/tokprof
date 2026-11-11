@@ -30,7 +30,7 @@ Read from opencode's source (`packages/core/src/database`, `packages/schema/src`
 
 ## Parse time
 
-The author's store is 26 MB with 4 requests, the scratch one under 1 MB. Discovery is one query per store and table; reading a session a few indexed queries. The 8.5 GB corpus of the other agents parses as before; `tokprof` with no arguments adds the discovery queries, a few ms.
+The author's store is 22 MB with 4 requests, the scratch one under 1 MB. Discovery is one query per store and table; reading a session a few indexed queries. The 8.5 GB corpus of the other agents parses as before; `tokprof` with no arguments adds the discovery queries, a few ms.
 
 ## Open questions, settled
 
@@ -39,3 +39,11 @@ The author's store is 26 MB with 4 requests, the scratch one under 1 MB. Discove
 3. **2.x compaction calls of migrated sessions.** Read from the 1.x rows, which 2.x leaves in the store.
 4. **Several steps in one 1.x message.** Each `step-finish` part is a request, so a message with several counts each once; a message without one counts its own `tokens`.
 5. **Compaction from the command line.** `opencode run --command compact` fails in 1.19.3, and a smaller context limit in the config did not trigger one, so the compaction rules come from the source and the migration code, checked by synthetic fixtures, not by a log.
+
+## Checked
+
+- The author's store (`~/.local/share/opencode/opencode.db`, 22 MB): `tokprof --agent opencode sessions` lists 9 sessions (7 of 2.2.x without messages); `summary` reads `opencode 9 files` and gives 4 requests of `big-pickle` with 15.5k uncached, 19.2k read, 0 written and 296 output tokens, the sums `sqlite3` gives over the same rows; OpenCode's own cost $0.00, the model unpriced.
+- The scratch store of opencode 1.19.3 (`XDG_DATA_HOME=/tmp/oc-run/data`): 2 logs, a main session and its `explore` subagent; 20 requests with 15.7k uncached plus 19.4k rewritten after a miss (35,103), 142.4k read and 1.3k output (1,130 output plus 125 reasoning), the sums over its `step-finish` parts. The X-ray shows `big-pickle ×20` and 1 subagent.
+- `tokprof --agent opencode ui` on the scratch store, in a pty, while `opencode run -c` wrote a step: within the 8 s waited, the row went from 20 to 21 requests and its time from 01:34 to 02:05, on the same row; a new `opencode run` session joined the list on top, with the cursor left on the session it was on.
+- The fixtures: tokprof's dollars are within 1.5% of OpenCode's `cost` for every session (`tests/conformance.rs`).
+- `tokprof` with no arguments: medians of 10 alternating runs 0.70 s with `--agent claude,codex,pi` and 0.73 s with opencode too, within the noise of the growing latest session. The full corpus (claude 6.8 GB, codex 2.6 GB) parses in 39.3 s before and 39.0 s after.

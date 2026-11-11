@@ -226,8 +226,9 @@ pub enum OwnCost {
     Request,
 }
 
-/// Where the records of a session are.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Where the records of a session are: what tells one log from another, also when several
+/// sessions share one file.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Locator {
     File(PathBuf),
     Dir(PathBuf),
@@ -245,7 +246,7 @@ impl Locator {
 }
 
 /// One log a source found: a main session's or a subagent's.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionRef {
     /// The name of the source that found it.
     pub source: &'static str,
@@ -294,6 +295,9 @@ pub enum Touched {
     Log(Option<PathBuf>),
     /// A directory that arrived with logs: the paths of their main sessions' logs.
     Logs(Vec<PathBuf>),
+    /// A store that holds many sessions: the main sessions in it that may have changed, as they
+    /// are now. A session that did not change may be among them.
+    Sessions(Vec<SessionRef>),
 }
 
 /// What the first records of a log tell, without reading the rest.
@@ -407,6 +411,11 @@ pub trait LogSource: Send + Sync {
     /// What a change at a path in a watched directory means. `arrived` says the path was
     /// created or moved in.
     fn touched(&self, changed: &Path, arrived: bool) -> Touched;
+    /// The files whose writes change a session, which a reader that follows the logs looks at
+    /// when no change event comes: the log itself, or a store and the journal it writes first.
+    fn polled(&self, s: &SessionRef) -> Vec<PathBuf> {
+        vec![s.path().to_path_buf()]
+    }
     fn head(&self, s: &SessionRef) -> Head;
     /// When the session last did something, in epoch ms: the time of the last record in its log
     /// that carries one. Agents also write records that are not work, such as bookkeeping when a

@@ -1,6 +1,6 @@
 # tokprof
 
-A token, cost and prompt-cache profiler for AI coding-agent session logs (Claude Code, Codex, pi).
+A token, cost and prompt-cache profiler for AI coding-agent session logs (Claude Code, Codex, pi, OpenCode).
 It reads the logs the agents already write. It needs no proxy and no account, and nothing leaves the machine.
 
 <picture>
@@ -406,7 +406,7 @@ Every command but `tokprof prices` takes these filters. `tokprof day` takes all 
 
 | Filter | Example |
 |---|---|
-| `--agent` | `claude,codex,pi` |
+| `--agent` | `claude,codex,pi,opencode` |
 | `--since` | `2026-10-01`, or `7d` for the last seven days |
 | `--until` | `2026-10-16`, excluded |
 | `--project` | text the project path contains, such as `billing`; a path under the home directory works with or without `~` |
@@ -728,8 +728,9 @@ Coverage depends on what the logs contain:
   - Tool schemas other than `additional_tools` are not logged.
   - `world_state` repeats the messages, so it is not counted.
   - Compressed rollouts (`.jsonl.zst`, in `sessions` and `archived_sessions`) are read too.
-- **pi** logs are read from `$PI_CODING_AGENT_SESSION_DIR`, else `$PI_CODING_AGENT_DIR/sessions`, by default `~/.pi/agent/sessions` (pi 0.84.2). Each reply with usage is a request, on every branch of the session's tree, and each `compaction` is a compaction call; a fork's copies of earlier entries count once, in the log they came from. pi's prompts are not rebuilt, so a miss gets no cause from the prompt. pi's own `cost.total` is compared with tokprof's price, never used as one: a local model stays unpriced. pi-durable SQLite stores are not read.
   - Subagent threads join their parent through `parent_thread_id`, and count under the topmost thread above them, so threads that subagents spawn belong to the same session.
+- **pi** logs are read from `$PI_CODING_AGENT_SESSION_DIR`, else `$PI_CODING_AGENT_DIR/sessions`, by default `~/.pi/agent/sessions` (pi 0.84.2). Each reply with usage is a request, on every branch of the session's tree, and each `compaction` is a compaction call; a fork's copies of earlier entries count once, in the log they came from. pi's prompts are not rebuilt, so a miss gets no cause from the prompt. pi's own `cost.total` is compared with tokprof's price, never used as one: a local model stays unpriced. pi-durable SQLite stores are not read.
+- **OpenCode** keeps no log files: tokprof reads its SQLite stores, `opencode.db` and `opencode-<channel>.db` in `$XDG_DATA_HOME/opencode`, by default `~/.local/share/opencode`, or the one `$OPENCODE_DB` names, read-only (opencode 1.18–1.19 and 2.2). Each session in a store is a log; both table layouts are read, a session 2.x copied from 1.x once. Each step with usage is a request, a compaction's own call a compaction call, and a session that the `task` tool started is a subagent of the session above it. OpenCode's prompts are not rebuilt, so a miss gets no cause from the prompt. Its own `cost` is compared with tokprof's price, never used as one. The JSON files of opencode before 1.x are not read.
 
 ## Origin and task
 

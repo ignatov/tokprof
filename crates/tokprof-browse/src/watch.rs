@@ -14,7 +14,7 @@ use rayon::prelude::*;
 use std::sync::Arc;
 
 use tokprof_core::catalog::Catalog;
-use tokprof_core::source::{AgentId, Touched};
+use tokprof_core::source::{AgentId, SessionRef, Touched};
 use tokprof_core::xray::{self, SessionRow};
 
 /// How long changes are gathered after the first one. An agent writes its log many times a
@@ -144,10 +144,11 @@ fn is_recent(stamp: &Stamp) -> bool {
 impl Hot {
     /// The logs the agents wrote within the last hour.
     fn of(catalog: &Catalog, agents: &[AgentId]) -> Hot {
-        let logs = catalog.discover(agents).into_iter().filter_map(|r| {
-            let path = r.path().to_path_buf();
-            let stamp = stamp(&path).filter(is_recent)?;
-            Some((path, (r.source, Some(stamp))))
+        let logs = catalog.discover(agents).into_iter().flat_map(|r| {
+            catalog.polled(&r).into_iter().filter_map(move |path| {
+                let stamp = stamp(&path).filter(is_recent)?;
+                Some((path, (r.source, Some(stamp))))
+            })
         });
         Hot(logs.collect())
     }
@@ -202,11 +203,20 @@ fn changes(catalog: &Catalog, roots: &[Root], events: &[Event]) -> Vec<Change> {
 fn changes_at(catalog: &Catalog, paths: &[(&'static str, PathBuf, bool)]) -> Vec<Change> {
     let mut sessions = BTreeSet::new();
     let mut gone = BTreeSet::new();
+    // Sessions in stores, by their place in the store, as their sources found them.
+    let mut rows = Vec::new();
     for (source, path, arrived) in paths {
         let source = *source;
         match catalog.touched(source, path, *arrived) {
             Touched::Log(main) => sessions.extend(main.map(|m| (source, m))),
             Touched::Logs(mains) => sessions.extend(mains.into_iter().map(|m| (source, m))),
+            Touched::Sessions(found) => {
+                for r in found {
+                    if !rows.iter().any(|s: &SessionRef| s.locator == r.locator) {
+                        rows.push(r);
+                    }
+                }
+            }
             Touched::Other if !path.exists() => {
                 gone.insert(path.clone());
             }
@@ -220,6 +230,7 @@ fn changes_at(catalog: &Catalog, paths: &[(&'static str, PathBuf, bool)]) -> Vec
             None => Change::Gone(path),
         })
         .collect();
+    out.extend(rows.into_iter().map(|r| Change::Session(Box::new(SessionRow::new(catalog, r)))));
     out.extend(gone.into_iter().map(Change::Gone));
     out
 }
@@ -305,6 +316,39 @@ mod tests {
         fs::remove_dir_all(&moved).unwrap();
         let removed = EventKind::Remove(RemoveKind::Any);
         assert_eq!(changed(&d, &[(removed, sub), (removed, moved)]), ["-p/s1.jsonl", "-q"], "gone logs and directories");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A write to a store that holds many sessions gives each session its source names, once,
+    /// however many of the store's files the events name; the poll looks at the store's journal.
+    #[test]
+    fn a_touched_store_gives_its_sessions() {
+        let d = dir("store");
+        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as i64;
+        let db = rusqlite::Connection::open(d.join("opencode.db")).unwrap();
+        db.execute_batch(&format!(
+            "CREATE TABLE session_v2 (id text PRIMARY KEY, parent_id text, directory text, title text, agent text, time_created integer, time_updated integer);
+             CREATE TABLE session_message (id text PRIMARY KEY, session_id text, type text, seq integer, time_created integer, time_updated integer, data text);
+             INSERT INTO session_v2 VALUES ('ses_a', NULL, '/w/a', 'a', NULL, {now}, {now}), ('ses_b', NULL, '/w/b', 'b', NULL, {now}, {now}),
+               ('ses_c', 'ses_a', '/w/a', 'c', NULL, {now}, {now}), ('ses_old', NULL, '/w/o', 'o', NULL, 0, 0);"
+        ))
+        .unwrap();
+        drop(db);
+        let catalog = Catalog::new(vec![Box::new(tokprof_source_opencode::OpenCode::at(d.clone(), Path::new("/h")))], PathBuf::from("/h"));
+        let roots = [Root { source: "opencode", path: d.clone(), real: real_path(&d) }];
+        let modify = EventKind::Modify(ModifyKind::Any);
+        let events: Vec<Event> = ["opencode.db", "opencode.db-wal", "opencode.db-shm"].iter().map(|f| Event::new(modify).add_path(d.join(f))).collect();
+        let mut got: Vec<(String, usize)> = changes(&catalog, &roots, &events)
+            .iter()
+            .map(|c| match c {
+                Change::Session(r) => (r.session_id.clone(), r.subagents.len()),
+                _ => panic!("only sessions"),
+            })
+            .collect();
+        got.sort();
+        assert_eq!(got, [("ses_a".to_string(), 1), ("ses_b".to_string(), 0)], "the main sessions written lately, each once");
+        let hot = Hot::of(&catalog, &catalog.agents());
+        assert!(hot.0.contains_key(&d.join("opencode.db")), "the store is looked at");
         fs::remove_dir_all(&d).unwrap();
     }
 

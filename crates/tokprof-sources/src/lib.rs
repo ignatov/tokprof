@@ -61,5 +61,7 @@ pub fn catalog_at(home: &Path) -> Catalog {
     sources.push(Box::new(tokprof_source_codex::Codex::from_env(home)));
     #[cfg(feature = "pi")]
     sources.push(Box::new(tokprof_source_pi::Pi::from_env(home)));
+    #[cfg(feature = "opencode")]
+    sources.push(Box::new(tokprof_source_opencode::OpenCode::from_env(home)));
     Catalog::new(sources, home.to_path_buf())
 }

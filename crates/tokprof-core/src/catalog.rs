@@ -151,6 +151,11 @@ impl Catalog {
         self.sources_of(agents).flat_map(|s| s.watched_paths().into_iter().map(move |p| (s.name(), p))).collect()
     }
 
+    /// The files whose writes change a session (see `LogSource::polled`).
+    pub fn polled(&self, s: &SessionRef) -> Vec<PathBuf> {
+        self.source(s).polled(s)
+    }
+
     pub fn touched(&self, source: &str, changed: &Path, arrived: bool) -> Touched {
         self.source_named(source).map_or(Touched::Other, |s| s.touched(changed, arrived))
     }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/tokprof-core", "crates/tokprof-logio", "crates/tokprof-sources", "crates/tokprof-browse", "crates/tokprof", "sources/claude-code", "sources/codex", "sources/pi"]
+members = ["crates/tokprof-core", "crates/tokprof-logio", "crates/tokprof-sources", "crates/tokprof-browse", "crates/tokprof", "sources/claude-code", "sources/codex", "sources/pi", "sources/opencode"]
 # The window builds in a workspace of its own, so that this one never fetches Rune.
 exclude = ["crates/tokprof-desk"]
 
@@ -19,6 +19,7 @@ tokprof-browse = { path = "crates/tokprof-browse" }
 tokprof-source-claude-code = { path = "sources/claude-code" }
 tokprof-source-codex = { path = "sources/codex" }
 tokprof-source-pi = { path = "sources/pi" }
+tokprof-source-opencode = { path = "sources/opencode" }
 ansi-to-tui = "8"
 anyhow = "1"
 chrono = "0.4"
@@ -28,6 +29,8 @@ notify = "8"
 prost = "0.13"
 ratatui = "0.30"
 rayon = "1.10"
+# The bundled SQLite builds from C on every release target, with no system library.
+rusqlite = { version = "0.41", features = ["bundled"] }
 ruzstd = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

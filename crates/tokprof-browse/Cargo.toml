@@ -16,3 +16,5 @@ rayon.workspace = true
 
 [dev-dependencies]
 tokprof-source-claude-code.workspace = true
+tokprof-source-opencode.workspace = true
+rusqlite.workspace = true

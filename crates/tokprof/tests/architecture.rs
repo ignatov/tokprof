@@ -26,6 +26,12 @@ const AGENT_WORDS: &[&str] = &[
     "parent_thread_id",
     "token_count",
     "response_item",
+    "PI_CODING_AGENT",
+    "parentSession",
+    "OpenCode",
+    "opencode",
+    "session_v2",
+    "step-finish",
 ];
 
 /// The one file of the framework that may name vendors: the cache rules of their APIs.

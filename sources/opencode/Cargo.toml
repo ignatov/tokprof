@@ -1,0 +1,18 @@
+[package]
+name = "tokprof-source-opencode"
+description = "tokprof's source of OpenCode sessions, read from its SQLite stores"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+tokprof-core.workspace = true
+tokprof-logio.workspace = true
+anyhow.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokprof-core = { workspace = true, features = ["testkit"] }

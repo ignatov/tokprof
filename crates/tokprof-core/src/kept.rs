@@ -19,7 +19,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::Result;
 
 use crate::model::Session;
-use crate::source::{Decoder, LogSource, ReadOn, SessionRef};
+use crate::source::{Decoder, Locator, LogSource, ReadOn, SessionRef};
 
 /// Logs last written longer ago than this are read whole and not kept: they hardly change, and
 /// they are read for reports over long periods, which would keep every log.
@@ -112,6 +112,10 @@ impl Kept {
     /// The session a log gives now: read on from where its last read stopped when it is kept,
     /// else read whole and kept when it is recent and its source can read it on.
     pub(crate) fn parse(&self, source: &dyn LogSource, s: &SessionRef) -> Result<Session> {
+        // A session in a store that holds many is rewritten in place: it is read whole.
+        if matches!(s.locator, Locator::Row { .. }) {
+            return read_whole(source, s);
+        }
         let key: Key = (source.name(), s.path().to_path_buf(), s.subagent);
         let stamp = match std::fs::metadata(s.path()) {
             Ok(meta) if Stamp::of(&meta).recent() => Stamp::of(&meta),

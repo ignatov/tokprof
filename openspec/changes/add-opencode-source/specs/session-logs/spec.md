@@ -138,7 +138,7 @@ OpenCode's sessions SHALL be read from its SQLite stores in `$XDG_DATA_HOME/open
 
 #### Scenario: A file that is not a store
 - **WHEN** `opencode.db` is not a SQLite file, or has neither the `session` nor the `session_v2` table
-- **THEN** it adds no logs, and a report that reads it warns as for Unreadable logs
+- **THEN** it adds no logs and causes no error
 
 #### Scenario: A store given as the target
 - **WHEN** `tokprof ~/.local/share/opencode/opencode.db` runs
