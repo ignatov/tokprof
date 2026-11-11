@@ -56,3 +56,58 @@ fn the_fixtures_hold_call_outcomes_and_request_times() {
     let first = &main.chains[0].requests[0];
     assert_eq!((first.sent_ms, first.ended_ms), (Some(at("08:00:02")), Some(at("08:00:05"))));
 }
+
+/// Rollouts of the usage streams and items `tests/fixtures` lacks, kept apart from it, since other
+/// tests read it.
+fn streams() -> tokprof_source_codex::Codex {
+    tokprof_source_codex::Codex::at(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/conform"), Path::new("/h"))
+}
+
+#[test]
+fn the_stream_fixtures_conform() {
+    tokprof_core::testkit::conform(&streams()).unwrap();
+}
+
+/// A rollout whose usage comes only from `token_count` events, with reasoning, a repeated total
+/// and a compaction event; one with both usage streams, a repeated and an empty usage record, a
+/// compaction call, tools and items of every kind; and the subagent it spawned, which spawned
+/// another, so the checks above run over all of them.
+#[test]
+fn the_stream_fixtures_hold_each_path() {
+    use tokprof_core::model::{Origin, Outcome, Session};
+    use tokprof_core::source::LogSource;
+    let source = streams();
+    let logs = source.discover();
+    let decode = |id: char| -> Session {
+        let log = logs.iter().find(|l| l.session_id.ends_with(id)).unwrap();
+        let mut d = source.decoder(log);
+        source.open(log).unwrap().for_each(&mut |r| d.feed(r)).unwrap();
+        d.finish()
+    };
+    let counts = decode('a');
+    let r = &counts.chains[0].requests;
+    let got: Vec<_> = r.iter().map(|r| (r.usage.uncached, r.usage.reasoning, r.context_window, r.compacted_before)).collect();
+    assert_eq!(
+        got,
+        [(5000, 20, Some(272_000), false), (200, 0, Some(272_000), false), (900, 0, Some(272_000), true)],
+        "a repeated total and no info count nothing"
+    );
+    assert_eq!((counts.title.as_deref(), counts.compactions.len()), (Some("List the crates"), 1));
+
+    let both = decode('b');
+    let r = &both.chains[0].requests;
+    assert_eq!(r.len(), 6, "the usage records, a repeated one once and an empty one not");
+    assert_eq!((r[0].usage.uncached, r[0].usage.write_short), (1000, 6000));
+    let marks: Vec<(bool, bool)> = r.iter().map(|r| (r.compaction_call, r.compacted_before)).collect();
+    assert_eq!(marks[3..5], [(true, false), (false, true)]);
+    assert!(both.scripted && both.title.as_deref() == Some("Rename the loader"));
+    assert!(both.vcs.values().all(|v| v.commit && v.pull_request) && !both.vcs.is_empty());
+    assert!(both.call_ends.values().all(|e| e.outcome == Outcome::Failed) && !both.call_ends.is_empty());
+
+    let (child, grandchild) = (decode('c'), decode('d'));
+    assert_eq!((child.id.as_str(), child.task.as_deref(), child.chains[0].name.as_str()), (both.id.as_str(), Some("map callers"), "subagent: map callers"));
+    assert_eq!(child.chains[0].requests[0].origin, Some(Origin::Subagent("explorer".into())));
+    assert_eq!((grandchild.id.as_str(), grandchild.chains[0].name.as_str()), (both.id.as_str(), "subagent:review"));
+    let main = logs.iter().find(|l| l.session_id.ends_with('b')).unwrap();
+    assert_eq!(source.subagents(main).len(), 2, "the thread it spawned, and the one that spawned");
+}

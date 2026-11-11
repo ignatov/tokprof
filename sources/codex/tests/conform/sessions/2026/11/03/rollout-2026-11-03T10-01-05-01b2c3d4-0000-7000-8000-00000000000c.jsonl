@@ -1,0 +1,7 @@
+{"timestamp":"2026-11-03T10:01:05Z","type":"session_meta","payload":{"id":"01b2c3d4-0000-7000-8000-00000000000c","parent_thread_id":"01b2c3d4-0000-7000-8000-00000000000b","cwd":"/w/tool","originator":"codex_exec","cli_version":"0.160.0","source":{"subagent":{"thread_spawn":{"parent_thread_id":"01b2c3d4-0000-7000-8000-00000000000b","depth":1,"agent_path":"/root/map_callers","agent_role":"explorer"}}}}}
+{"timestamp":"2026-11-03T10:01:05Z","type":"turn_context","payload":{"model":"gpt-5.1-codex-mini","effort":"low","cwd":"/w/tool"}}
+{"timestamp":"2026-11-03T10:01:06Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Map the callers of load_config."}]}}
+{"timestamp":"2026-11-03T10:01:10Z","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"Searching."}]}}
+{"timestamp":"2026-11-03T10:02:50Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Two callers: main.rs and cli.rs."}]}}
+{"timestamp":"2026-11-03T10:02:51Z","type":"token_usage_record","payload":{"response_id":"rc1","usage":{"input_tokens":3000,"cached_input_tokens":0,"output_tokens":80,"reasoning_output_tokens":10,"total_tokens":3080}}}
+{"timestamp":"2026-11-03T10:02:52Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"tc1","last_agent_message":"Two callers: main.rs and cli.rs."}}
