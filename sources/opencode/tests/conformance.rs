@@ -131,3 +131,27 @@ fn stores_as_logs() {
         "the compaction asked for has no text"
     );
 }
+
+/// A main session a store holds that it did not hold before, such as one 2.x imported with its
+/// old times, is changed for the ui though it was not written lately.
+#[test]
+fn a_session_new_to_the_store_is_changed() {
+    let dir = data_dir("fresh");
+    let source = OpenCode::at(dir.clone(), Path::new("/h"));
+    assert_eq!(source.discover().len(), 4);
+    let store = dir.join("opencode.db");
+    let db = rusqlite::Connection::open(&store).unwrap();
+    db.execute_batch(
+        "INSERT INTO session_v2 (id, project_id, slug, directory, title, version, time_created, time_updated)
+         VALUES ('ses_f00000000005eeeeeeeeeeeeee', 'global', 's', '/h/src/old', 'Imported', '2.2.4', 1000, 2000);",
+    )
+    .unwrap();
+    drop(db);
+    match source.touched(&store, false) {
+        Touched::Store { changed, held, .. } => {
+            assert_eq!(changed.iter().map(|r| r.session_id.as_str()).collect::<Vec<_>>(), ["ses_f00000000005eeeeeeeeeeeeee"]);
+            assert_eq!(held.len(), 3);
+        }
+        other => panic!("{other:?}"),
+    }
+}

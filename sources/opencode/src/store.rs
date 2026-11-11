@@ -83,13 +83,13 @@ impl Store {
                 }
             }
         }
-        // The size and last write of each session's messages, in each layout. The parts of 1.x
-        // messages, which hold most of their text, are left out: summing them reads the whole
-        // `part` table, 0.8 s for 400 MB, on every write OpenCode makes while the ui follows it.
+        // The size and last write of each session's messages, in each layout. The parts (1.x
+        // `part`, 2.x `session_part`), which hold most of the text, are left out: summing them
+        // reads the whole table, 0.8 s for 400 MB, on every write OpenCode makes while the ui
+        // follows it.
         let mut sizes: HashMap<String, ([u64; 2], Option<i64>)> = HashMap::new();
         for (layout, table) in [(0, "message"), (1, "session_message")] {
-            let Some(rows) = self.message_sizes(table) else { continue };
-            for (id, bytes, last) in rows {
+            for (id, bytes, last) in self.message_sizes(table)? {
                 let e = sizes.entry(id).or_default();
                 e.0[layout] = bytes;
                 e.1 = e.1.max(last);
@@ -105,17 +105,18 @@ impl Store {
         Ok(out)
     }
 
-    /// The bytes and the latest `time_updated` of each session's rows in a message table; `None`
-    /// when the table is not there, lacks a column or cannot be read, which leaves sizes at 0.
-    /// `octet_length` reads the size of a value, not the value.
-    fn message_sizes(&self, table: &str) -> Option<Vec<(String, u64, Option<i64>)>> {
+    /// The bytes and the latest `time_updated` of each session's rows in a message table, or
+    /// none when the table is not there or lacks a column. A read that fails, as on a lock held
+    /// too long, is an error. `octet_length` reads the size of a value, not the value.
+    fn message_sizes(&self, table: &str) -> Result<Vec<(String, u64, Option<i64>)>> {
         if !self.has(table) {
-            return None;
+            return Ok(Vec::new());
         }
-        let mut q = self.db.prepare(&format!("SELECT session_id, SUM(octet_length(data)), MAX(time_updated) FROM {table} GROUP BY session_id")).ok()?;
-        let rows =
-            q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0).max(0) as u64, r.get::<_, Option<i64>>(2)?))).ok()?;
-        rows.collect::<rusqlite::Result<_>>().ok()
+        let Ok(mut q) = self.db.prepare(&format!("SELECT session_id, SUM(octet_length(data)), MAX(time_updated) FROM {table} GROUP BY session_id")) else {
+            return Ok(Vec::new());
+        };
+        let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0).max(0) as u64, r.get::<_, Option<i64>>(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// The session with this id, from `session_v2` else `session`.

@@ -114,13 +114,15 @@ fn follow(events: &Receiver<notify::Result<Event>>, catalog: &Catalog, agents: &
             vec![Change::All(rescan(catalog, agents))]
         } else {
             let mut paths = event_paths(roots, &batch);
+            let events = paths.len();
             if Instant::now() >= poll_at {
                 paths.extend(hot.written());
                 poll_at = Instant::now() + POLL;
             }
             let (changes, logs) = changes_at(catalog, &paths);
-            // Only the logs are looked at again, not the other files that change beside them.
-            hot.saw(&logs);
+            // The logs events named are looked at from now on, not the other files that change
+            // beside them; the polled ones already are.
+            hot.saw(&logs.iter().filter(|&&i| i < events).map(|&i| paths[i].clone()).collect::<Vec<_>>());
             changes
         };
         for change in changes {
@@ -204,8 +206,9 @@ fn changes(catalog: &Catalog, roots: &[Root], events: &[Event]) -> Vec<Change> {
     changes_at(catalog, &event_paths(roots, events)).0
 }
 
-/// What changes at these paths mean for the sessions, and which of the paths are logs or stores.
-fn changes_at(catalog: &Catalog, paths: &[(&'static str, PathBuf, bool)]) -> (Vec<Change>, Vec<(&'static str, PathBuf, bool)>) {
+/// What changes at these paths mean for the sessions, and which of the paths, by index, are logs
+/// or stores.
+fn changes_at(catalog: &Catalog, paths: &[(&'static str, PathBuf, bool)]) -> (Vec<Change>, Vec<usize>) {
     let mut sessions = BTreeSet::new();
     let mut gone = BTreeSet::new();
     let mut logs = Vec::new();
@@ -213,11 +216,11 @@ fn changes_at(catalog: &Catalog, paths: &[(&'static str, PathBuf, bool)]) -> (Ve
     // each store holds now.
     let mut rows: Vec<SessionRef> = Vec::new();
     let mut held: Vec<(PathBuf, Vec<Locator>)> = Vec::new();
-    for (source, path, arrived) in paths {
+    for (i, (source, path, arrived)) in paths.iter().enumerate() {
         let source = *source;
         let touched = catalog.touched(source, path, *arrived);
         if !matches!(touched, Touched::Other) {
-            logs.push((source, path.clone(), *arrived));
+            logs.push(i);
         }
         match touched {
             Touched::Log(main) => sessions.extend(main.map(|m| (source, m))),

@@ -50,6 +50,9 @@ struct Listing {
     logs: Vec<SessionRef>,
     /// Each session's row, by id.
     rows: HashMap<String, SessionRow>,
+    /// The main sessions the listing before this one did not hold, such as ones 2.x imported
+    /// with their old times.
+    fresh: HashSet<String>,
 }
 
 /// The length and last write of a store and of its journal.
@@ -132,25 +135,24 @@ impl OpenCode {
         if let Some(l) = self.listed.lock().unwrap_or_else(|e| e.into_inner()).get(db).filter(|l| l.stamp == stamp) {
             return Ok(l.clone());
         }
-        let sessions = Store::open(db).and_then(|s| s.sessions());
-        let sessions = match sessions {
-            Ok(s) => s,
-            Err(e) => {
-                self.listed.lock().unwrap_or_else(|e| e.into_inner()).remove(db);
-                return Err(e);
-            }
-        };
+        let sessions = Store::open(db).and_then(|s| s.sessions())?;
         let parents: HashMap<&str, Option<&str>> = sessions.iter().map(|s| (s.id.as_str(), s.parent_id.as_deref())).collect();
-        let logs = sessions.iter().map(|s| self.reference(db, s, root_of(&parents, &s.id))).collect();
+        let logs: Vec<SessionRef> = sessions.iter().map(|s| self.reference(db, s, root_of(&parents, &s.id))).collect();
         let rows = sessions.iter().map(|s| (s.id.clone(), s.clone())).collect();
-        let listing = Arc::new(Listing { stamp, logs, rows });
-        self.listed.lock().unwrap_or_else(|e| e.into_inner()).insert(db.to_path_buf(), listing.clone());
+        let mut listed = self.listed.lock().unwrap_or_else(|e| e.into_inner());
+        let fresh = match listed.get(db) {
+            Some(before) => logs.iter().filter(|r| !r.subagent && !before.rows.contains_key(&r.session_id)).map(|r| r.session_id.clone()).collect(),
+            None => HashSet::new(),
+        };
+        let listing = Arc::new(Listing { stamp, logs, rows, fresh });
+        listed.insert(db.to_path_buf(), listing.clone());
         Ok(listing)
     }
 
-    /// The listing of a store, or none when it cannot be read.
-    fn listing_or_empty(&self, db: &Path) -> Arc<Listing> {
-        self.listing(db).unwrap_or_default()
+    /// The listing of a store as it is now, else as it was when it was last read, else none: a
+    /// store that cannot be read for a moment keeps its sessions as they were.
+    fn known(&self, db: &Path) -> Arc<Listing> {
+        self.listing(db).unwrap_or_else(|_| self.listed.lock().unwrap_or_else(|e| e.into_inner()).get(db).cloned().unwrap_or_default())
     }
 
     fn reference(&self, db: &Path, s: &SessionRow, root: &str) -> SessionRef {
@@ -167,14 +169,18 @@ impl OpenCode {
         }
     }
 
-    /// The main sessions of a listing written since `since_ms`, its own logs or its subagents',
-    /// the session written last first.
+    /// The main sessions of a listing written since `since_ms`, in their own logs or their
+    /// subagents', the one written last first.
     fn mains_of(listing: &Listing, since_ms: Option<i64>) -> Vec<SessionRef> {
-        let written: HashSet<&str> =
-            listing.logs.iter().filter(|r| since_ms.is_none_or(|since| r.modified_ms() >= since)).map(|r| r.main_id.as_str()).collect();
-        let mut mains: Vec<SessionRef> = listing.logs.iter().filter(|r| !r.subagent && written.contains(r.session_id.as_str())).cloned().collect();
-        mains.sort_by_key(|r| std::cmp::Reverse(r.modified_ns));
-        mains
+        let mut written: HashMap<&str, i128> = HashMap::new();
+        for r in listing.logs.iter().filter(|r| since_ms.is_none_or(|since| r.modified_ms() >= since)) {
+            let at = written.entry(r.main_id.as_str()).or_default();
+            *at = (*at).max(r.modified_ns);
+        }
+        let mut mains: Vec<(i128, SessionRef)> =
+            listing.logs.iter().filter(|r| !r.subagent).filter_map(|r| Some((*written.get(r.session_id.as_str())?, r.clone()))).collect();
+        mains.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+        mains.into_iter().map(|(_, r)| r).collect()
     }
 
     /// The store at a path, and the session in it a locator names.
@@ -234,7 +240,7 @@ impl LogSource for OpenCode {
     }
 
     fn discover(&self) -> Vec<SessionRef> {
-        self.stores().iter().flat_map(|db| self.listing_or_empty(db).logs.clone()).collect()
+        self.stores().iter().flat_map(|db| self.known(db).logs.clone()).collect()
     }
 
     /// A store given as a path means its main session that was written last.
@@ -248,8 +254,9 @@ impl LogSource for OpenCode {
         if (named || name) && Store::open(path).is_ok() { Claim::Yes } else { Claim::No }
     }
 
-    /// The data directory. A store `$OPENCODE_DB` names elsewhere is followed while it is written,
-    /// by the poll of `polled`, since watching its directory would watch all below it.
+    /// The data directory. A store `$OPENCODE_DB` names elsewhere is not watched, since the watch
+    /// would take in all below its directory: the poll follows it while it was written in the
+    /// last hour, and the ui shows it anew when it starts or scans again.
     fn watched_paths(&self) -> Vec<PathBuf> {
         vec![self.dir.clone()]
     }
@@ -264,7 +271,11 @@ impl LogSource for OpenCode {
             Err(_) => return Touched::Other,
         };
         let held = listing.logs.iter().filter(|r| !r.subagent).map(|r| r.locator.clone()).collect();
-        Touched::Store { changed: OpenCode::mains_of(&listing, Some(now_ms() - RECENT_MS)), held, db }
+        let mut changed = OpenCode::mains_of(&listing, Some(now_ms() - RECENT_MS));
+        let fresh: Vec<SessionRef> =
+            listing.logs.iter().filter(|r| listing.fresh.contains(&r.session_id) && !changed.iter().any(|c| c.session_id == r.session_id)).cloned().collect();
+        changed.extend(fresh);
+        Touched::Store { changed, held, db }
     }
 
     /// The store and the journal SQLite writes first: the store itself changes at checkpoints.
@@ -273,14 +284,14 @@ impl LogSource for OpenCode {
     }
 
     fn head(&self, s: &SessionRef) -> Head {
-        let directory = self.row(s).ok().and_then(|(db, id)| Some(self.listing(db).ok()?.rows.get(id)?.directory.clone()));
+        let directory = self.row(s).ok().and_then(|(db, id)| Some(self.known(db).rows.get(id)?.directory.clone()));
         let project = directory.map(|d| display_path(&d, None, &self.home)).unwrap_or_default();
         Head { project, session_id: s.session_id.clone(), client: None }
     }
 
     fn last_active(&self, s: &SessionRef) -> Option<i64> {
         let (db, id) = self.row(s).ok()?;
-        self.listing(db).ok()?.rows.get(id)?.last_message_ms
+        self.known(db).rows.get(id)?.last_message_ms
     }
 
     fn first_active(&self, s: &SessionRef) -> Option<i64> {
@@ -289,7 +300,7 @@ impl LogSource for OpenCode {
 
     fn subagents(&self, s: &SessionRef) -> Vec<SessionRef> {
         let Ok((db, _)) = self.row(s) else { return Vec::new() };
-        self.listing_or_empty(db).logs.iter().filter(|r| r.subagent && r.main_id == s.session_id).cloned().collect()
+        self.known(db).logs.iter().filter(|r| r.subagent && r.main_id == s.session_id).cloned().collect()
     }
 
     fn open(&self, s: &SessionRef) -> Result<Box<dyn Records>> {
@@ -359,6 +370,32 @@ mod tests {
         let oc = OpenCode::at(PathBuf::from("/d/opencode"), Path::new("/h"));
         assert_eq!(oc.store_of(Path::new("/d/opencode/opencode.db-wal")), Some(PathBuf::from("/d/opencode/opencode.db")));
         assert_eq!(oc.store_of(Path::new("/d/opencode/snapshot/x")), None);
+    }
+
+    /// A listing of main `a` (written at 10:00, its subagent `s` at 12:00) and main `b` (11:00).
+    fn listing() -> Listing {
+        let oc = OpenCode::at(PathBuf::from("/d"), Path::new("/h"));
+        let row = |id: &str, parent: Option<&str>, at: i64| SessionRow {
+            id: id.into(),
+            parent_id: parent.map(str::to_string),
+            directory: "/h/w".into(),
+            title: None,
+            agent: None,
+            created_ms: 0,
+            updated_ms: at,
+            bytes: 0,
+            last_message_ms: Some(at),
+        };
+        let rows = [row("a", None, 10), row("s", Some("a"), 12), row("b", None, 11)];
+        let logs = rows.iter().map(|r| oc.reference(Path::new("/d/opencode.db"), r, r.parent_id.as_deref().unwrap_or(&r.id))).collect();
+        Listing { stamp: Stamp::default(), logs, rows: rows.into_iter().map(|r| (r.id.clone(), r)).collect(), fresh: HashSet::new() }
+    }
+
+    #[test]
+    fn main_sessions_by_the_last_write_of_their_tree() {
+        let ids = |since| OpenCode::mains_of(&listing(), since).into_iter().map(|r| r.session_id).collect::<Vec<_>>();
+        assert_eq!(ids(None), ["a", "b"], "a's subagent wrote last");
+        assert_eq!(ids(Some(12)), ["a"], "only a's tree was written since");
     }
 
     #[test]
