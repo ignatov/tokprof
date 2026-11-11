@@ -286,7 +286,19 @@ impl Calendars {
             return;
         }
         self.pending = Some(changes);
-        let _ = jobs.send(changes);
+        // A worker that is gone computes nothing more: the calendar fails instead of waiting.
+        if jobs.send(changes).is_err() {
+            self.pending = None;
+            self.kept = Some(Computed {
+                calendar: Err("the worker that computes the calendar stopped".to_string()),
+                store: None,
+                warnings: Vec::new(),
+                gone: 0,
+                changes,
+                took: Duration::ZERO,
+                arrived: Instant::now(),
+            });
+        }
     }
 
     /// When the calendar is due to be computed again, while it is out of date.
@@ -552,5 +564,15 @@ mod tests {
         c.kept = None;
         c.settle(1, Duration::from_secs(20));
         assert!(c.get().is_some_and(|x| x.calendar.is_ok()));
+    }
+
+    #[test]
+    fn a_worker_that_is_gone_fails_the_calendar_instead_of_waiting() {
+        let (jobs, rx) = mpsc::channel();
+        drop(rx);
+        let mut c = Calendars { jobs: Some(jobs), ..Calendars::detached() };
+        c.tick(0);
+        assert!(!c.reading());
+        assert_eq!(c.get().and_then(|x| x.calendar.as_ref().err()).map(String::as_str), Some("the worker that computes the calendar stopped"));
     }
 }

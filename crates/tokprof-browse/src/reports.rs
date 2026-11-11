@@ -197,7 +197,14 @@ impl Reports {
             return;
         }
         self.pending = Some((days, changes));
-        let _ = jobs.send((days, changes));
+        // A worker that is gone reads nothing more: the report fails instead of waiting.
+        if jobs.send((days, changes)).is_err() {
+            self.pending = None;
+            let now = now_ms();
+            let overview = Err("the worker that reads the reports stopped".to_string());
+            let report = Report { overview, since_ms: now - days as i64 * DAY_MS, until_ms: now, changes, took: Duration::ZERO, arrived: Instant::now() };
+            self.kept.insert(days, report);
+        }
     }
 
     /// When the report of `days` is due to be read again, while it is out of date and waits for
@@ -335,5 +342,15 @@ mod tests {
         r.kept.clear();
         r.settle(30, 1, Duration::from_secs(20));
         assert!(r.get(30).is_some_and(|x| x.overview.is_ok()));
+    }
+
+    #[test]
+    fn a_worker_that_is_gone_fails_the_report_instead_of_waiting() {
+        let (jobs, rx) = mpsc::channel();
+        drop(rx);
+        let mut r = Reports { jobs: Some(jobs), ..Reports::detached() };
+        r.tick(30, 0);
+        assert!(!r.reading(30));
+        assert_eq!(r.get(30).and_then(|x| x.overview.as_ref().err()).map(String::as_str), Some("the worker that reads the reports stopped"));
     }
 }

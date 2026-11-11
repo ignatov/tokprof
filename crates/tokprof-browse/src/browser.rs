@@ -253,7 +253,8 @@ pub struct Browser<T> {
     status: String,
     notes: Receiver<Note>,
     notify: Notify,
-    xray_tx: Sender<(usize, u32, SessionRef)>,
+    /// The X-ray worker; none for a detached browser.
+    xray_tx: Option<Sender<(usize, u32, SessionRef)>>,
     /// The day shown in the right pane instead of the X-ray: `Some(None)` is the day of the
     /// latest action, `Some(Some(date))` another day.
     day: Option<Option<i64>>,
@@ -264,7 +265,8 @@ pub struct Browser<T> {
     day_pending: Option<DayJob>,
     /// When the current day may be computed again, as for X-rays.
     day_after: Instant,
-    day_tx: Sender<DayAsk>,
+    /// The day worker; none for a detached browser.
+    day_tx: Option<Sender<DayAsk>>,
     /// The list holds every main log the day may read: the log directories are followed, and
     /// no filter leaves a session out.
     knows_all: bool,
@@ -377,7 +379,7 @@ impl<T> Browser<T> {
             });
         }
 
-        let mut browser = Browser::new(catalog, rows, pricing, frontend, notes, notify, xray_tx, day_tx);
+        let mut browser = Browser::new(catalog, rows, pricing, frontend, notes, notify, Some(xray_tx), Some(day_tx));
         match following {
             Err(e) => browser.status = format!("not following the logs: {e:#}"),
             Ok(()) => {
@@ -393,10 +395,8 @@ impl<T> Browser<T> {
     /// A browser of these rows that computes nothing in the background, for tests.
     pub fn detached(catalog: Arc<Catalog>, rows: Vec<SessionRow>, pricing: Pricing, frontend: Frontend<T>) -> Browser<T> {
         let (notes_tx, notes) = mpsc::channel();
-        let (xray_tx, _) = mpsc::channel();
-        let (day_tx, _) = mpsc::channel();
         let notify = Notify { tx: notes_tx, wake: Arc::new(|| {}) };
-        let mut browser = Browser::new(catalog, rows, Arc::new(pricing), frontend, notes, notify, xray_tx, day_tx);
+        let mut browser = Browser::new(catalog, rows, Arc::new(pricing), frontend, notes, notify, None, None);
         browser.costs = false;
         browser
     }
@@ -409,8 +409,8 @@ impl<T> Browser<T> {
         frontend: Frontend<T>,
         notes: Receiver<Note>,
         notify: Notify,
-        xray_tx: Sender<(usize, u32, SessionRef)>,
-        day_tx: Sender<DayAsk>,
+        xray_tx: Option<Sender<(usize, u32, SessionRef)>>,
+        day_tx: Option<Sender<DayAsk>>,
     ) -> Browser<T> {
         let by_log = rows.iter().enumerate().map(|(i, r)| (r.file.locator.clone(), i)).collect();
         let mut browser = Browser {
@@ -805,7 +805,16 @@ impl<T> Browser<T> {
             return;
         }
         self.pending = Some((i, e.version));
-        let _ = self.xray_tx.send((i, e.version, e.row.file.clone()));
+        let job = (i, e.version, e.row.file.clone());
+        // A worker that is gone computes nothing more: the X-ray fails instead of waiting.
+        if let Some(tx) = &self.xray_tx
+            && tx.send(job).is_err()
+        {
+            let e = &mut self.entries[i];
+            e.report = Some((self.frontend.show)("error: the worker that computes the X-rays stopped".to_string()));
+            e.xray = None;
+            e.reported = e.version;
+        }
     }
 
     /// Asks for the shown day when it has no view for the pane's width yet, or when it is the
@@ -824,7 +833,15 @@ impl<T> Browser<T> {
         }
         let job = (key, self.changes, size, self.day_axis);
         self.day_pending = Some(job);
-        let _ = self.day_tx.send((job, self.known_logs()));
+        // A worker that is gone computes nothing more: the day fails instead of waiting.
+        if let Some(tx) = &self.day_tx
+            && tx.send((job, self.known_logs())).is_err()
+        {
+            self.day_pending = None;
+            let date = key.unwrap_or_else(|| rhythm::date_of(now_ms(), &rhythm::local_offset));
+            let text = (self.frontend.show)("error: the worker that computes the days stopped".to_string());
+            self.days.insert(key, DayText { date, text, parts: None, changes: self.changes, size });
+        }
     }
 
     /// The main logs of the listed sessions and of those a filter hides, when they are every main
@@ -2178,5 +2195,22 @@ mod tests {
         let text = shown(&app).expect("the healthy X-ray arrived");
         assert!(!text.starts_with("error"), "{text}");
         assert!(app.xray().is_some());
+    }
+
+    #[test]
+    fn a_worker_that_is_gone_fails_the_x_ray_instead_of_waiting() {
+        let mut a = app(&["~/a"]);
+        let (tx, rx) = mpsc::channel();
+        drop(rx);
+        a.xray_tx = Some(tx);
+        a.tick();
+        assert_eq!(shown(&a).as_deref(), Some("error: the worker that computes the X-rays stopped"));
+        let (tx, rx) = mpsc::channel();
+        drop(rx);
+        a.day_tx = Some(tx);
+        a.set_pane((80, 30));
+        a.show_day(20_000);
+        a.tick();
+        assert!(matches!(a.day_pane(), Pane::Text(t) if t == "error: the worker that computes the days stopped"));
     }
 }
