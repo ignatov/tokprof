@@ -1,6 +1,7 @@
 //! The layout rules of the workspace: no agent knowledge outside `sources/`, and the dependency
 //! edges between the packages.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -413,4 +414,185 @@ fn the_packages_depend_as_the_layout_says() {
         }
     }
     assert!(broken.is_empty(), "{}", broken.join("\n"));
+}
+
+#[test]
+fn the_window_is_the_version_of_the_cli() {
+    let root = root();
+    let version = |dir: &Path, name: &str| {
+        let all = packages(dir);
+        let package = all.iter().find(|p| p["name"] == name).unwrap_or_else(|| panic!("no package {name}"));
+        package["version"].as_str().unwrap().to_string()
+    };
+    assert_eq!(version(&root, "tokprof"), version(&root.join("crates/tokprof-desk"), "tokprof-desk"));
+}
+
+/// A dependency as a manifest writes it: its version requirement, features and default features.
+#[derive(Debug, PartialEq)]
+struct Dep {
+    version: Option<String>,
+    features: BTreeSet<String>,
+    default_features: bool,
+}
+
+/// The dependencies of the manifest `text` in the sections that `section` accepts, by name. An
+/// inline table may span lines.
+fn manifest_deps(text: &str, section: impl Fn(&str) -> bool) -> BTreeMap<String, Dep> {
+    let mut out = BTreeMap::new();
+    let mut inside = false;
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            inside = section(line.trim_matches(['[', ']']));
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else { continue };
+        let mut value = value.trim().to_string();
+        while value.matches(['{', '[']).count() > value.matches(['}', ']']).count() {
+            let Some(next) = lines.next() else { break };
+            value.push(' ');
+            value.push_str(next.trim());
+        }
+        out.insert(name.trim().to_string(), parse_dep(&value));
+    }
+    out
+}
+
+fn parse_dep(value: &str) -> Dep {
+    let quoted = |s: &str| s.trim().strip_prefix('"').and_then(|s| s.split_once('"')).map(|(v, _)| v.to_string());
+    if !value.starts_with('{') {
+        return Dep { version: quoted(value), features: BTreeSet::new(), default_features: true };
+    }
+    // The value of `key`, and not of a key that ends in it, as `default-features` ends in `features`.
+    let field = |key: &str| {
+        let (at, _) = value.match_indices(&format!("{key} =")).find(|(at, _)| value[..*at].ends_with(['{', ',', ' ']))?;
+        Some(value[at + key.len()..].trim_start().strip_prefix('=').unwrap().trim_start())
+    };
+    let features = field("features").map(|f| {
+        let list = &f[1..f.find(']').unwrap()];
+        list.split(',').filter_map(quoted).collect()
+    });
+    Dep {
+        version: field("version").and_then(quoted),
+        features: features.unwrap_or_default(),
+        default_features: !field("default-features").is_some_and(|v| v.starts_with("false")),
+    }
+}
+
+#[test]
+fn manifests_are_read_with_features_and_default_features() {
+    let text = "[workspace.dependencies]\n# A comment.\na = \"1\"\nb = { version = \"0.3\", default-features = false, features = [\"x\", \"y\"] }\nc = { version = \"2\", features = [\n    \"z\",\n] }\n[profile.release]\nd = \"1\"\n";
+    let deps = manifest_deps(text, |s| s == "workspace.dependencies");
+    let dep = |v: &str, f: &[&str], default_features| Dep { version: Some(v.into()), features: f.iter().map(|s| s.to_string()).collect(), default_features };
+    assert_eq!(deps.len(), 3);
+    assert_eq!(deps["a"], dep("1", &[], true));
+    assert_eq!(deps["b"], dep("0.3", &["x", "y"], false));
+    assert_eq!(deps["c"], dep("2", &["z"], true));
+}
+
+#[test]
+fn the_window_asks_for_the_dependencies_the_workspace_does() {
+    let root = root();
+    let read = |p: &str| std::fs::read_to_string(root.join(p)).unwrap();
+    let shared = manifest_deps(&read("Cargo.toml"), |s| s == "workspace.dependencies");
+    let desk = manifest_deps(&read("crates/tokprof-desk/Cargo.toml"), |s| s.ends_with("dependencies"));
+    assert!(shared.contains_key("anyhow") && desk.contains_key("anyhow"), "the manifests were not read");
+    let mut differ = Vec::new();
+    for (name, dep) in &desk {
+        if let Some(want) = shared.get(name)
+            && want != dep
+        {
+            differ.push(format!("{name}: the workspace asks for {want:?}, the window for {dep:?}"));
+        }
+    }
+    assert!(differ.is_empty(), "{}", differ.join("\n"));
+}
+
+/// A package of a lock file and the packages it depends on, each as `name` or `name version`.
+struct Locked {
+    name: String,
+    version: String,
+    deps: Vec<String>,
+}
+
+fn lock_packages(text: &str) -> Vec<Locked> {
+    let mut out: Vec<Locked> = Vec::new();
+    let mut in_deps = false;
+    for line in text.lines() {
+        if line == "[[package]]" {
+            out.push(Locked { name: String::new(), version: String::new(), deps: Vec::new() });
+            in_deps = false;
+            continue;
+        }
+        let Some(package) = out.last_mut() else { continue };
+        if in_deps {
+            if line == "]" {
+                in_deps = false;
+            } else {
+                package.deps.push(line.trim().trim_end_matches(',').trim_matches('"').to_string());
+            }
+        } else if line == "dependencies = [" {
+            in_deps = true;
+        } else if let Some(v) = line.strip_prefix("name = ") {
+            package.name = v.trim_matches('"').to_string();
+        } else if let Some(v) = line.strip_prefix("version = ") {
+            package.version = v.trim_matches('"').to_string();
+        }
+    }
+    out
+}
+
+/// The versions of every package that `roots` reach in a lock file, by name.
+fn lock_closure<'a>(lock: &'a [Locked], roots: &[&str]) -> BTreeMap<&'a str, BTreeSet<&'a str>> {
+    let mut out: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    let mut todo: Vec<(&str, Option<&str>)> = roots.iter().map(|r| (*r, None)).collect();
+    while let Some((name, version)) = todo.pop() {
+        let mut found = lock.iter().filter(|p| p.name == name && version.is_none_or(|v| p.version == v));
+        let package = found.next().unwrap_or_else(|| panic!("the lock has no {name} {version:?}"));
+        assert!(version.is_some() || found.next().is_none(), "{name} is locked at several versions; say which");
+        if !out.entry(&package.name).or_default().insert(&package.version) {
+            continue;
+        }
+        for dep in &package.deps {
+            let mut parts = dep.split(' ');
+            todo.push((parts.next().unwrap(), parts.next()));
+        }
+    }
+    out
+}
+
+/// The crates both workspaces build from the same folders.
+fn shared_crate(name: &str) -> bool {
+    ["tokprof-core", "tokprof-logio", "tokprof-browse", "tokprof-sources"].contains(&name) || name.starts_with("tokprof-source-")
+}
+
+#[test]
+fn the_window_locks_the_shared_crates_dependencies_as_the_workspace_does() {
+    let root = root();
+    let read = |p: &str| std::fs::read_to_string(root.join(p)).unwrap();
+    let (cli, desk) = (lock_packages(&read("Cargo.lock")), lock_packages(&read("crates/tokprof-desk/Cargo.lock")));
+    let roots: Vec<&str> = cli.iter().map(|p| p.name.as_str()).filter(|n| shared_crate(n)).collect();
+    assert!(roots.contains(&"tokprof-core"), "the lock was not read");
+    let desk_roots: Vec<&str> = roots.iter().copied().filter(|r| desk.iter().any(|p| p.name == *r)).collect();
+    let (cli, desk) = (lock_closure(&cli, &roots), lock_closure(&desk, &desk_roots));
+    let differ: Vec<String> = cli
+        .iter()
+        .filter_map(|(name, versions)| {
+            let other = desk.get(name)?;
+            (other != versions).then(|| format!("{name}: {versions:?} in Cargo.lock, {other:?} in crates/tokprof-desk/Cargo.lock"))
+        })
+        .collect();
+    assert!(
+        differ.is_empty(),
+        "the CLI and the window would build the shared crates with different dependencies; in crates/tokprof-desk run \
+         cargo update -p <name> --precise <the version in Cargo.lock>:\n{}",
+        differ.join("\n")
+    );
 }
