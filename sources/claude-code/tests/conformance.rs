@@ -85,3 +85,61 @@ fn a_broken_fixture_fails() {
     let error = result.expect_err("the broken fixture fails").to_string();
     assert!(error.contains("goes back in time"), "{error}");
 }
+
+/// A session with request-audit lines, kept apart from `tests/fixtures`, which other tests read.
+fn audited() -> tokprof_source_claude_code::ClaudeCode {
+    tokprof_source_claude_code::ClaudeCode::at(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/conform/projects"), Path::new("/h"))
+}
+
+#[test]
+fn the_audited_fixtures_conform() {
+    tokprof_core::testkit::conform(&audited()).unwrap();
+}
+
+/// The audited session holds each path of the audit lines, so the checks above run over them: a
+/// retried request, an advisor call, a message no line holds, a compaction, a second shape, a
+/// request nobody answered, the origins of a skill, a command and a subagent's notification, a
+/// custom title over the generated one, and a subagent with its meta file and its own retry.
+#[test]
+fn the_audited_fixtures_hold_each_path() {
+    use tokprof_core::model::{CompactionTrigger, Origin};
+    use tokprof_core::source::LogSource;
+    let source = audited();
+    let decode = |subagent: bool| {
+        let log = source.discover().into_iter().find(|s| s.subagent == subagent).unwrap();
+        let mut d = source.decoder(&log);
+        source.open(&log).unwrap().for_each(&mut |r| d.feed(r)).unwrap();
+        d.finish()
+    };
+    let at = |ts: &str| tokprof_logio::parse_ts_ms(Some(&serde_json::Value::String(format!("2026-11-02T{ts}Z")))).unwrap();
+    let main = decode(false);
+    let requests = &main.chains[0].requests;
+    assert_eq!((main.chains.len(), requests.len(), main.shapes.len()), (1, 9, 2));
+    assert!(requests.iter().all(|r| r.prompt.is_some()), "every request has its prompt");
+    assert_eq!(main.messages.iter().filter(|m| !m.resolved).count(), 1, "one message is in no line");
+    let (failed, retried) = (&requests[0], &requests[1]);
+    assert_eq!((failed.first_sent_ms, failed.usage.output), (None, 0), "the failed attempt keeps no time of its own");
+    assert_eq!((retried.first_sent_ms, retried.sent_ms, retried.retries), (Some(at("09:00:01")), Some(at("09:00:05")), 1));
+    assert_eq!(retried.retry_error.as_deref(), Some("529 overloaded"));
+    let advisor: Vec<&str> = requests.iter().filter(|r| r.advisor).map(|r| r.model.as_str()).collect();
+    assert_eq!(advisor, ["claude-fable-5-2"]);
+    assert_eq!(main.compactions.iter().map(|c| c.kind.clone()).collect::<Vec<_>>(), [CompactionTrigger::Manual]);
+    let compacted: Vec<Option<&Origin>> = requests.iter().filter(|r| r.compacted_before).map(|r| r.origin.as_ref()).collect();
+    assert_eq!(compacted, [Some(&Origin::Command("goal".into()))]);
+    let skill = Origin::Skill("code-review".into());
+    assert_eq!(
+        requests.iter().filter(|r| r.origin.as_ref() == Some(&skill)).count(),
+        4,
+        "the skill's response, its advisor call and the subagent's notification"
+    );
+    assert_eq!(requests.last().map(|r| (r.ended_ms, r.usage.prompt())), Some((None, 0)), "nobody answered the last request");
+    assert_eq!(main.title.as_deref(), Some("Rename the loader"));
+    assert!((main.reported_usd.unwrap() - 0.67).abs() < 1e-9, "the highest count of each run of the counter");
+    assert_eq!(main.vcs.len(), 2, "the commit and push call, in its line and in its merged response");
+
+    let sub = decode(true);
+    assert_eq!((sub.task.as_deref(), sub.chains[0].name.as_str()), (Some("Map the loader"), "subagent: Map the loader"));
+    let answered = sub.chains[0].requests.last().unwrap();
+    assert_eq!((answered.first_sent_ms, answered.retries, answered.retry_error.as_deref()), (Some(at("09:00:32")), 1, Some("500 internal error")));
+    assert_eq!(answered.origin, Some(Origin::Subagent("general-purpose".into())));
+}
