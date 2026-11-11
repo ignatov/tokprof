@@ -1111,7 +1111,8 @@ impl<T> Browser<T> {
             next: g.and_then(|g| crate::render_sessions::next_cell(g, now)),
             title: g.and_then(|g| g.title.as_deref()),
             active_ms: r.active_ms,
-            warm_until: g.and_then(|g| g.next(now)).filter(|(_, cold)| !cold).and(g.map(|g| g.cold_at_ms)),
+            // A cache without a known lifetime never goes cold: there is no time to count down to.
+            warm_until: g.and_then(|g| g.next(now)).filter(|(_, cold)| !cold).and(g.map(|g| g.cold_at_ms)).filter(|&at| at != i64::MAX),
             next_usd: g.and_then(|g| g.next(now)).map(|(usd, _)| usd),
         }
     }
@@ -2141,6 +2142,11 @@ mod tests {
         let cold = a.cells(row, cold_at);
         assert_eq!((cold.warm_until, cold.next_usd), (None, Some(2.0)), "cold: no countdown, the cold cost");
         assert_eq!(a.cells(a.row_of("id1").unwrap(), 0).title, None);
+        // A cache without a known lifetime: warm for good, and no time to count down to.
+        a.entries[1].glance =
+            Some(xray::Glance { cost: 2.0, next_warm: Some(0.3), next_cold: Some(3.0), cold_at_ms: i64::MAX, last_ms: last, ..Default::default() });
+        let never = a.cells(a.row_of("id1").unwrap(), last + 1);
+        assert_eq!((never.warm_until, never.next_usd), (None, Some(0.3)), "never cold: no countdown, the warm cost");
     }
 
     #[test]
