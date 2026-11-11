@@ -60,8 +60,11 @@ pub fn scan_counted<T: Send>(
     merge: impl Fn(T, T) -> T + Sync + Send,
     on_log: impl Fn() + Sync + Send,
 ) -> Result<(T, ScanStats)> {
+    // One log per job: rayon would otherwise hand each worker a run of neighbouring logs, and
+    // the largest, which come first, would be read one after another by the same worker.
     let (value, unreadable) = files
         .par_iter()
+        .with_max_len(1)
         .map(|f| {
             let mut t = init();
             let mut unreadable = Vec::new();
