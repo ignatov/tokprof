@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::ops::ControlFlow;
 use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender};
+use std::thread::JoinHandle;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
@@ -51,10 +52,14 @@ pub fn for_each_line(path: &Path, f: impl FnMut(&str)) -> Result<()> {
 /// A reader's chunks, read on a thread of its own: the bytes it gave, then the error it stopped
 /// with, if any. The thread reads as `open`'s buffer does, a chunk's worth at a time, so that the
 /// reader gives the same bytes before an error. It stops when the reader ends or fails, or when
-/// nothing reads from it any more. The chunks' buffers go back to it to be filled again.
+/// nothing reads from it any more: an `Ahead` dropped early waits for nothing, and the thread's
+/// next send fails. The chunks' buffers go back to it to be filled again. A thread that panics
+/// closes the channel too; that is an error, not the end of the log.
 struct Ahead {
     chunks: Receiver<std::io::Result<(Vec<u8>, usize)>>,
     spare: Sender<Vec<u8>>,
+    /// The thread, joined once the channel closes to tell an end from a panic.
+    thread: Option<JoinHandle<()>>,
     /// The chunk being handed over, its length, and how much of it was.
     chunk: Vec<u8>,
     len: usize,
@@ -65,7 +70,7 @@ impl Ahead {
     fn spawn(mut reader: impl Read + Send + 'static) -> Ahead {
         let (send, chunks) = std::sync::mpsc::sync_channel(AHEAD);
         let (spare, spares) = std::sync::mpsc::channel::<Vec<u8>>();
-        std::thread::spawn(move || {
+        let thread = std::thread::spawn(move || {
             loop {
                 let mut chunk = spares.try_recv().unwrap_or_else(|_| vec![0u8; CHUNK]);
                 let read = match reader.read(&mut chunk) {
@@ -80,7 +85,7 @@ impl Ahead {
                 }
             }
         });
-        Ahead { chunks, spare, chunk: Vec::new(), len: 0, at: 0 }
+        Ahead { chunks, spare, thread: Some(thread), chunk: Vec::new(), len: 0, at: 0 }
     }
 }
 
@@ -102,9 +107,14 @@ impl BufRead for Ahead {
             if !done.is_empty() {
                 let _ = self.spare.send(done);
             }
-            // A closed channel: the reader ended.
-            if let Ok(read) = self.chunks.recv() {
-                (self.chunk, self.len) = read?;
+            match self.chunks.recv() {
+                Ok(read) => (self.chunk, self.len) = read?,
+                // A closed channel: the thread is done, and the reader ended unless it panicked.
+                Err(_) => {
+                    if let Some(Err(panic)) = self.thread.take().map(JoinHandle::join) {
+                        return Err(stopped(panic.as_ref()));
+                    }
+                }
             }
         }
         Ok(&self.chunk[self.at..self.len])
@@ -113,6 +123,15 @@ impl BufRead for Ahead {
     fn consume(&mut self, n: usize) {
         self.at = (self.at + n).min(self.len);
     }
+}
+
+/// The error of a decompression whose thread panicked, with the panic's text when it has one.
+fn stopped(panic: &(dyn std::any::Any + Send)) -> std::io::Error {
+    let text = panic.downcast_ref::<&str>().copied().or_else(|| panic.downcast_ref::<String>().map(String::as_str));
+    std::io::Error::other(match text {
+        Some(text) => format!("the decompression stopped: {text}"),
+        None => "the decompression stopped".to_string(),
+    })
 }
 
 fn lines(mut reader: impl BufRead, mut f: impl FnMut(&str)) -> Result<()> {
@@ -441,6 +460,65 @@ mod tests {
         std::fs::write(&junk, b"not zstd").unwrap();
         assert_eq!(read_all(|f| for_each_line(&junk, f)), read_all(|f| lines(open(&junk)?, f)));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Gives its bytes a few at a time, then panics, or gives them without end; it says when it
+    /// is dropped.
+    struct Feed {
+        bytes: Vec<u8>,
+        at: usize,
+        endless: bool,
+        dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Read for Feed {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            if self.endless {
+                out.fill(b'\n');
+                return Ok(out.len());
+            }
+            if self.at == self.bytes.len() {
+                panic!("damaged frame");
+            }
+            let n = 3.min(self.bytes.len() - self.at).min(out.len());
+            out[..n].copy_from_slice(&self.bytes[self.at..self.at + n]);
+            self.at += n;
+            Ok(n)
+        }
+    }
+
+    impl Drop for Feed {
+        fn drop(&mut self) {
+            self.dropped.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn feed(bytes: &[u8], endless: bool) -> (Feed, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        let dropped = std::sync::Arc::default();
+        (Feed { bytes: bytes.to_vec(), at: 0, endless, dropped: std::sync::Arc::clone(&dropped) }, dropped)
+    }
+
+    #[test]
+    fn a_decompression_that_panics_is_an_error_after_the_lines_before_it() {
+        let (reader, _) = feed(b"{\"a\":1}\n{\"b\":2}\n{\"c\"", false);
+        let (lines_read, error) = read_all(|f| lines(Ahead::spawn(reader), f));
+        assert_eq!(lines_read, ["{\"a\":1}\n", "{\"b\":2}\n"]);
+        assert_eq!(error.as_deref(), Some("the decompression stopped: damaged frame"));
+    }
+
+    #[test]
+    fn an_ahead_dropped_early_leaves_no_thread_behind() {
+        let (reader, dropped) = feed(b"", true);
+        let mut ahead = Ahead::spawn(reader);
+        assert!(!ahead.fill_buf().unwrap().is_empty());
+        // The thread is filling a full channel without end; dropping the reader must not wait.
+        let started = std::time::Instant::now();
+        drop(ahead);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        while !dropped.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(started.elapsed() < std::time::Duration::from_secs(10), "the thread is still running");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[test]
