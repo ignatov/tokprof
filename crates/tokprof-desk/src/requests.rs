@@ -160,7 +160,7 @@ fn frame(s: &Desk, x: &XRay) -> Option<Frame> {
     let session = s.browser.selected().map(|r| s.browser.session(r).to_string()).unwrap_or_default();
     let (last, cold_at) = s.browser.cache_life(&session).unwrap_or_else(|| {
         let last = x.points.last().map_or(first, |q| q.ts_ms);
-        (last, x.context.as_ref().map_or(last, |c| last + c.cache.ttl_ms))
+        (last, x.context.as_ref().map_or(last, |c| last.saturating_add(c.cache.ttl_ms)))
     });
     let next = s.browser.selected().and_then(|r| s.browser.cells(r, now).next_usd);
     Some(Frame { axis: Axis::of(first, last, cold_at, now), last, cold_at, now, next })

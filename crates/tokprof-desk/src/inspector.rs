@@ -585,7 +585,7 @@ fn request_track(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal, tall: f32) -> Optio
     let session = s.browser.selected().map(|r| s.browser.session(r).to_string()).unwrap_or_default();
     let (last, cold_at) = s.browser.cache_life(&session).unwrap_or_else(|| {
         let last = x.points.last().map_or(first, |q| q.ts_ms);
-        (last, x.context.as_ref().map_or(last, |c| last + c.cache.ttl_ms))
+        (last, x.context.as_ref().map_or(last, |c| last.saturating_add(c.cache.ttl_ms)))
     });
     let next = s.browser.selected().and_then(|r| s.browser.cells(r, now).next_usd);
     let axis = Axis::of(first, last, cold_at, now);
@@ -683,7 +683,7 @@ fn next_box(s: &Desk, x: &XRay, p: &Pal) -> El {
         Some((_, cold_at)) if now >= cold_at => (true, format!("cold for {}", human_duration((now - cold_at) as f64 / 1000.0))),
         Some((_, cold_at)) => (false, format!("warm, cold in {} min", (cold_at - now + 59_999) / 60_000)),
         None if c.cache.cold() => (true, format!("cold for {}", human_duration((c.cache.idle_ms - c.cache.ttl_ms) as f64 / 1000.0))),
-        None => (false, format!("warm, cold in {}", human_duration((c.cache.ttl_ms - c.cache.idle_ms) as f64 / 1000.0))),
+        None => (false, format!("warm, cold in {}", human_duration(c.cache.ttl_ms.saturating_sub(c.cache.idle_ms) as f64 / 1000.0))),
     };
     let next = next.or(if cold { c.cache.next_cold_usd } else { c.cache.next_warm_usd });
     let share = |n: f64| {

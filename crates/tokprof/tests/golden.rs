@@ -193,13 +193,12 @@ fn every_golden_file_has_a_case() {
 }
 
 /// A reader that went away, as `head` does after its lines, ends tokprof quietly and with success:
-/// stdout is a pipe whose read end is closed before tokprof starts. The frame of `ui` leaves pi out:
-/// the glance of a pi session overflows in a debug build, which is not about the pipe.
+/// stdout is a pipe whose read end is closed before tokprof starts.
 #[test]
 fn a_closed_stdout_ends_quietly() {
     let home = common::temp_home("closed-pipe");
-    let cases: [&[&str]; 5] =
-        [&["prices"], &["summary"], &["sessions", "--limit", "5000"], &["handoff", "5e5510f0"], &["--agent", "claude,codex", "ui", "--dump", "80x20"]];
+    let cases: [&[&str]; 6] =
+        [&["prices"], &["summary"], &["sessions", "--limit", "5000"], &["handoff", "5e5510f0"], &["sessions", "--cost"], &["ui", "--dump", "80x20"]];
     for args in cases {
         let (reader, writer) = std::io::pipe().unwrap();
         drop(reader);

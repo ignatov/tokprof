@@ -692,12 +692,18 @@ pub fn glance(catalog: &Catalog, row: &SessionRow, pricing: &Pricing, now_ms: i6
             }
         }
     }
-    let mut g = Glance { cost: t.components.iter().map(|v| v.usd).sum(), cold_at_ms: i64::MAX, ..Glance::default() };
+    glance_of(main, t.components.iter().map(|v| v.usd).sum(), pricing, now_ms, temp)
+}
+
+/// The glance of a session from its main log, and what all its logs cost.
+fn glance_of(main: Option<Session>, cost: f64, pricing: &Pricing, now_ms: i64, temp: &[String]) -> Glance {
+    let mut g = Glance { cost, cold_at_ms: i64::MAX, ..Glance::default() };
     if let Some((s, live)) = main.as_ref().and_then(|s| analysis::live_context(s).map(|l| (s, l))) {
         let cache = cache_state(s, &live, pricing, now_ms);
         g.next_warm = cache.next_warm_usd;
         g.next_cold = cache.next_cold_usd;
-        g.cold_at_ms = live.ts_ms + cache.ttl_ms;
+        // An API without a known cache lifetime has `i64::MAX`: never cold.
+        g.cold_at_ms = live.ts_ms.saturating_add(cache.ttl_ms);
         g.last_ms = live.ts_ms;
     }
     g.waiting_since = main.as_ref().and_then(|s| crate::rhythm::waiting_since(s, temp));
@@ -963,6 +969,16 @@ mod tests {
             .sum();
         assert!(in_content > 0.0);
         assert!((totals.setup.total(&crate::testing::claude()).all.usd - in_content).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_session_on_an_api_without_a_known_cache_lifetime_never_goes_cold() {
+        let (mut s, _) = compacted_session("auto", false);
+        for r in &mut s.chains[0].requests {
+            r.api = crate::api::ApiId::Unknown;
+        }
+        let g = glance_of(Some(s), 1.0, &Pricing::defaults(), crate::TEST_NOW_MS, &[]);
+        assert_eq!((g.last_ms, g.cold_at_ms), (60 * MIN, i64::MAX));
     }
 
     #[test]

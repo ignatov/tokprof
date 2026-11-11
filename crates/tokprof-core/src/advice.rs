@@ -186,7 +186,7 @@ pub fn advise(i: &Inputs) -> Vec<Advice> {
                 ));
             }
         } else {
-            let left = human_duration((i.cache.ttl_ms - i.cache.idle_ms) as f64 / 1000.0);
+            let left = human_duration(i.cache.ttl_ms.saturating_sub(i.cache.idle_ms) as f64 / 1000.0);
             let mut line = format!("Cache warm for {left}: keep going now");
             // While warm, a compaction call that shares the conversation's cache reads the
             // context at the cache rate; any other writes it again.

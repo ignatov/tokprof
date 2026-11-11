@@ -156,7 +156,7 @@ fn context_lines(out: &mut String, c: &ContextNow, style: &Style) {
     let label = style.dim(&format!("{:<9}", "cache"));
     let ttl = cache.ttl_name;
     if !cache.cold() {
-        let left = human_duration((cache.ttl_ms - cache.idle_ms) as f64 / 1000.0);
+        let left = human_duration(cache.ttl_ms.saturating_sub(cache.idle_ms) as f64 / 1000.0);
         let _ = writeln!(out, "{label} {} · {ttl} TTL · cold in {left}", style.paint("32", "warm"));
     } else {
         let idle = human_duration((cache.idle_ms - cache.ttl_ms) as f64 / 1000.0);
