@@ -47,7 +47,16 @@ fn open_compressed(path: &Path) -> Result<Zstd> {
 /// decompressed on a thread of its own, a few chunks ahead, so that its lines are handled while
 /// the next ones are decompressed; the lines and any error are the same as `open` gives.
 pub fn for_each_line(path: &Path, f: impl FnMut(&str)) -> Result<()> {
-    if is_compressed(path) { lines(Ahead::spawn(open_compressed(path)?), f) } else { lines(open(path)?, f) }
+    if is_compressed(path) { read_compressed(path, Ahead::spawn(open_compressed(path)?), f) } else { lines(open(path)?, f) }
+}
+
+/// The lines of a compressed log from the thread that decompresses it ahead, or, when the system
+/// refused that thread (a low limit on processes, say), read on this thread as `open` reads it.
+fn read_compressed(path: &Path, ahead: std::io::Result<Ahead>, f: impl FnMut(&str)) -> Result<()> {
+    match ahead {
+        Ok(ahead) => lines(ahead, f),
+        Err(_) => lines(open(path)?, f),
+    }
 }
 
 /// A reader's chunks, read on a thread of its own: the bytes it gave, then the error it stopped
@@ -68,10 +77,11 @@ struct Ahead {
 }
 
 impl Ahead {
-    fn spawn(mut reader: impl Read + Send + 'static) -> Ahead {
+    /// Starts the thread; the error is the system's refusal.
+    fn spawn(mut reader: impl Read + Send + 'static) -> std::io::Result<Ahead> {
         let (send, chunks) = std::sync::mpsc::sync_channel(AHEAD);
         let (spare, spares) = std::sync::mpsc::channel::<Vec<u8>>();
-        let thread = std::thread::spawn(move || {
+        let thread = std::thread::Builder::new().spawn(move || {
             loop {
                 let mut chunk = spares.try_recv().unwrap_or_else(|_| vec![0u8; CHUNK]);
                 let read = match reader.read(&mut chunk) {
@@ -85,8 +95,8 @@ impl Ahead {
                     return;
                 }
             }
-        });
-        Ahead { chunks, spare, thread: Some(thread), chunk: Vec::new(), len: 0, at: 0 }
+        })?;
+        Ok(Ahead { chunks, spare, thread: Some(thread), chunk: Vec::new(), len: 0, at: 0 })
     }
 }
 
@@ -456,6 +466,11 @@ mod tests {
         assert!(ahead.1.is_some() && !ahead.0.is_empty(), "{:?}", ahead.1);
         assert_eq!(ahead, read_all(|f| lines(open(&cut)?, f)));
 
+        // A refused thread: the log is read on the caller's thread, to the same lines and error.
+        let refused = || Err(std::io::Error::other("refused"));
+        assert_eq!(read_all(|f| read_compressed(&whole, refused(), f)), read_all(|f| lines(open(&whole)?, f)));
+        assert_eq!(read_all(|f| read_compressed(&cut, refused(), f)), ahead);
+
         // A file that is no zstd frame fails as it opens.
         let junk = dir.join("rollout-junk.jsonl.zst");
         std::fs::write(&junk, b"not zstd").unwrap();
@@ -517,7 +532,7 @@ mod tests {
     #[test]
     fn a_decompression_that_panics_is_an_error_after_the_lines_before_it() {
         let (reader, _) = feed(b"{\"a\":1}\n{\"b\":2}\n{\"c\"", false);
-        let (lines_read, error) = read_all(|f| lines(Ahead::spawn(reader), f));
+        let (lines_read, error) = read_all(|f| lines(Ahead::spawn(reader).unwrap(), f));
         assert_eq!(lines_read, ["{\"a\":1}\n", "{\"b\":2}\n"]);
         assert_eq!(error.as_deref(), Some("the decompression stopped: damaged frame"));
     }
@@ -525,7 +540,7 @@ mod tests {
     #[test]
     fn an_ahead_dropped_early_leaves_no_thread_behind() {
         let (reader, dropped) = feed(b"", true);
-        let mut ahead = Ahead::spawn(reader);
+        let mut ahead = Ahead::spawn(reader).unwrap();
         assert!(!ahead.fill_buf().unwrap().is_empty());
         // The thread is filling a full channel without end; dropping the reader must not wait.
         let started = std::time::Instant::now();
