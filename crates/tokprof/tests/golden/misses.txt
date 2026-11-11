@@ -1,0 +1,14 @@
+$ tokprof --prices tests/golden/prices.toml misses --top 0 --expected
+--- stdout
+Cache misses by cause
+
+agent   cause                  misses  re-processed  avoidable
+claude  compaction (expected)       1          3.0k      $0.03
+pi      compaction call             1          4.6k      $0.01
+codex   compaction (expected)       1          3.6k      $0.01
+
+Most expensive misses
+
+when  agent  project  session  chain  context  re-processed  avoidable  cause
+--- stderr
+read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB) in <time>

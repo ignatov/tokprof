@@ -22,6 +22,7 @@ A fix that restores specified behavior needs no proposal. If the code is right a
 cargo fmt --all
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+TOKPROF_BLESS=1 cargo test -p tokprof --test golden    # a change of what the CLI prints: rewrite crates/tokprof/tests/golden, review its diff
 cargo install --path crates/tokprof --root ~/.local    # the binary the author runs
 ```
 

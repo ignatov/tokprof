@@ -1,0 +1,44 @@
+$ tokprof --prices tests/golden/prices.toml flame -o <home>/f.folded
+--- stdout
+wrote 38 stacks to ~/f.folded
+--- stderr
+read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB) in <time>
+--- f.folded
+claude;/w/app;5e5510f0;main;turn 0;assistant text;output 2182
+claude;/w/app;5e5510f0;main;turn 0;thinking;output 9818
+claude;/w/app;5e5510f0;main;turn 0;tool calls;Agent;Explore;output 12000
+claude;/w/app;5e5510f0;main;turn 0;tool calls;AskUserQuestion;output 2400
+claude;/w/app;5e5510f0;main;turn 0;tool calls;Bash;cargo clippy;output 5902
+claude;/w/app;5e5510f0;main;turn 0;tool calls;Bash;cargo test;output 1800
+claude;/w/app;5e5510f0;main;turn 0;tool calls;Bash;rm -rf;output 6098
+claude;/w/app;5e5510f0;main;unknown;cache read 66240
+claude;/w/app;5e5510f0;main;unknown;cache write 50400
+claude;/w/app;5e5510f0;main;unknown;rewrite after miss 36072
+claude;/w/app;5e5510f0;main;unknown;uncached input 288
+claude;/w/app;5e5510f0;subagent: Scan the parser;turn 0;assistant text;output 12000
+claude;/w/app;5e5510f0;subagent: Scan the parser;unknown;cache read 12000
+claude;/w/app;5e5510f0;subagent: Scan the parser;unknown;cache write 36000
+claude;/w/app;5e5510f0;subagent: Scan the parser;unknown;uncached input 72
+codex;/w/svc;01a19a00-1111-7222;main;setup;system prompt;cache read 2314
+codex;/w/svc;01a19a00-1111-7222;main;setup;system prompt;rewrite after miss 3000
+codex;/w/svc;01a19a00-1111-7222;main;turn 1;assistant text;cache read 259
+codex;/w/svc;01a19a00-1111-7222;main;turn 1;assistant text;output 800
+codex;/w/svc;01a19a00-1111-7222;main;turn 1;tool calls;exec_command;cargo test;cache read 258
+codex;/w/svc;01a19a00-1111-7222;main;turn 1;tool calls;exec_command;cargo test;output 800
+codex;/w/svc;01a19a00-1111-7222;main;turn 1;tool calls;exec_command;python3 x.py;output 480
+codex;/w/svc;01a19a00-1111-7222;main;turn 1;tool results;exec_command;cargo test;cache read 1091
+codex;/w/svc;01a19a00-1111-7222;main;turn 1;tool results;exec_command;cargo test;uncached input 200
+codex;/w/svc;01a19a00-1111-7222;main;turn 1;user prompt;cache read 543
+codex;/w/svc;01a19a00-1111-7222;main;turn 1;user prompt;rewrite after miss 4200
+codex;/w/svc;01a19a00-1111-7222;main;turn 1;user prompt;uncached input 9800
+codex;/w/svc;01a19a00-1111-7222;main;turn 2;tool calls;exec_command;cargo test;output 640
+codex;/w/svc;01a19a00-1111-7222;main;turn 2;user prompt;cache read 634
+codex;/w/svc;01a19a00-1111-7222;main;turn 2;user prompt;uncached input 1000
+codex;/w/svc;01a19a00-1111-7222;subagent:explorer;assistant text;output 800
+codex;/w/svc;01a19a00-1111-7222;subagent:explorer;turn 1;user prompt;cache read 300
+codex;/w/svc;01a19a00-1111-7222;subagent:explorer;turn 1;user prompt;uncached input 3000
+pi;/h/src/app;01a1b000-0000-7000;main;assistant text;output 28125
+pi;/h/src/app;01a1b000-0000-7000;main;unknown;cache read 4017
+pi;/h/src/app;01a1b000-0000-7000;main;unknown;cache write 22613
+pi;/h/src/app;01a1b000-0000-7000;main;unknown;rewrite after miss 13905
+pi;/h/src/app;01a1b000-0000-7000;main;unknown;uncached input 2808

@@ -1,8 +1,10 @@
 //! `tokprof share` and `tokprof pool` run as programs, on a home directory that holds one
 //! synthetic Claude Code session.
 
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 /// A home directory with one Claude Code transcript of two requests, written today.
 fn home(name: &str) -> PathBuf {
@@ -35,16 +37,7 @@ fn home_with_model(name: &str, model: impl Fn(&Path) -> String) -> PathBuf {
 }
 
 fn tokprof(home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tokprof"))
-        .args(args)
-        .env("HOME", home)
-        // Where Windows takes the home directory from.
-        .env("USERPROFILE", home)
-        .env("TOKPROF_DIR", home.join("tokprof"))
-        .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
-        .env("CODEX_HOME", home.join(".codex"))
-        .output()
-        .unwrap()
+    common::tokprof(home).args(args).output().unwrap()
 }
 
 #[test]
@@ -182,19 +175,9 @@ fn the_pool_takes_no_filters_and_needs_a_share_file() {
     std::fs::remove_dir_all(&home).unwrap();
 }
 
-/// tokprof over the log sources' fixture logs, with a home of its own and UTC.
+/// tokprof over Claude Code's and Codex's fixture logs, with a home of its own and UTC.
 fn tokprof_fixtures(home: &Path, args: &[&str]) -> Output {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    Command::new(env!("CARGO_BIN_EXE_tokprof"))
-        .args(args)
-        .env("HOME", home)
-        .env("USERPROFILE", home)
-        .env("TOKPROF_DIR", home.join("tokprof"))
-        .env("TZ", "UTC")
-        .env("CLAUDE_CONFIG_DIR", root.join("sources/claude-code/tests/fixtures"))
-        .env("CODEX_HOME", root.join("sources/codex/tests/fixtures"))
-        .output()
-        .unwrap()
+    common::tokprof_fixtures(home, false).args(args).output().unwrap()
 }
 
 #[test]

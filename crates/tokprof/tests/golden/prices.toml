@@ -1,0 +1,32 @@
+# The prices of the golden tests, given with --prices over the built-in table: every model the
+# fixture logs name has an entry here, and an entry replaces the built-in one for the same model,
+# so a change to crates/tokprof-core/prices.toml changes no golden. The numbers are made up.
+
+[models."claude-opus-5-5"]
+input = 6.00
+cache_write = 7.50
+cache_write_long = 12.00
+cache_read = 0.60
+output = 30.00
+context_window = 1_000_000
+
+[models."claude-sonnet-4-5"]
+input = 3.00
+cache_write = 3.75
+cache_write_long = 6.00
+cache_read = 0.30
+output = 15.00
+context_window = 200_000
+
+[models."gpt-6-astra"]
+input = 2.00
+cache_read = 0.20
+output = 16.00
+context_window = 400_000
+
+# No price: a period that ended long before the fixtures' requests leaves them unpriced, whatever
+# the built-in table says.
+[[models."qwen3.8-27b-q6_k"]]
+until = 2000-01-01
+input = 1.00
+output = 1.00

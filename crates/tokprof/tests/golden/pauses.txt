@@ -1,0 +1,90 @@
+$ tokprof --prices tests/golden/prices.toml --since 2026-10-29 --until 2026-11-03 pauses
+--- stdout
+Pauses before typed messages, and what they cost through the prompt cache
+
+Claude Code (claude)
+
+No typed messages after an earlier request.
+
+Cold returns: requests of main conversations that missed the cache after a pause longer than its lifetime
+
+No cold returns.
+
+Sessions by largest context: the largest prompt of each session's main conversations
+
+largest context  sessions  spend   share  cold returns
+under 100k              1  $0.25  100.0%             0
+
+Where the agent's busy time went: what it waited on in its turns, and while its own background work ran after them
+
+kind                  time  share  after turns
+compaction            1.0h  94.3%         1.0h
+nothing               1.3m   2.1%            –
+model                  55s   1.4%            –
+subagents              50s   1.3%            –
+building and testing   30s   0.8%            –
+API retries             5s   0.1%            –
+
+0 of 6 requests took a minute or more (0.0%).
+
+Codex (codex)
+
+1 message typed in main conversations after an earlier request, by the pause before them
+
+pause     messages   share  median context
+under 1m         0    0.0%
+1–5m             0    0.0%
+5–15m            1  100.0%            9.5k
+15–30m           0    0.0%
+30–60m           0    0.0%
+1–2h             0    0.0%
+2–4h             0    0.0%
+4–8h             0    0.0%
+8–24h            0    0.0%
+over 1d          0    0.0%
+
+On a 30-minute cache, 0% of these messages come after it expired.
+
+Cold returns: requests of main conversations that missed the cache after a pause longer than its lifetime
+
+No cold returns.
+
+Sessions by largest context: the largest prompt of each session's main conversations
+
+largest context  sessions  spend   share  cold returns
+under 100k              1  $0.03  100.0%             0
+
+Where the agent's busy time went: what it waited on in its turns, and while its own background work ran after them
+
+kind                  time  share  after turns
+model                  31m  96.7%            –
+nothing                57s   3.0%            –
+building and testing    4s   0.2%            –
+compaction              3s   0.2%            –
+
+1 of 5 requests took a minute or more (20.0%); the longest took 31m.
+
+pi (pi)
+
+No typed messages after an earlier request.
+
+Cold returns: requests of main conversations that missed the cache after a pause longer than its lifetime
+
+No cold returns.
+
+Sessions by largest context: the largest prompt of each session's main conversations
+
+largest context  sessions  spend   share  cold returns
+under 100k              1  $0.07  100.0%             0
+
+Where the agent's busy time went: what it waited on in its turns, and while its own background work ran after them
+
+kind        time  share  after turns
+nothing     9.8m  89.0%            –
+compaction  1.1m   9.6%            –
+model         9s   1.4%           4s
+
+0 of 7 requests took a minute or more (0.0%).
+
+--- stderr
+read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB) in <time>

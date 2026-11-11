@@ -1,0 +1,72 @@
+$ tokprof --prices tests/golden/prices.toml summary
+--- stdout
+Spend by model (API-equivalent USD; token counts where no price is known)
+
+agent   model              requests  prompt known  cache read  cache write  rewrite after miss  uncached input  output     total
+claude  claude-opus-5-5           6            0%       $0.08        $0.09               $0.04           $0.00   $0.05     $0.25
+pi      claude-sonnet-4-5         6            0%       $0.00        $0.02               $0.01           $0.00   $0.03     $0.07
+codex   gpt-6-astra               5          100%       $0.01        $0.00               $0.01           $0.01   $0.00     $0.03
+pi      Qwen3.8-27B-Q6_K          1            0%        1.5k            0                   0              13      77  1.6k tok
+
+Total priced: $0.35   avoidable on cache misses: $0.01 (3.5%)
+No price for Qwen3.8-27B-Q6_K (1.6k tokens). Add them to <home>/.config/tokprof/prices.toml
+Claude Code's own cost counter for 1 session: $0.42; tokprof for the same sessions: $0.25
+pi's own cost count for 1 session: $0.07; tokprof for the same sessions: $0.07
+
+Spend by client: the program that ran the agent, as its log names it
+
+agent   client     sessions  requests   cost  share  avoidable
+claude  sdk-ts            1         5  $0.19  54.4%      $0.00
+pi      unknown           1         7  $0.07  20.1%      $0.01
+claude  unknown           1         1  $0.06  16.9%      $0.00
+codex   codex-tui         1         4  $0.03   7.3%      $0.00
+codex   unknown           1         1  $0.00   1.2%      $0.00
+
+Spend by origin: the kind of work each request was part of
+
+origin          requests  tokens   cost  share
+prompt                15  158.9k  $0.23  65.0%
+agent:Explore          1   23.4k  $0.06  16.9%
+notification           1   23.4k  $0.06  16.9%
+agent:explorer         1    3.0k  $0.00   1.2%
+
+Most expensive tasks: session titles, and what subagents were asked to do
+
+task                         origin         requests   cost  share
+Parser test                  prompt                5  $0.19  54.4%
+untitled 01a1b000-0000-7000  prompt                7  $0.07  20.1%
+Scan the parser              agent:Explore         1  $0.06  16.9%
+untitled 01a19a00-1111-7222  prompt                5  $0.03   8.5%
+
+Spend by trigger: what made the agent send each request
+
+trigger     requests  avg prompt   cost  per request  share
+prompt             5       13.3k  $0.14        $0.03  38.7%
+compaction         3       11.3k  $0.08        $0.03  23.7%
+unknown            6        4.1k  $0.06        $0.01  16.4%
+run                3       18.7k  $0.05        $0.02  15.0%
+subagent           1       23.5k  $0.02        $0.02   6.3%
+
+Spend by activity: what the agent was doing before each request
+
+activity              requests  avg prompt   cost  per request  share
+prompt                       5       13.3k  $0.14        $0.03  38.7%
+compaction                   3       11.3k  $0.08        $0.03  23.7%
+unknown                      6        4.1k  $0.06        $0.01  16.4%
+building and testing         2       16.2k  $0.03        $0.02   9.1%
+subagents                    1       23.5k  $0.02        $0.02   6.3%
+other tools                  1       23.9k  $0.02        $0.02   5.9%
+
+Setup: what every request carries before the work
+
+agent  source          cost  subagents  share  hint
+codex  system prompt  $0.01      $0.00  17.6%
+
+Codex setup: $0.01, 17.6% of its spend
+
+Cache misses by cause
+
+agent  cause            misses  re-processed  avoidable
+pi     compaction call       1          4.6k      $0.01
+--- stderr
+read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB) in <time>

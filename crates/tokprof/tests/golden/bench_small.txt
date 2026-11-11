@@ -1,0 +1,30 @@
+$ tokprof --prices tests/golden/prices.toml bench --min-context 1000 --keep-warm 90m --requests 5
+--- stdout
+tokprof bench · coming back to a big session after its prompt cache expired
+
+pi     1 returns to contexts of 1k+ tokens (median 4.6k) after a break of 8m (median);
+       each followed for up to 5 requests, until the next break or compaction (median 1)
+
+  mean per return              1st request  5 requests  all returns
+  resume as is                       $0.02       $0.02        $0.02
+  /compact first                     $0.18       $0.18        $0.18
+  new session + handoff note         $0.17       $0.17        $0.17
+  heartbeats, then resume            $0.01       $0.01        $0.01
+  heartbeats, then compaction        $0.01       $0.01        $0.01
+
+  A handoff note before the break would have saved -$0.14 of $0.02 (-603%).
+  Per return it saves a median of -$0.14 (-603%), and it is cheaper in 0 of 1 returns.
+  /compact first does not pay off within 5 requests.
+  Heartbeats for up to 90m would have kept 1 of 1 returns warm, for $0.00 of pings, and saved $0.01 of $0.02 (40%).
+  They cost less than a handoff note in 1 of 1 returns.
+  Breaks that were not cold returns would have taken another 42 pings for $0.11; with them, heartbeats cost $0.10 more than resuming.
+  Heartbeats for up to 90m, then a compaction, would have kept 1 of 1 returns warm and compacted 0, for $0.00 of pings and compactions, and saved $0.01 of $0.02 (40%).
+  Breaks that were not cold returns would have taken another 42 pings and 2 compactions for $0.43; with them, it costs $0.42 more than resuming.
+  The X-ray's forecast of the first request was within 10% of its logged cost for 1 of 1 returns (100%).
+
+The alternatives start from what a compaction leaves: pi 1.9k (median of 1 compactions).
+A compaction re-writes the cold context and outputs 10.0k tokens; a handoff note is 10.0k tokens written while the cache was warm.
+A heartbeat goes out at 5/6 of the cache lifetime, every 50m on a 1h cache, reads the context and outputs 100 tokens.
+Heartbeats, then compaction sends the same pings and, at the next ping time past the window, a compaction while the cache is warm that outputs 10.0k tokens: it writes the context again in pi, whose compaction calls read nothing from the cache.
+--- stderr
+read claude 1 files (0.0 GB), codex 1 files (0.0 GB), pi 3 files (0.0 GB) in <time>

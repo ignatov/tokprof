@@ -1,0 +1,13 @@
+$ tokprof --prices tests/golden/prices.toml whatif
+--- stdout
+Claude input cost under each cache TTL, replaying the same requests.
+The model counts only TTL expiry, so compare the simulated columns with each other.
+
+requests                       bucket  actual  simulated 5m  simulated 1h
+      11            main conversation   $0.20         $0.45         $0.67
+       1  subagents and side requests   $0.05         $0.17         $0.28
+
+Cheapest: main conversation 5m (saves $0.22 over the other), subagents 5m (saves $0.10).
+Claude Code settings: promptCacheTtl and subagentPromptCacheTtl ("5m" or "1h").
+--- stderr
+read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB) in <time>

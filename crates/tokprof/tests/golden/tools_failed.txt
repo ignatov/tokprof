@@ -1,0 +1,16 @@
+$ tokprof --prices tests/golden/prices.toml tools --by failed
+--- stdout
+Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent do (trips)
+
+tool                       calls  avg result  avg input   rent  trips  single  failed  after  hint
+Bash cargo test                1           –          –  $0.00  $0.00    100%       1  $0.03
+exec_command python3 x.py      1           –          –  $0.00  $0.00    100%       1  $0.01
+exec_command cargo test        2        5.6k       1.3k  $0.00  $0.00    100%       1  $0.00
+Agent                          1           –          –  $0.01  $0.01    100%
+AskUserQuestion                1           –          –  $0.00  $0.00    100%
+Bash cargo clippy              1           –          –  $0.01  $0.01      0%
+Bash rm -rf                    1           –          –  $0.01  $0.01      0%
+spend $0.35 · rent of these tools $0.03 · trips of these tools $0.03 (two views of the same money; do not add them)
+failed 3 calls, after them $0.04 until the tool worked again · you refused 2 · rules denied 1
+--- stderr
+read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB) in <time>

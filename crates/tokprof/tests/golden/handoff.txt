@@ -1,0 +1,4 @@
+$ tokprof --prices tests/golden/prices.toml handoff 5e5510f0
+--- stdout
+Continue from the earlier session 5e5510f0-1111-4222-8333-944445555666. Its log: <repo>/sources/claude-code/tests/fixtures/projects/-w-app/5e5510f0-1111-4222-8333-944445555666.jsonl.
+--- stderr

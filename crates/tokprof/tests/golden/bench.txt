@@ -1,0 +1,7 @@
+$ tokprof --prices tests/golden/prices.toml bench
+--- stdout
+tokprof bench · coming back to a big session after its prompt cache expired
+
+No cold returns to contexts of 100k+ tokens in these logs.
+--- stderr
+read claude 1 files (0.0 GB), codex 1 files (0.0 GB), pi 3 files (0.0 GB) in <time>
