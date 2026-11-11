@@ -27,8 +27,9 @@ None.
 
 ### Modified Capabilities
 - `session-logs`:
-  - changes `Log locations`, `Session id and project`, `Compaction markers`, `Agent-reported cost` and `Agent selection`;
-  - adds `Pi requests and usage`, `Pi compaction calls` and `Pi forks`.
+  - changes `Log locations`, `Session id and project`, `Compaction markers`, `Agent-reported cost` and `Agent selection`, which now name each agent's requirement instead of holding every agent's fields, so that each stays under the 500 characters of a requirement;
+  - adds `Pi log locations`, `Pi session id and project`, `Pi's own cost`, `Pi requests and usage`, `Pi compaction calls` and `Pi forks`;
+  - adds `Claude Code and Codex log locations`, `Claude Code and Codex session ids`, `Compaction marker lines` and `Claude Code's cost counter`, which hold the text the changed requirements gave up, unchanged.
 
 ## How it is checked
 

@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Log locations
-tokprof SHALL look for session logs only in the agents' log directories, at any depth. Claude Code: files ending in `.jsonl` under `$CLAUDE_CONFIG_DIR/projects`, by default `~/.claude/projects`. Codex: files named `rollout-*.jsonl`, or `rollout-*.jsonl.zst` when zstd-compressed, under `$CODEX_HOME/sessions` and `$CODEX_HOME/archived_sessions`, by default under `~/.codex`. Compressed rollouts are decompressed while reading. pi: files ending in `.jsonl` under `$PI_CODING_AGENT_SESSION_DIR`, else `$PI_CODING_AGENT_DIR/sessions`, by default `~/.pi/agent/sessions` (seen in pi 0.84.2).
+tokprof SHALL look for session logs only in the agents' log locations, at any depth, as Claude Code and Codex log locations and Pi log locations name them. A location that does not exist adds no logs and causes no error.
 
 #### Scenario: Default directories
 - **WHEN** none of `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR` and `PI_CODING_AGENT_SESSION_DIR` is set
@@ -23,16 +23,8 @@ tokprof SHALL look for session logs only in the agents' log directories, at any 
 - **WHEN** a Claude Code transcript is compressed as `.jsonl.zst`, or a file such as `~/.codex/history.jsonl` lies outside the Codex log directories
 - **THEN** it is not picked up when tokprof looks for session logs
 
-#### Scenario: pi session directory set by the environment
-- **WHEN** `PI_CODING_AGENT_DIR=/data/pi` is set and `PI_CODING_AGENT_SESSION_DIR` is not
-- **THEN** pi logs are read from `/data/pi/sessions` only
-
-#### Scenario: pi store that is not a log
-- **WHEN** a pi-durable app keeps its conversations in a SQLite file
-- **THEN** it is not picked up when tokprof looks for session logs
-
 ### Requirement: Session id and project
-Each log SHALL carry a session id and a project read from the log. The id is the `sessionId` of Claude Code `user` and `assistant` lines, the `id` of the Codex `session_meta` payload, or the `id` of the pi `session` line that starts the log. A Codex subagent rollout carries the id of the session it belongs to (see Sessions and subagent logs) instead of its own. The project is the first `cwd` of those Claude Code lines, of Codex `session_meta` and `turn_context` lines, or of the pi `session` line, written with `~` for the home directory.
+Each log SHALL carry a session id and a project read from the log, as Claude Code and Codex session ids and Pi session id and project say. The project is written with `~` for the home directory.
 
 #### Scenario: Claude Code subagent transcript
 - **WHEN** a subagent transcript's lines carry the parent's `sessionId`
@@ -55,12 +47,8 @@ Each log SHALL carry a session id and a project read from the log. The id is the
 - **WHEN** the first `cwd` is `/Users/me/src/app` and the home directory is `/Users/me`
 - **THEN** the project is `~/src/app`
 
-#### Scenario: pi log without an id
-- **WHEN** a pi log's first line has no `id`
-- **THEN** the id is the UUID at the end of the file name, after the `_`, such as `01a00c3b-cc83-7a8d-a89b-262bd2f8ecac` in `2026-08-16T20-20-40-708Z_01a00c3b-cc83-7a8d-a89b-262bd2f8ecac.jsonl`
-
 ### Requirement: Compaction markers
-A request SHALL be marked as following a compaction when a compaction marker comes after the previous answered request of its conversation (see Main conversations across chains) and no later than the request. Markers are Claude Code `system` lines with subtype `compact_boundary` (seen in 2.1.284–2.1.312), which apply to every chain of the transcript, Codex `compacted` lines or `event_msg` events whose type contains `compact` (none seen yet), and pi `compaction` lines (seen in pi 0.84.2). cache-misses counts the rebuild as expected.
+A request SHALL be marked as following a compaction when a compaction marker comes after the previous answered request of its conversation (see Main conversations across chains) and no later than the request. The agents' markers are those of Compaction marker lines. cache-misses counts the rebuild as expected.
 
 #### Scenario: Claude Code compaction
 - **WHEN** a `compact_boundary` line at 10:05 falls between answered requests at 10:00 and 10:10
@@ -78,12 +66,8 @@ A request SHALL be marked as following a compaction when a compaction marker com
 - **WHEN** a `compacted` line comes before a rollout's next usage line
 - **THEN** the request of that usage line is marked
 
-#### Scenario: pi compaction
-- **WHEN** a pi `compaction` line comes between two answered requests
-- **THEN** the later request is marked
-
 ### Requirement: Agent-reported cost
-tokprof SHALL take a Claude Code session's own cost counter from the `cost-state` lines in its transcript (seen in transcripts of Claude Code 2.1.284–2.1.312). The lines that share a `startTime` are one run of the counter, and lines without a `startTime` are one run together. The counter is the sum, over the runs, of the highest `totalCostUSD` in each. cost-attribution compares it with tokprof's total in `tokprof summary`. A pi session's own cost is the sum of `usage.cost.total` over the requests of Pi requests and usage (seen in pi 0.84.2). It is compared, never used as a price. Codex logs no such figure.
+tokprof SHALL take a session's own cost, as the agent counted it, where its log reports one: Claude Code's from Claude Code's cost counter, pi's from Pi's own cost. cost-attribution compares it with tokprof's total in `tokprof summary`; it is never used as a price. Codex logs no such figure.
 
 #### Scenario: Several cost-state lines
 - **WHEN** a transcript's `cost-state` lines share one `startTime` and read $10.00, $30.00 and $28.00
@@ -101,14 +85,6 @@ tokprof SHALL take a Claude Code session's own cost counter from the `cost-state
 - **WHEN** a transcript has no `cost-state` line
 - **THEN** the session has no reported cost and is left out of the comparison
 
-#### Scenario: pi's own cost
-- **WHEN** a pi log's responses carry `usage.cost.total` of $0.0049, $0.0120 and $0.0031
-- **THEN** the session's reported cost is $0.02
-
-#### Scenario: pi's cost of a local model
-- **WHEN** every response of a pi log is from `provider` `local` and carries `cost.total` 0
-- **THEN** the session's reported cost is $0.00 and its requests stay unpriced unless the user's prices name the model
-
 ### Requirement: Agent selection
 `--agent` SHALL choose whose logs every command reads, as a comma-separated list of `claude`, `codex` and `pi`; the default is `claude,codex,pi`.
 
@@ -125,6 +101,63 @@ tokprof SHALL take a Claude Code session's own cost counter from the `cost-state
 - **THEN** only pi sessions are listed
 
 ## ADDED Requirements
+
+### Requirement: Claude Code and Codex log locations
+Claude Code's session logs SHALL be the files ending in `.jsonl` under `$CLAUDE_CONFIG_DIR/projects`, by default `~/.claude/projects`. Codex's SHALL be the files named `rollout-*.jsonl`, or `rollout-*.jsonl.zst` when zstd-compressed, under `$CODEX_HOME/sessions` and `$CODEX_HOME/archived_sessions`, by default under `~/.codex`. Compressed rollouts are decompressed while reading.
+
+#### Scenario: Claude Code directory set by the environment
+- **WHEN** `CLAUDE_CONFIG_DIR=/data/claude` is set
+- **THEN** Claude Code transcripts are read from `/data/claude/projects` only
+
+### Requirement: Pi log locations
+pi's session logs SHALL be the files ending in `.jsonl` under `$PI_CODING_AGENT_SESSION_DIR`, else `$PI_CODING_AGENT_DIR/sessions`, by default `~/.pi/agent/sessions` (seen in pi 0.84.2).
+
+#### Scenario: pi session directory set by the environment
+- **WHEN** `PI_CODING_AGENT_DIR=/data/pi` is set and `PI_CODING_AGENT_SESSION_DIR` is not
+- **THEN** pi logs are read from `/data/pi/sessions` only
+
+#### Scenario: pi store that is not a log
+- **WHEN** a pi-durable app keeps its conversations in a SQLite file
+- **THEN** it is not picked up when tokprof looks for session logs
+
+### Requirement: Claude Code and Codex session ids
+The session id SHALL be the `sessionId` of Claude Code `user` and `assistant` lines, or the `id` of the Codex `session_meta` payload. A Codex subagent rollout carries the id of the session it belongs to (see Sessions and subagent logs) instead of its own. The project is the first `cwd` of those Claude Code lines, or of Codex `session_meta` and `turn_context` lines.
+
+#### Scenario: Claude Code session
+- **WHEN** a transcript's lines carry the `sessionId` `3f951de0-14bc-4966-880b-81f649966ccf` and first the `cwd` `/Users/me/src/app`, with `/Users/me` the home directory
+- **THEN** its session is `3f951de0-14bc-4966-880b-81f649966ccf` of the project `~/src/app`
+
+### Requirement: Pi session id and project
+A pi log's session id SHALL be the `id` of the `session` line that starts it, else the UUID at the end of the file name, after the `_`. Its project is that line's `cwd`.
+
+#### Scenario: pi log without an id
+- **WHEN** a pi log's first line has no `id`
+- **THEN** the id is the UUID at the end of the file name, after the `_`, such as `01a00c3b-cc83-7a8d-a89b-262bd2f8ecac` in `2026-08-16T20-20-40-708Z_01a00c3b-cc83-7a8d-a89b-262bd2f8ecac.jsonl`
+
+### Requirement: Compaction marker lines
+The compaction markers SHALL be Claude Code `system` lines with subtype `compact_boundary` (seen in 2.1.284–2.1.312), which apply to every chain of the transcript, Codex `compacted` lines or `event_msg` events whose type contains `compact` (none seen yet), and pi `compaction` lines (seen in pi 0.84.2).
+
+#### Scenario: pi compaction
+- **WHEN** a pi `compaction` line comes between two answered requests
+- **THEN** the later request is marked
+
+### Requirement: Claude Code's cost counter
+A Claude Code session's own cost SHALL be its counter in the `cost-state` lines of its transcript (seen in transcripts of Claude Code 2.1.284–2.1.312). The lines that share a `startTime` are one run of the counter, and lines without a `startTime` are one run together. The counter is the sum, over the runs, of the highest `totalCostUSD` in each.
+
+#### Scenario: Lines without a start time
+- **WHEN** a transcript's `cost-state` lines have no `startTime` and read $1.00, $3.00 and $2.00
+- **THEN** the session's reported cost is $3.00
+
+### Requirement: Pi's own cost
+A pi session's own cost SHALL be the sum of `usage.cost.total` over the requests of Pi requests and usage (seen in pi 0.84.2).
+
+#### Scenario: pi's own cost
+- **WHEN** a pi log's responses carry `usage.cost.total` of $0.0049, $0.0120 and $0.0031
+- **THEN** the session's reported cost is $0.02
+
+#### Scenario: pi's cost of a local model
+- **WHEN** every response of a pi log is from `provider` `local` and carries `cost.total` 0
+- **THEN** the session's reported cost is $0.00 and its requests stay unpriced unless the user's prices name the model
 
 ### Requirement: Pi requests and usage
 Each pi API request SHALL come from a `message` line whose `message.role` is `assistant` and whose `message.usage` has a non-zero `input`, `output`, `cacheRead` or `cacheWrite` (seen in pi 0.84.2). Every branch of the log's tree counts. `input` is uncached input, `cacheRead` reads, `cacheWrite` short-lifetime writes less `cacheWrite1h`, the long-lifetime ones, and `output` output, `reasoning` included. The model is the response's `model`. A request's time is the line's `timestamp`.
