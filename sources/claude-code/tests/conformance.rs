@@ -2,10 +2,12 @@
 
 use std::path::{Path, PathBuf};
 
+/// The fixtures and the audited session below; each capability shows in one of them.
 #[test]
 fn the_fixtures_conform() {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    tokprof_core::testkit::conform(&tokprof_source_claude_code::ClaudeCode::at(fixtures.join("projects"), Path::new("/h"))).unwrap();
+    let source = tokprof_source_claude_code::ClaudeCode::at(fixtures.join("projects"), Path::new("/h"));
+    tokprof_core::testkit::conform_all(&[&source, &audited()]).unwrap();
 }
 
 /// The fixture holds one hand-off of each kind, so the checks above run over all of them.
@@ -89,11 +91,6 @@ fn a_broken_fixture_fails() {
 /// A session with request-audit lines, kept apart from `tests/fixtures`, which other tests read.
 fn audited() -> tokprof_source_claude_code::ClaudeCode {
     tokprof_source_claude_code::ClaudeCode::at(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/conform/projects"), Path::new("/h"))
-}
-
-#[test]
-fn the_audited_fixtures_conform() {
-    tokprof_core::testkit::conform(&audited()).unwrap();
 }
 
 /// The audited session holds each path of the audit lines, so the checks above run over them: a

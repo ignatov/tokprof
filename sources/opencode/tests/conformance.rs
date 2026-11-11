@@ -40,9 +40,11 @@ fn sessions(source: &OpenCode) -> Vec<(String, bool, Session)> {
     out
 }
 
+/// The fixtures and the stores of the paths below; each capability shows in one of them.
 #[test]
 fn the_fixtures_conform() {
-    tokprof_core::testkit::conform(&OpenCode::at(data_dir("conform"), Path::new("/h"))).unwrap();
+    let paths = OpenCode::at(paths_dir("conform"), Path::new("/h"));
+    tokprof_core::testkit::conform_all(&[&OpenCode::at(data_dir("conform"), Path::new("/h")), &paths]).unwrap();
 }
 
 /// Each store's sessions, each request once: the 1.x store's session and its subagent; the
@@ -168,11 +170,6 @@ fn paths_dir(name: &str) -> PathBuf {
         rusqlite::Connection::open(dir.join(store)).unwrap().execute_batch(&std::fs::read_to_string(entry.path()).unwrap()).unwrap();
     }
     dir
-}
-
-#[test]
-fn the_path_fixtures_conform() {
-    tokprof_core::testkit::conform(&OpenCode::at(paths_dir("conform"), Path::new("/h"))).unwrap();
 }
 
 /// A 2.x store without the 1.x tables: a router's model, a failed compaction that is a call, a

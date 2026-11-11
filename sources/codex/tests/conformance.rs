@@ -2,10 +2,11 @@
 
 use std::path::{Path, PathBuf};
 
+/// The fixtures and the stream rollouts below; each capability shows in one of them.
 #[test]
 fn the_fixtures_conform() {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    tokprof_core::testkit::conform(&tokprof_source_codex::Codex::at(fixtures, Path::new("/h"))).unwrap();
+    tokprof_core::testkit::conform_all(&[&tokprof_source_codex::Codex::at(fixtures, Path::new("/h")), &streams()]).unwrap();
 }
 
 /// The main rollout holds an end of turn and an interrupt, so the checks above run over both.
@@ -61,11 +62,6 @@ fn the_fixtures_hold_call_outcomes_and_request_times() {
 /// tests read it.
 fn streams() -> tokprof_source_codex::Codex {
     tokprof_source_codex::Codex::at(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/conform"), Path::new("/h"))
-}
-
-#[test]
-fn the_stream_fixtures_conform() {
-    tokprof_core::testkit::conform(&streams()).unwrap();
 }
 
 /// A rollout whose usage comes only from `token_count` events, with reasoning, a repeated total

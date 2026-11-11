@@ -27,9 +27,10 @@ fn sessions() -> Vec<Session> {
     out
 }
 
+/// The fixtures and the logs of the paths below; each capability shows in one of them.
 #[test]
 fn the_fixtures_conform() {
-    tokprof_core::testkit::conform(&source()).unwrap();
+    tokprof_core::testkit::conform_all(&[&source(), &paths()]).unwrap();
 }
 
 /// The main log has two branches, an aborted reply and a compaction; the fork copied the path up
@@ -77,11 +78,6 @@ fn decode_all(source: &Pi) -> Vec<Session> {
         .collect();
     out.sort_by(|a, b| a.id.cmp(&b.id));
     out
-}
-
-#[test]
-fn the_path_fixtures_conform() {
-    tokprof_core::testkit::conform(&paths()).unwrap();
 }
 
 /// A compaction before the first reply runs on the model of the `model_change`; a long-lifetime

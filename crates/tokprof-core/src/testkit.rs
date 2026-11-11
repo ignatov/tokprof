@@ -9,27 +9,44 @@
 //! the whole log; a decoder cut at any record, with snapshots there, gives what it gives fed at
 //! once, as the browser feeds a live log; a record the decoder cannot read changes nothing; every
 //! index a session holds points into it; a log is found again at its path; subagents' logs point
-//! at their main session; and no session shows a fact its agent does not declare.
+//! at their main session; and the capabilities an agent declares hold both ways: no session shows
+//! a fact its agent does not declare, and each declared fact shows in at least one session.
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use anyhow::{Result, anyhow, bail, ensure};
 
 use crate::model::{BlockKind, CompactionTrigger, Session, short_id};
-use crate::source::{Capabilities, Claim, Locator, LogSource, OwnCost, SessionRef};
+use crate::source::{AgentId, Capabilities, Claim, Locator, LogSource, OwnCost, SessionRef};
 
 /// Runs every check over every log the source finds; fails with the first that does not hold.
 pub fn conform(source: &dyn LogSource) -> Result<()> {
-    let logs = source.discover();
-    ensure!(!logs.is_empty(), "{}: the fixtures hold no logs", source.name());
-    for s in &logs {
-        check(source, s).map_err(|e| anyhow!("{}: {}: {e}", source.name(), s.path().display()))?;
+    conform_all(&[source])
+}
+
+/// Runs every check over every log the sources find, such as one source over several fixture
+/// folders. Each fact an agent's capabilities declare shows in at least one of their sessions.
+pub fn conform_all(sources: &[&dyn LogSource]) -> Result<()> {
+    let mut shown: BTreeMap<AgentId, Shown> = BTreeMap::new();
+    for &source in sources {
+        let logs = source.discover();
+        ensure!(!logs.is_empty(), "{}: the fixtures hold no logs", source.name());
+        for s in &logs {
+            let whole = check(source, s).map_err(|e| anyhow!("{}: {}: {e}", source.name(), s.path().display()))?;
+            shown.entry(s.agent.clone()).or_default().add(&Shown::of(&whole));
+        }
+        for main in logs.iter().filter(|s| !s.subagent) {
+            for sub in source.subagents(main) {
+                ensure!(sub.subagent, "{} is listed as a subagent of {} but is not one", sub.session_id, main.session_id);
+                ensure!(sub.main_id == main.session_id, "subagent {} names main session {}, not {}", sub.session_id, sub.main_id, main.session_id);
+            }
+        }
     }
-    for main in logs.iter().filter(|s| !s.subagent) {
-        for sub in source.subagents(main) {
-            ensure!(sub.subagent, "{} is listed as a subagent of {} but is not one", sub.session_id, main.session_id);
-            ensure!(sub.main_id == main.session_id, "subagent {} names main session {}, not {}", sub.session_id, sub.main_id, main.session_id);
+    for (agent, shown) in &shown {
+        for (fact, declared, seen) in shown.against(&agent.info().capabilities) {
+            ensure!(!declared || seen, "{agent} declares {fact}, but no fixture session shows it");
         }
     }
     Ok(())
@@ -175,7 +192,7 @@ fn indices(s: &Session) -> Result<()> {
 }
 
 /// What a session shows of each fact a capability promises.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct Shown {
     own_cost: bool,
     compaction_trigger: bool,
@@ -198,6 +215,16 @@ impl Shown {
             subagent_tasks: s.task.is_some(),
             origins: requests().any(|r| r.origin.is_some()),
         }
+    }
+
+    fn add(&mut self, other: &Shown) {
+        self.own_cost |= other.own_cost;
+        self.compaction_trigger |= other.compaction_trigger;
+        self.context_window |= other.context_window;
+        self.prompt_composition |= other.prompt_composition;
+        self.titles |= other.titles;
+        self.subagent_tasks |= other.subagent_tasks;
+        self.origins |= other.origins;
     }
 
     /// Each fact: what it is, whether the capabilities declare it, and whether it shows. An own
@@ -287,6 +314,8 @@ mod tests {
         ClaimsNothing,
         /// The session has a title its agent does not declare.
         UndeclaredTitle,
+        /// The agent declares titles, but no session has one.
+        MissingTitle,
     }
 
     /// A source of one log of three records, `{"n": <time>}`, each a request.
@@ -296,7 +325,9 @@ mod tests {
 
     impl Toy {
         fn log(&self) -> SessionRef {
-            let agent = AgentId::new(AgentInfo::named("toy"));
+            let mut info = AgentInfo::named("toy");
+            info.capabilities.titles = self.0 == Flaw::MissingTitle;
+            let agent = AgentId::new(info);
             SessionRef {
                 source: "toy",
                 agent,
@@ -433,5 +464,6 @@ mod tests {
         assert!(e.contains("does not read its own log given as a target"), "{e}");
         let e = error(Flaw::UndeclaredTitle);
         assert!(e.contains("the session shows a title without the capability"), "{e}");
+        assert_eq!(error(Flaw::MissingTitle), "toy declares a title, but no fixture session shows it");
     }
 }
