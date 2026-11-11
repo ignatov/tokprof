@@ -8,9 +8,13 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// What only a source may know: agent names, the names of agents' tools, and log fields.
+/// What only a source may know: agent names, their instruction files, the names of agents' tools,
+/// and log fields.
 const AGENT_WORDS: &[&str] = &[
-    "Claude Code",
+    "Claude",
+    "claude",
+    "CLAUDE.md",
+    "AGENTS.md",
     "Codex",
     "codex",
     "BashOutput",
@@ -27,11 +31,14 @@ const AGENT_WORDS: &[&str] = &[
     "token_count",
     "response_item",
     "PI_CODING_AGENT",
+    "pi-coding",
     "parentSession",
     "OpenCode",
     "opencode",
     "session_v2",
     "step-finish",
+    "Junie",
+    "junie",
 ];
 
 /// The one file of the framework that may name vendors: the cache rules of their APIs.
