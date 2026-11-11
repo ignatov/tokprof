@@ -817,15 +817,22 @@ fn default_name(cli: &Cli, value: Value) -> String {
     format!("{}.jfr", parts.join("-"))
 }
 
-/// Writes to stdout. A reader that went away, as `head` does after its lines, ends tokprof quietly
-/// and with success; any other failure panics, as `print!` does. SIGPIPE stays ignored, as Rust
-/// leaves it: the terminal UI and the clipboard's child share this process.
+/// Writes to stdout. Once its reader went away, as `head` does after its lines, nothing more is
+/// written and the command goes on quietly to its end: what it does besides printing, such as
+/// writing a file, still happens, and it ends as it would have. Any other failure panics, as
+/// `print!` does. SIGPIPE stays ignored, as Rust leaves it: the terminal UI and the clipboard's
+/// child share this process.
 fn write_out(args: std::fmt::Arguments) {
     use std::io::Write;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static CLOSED: AtomicBool = AtomicBool::new(false);
+    if CLOSED.load(Ordering::Relaxed) {
+        return;
+    }
     let mut stdout = std::io::stdout().lock();
     match stdout.write_fmt(args).and_then(|()| stdout.flush()) {
         Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => CLOSED.store(true, Ordering::Relaxed),
         Err(e) => panic!("failed printing to stdout: {e}"),
     }
 }

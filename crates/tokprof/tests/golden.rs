@@ -208,3 +208,23 @@ fn a_closed_stdout_ends_quietly() {
     }
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+/// What a command does besides printing still happens when its reader went away.
+#[test]
+fn a_closed_stdout_still_writes_the_file_asked_for() {
+    let home = common::temp_home("closed-pipe-file");
+    let svg = home.join("bench.svg");
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let out = common::tokprof_fixtures(&home, true)
+        .args(["bench", "--min-context", "1", "--svg"])
+        .arg(&svg)
+        .stdout(writer)
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && !stderr.contains("panicked"), "{}\n{stderr}", out.status);
+    assert!(svg.exists(), "the chart is written though nobody read the report\n{stderr}");
+    std::fs::remove_dir_all(&home).unwrap();
+}
