@@ -1,0 +1,41 @@
+# Design
+
+## Store fields
+
+Read from opencode's source (`packages/core/src/database`, `packages/schema/src`, main of 2026-11-10) and checked on the author's store (1.18.16 and 2.2.4 rows) and a scratch store of 1.19.3.
+
+- **Where:** the data directory is `$XDG_DATA_HOME/opencode`, by default `~/.local/share/opencode`, on macOS too. The store is `opencode.db`, or `opencode-<channel>.db` for a channel other than `latest`, `dev`, `beta`, `next` and `prod`; `$OPENCODE_DB` overrides the name, relative to the data directory unless absolute. 2.x imports `opencode-next.db`, an earlier 2.x store, into `opencode.db` and leaves it there.
+- **Journal:** WAL. Writes go to `opencode.db-wal` until a checkpoint, so the store file itself changes seldom.
+- **1.x sessions:** table `session`: `id` (`ses_` and 26 characters), `parent_id`, `directory`, `title`, `version`, `time_created`, `time_updated` (epoch ms).
+- **1.x messages:** table `message`: `id` (`msg_…`), `session_id`, `time_created`, `time_updated`, `data`. `data.role` is `user` or `assistant`. An assistant has `modelID`, `providerID`, `agent`, `mode`, `cost`, `tokens` (`input`, `output`, `reasoning`, `cache.read`, `cache.write`, `total`), `time.created`, `time.completed`, `finish`, `error`, `parentID`, and `summary: true` when it is the summary of a compaction.
+- **1.x parts:** table `part`: `id`, `message_id`, `session_id`, `time_created`, `data`. `step-start` and `step-finish` (with `tokens` and `cost`) frame each model call; `compaction` (with `auto`) sits on the user message that asked for a compaction; `subtask` and `tool` (`tool: "task"`) start subagents.
+- **2.x sessions:** table `session_v2`, the same columns plus `fork_session_id` and `fork_boundary`.
+- **2.x messages:** table `session_message`: `id`, `session_id`, `type`, `seq`, `time_created`, `time_updated`, `data`. `type` `assistant` has `model` (`id`, `providerID`, `variant`), `agent`, `cost`, `tokens`, `finish`, `error`, `time.created`, `time.streamed`, `time.completed`. `type` `compaction` has `status` (`running`, `completed`, `failed`), `reason` (`auto`, `manual`), and when done `model`, `cost` and `tokens` of the compaction call. Other types (`user`, `synthetic`, `system`, `shell`, `skill`, `agent-switched`, `model-switched`, `location-switched`, `idle`) carry no usage. Assistant content may sit in `session_part` since 2.x's migration `20261029002625_session_part`; tokprof reads none of it.
+- **Tokens:** `input` is the non-cached input; `output` is the visible output and `reasoning` comes on top of it: in 1.19.3, `total` = `input` + `output` + `reasoning` + `cache.read` + `cache.write` in all 7 steps with reasoning, and 2.x's `TokenUsage.total` sums the same. The cache lifetime is the provider's default (5 min for Anthropic); 2.x sends a `ttl` only when the configuration asks.
+- **One call, one step:** 2.x writes an assistant message per step (`Step.Ended`), and a retry starts a new one. 1.x writes one `step-finish` per assistant message in every message seen (20 of 20), but its schema allows several.
+- **Migration:** 2.x copies 1.x sessions into `session_v2` and `session_message` with the same ids, and leaves the 1.x tables. The copy drops the summary assistant of a compaction (its usage with it) and the assistant that ran a `subtask`.
+- **Forks:** 2.x copies the parent's messages under new ids with their own `time_created` (`SessionProjector.projectFork`); its own stats leave out a fork's messages older than the fork (`SessionStats`).
+
+## Choices
+
+- **One log per session.** A session is known by the store and its id. Its size is the bytes of its message rows (and part rows for 1.x), read with SQLite's `octet_length`, which does not read the values. Its last write is the latest `time_updated` of the session and its messages; its last activity the latest `time_updated` of its messages.
+- **Reading a session** opens the store read-only, reads the session row from `session_v2` else `session`, then the messages of both message tables, ordered by `time_created` and id, with the 1.x row kept when both have an id. The decoder gets one record per message, and for a 1.x assistant its `step-finish` parts' usage and times. Messages created before the session are a fork's copies and are left out, in both layouts (no 1.x session holds older messages unless it is a copy).
+- **Requests:** a request with all of `input`, `output`, `reasoning`, `cache.read` and `cache.write` at 0 is no request. Model: `model.id` or `modelID`, after its last `/` (`anthropic/claude-sonnet-4.5` → `claude-sonnet-4.5`). API: the `providerID` `anthropic` or a model starting `claude` takes Anthropic's cache rules, `openai` or a model starting `gpt-` OpenAI's, else none. Sent: `time.created` of the message (1.x: the step's `step-start` part when there is one); ended: `time.completed`, else the step's `step-finish` part, else the row's `time_updated`.
+- **Compactions:** a 2.x `compaction` with `status` `completed` is a marker at its `time_created`; one that `completed` or `failed` with `tokens` is a compaction call, its model `model.id` else the latest request's. A 1.x user message with a `compaction` part is a marker (`auto` true → `auto`, else `manual`); an assistant with `summary: true` gives compaction calls. A compaction call is neither marked nor clears the mark: the request after it is marked.
+- **Subagents:** `parent_id`, up to the topmost session found; a parent that is gone leaves the session a main one. The chain is `subagent: <title>` with the title's ` (@<agent> subagent)` cut, else `subagent:<agent>`; the title is the session's task.
+- **Short id:** 20 characters, `ses_` and the 12 hex digits of its time (2.x ids count down) and 4 random ones: sessions started in one millisecond share the first 16.
+- **Prices:** the model name alone, as for the other agents. OpenCode's `cost` is compared only. Free models such as `big-pickle` have no tokprof price.
+- **Following the store:** the ui watches the data directory and polls the store and its `-wal` every 2 s, as it polls logs written in the last hour. A change gives the sessions of the store written in the last hour, and the browser keeps the rows of those that did not change. A log is known by its locator, so the sessions of one store are rows of their own. A session in a store is read whole each time, never kept and read on: OpenCode rewrites rows in place.
+- **SQLite:** `rusqlite` with its bundled SQLite (3.50 or later), so every release target builds it from C with no system library; the store is opened read-only with `SQLITE_OPEN_READ_ONLY` and a 2 s busy timeout.
+
+## Parse time
+
+The author's store is 26 MB with 4 requests, the scratch one under 1 MB. Discovery is one query per store and table; reading a session a few indexed queries. The 8.5 GB corpus of the other agents parses as before; `tokprof` with no arguments adds the discovery queries, a few ms.
+
+## Open questions, settled
+
+1. **Default list.** `opencode` joins the default `--agent` list, `claude,codex,pi,opencode`, as pi did: a missing store adds nothing.
+2. **The JSON storage of opencode before 1.x.** Out of scope: no log on this machine to check, and opencode no longer migrates it.
+3. **2.x compaction calls of migrated sessions.** Read from the 1.x rows, which 2.x leaves in the store.
+4. **Several steps in one 1.x message.** Each `step-finish` part is a request, so a message with several counts each once; a message without one counts its own `tokens`.
+5. **Compaction from the command line.** `opencode run --command compact` fails in 1.19.3, and a smaller context limit in the config did not trigger one, so the compaction rules come from the source and the migration code, checked by synthetic fixtures, not by a log.
