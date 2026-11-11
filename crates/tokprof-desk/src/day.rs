@@ -130,9 +130,8 @@ fn mark_key(m: Mark) -> &'static str {
     }
 }
 
-/// The line under the lanes about the time under the pointer: `14:32 · ecad11 Инфографика
-/// прерываний · agent working`, the lane's label, and what it shows there, the cache's tail
-/// included.
+/// The line under the lanes about the time under the pointer: `14:32 · 3f951d Fix the login
+/// redirect · agent working`, the lane's label, and what it shows there, the cache's tail included.
 pub fn pointer_text(lanes: &StripLanes, lives: &[Option<(i64, i64)>], range: Range, pointer: &Pointer, width: f32) -> String {
     let ts = range.ts(pointer.x, width);
     let slack = ((range.end - range.begin) as f64 * 2.0 / width.max(1.0) as f64) as i64;
@@ -156,7 +155,7 @@ pub fn pointer_text(lanes: &StripLanes, lives: &[Option<(i64, i64)>], range: Ran
     out
 }
 
-/// The pointer's line over the `Agents at work` lane: `14:20 · 3 agents at work: ecad11 …, …`, the
+/// The pointer's line over the `Agents at work` lane: `14:20 · 3 agents at work: 3f951d …, …`, the
 /// sessions in the lanes' order.
 pub fn agents_text(lanes: &StripLanes, ts: i64) -> String {
     let a = &lanes.agents;
