@@ -42,6 +42,8 @@ fn lines(text: &Text<'static>) -> usize {
 }
 
 pub fn run(catalog: Arc<Catalog>, pricing: Pricing, dump: Option<(u16, u16)>, select: Query, waiting: bool) -> Result<()> {
+    // A job of the background work that panics shows as its error, and says nothing on stderr.
+    tokprof_browse::contain::install_hook();
     // The terminal draws at least every 100 ms, so the background work needs not wake it, and a
     // wait on the screen is redrawn as it grows.
     let mut app = Browser::start(catalog, pricing, select, dump.is_none(), Arc::new(|| {}), terminal())?;
@@ -50,6 +52,8 @@ pub fn run(catalog: Arc<Catalog>, pricing: Pricing, dump: Option<(u16, u16)>, se
         return dump_frame(&mut app, width, height);
     }
     let mut terminal = ratatui::init();
+    // Over the hook that restores the terminal: the screen stays as it is.
+    tokprof_browse::contain::install_hook();
     let result = event_loop(&mut terminal, &mut app);
     ratatui::restore();
     result

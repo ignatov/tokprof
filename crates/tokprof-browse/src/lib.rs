@@ -5,6 +5,7 @@
 pub mod browser;
 pub mod calendar;
 pub mod clipboard;
+pub mod contain;
 pub mod day;
 pub mod filters;
 pub mod paths;

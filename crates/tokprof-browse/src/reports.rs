@@ -129,7 +129,9 @@ impl Reports {
                             wake();
                         }
                     };
-                    let overview = overview::collect(&catalog, &query, &pricing, progress).map_err(|e| format!("{e:#}"));
+                    // A report that panicked fails as one that could not be read.
+                    let overview =
+                        crate::contain::run(|| overview::collect(&catalog, &query, &pricing, progress).map_err(|e| format!("{e:#}"))).and_then(|o| o);
                     if tx.send(Done { job, overview, window, took: started.elapsed() }).is_err() {
                         return;
                     }
@@ -316,5 +318,22 @@ mod tests {
         let mut r = Reports::detached();
         r.tick(30, 0);
         assert!(!r.reading(30) && r.get(30).is_none() && r.next_due(30, 3).is_none());
+    }
+
+    #[test]
+    fn a_report_that_panicked_shows_the_error_and_the_worker_goes_on() {
+        use crate::contain::testing::{self, BOOM};
+        let (catalog, armed, _) = testing::catalog("reports");
+        let select = Query { agents: catalog.agents(), ..Query::default() };
+        let mut r = Reports::start(catalog, Pricing::defaults(), select, Arc::new(|| {}));
+        r.settle(30, 0, Duration::from_secs(20));
+        let failed = r.get(30).expect("the report arrived");
+        assert_eq!(failed.overview.as_ref().err(), Some(&format!("tokprof panicked: {BOOM}")));
+        assert!(!r.reading(30));
+        // The next report, once its pause passed, is read by the same worker.
+        armed.store(false, Ordering::SeqCst);
+        r.kept.clear();
+        r.settle(30, 1, Duration::from_secs(20));
+        assert!(r.get(30).is_some_and(|x| x.overview.is_ok()));
     }
 }

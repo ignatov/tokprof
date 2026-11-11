@@ -91,7 +91,7 @@ pub fn watch(catalog: Arc<Catalog>, agents: Vec<AgentId>, send: impl FnMut(Chang
 }
 
 fn follow(events: &Receiver<notify::Result<Event>>, catalog: &Catalog, agents: &[AgentId], roots: &[Root], mut send: impl FnMut(Change) -> bool) {
-    let mut hot = Hot::of(catalog, agents);
+    let mut hot = crate::contain::run_on(None, || Hot::of(catalog, agents)).unwrap_or_default();
     let mut poll_at = Instant::now() + POLL;
     loop {
         let mut batch = Vec::new();
@@ -109,9 +109,13 @@ fn follow(events: &Receiver<notify::Result<Event>>, catalog: &Catalog, agents: &
             }
         }
         let batch: Vec<Event> = batch.into_iter().flatten().collect();
+        // A batch that panicked is left out, and the logs are followed on: a later change of the
+        // same logs brings them again.
         let changes = if batch.iter().any(Event::need_rescan) {
-            hot = Hot::of(catalog, agents);
-            vec![Change::All(rescan(catalog, agents))]
+            crate::contain::run(|| {
+                hot = Hot::of(catalog, agents);
+                vec![Change::All(rescan(catalog, agents))]
+            })
         } else {
             let mut paths = event_paths(roots, &batch);
             let events = paths.len();
@@ -119,13 +123,16 @@ fn follow(events: &Receiver<notify::Result<Event>>, catalog: &Catalog, agents: &
                 paths.extend(hot.written());
                 poll_at = Instant::now() + POLL;
             }
-            let (changes, logs) = changes_at(catalog, &paths);
-            // The logs events named are looked at from now on, not the other files that change
-            // beside them; the polled ones already are.
-            hot.saw(&logs.iter().filter(|&&i| i < events).map(|&i| paths[i].clone()).collect::<Vec<_>>());
-            changes
+            // On this thread, so that a change does not wait behind the costing of every session.
+            crate::contain::run_on(None, || {
+                let (changes, logs) = changes_at(catalog, &paths);
+                // The logs events named are looked at from now on, not the other files that
+                // change beside them; the polled ones already are.
+                hot.saw(&logs.iter().filter(|&&i| i < events).map(|&i| paths[i].clone()).collect::<Vec<_>>());
+                changes
+            })
         };
-        for change in changes {
+        for change in changes.unwrap_or_default() {
             if !send(change) {
                 return;
             }
@@ -134,6 +141,7 @@ fn follow(events: &Receiver<notify::Result<Event>>, catalog: &Catalog, agents: &
 }
 
 /// The logs written lately, with how each looked when it was last looked at, by path.
+#[derive(Default)]
 struct Hot(HashMap<PathBuf, (&'static str, Option<Stamp>)>);
 
 /// A log's length and last write.

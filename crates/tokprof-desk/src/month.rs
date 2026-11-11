@@ -92,8 +92,9 @@ pub fn step_to(s: &mut Desk, ym: Ym) {
     let slot: Arc<Mutex<Option<Month>>> = Arc::default();
     s.month.next = Some(slot.clone());
     std::thread::spawn(move || {
-        let month = tokprof_browse::calendar::month(&store, &select, ym, tokprof_browse::browser::now_ms());
-        *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(month);
+        // A month that panicked does not arrive: the card keeps the month it shows.
+        let month = tokprof_browse::contain::run_on(None, || tokprof_browse::calendar::month(&store, &select, ym, tokprof_browse::browser::now_ms()));
+        *slot.lock().unwrap_or_else(|e| e.into_inner()) = month.ok();
         crate::wake();
     });
 }
@@ -158,7 +159,9 @@ pub fn save(s: &mut Desk) {
     std::thread::spawn(move || {
         let mut cmd = std::process::Command::new(exe);
         cmd.args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
-        let result = run_for(cmd, SAVE_LIMIT).and_then(|_| if path.exists() { Ok(path) } else { Err("the image was not written".to_string()) });
+        let result = tokprof_browse::contain::run_on(None, || run_for(cmd, SAVE_LIMIT))
+            .and_then(|r| r)
+            .and_then(|_| if path.exists() { Ok(path) } else { Err("the image was not written".to_string()) });
         *saved.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
         crate::wake();
     });

@@ -323,7 +323,7 @@ impl<T> Browser<T> {
             let (catalog, pricing, notify, select, layout) = (catalog.clone(), pricing.clone(), notify.clone(), select.clone(), frontend.day_layout);
             std::thread::spawn(move || {
                 // A pool of its own, so that a day does not wait behind the costing of every session.
-                let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().ok();
+                let pool = crate::contain::pool(4);
                 while let Ok(mut ask) = day_rx.recv() {
                     while let Ok(newer) = day_rx.try_recv() {
                         ask = newer;
@@ -332,11 +332,12 @@ impl<T> Browser<T> {
                     let started = Instant::now();
                     let style = tokprof_core::fmt::Style::with_color(true);
                     let build = || crate::day::build(&catalog, &select, &pricing, key, now_ms(), layout(size), axis, &style, known.as_deref());
+                    // A day that panicked fails as one that could not be read.
                     let built = match &pool {
-                        Some(pool) => pool.install(build),
-                        None => build(),
+                        Some(pool) => crate::contain::run_on(Some(pool), build),
+                        None => crate::contain::run(build),
                     };
-                    let (date, hour, text, parts) = match built {
+                    let (date, hour, text, parts) = match built.map_err(anyhow::Error::msg).and_then(|day| day) {
                         Ok(day) => (day.date, day.axis_hour, day.text, Some(Arc::new(day.parts))),
                         Err(e) => (key.unwrap_or_else(|| rhythm::date_of(now_ms(), &rhythm::local_offset)), axis.unwrap_or(0), format!("error: {e:#}"), None),
                     };
@@ -358,11 +359,15 @@ impl<T> Browser<T> {
                     }
                     let (i, version, file) = job;
                     let started = Instant::now();
-                    let (text, data) = match xray::xray(&catalog, &file, &pricing, now_ms()) {
-                        Ok(x) => {
+                    // An X-ray that panicked fails as one that could not be computed.
+                    let computed = crate::contain::run(|| {
+                        xray::xray(&catalog, &file, &pricing, now_ms()).map(|x| {
                             let style = tokprof_core::fmt::Style::with_color(true);
                             (crate::render_xray::text(&x, &style, &crate::paths::profile_dir(), catalog.home()), Some(Arc::new(x)))
-                        }
+                        })
+                    });
+                    let (text, data) = match computed.map_err(anyhow::Error::msg).and_then(|x| x) {
+                        Ok(x) => x,
                         Err(e) => (format!("error: {e:#}"), None),
                     };
                     if !notify.send(Note::Report(i, version, text, data, started.elapsed())) {
@@ -777,10 +782,15 @@ impl<T> Browser<T> {
         }
         let (catalog, pricing, notify, temp) = (self.catalog.clone(), self.pricing.clone(), self.notify.clone(), self.temp.clone());
         std::thread::spawn(move || {
-            due.into_par_iter().for_each_with(notify, |notify, (i, version, row)| {
-                let started = Instant::now();
-                let g = xray::glance(&catalog, &row, &pricing, now_ms(), &temp);
-                notify.send(Note::Glance(i, version, g, started.elapsed()));
+            let _ = crate::contain::run(|| {
+                due.into_par_iter().for_each_with(notify, |notify, (i, version, row)| {
+                    let started = Instant::now();
+                    // A glance that panicked counts as one whose logs could not be read, and the
+                    // others of the batch go on.
+                    let g = crate::contain::run(|| xray::glance(&catalog, &row, &pricing, now_ms(), &temp))
+                        .unwrap_or_else(|_| Glance { cold_at_ms: i64::MAX, ..Glance::default() });
+                    notify.send(Note::Glance(i, version, g, started.elapsed()));
+                });
             });
         });
     }
@@ -1038,9 +1048,13 @@ impl<T> Browser<T> {
         self.status = format!("writing {}…", display_path(&path.to_string_lossy(), None, self.catalog.home()));
         let (catalog, pricing, notify) = (self.catalog.clone(), self.pricing.clone(), self.notify.clone());
         std::thread::spawn(move || {
-            let note = std::fs::create_dir_all(&dir)
-                .map_err(anyhow::Error::from)
-                .and_then(|_| xray::export(&catalog, &row, &pricing, &path))
+            // An export that panicked fails as one that could not be written.
+            let written = crate::contain::run_on(None, || {
+                std::fs::create_dir_all(&dir).map_err(anyhow::Error::from).and_then(|_| xray::export(&catalog, &row, &pricing, &path))
+            });
+            let note = written
+                .map_err(anyhow::Error::msg)
+                .and_then(|w| w)
                 .map(|written| {
                     if open {
                         let (program, target) = opener(&path);
@@ -2125,5 +2139,44 @@ mod tests {
         a.notify.tx.send(Note::Report(0, version + 1, "error: gone".into(), None, Duration::ZERO)).unwrap();
         a.absorb();
         assert!(a.xray().is_none(), "a failed X-ray has no data");
+    }
+
+    /// Ticks the browser until `done`, at most 20 s.
+    fn tick_until(app: &mut Browser<String>, done: impl Fn(&Browser<String>) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !done(app) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            app.tick();
+        }
+    }
+
+    fn shown(app: &Browser<String>) -> Option<String> {
+        match app.report() {
+            Pane::Text(t) => Some(t.clone()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_session_whose_decoder_panics_shows_the_error_and_the_workers_go_on() {
+        use crate::contain::testing::{self, BOOM, BROKEN, HEALTHY};
+        let (catalog, _, _) = testing::catalog("browser");
+        let select = Query { agents: catalog.agents(), ..Query::default() };
+        let mut app = Browser::start(catalog, Pricing::defaults(), select, false, Arc::new(|| {}), plain()).unwrap();
+        assert!(app.open_session(BROKEN));
+        tick_until(&mut app, |a| shown(a).is_some());
+        assert_eq!(shown(&app).as_deref(), Some(format!("error: tokprof panicked: {BOOM}").as_str()));
+        assert!(app.xray().is_none());
+        // Its row leaves the costing: its logs count as unreadable, as a log that fails to parse.
+        let costed = |a: &Browser<String>, id: &str| a.row_of(id).and_then(|row| a.cells(row, now_ms()).usd);
+        tick_until(&mut app, |a| costed(a, BROKEN).is_some() && costed(a, HEALTHY).is_some());
+        assert_eq!(costed(&app, BROKEN), Some(0.0));
+        assert!(costed(&app, HEALTHY).is_some_and(|usd| usd > 0.0), "the rest of the batch was costed");
+        // The worker survived: the X-ray of a healthy session still arrives.
+        assert!(app.open_session(HEALTHY));
+        tick_until(&mut app, |a| shown(a).is_some());
+        let text = shown(&app).expect("the healthy X-ray arrived");
+        assert!(!text.starts_with("error"), "{text}");
+        assert!(app.xray().is_some());
     }
 }

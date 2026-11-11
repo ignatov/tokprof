@@ -967,6 +967,8 @@ fn main() -> Result<()> {
         check_before_start(&cli, &tokprof_sources::catalog())?;
         return start_apart(&start, &exe, &args);
     }
+    // A job of the background work that panics shows as its error, and says nothing on stderr.
+    tokprof_browse::contain::install_hook();
     let mut desk = desk(&cli, tokprof_sources::catalog(), rune::is_headless(), Arc::new(wake))?;
     // The first frame is laid out for the window's size before the root's layout says it.
     desk.window = size_of(&args).unwrap_or(view::WINDOW);

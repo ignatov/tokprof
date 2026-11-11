@@ -201,8 +201,13 @@ impl Calendars {
                             wake();
                         }
                     };
-                    let (calendar, gone, store, warnings) = match update(&catalog, &select.agents, watch.current(), &path, progress) {
-                        Ok((store, r)) => (Ok(compute(&store, &select, now_ms())), r.gone, Some(Arc::new(store)), r.warnings),
+                    // A calendar that panicked fails as one whose store could not be brought up to date.
+                    let pricing = watch.current();
+                    let computed = crate::contain::run(|| {
+                        update(&catalog, &select.agents, pricing, &path, progress).map(|(store, r)| (compute(&store, &select, now_ms()), r, store))
+                    });
+                    let (calendar, gone, store, warnings) = match computed.map_err(anyhow::Error::msg).and_then(|c| c) {
+                        Ok((calendar, r, store)) => (Ok(calendar), r.gone, Some(Arc::new(store)), r.warnings),
                         Err(e) => (Err(format!("{e:#}")), 0, None, Vec::new()),
                     };
                     if tx.send(Done { changes, calendar, store, gone, warnings, took: started.elapsed() }).is_err() {
@@ -530,5 +535,22 @@ mod tests {
         assert!(!c.reading() && c.get().is_none() && c.next_due(1).is_none());
         c.put(Calendar::default(), 0);
         assert!(c.get().is_some());
+    }
+
+    #[test]
+    fn a_calendar_that_panicked_shows_the_error_and_the_worker_goes_on() {
+        use crate::contain::testing::{self, BOOM};
+        let (catalog, armed, dir) = testing::catalog("calendar");
+        let select = Query { agents: catalog.agents(), ..Query::default() };
+        let mut c = Calendars::start(catalog, Pricing::defaults(), None, select, dir.join(daystore::FILE_NAME), Arc::new(|| {}));
+        c.settle(0, Duration::from_secs(20));
+        let failed = c.get().expect("the calendar arrived");
+        assert_eq!(failed.calendar.as_ref().err(), Some(&format!("tokprof panicked: {BOOM}")));
+        assert!(!c.reading());
+        // The next calendar, once its pause passed, is computed by the same worker.
+        armed.store(false, Ordering::SeqCst);
+        c.kept = None;
+        c.settle(1, Duration::from_secs(20));
+        assert!(c.get().is_some_and(|x| x.calendar.is_ok()));
     }
 }
