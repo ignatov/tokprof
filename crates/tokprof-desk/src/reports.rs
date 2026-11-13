@@ -1,5 +1,6 @@
-//! Month and Quarter: one calendar month or quarter in place of the lanes, the list and the
-//! inspector, in one scrolling pane of cards (desk-window, Report cards). The key numbers, the
+//! Month, Quarter and Year: one calendar month, quarter or year in place of the lanes, the list
+//! and the inspector, in one scrolling pane of cards (desk-window, Report cards). Year's cards are
+//! in `year`, and read no log. The key numbers, the
 //! days of the month, the weeks of the quarter, by project and the records come from the day
 //! store at once (see `tokprof_browse::period`); by origin, by model, the pause tables, what to
 //! change and the largest prompt read the period's logs in the background, as `tokprof summary`,
@@ -46,18 +47,18 @@ pub enum Mode {
     Day,
     /// A calendar week (see `week`).
     Week,
-    /// A calendar month and a calendar quarter, in this pane.
+    /// A calendar month, quarter and year, in this pane (Year's cards are in `year`).
     Month,
     Quarter,
-    Calendar,
+    Year,
     /// The Sessions screen (see `sessions`), apart from the switch.
     Sessions,
 }
 
 impl Mode {
-    /// Month or Quarter, the views of this pane.
+    /// Month, Quarter or Year, the views of this pane.
     pub fn period(self) -> bool {
-        matches!(self, Mode::Month | Mode::Quarter)
+        matches!(self, Mode::Month | Mode::Quarter | Mode::Year)
     }
 }
 
@@ -72,6 +73,8 @@ pub enum Part {
     Weeks,
     Months,
     Shifts,
+    /// Year: the grid of the year's days, with a day cursor.
+    Grid,
     Projects,
     Origins,
     Models,
@@ -89,6 +92,8 @@ pub const MONTH_PARTS: [Part; 11] =
     [Part::Days, Part::Chart, Part::Projects, Part::Origins, Part::Models, Part::Returns, Part::Sizes, Part::Saved, Part::Ways, Part::Habits, Part::Records];
 pub const QUARTER_PARTS: [Part; 9] =
     [Part::Weeks, Part::Months, Part::Shifts, Part::Projects, Part::Models, Part::Saved, Part::Ways, Part::Habits, Part::Records];
+/// Year's: the grid, the months, by project, what to change and the records.
+pub const YEAR_PARTS: [Part; 5] = [Part::Grid, Part::Months, Part::Projects, Part::Saved, Part::Records];
 
 impl Part {
     pub fn key(self) -> &'static str {
@@ -98,6 +103,7 @@ impl Part {
             Part::Weeks => "rep-weeks",
             Part::Months => "rep-months",
             Part::Shifts => "rep-shifts",
+            Part::Grid => "rep-grid",
             Part::Projects => "rep-projects",
             Part::Origins => "rep-origins",
             Part::Models => "rep-models",
@@ -131,15 +137,18 @@ pub enum Hover {
     Week(usize),
     /// A row of by model.
     Model(usize),
+    /// A month of the year's bars, January 0.
+    Month(usize),
 }
 
 /// The view's state: the period shown, the card with the keyboard and its cursors, the pointer,
 /// and the periods computed from the store and read from the logs.
 pub struct State {
     pub mode: Mode,
-    /// The month and the quarter shown; `None` for the current one.
+    /// The month, the quarter and the year shown; `None` for the current one.
     pub month: Option<Ym>,
     pub quarter: Option<Yq>,
+    pub year: Option<i32>,
     /// The card with the keyboard; none while the page has it.
     pub part: Option<Part>,
     /// The day cursor of the days and of spend by day, the week cursor of the weeks, and the row
@@ -153,6 +162,9 @@ pub struct State {
     /// What the period's logs gave, and its sums from the store.
     pub data: Reports,
     pub sums: Periods,
+    /// Year's what to change, from the store's cards of the sums it was made from (by their
+    /// address), as Month's comes from its logs.
+    pub year_changes: Option<(usize, Changes)>,
     /// The filter text the period is counted with: the window's, once it is not being typed.
     pub text: String,
     /// The window filters by client, which the store cannot.
@@ -171,6 +183,7 @@ impl State {
             mode: Mode::Day,
             month: None,
             quarter: None,
+            year: None,
             part: None,
             day: None,
             week: None,
@@ -179,6 +192,7 @@ impl State {
             open: None,
             data,
             sums,
+            year_changes: None,
             text: String::new(),
             client_ignored: false,
             clock: None,
@@ -201,6 +215,10 @@ impl State {
         Yq::of(self.this_month())
     }
 
+    pub fn this_year(&self) -> i32 {
+        self.this_month().year
+    }
+
     /// The month Month shows, and the quarter Quarter shows.
     pub fn shown_month(&self) -> Ym {
         self.month.unwrap_or_else(|| self.this_month())
@@ -210,9 +228,17 @@ impl State {
         self.quarter.unwrap_or_else(|| self.this_quarter())
     }
 
-    /// The period shown: Quarter's in Quarter, else Month's.
+    pub fn shown_year(&self) -> i32 {
+        self.year.unwrap_or_else(|| self.this_year())
+    }
+
+    /// The period shown: Quarter's in Quarter, Year's in Year, else Month's.
     pub fn period(&self) -> Period {
-        if self.mode == Mode::Quarter { Period::Quarter(self.shown_quarter()) } else { Period::Month(self.shown_month()) }
+        match self.mode {
+            Mode::Quarter => Period::Quarter(self.shown_quarter()),
+            Mode::Year => Period::Year(self.shown_year()),
+            _ => Period::Month(self.shown_month()),
+        }
     }
 
     /// What the period shown is kept by: the period and the filter text.
@@ -235,14 +261,22 @@ impl State {
         self.report().and_then(|r| r.overview.as_deref().ok())
     }
 
-    /// What to change in the period shown, once read.
+    /// What to change in the period shown, once read; Year's from the store.
     pub fn changes(&self) -> Option<&Changes> {
+        if self.mode == Mode::Year {
+            let at = self.sums().map(|x| Arc::as_ptr(x) as usize);
+            return self.year_changes.as_ref().filter(|(a, _)| Some(*a) == at).map(|(_, c)| c);
+        }
         self.overview().map(|o| &o.changes)
     }
 
     /// The order Tab moves through the cards.
     pub fn parts(&self) -> &'static [Part] {
-        if self.mode == Mode::Quarter { &QUARTER_PARTS } else { &MONTH_PARTS }
+        match self.mode {
+            Mode::Quarter => &QUARTER_PARTS,
+            Mode::Year => &YEAR_PARTS,
+            _ => &MONTH_PARTS,
+        }
     }
 }
 
@@ -250,10 +284,10 @@ pub fn offset() -> Offset<'static> {
     &rhythm::local_offset
 }
 
-/// Takes in what the workers sent while Month or Quarter is shown: the store from the calendar's
-/// worker, the period's sums and its log read, and the images of the cards; asks for what is
-/// missing or out of date, and wakes the window when one is due. Returns whether the view
-/// changed. While neither is shown it does nothing.
+/// Takes in what the workers sent while Month, Quarter or Year is shown: the store from the
+/// calendar's worker, the period's sums and, but in Year, its log read, and the images of the
+/// cards; asks for what is missing or out of date, and wakes the window when one is due. Returns
+/// whether the view changed. While none is shown it does nothing.
 pub fn poll(s: &mut Desk, tx: &mut Tx) -> bool {
     if !s.reports.mode.period() {
         return false;
@@ -276,9 +310,14 @@ pub fn poll(s: &mut Desk, tx: &mut Tx) -> bool {
     let store = s.calendar.data.get().and_then(|c| c.store.clone());
     let key = s.reports.key();
     let summed = s.reports.sums.tick(&key, store.as_ref());
-    let arrived = s.reports.data.tick(&key, changes);
-    if let Some(at) = s.reports.data.next_due(&key, changes) {
+    // Year reads no log: its cards come from the store.
+    let year = s.reports.mode == Mode::Year;
+    let arrived = !year && s.reports.data.tick(&key, changes);
+    if !year && let Some(at) = s.reports.data.next_due(&key, changes) {
         wake(tx, at);
+    }
+    if year {
+        crate::year::keep_changes(s);
     }
     if let Some(key) = s.reports.reveal.take() {
         tx.scroll_into_view(key);
@@ -286,16 +325,17 @@ pub fn poll(s: &mut Desk, tx: &mut Tx) -> bool {
     }
     let review = review_months(s);
     let images = crate::month::want_images(s, &review);
-    let seen = (s.reports.data.progress(), s.calendar.data.progress(), s.reports.sums.summing(&key));
+    let cards = year && crate::year::want_cards(s);
+    let seen = (if year { None } else { s.reports.data.progress() }, s.calendar.data.progress(), s.reports.sums.summing(&key));
     let moved = seen != s.reports.seen;
     s.reports.seen = seen;
-    changed || stored || summed || arrived || moved || images
+    changed || stored || summed || arrived || moved || images || cards
 }
 
-/// Shows Day, Week, Month, Quarter, Calendar or Sessions. Month opens on the current month, and
-/// Quarter on the current quarter; Quarter from Month shows the month's quarter, and Month from
-/// Quarter the month it showed when that is in the quarter, else the quarter's last month that
-/// has begun.
+/// Shows Day, Week, Month, Quarter, Year or Sessions. Month opens on the current month, Quarter
+/// on the current quarter and Year on this year; Quarter from Month shows the month's quarter, and
+/// Month from Quarter the month it showed when that is in the quarter, else the quarter's last
+/// month that has begun.
 pub fn show(s: &mut Desk, mode: Mode) {
     let from = s.reports.mode;
     if mode == Mode::Sessions && from != Mode::Sessions {
@@ -321,6 +361,7 @@ pub fn show(s: &mut Desk, mode: Mode) {
                 r.quarter = None;
                 r.month = None;
             }
+            (_, Mode::Year) => r.year = None,
             _ => {}
         }
         if mode.period() {
@@ -332,7 +373,6 @@ pub fn show(s: &mut Desk, mode: Mode) {
     }
     s.reports.mode = mode;
     s.reports.hover = None;
-    s.calendar.hover = None;
 }
 
 /// The cursors and the open row of a period left behind.
@@ -356,6 +396,10 @@ pub fn show_period(s: &mut Desk, period: Period, tx: &mut Tx) {
             show(s, Mode::Quarter);
             s.reports.quarter = (yq != s.reports.this_quarter()).then_some(yq);
         }
+        Period::Year(y) => {
+            show(s, Mode::Year);
+            s.reports.year = (y != s.reports.this_year()).then_some(y);
+        }
     }
     reset(&mut s.reports);
     tx.scroll_to_y(PANE, 0.0);
@@ -364,13 +408,18 @@ pub fn show_period(s: &mut Desk, period: Period, tx: &mut Tx) {
 /// The first period that can be shown: the one of the store's first day with data.
 fn first_period(s: &Desk) -> Option<Period> {
     let first = s.reports.sums()?.first_data?;
-    Some(if s.reports.mode == Mode::Quarter { Period::quarter_of(first) } else { Period::month_of(first) })
+    Some(match s.reports.mode {
+        Mode::Quarter => Period::quarter_of(first),
+        Mode::Year => Period::year_of(first),
+        _ => Period::month_of(first),
+    })
 }
 
 /// Whether the period shown is the current one.
 pub fn is_current(s: &Desk) -> bool {
     match s.reports.mode {
         Mode::Quarter => s.reports.shown_quarter() == s.reports.this_quarter(),
+        Mode::Year => s.reports.shown_year() == s.reports.this_year(),
         _ => s.reports.shown_month() == s.reports.this_month(),
     }
 }
@@ -390,6 +439,7 @@ pub fn step(s: &mut Desk, back: bool, tx: &mut Tx) {
     match to {
         Period::Month(ym) => s.reports.month = (ym != s.reports.this_month()).then_some(ym),
         Period::Quarter(yq) => s.reports.quarter = (yq != s.reports.this_quarter()).then_some(yq),
+        Period::Year(y) => s.reports.year = (y != s.reports.this_year()).then_some(y),
     }
     let part = s.reports.part;
     reset(&mut s.reports);
@@ -401,16 +451,16 @@ pub fn step(s: &mut Desk, back: bool, tx: &mut Tx) {
 pub fn this_period(s: &mut Desk, tx: &mut Tx) {
     match s.reports.mode {
         Mode::Quarter => s.reports.quarter = None,
+        Mode::Year => s.reports.year = None,
         _ => s.reports.month = None,
     }
     reset(&mut s.reports);
     tx.scroll_to_y(PANE, 0.0);
 }
 
-/// ⌘1 shows Day, ⌘2 Week, ⌘3 Month, ⌘4 Quarter, ⌘5 Calendar and ⌘0 Sessions, whichever shows
-/// now.
+/// ⌘1 shows Day, ⌘2 Week, ⌘3 Month, ⌘4 Quarter, ⌘5 Year and ⌘0 Sessions, whichever shows now.
 pub fn switch_key(s: &mut Desk, e: &KeyEvent) -> bool {
-    let mode = [('0', Mode::Sessions), ('1', Mode::Day), ('2', Mode::Week), ('3', Mode::Month), ('4', Mode::Quarter), ('5', Mode::Calendar)]
+    let mode = [('0', Mode::Sessions), ('1', Mode::Day), ('2', Mode::Week), ('3', Mode::Month), ('4', Mode::Quarter), ('5', Mode::Year)]
         .into_iter()
         .find(|(c, _)| e.is_command(*c))
         .map(|(_, m)| m);
@@ -445,7 +495,7 @@ pub fn filter_project(s: &mut Desk, project: &str, tx: &mut Tx) {
 }
 
 /// The months whose cards Month and Quarter show as images: Month's card, and in Quarter the
-/// last complete month of the quarter.
+/// last complete month of the quarter; none in Year, which shows its own.
 pub fn review_months(s: &Desk) -> Vec<Ym> {
     match s.reports.mode {
         Mode::Month => vec![review_month(s)],
@@ -673,8 +723,8 @@ fn enter_row(s: &mut Desk, part: Part, tx: &mut Tx) {
 /// The gap between the bar's controls.
 const BAR_GAP: f32 = 10.0;
 
-/// What the bar holds in Month and Quarter: the period's name with the steps to the periods before
-/// and after, Today, and the span text as much of it as has room.
+/// What the bar holds in Month, Quarter and Year: the period's name with the steps to the periods
+/// before and after, Today, and the span text as much of it as has room.
 pub fn bar_controls(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> Vec<El> {
     let period = s.reports.period();
     let current = is_current(s);
@@ -712,7 +762,9 @@ pub fn fitting_span(s: &Desk, room: Option<f32>) -> Option<String> {
 }
 
 /// The dates of the period shown and what it compares with: `1–12 Nov so far · vs 1–12 Oct`,
-/// `Thu 1 – Sat 31 Oct · vs September`, `1 Oct – 12 Nov, 43 of 92 days`.
+/// `Thu 1 – Sat 31 Oct · vs September`, `1 Oct – 12 Nov, 43 of 92 days`; a year's extent,
+/// `logs since 6 Aug · 99 days` in the year the logs begin, `316 of 365 days` in a later year
+/// in progress, and nothing for a past year.
 pub fn span_text(s: &Desk) -> String {
     let r = &s.reports;
     let period = r.period();
@@ -734,6 +786,7 @@ pub fn span_text(s: &Desk) -> String {
             let was = tokprof_core::week::dates(rhythm::date_of(a, offset()), rhythm::date_of((b - 1).max(a), offset()), false);
             format!("{} so far · vs {was}", tokprof_core::week::dates(first, last, false))
         }
+        Period::Year(y) => crate::year::extent(r.sums().map(|x| x.as_ref()), y, now),
         Period::Quarter(_) => {
             let span = format!("{} – {}", local_time(noon(first), "%-d %b"), local_time(noon(last), "%-d %b"));
             if complete {
@@ -760,7 +813,7 @@ pub fn switch(s: &Desk, p: &Pal) -> El {
             seg("mode-week", "Week", Mode::Week),
             seg("mode-month", "Month", Mode::Month),
             seg("mode-quarter", "Quarter", Mode::Quarter),
-            seg("mode-calendar", "Calendar", Mode::Calendar),
+            seg("mode-year", "Year", Mode::Year),
         ],
         p.panel,
     )
@@ -769,7 +822,7 @@ pub fn switch(s: &Desk, p: &Pal) -> El {
 // ---------------------------------------------------------------------------------------------
 // The pane.
 
-/// Month or Quarter under the bar, in one scrolling pane.
+/// Month, Quarter or Year under the bar, in one scrolling pane.
 pub fn view(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
     let r = &s.reports;
     let k = r.key();
@@ -780,7 +833,7 @@ pub fn view(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
     let images = crate::month::images_version(s);
     let version = view::hash_of((
         (&k, r.mode, sums, logs, store, r.data.reading(&k), r.sums.summing(&k), &r.seen, images),
-        (r.part, r.day, r.week, r.row, r.hover, &r.open, r.client_ignored),
+        (r.part, r.day, r.week, r.row, r.hover, &r.open, r.client_ignored, crate::year::version(s)),
         (&s.theme.get().id, cx.system_dark(), width, s.browser.filter(), s.browser.relisted(), s.browser.len()),
     ));
     let window_w = width as f32;
@@ -832,8 +885,15 @@ fn body(s: &Desk, p: &Pal, window_w: f32) -> El {
                 .fill(p.bar),
         );
     }
+    // A year before the logs begin has nothing to count: its grid says so.
+    if s.reports.mode == Mode::Year && !crate::year::has_logs(&sums) {
+        return out.children(crate::year::without_logs(s, &sums, p, w));
+    }
     out = out.child(band(s, &sums, p, w));
     let pair = window_w < WIDE;
+    if s.reports.mode == Mode::Year {
+        return out.children(crate::year::cards(s, &sums, p, w, pair));
+    }
     if s.reports.mode == Mode::Quarter {
         let side = if pair { (w * 0.36).max(300.0) } else { 340.0 };
         out = out.child(
@@ -914,12 +974,17 @@ fn band_head(s: &Desk, p: &Pal) -> El {
 fn notes(s: &Desk, p: &Pal) -> Vec<El> {
     let mut out = Vec::new();
     let line = |key: &'static str, t: String, c: Color| text(t).key(key).w_full().wrap().font(pal::SMALL).color(c);
-    if s.reports.client_ignored {
+    // Year says it under its pills.
+    if s.reports.client_ignored && s.reports.mode != Mode::Year {
         out.push(line("rep-client", "the key numbers and charts count every client: the day store has no client".into(), p.ink3));
     }
     let t = s.reports.text.trim();
     if !t.is_empty() {
-        let view_name = if s.reports.mode == Mode::Quarter { "Quarter" } else { "Month" };
+        let view_name = match s.reports.mode {
+            Mode::Quarter => "Quarter",
+            Mode::Year => "Year",
+            _ => "Month",
+        };
         let n = s.browser.title_only(t);
         if n > 0 {
             out.push(line(
@@ -1032,7 +1097,7 @@ pub fn big_hours(ms: i64) -> String {
 }
 
 /// The band of the seven key numbers.
-fn band(s: &Desk, sums: &PeriodSums, p: &Pal, w: f32) -> El {
+pub fn band(s: &Desk, sums: &PeriodSums, p: &Pal, w: f32) -> El {
     let k = &sums.key;
     let lines = crate::deltas::key_lines(sums, p);
     let mut lines = lines.into_iter();
@@ -1092,7 +1157,7 @@ pub fn cursor_row(line: El, part: Part, i: usize, s: &Desk, p: &Pal) -> El {
 
 /// A row of a bar list: its name, a bar as long as its share of the first, its share of all and
 /// its dollars.
-fn bar_line(name: String, strong: bool, share_of_first: f64, color: Color, share: f64, amount: String, p: &Pal) -> El {
+pub fn bar_line(name: String, strong: bool, share_of_first: f64, color: Color, share: f64, amount: String, p: &Pal) -> El {
     row()
         .w_full()
         .h(24.0)
@@ -1107,7 +1172,7 @@ fn bar_line(name: String, strong: bool, share_of_first: f64, color: Color, share
 
 /// By project, from the store: the ten with the most spend and the rest as one row; a click sets
 /// the filter and stays on the period.
-fn projects(s: &Desk, sums: &PeriodSums, p: &Pal) -> El {
+pub fn projects(s: &Desk, sums: &PeriodSums, p: &Pal) -> El {
     let rows = &sums.projects;
     let content = if rows.is_empty() {
         text("No spend in this period.").key("projects-none").font(pal::BODY).color(p.ink2).single_line()
@@ -1427,13 +1492,16 @@ pub struct Record {
     pub target: Option<Target>,
 }
 
-fn day_name(date: i64) -> String {
+pub fn day_name(date: i64) -> String {
     local_time(noon(date), "%a %-d %b")
 }
 
-/// The records of the period shown: the month's six, or the quarter's.
+/// The records of the period shown: the month's six, the quarter's, or the year's.
 pub fn records(s: &Desk) -> Vec<Record> {
     let Some(sums) = s.reports.sums() else { return Vec::new() };
+    if s.reports.mode == Mode::Year {
+        return crate::year::records(sums);
+    }
     let r = &sums.records;
     let rec = |label, value: String, sub: String, target| Record { label, value, sub, target };
     let mut out = Vec::new();
@@ -1498,7 +1566,7 @@ pub fn records(s: &Desk) -> Vec<Record> {
 }
 
 /// The records in tiles, three in a row.
-fn records_card(s: &Desk, sums: &PeriodSums, p: &Pal, w: f32) -> El {
+pub fn records_card(s: &Desk, sums: &PeriodSums, p: &Pal, w: f32) -> El {
     let list = records(s);
     let per = if w >= 560.0 { 3 } else { 2 };
     let tile_w = (w - 28.0 - 10.0 * (per as f32 - 1.0)) / per as f32;
@@ -1525,13 +1593,17 @@ fn records_card(s: &Desk, sums: &PeriodSums, p: &Pal, w: f32) -> El {
         }
         grid = grid.child(t);
     }
-    let title = if sums.period.months().len() > 1 { "Records of the quarter" } else { "Records of the month" };
+    let title = match sums.period {
+        Period::Year(_) => "Records of the year",
+        Period::Quarter(_) => "Records of the quarter",
+        Period::Month(_) => "Records of the month",
+    };
     let aside = (!sums.complete).then(|| "so far".to_string());
     card(Some(Part::Records), title, aside, grid, &s.reports, p)
 }
 
 /// A button of a card to share.
-fn share_button(key: String, label: String, primary: bool, enabled: bool, p: &Pal) -> El {
+pub fn share_button(key: String, label: String, primary: bool, enabled: bool, p: &Pal) -> El {
     row()
         .key(key)
         .h(28.0)

@@ -8,7 +8,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use tokprof_browse::day::{self, keeps_client, temp_folders};
 use tokprof_browse::filters::{normalize_project, parse_date, parse_since};
 use tokprof_browse::reading::{sources, warnings};
-use tokprof_browse::{calendar, clipboard, paths, render_calendar, render_month, render_requests, render_rhythm, render_sessions, render_xray};
+use tokprof_browse::{calendar, clipboard, paths, render_calendar, render_month, render_requests, render_rhythm, render_sessions, render_xray, render_year};
 use tokprof_core::analysis::{self, Component};
 use tokprof_core::calendar::Metric;
 use tokprof_core::export;
@@ -228,6 +228,16 @@ enum Command {
     Month {
         /// YYYY-MM, or `this` for this month so far; by default the last complete month.
         month: Option<String>,
+    },
+    /// A year in review: the numbers of `tokprof month` over a calendar year, a bar per month,
+    /// the records (biggest day and week, longest streak, most commits in a day, most sessions
+    /// at once), the rhythm, the cache, the change from the year before or the pace per day,
+    /// whether its card is ready, and one thing to change. It names no project. From the day
+    /// store, as `tokprof calendar`.
+    Year {
+        /// YYYY, or `this` for this year so far; by default this year so far when it holds a
+        /// request or a message, else the last year that does.
+        year: Option<String>,
     },
     /// Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent
     /// do (trips), with a hint per row.
@@ -476,6 +486,28 @@ fn main() -> Result<()> {
         eprintln!("{}", calendar::read_line(&catalog, &refreshed, started.elapsed().as_secs_f64(), &path));
         warn(&refreshed.unreadable);
         out!("{}", render_month::text(&calendar::month(&store, &select, ym, now), &style));
+        for w in &refreshed.warnings {
+            eprintln!("{w}");
+        }
+        return Ok(());
+    }
+    if let Command::Year { year } = &command {
+        if cli.client.is_some() {
+            bail!("year cannot filter by client; drop --client");
+        }
+        if cli.since.is_some() || cli.until.is_some() {
+            bail!("year picks its time by YYYY; drop --since and --until");
+        }
+        let now = now_ms();
+        let this = tokprof_core::month::Ym::of_date(rhythm::date_of(now, &rhythm::local_offset)).year;
+        let asked = pick_year(year.as_deref(), this)?;
+        let started = Instant::now();
+        let path = paths::day_store();
+        let (store, refreshed) = calendar::update(&catalog, &agents, &pricing, &path, |_, _| {})?;
+        eprintln!("{}", calendar::read_line(&catalog, &refreshed, started.elapsed().as_secs_f64(), &path));
+        warn(&refreshed.unreadable);
+        let shown = asked.unwrap_or_else(|| calendar::default_year(&store, &select, now));
+        out!("{}", render_year::text(&calendar::year(&store, &select, shown, now), &style));
         for w in &refreshed.warnings {
             eprintln!("{w}");
         }
@@ -736,6 +768,7 @@ fn main() -> Result<()> {
         | Command::Day { .. }
         | Command::Calendar { .. }
         | Command::Month { .. }
+        | Command::Year { .. }
         | Command::Pauses
         | Command::Share { .. }
         | Command::Pool { .. } => {
@@ -982,6 +1015,21 @@ fn pick_month(arg: Option<&str>, this: tokprof_core::month::Ym) -> Result<tokpro
     Ok(ym)
 }
 
+/// The year `tokprof year` was asked for: `this`, or a YYYY that has begun; `None` for the
+/// default, which the store decides (see `tokprof_core::year::default_year`).
+fn pick_year(arg: Option<&str>, this: i32) -> Result<Option<i32>> {
+    let year = match arg {
+        None => return Ok(None),
+        Some("this") => this,
+        Some(y) if y.len() == 4 && y.bytes().all(|b| b.is_ascii_digit()) => y.parse::<i32>()?,
+        Some(y) => bail!("bad year {y:?}, expected YYYY or this"),
+    };
+    if year > this {
+        bail!("{year} has not begun; tokprof year this shows {this} so far");
+    }
+    Ok(Some(year))
+}
+
 /// A metric of `tokprof calendar`.
 fn parse_metric(s: &str) -> Result<Metric, String> {
     Metric::parse(s).ok_or_else(|| format!("unknown metric {s:?}; use {}", Metric::NAMES))
@@ -1058,6 +1106,17 @@ mod tests {
         let err = pick_month(Some("2027-05"), nov).unwrap_err().to_string();
         assert_eq!(err, "May 2027 has not begun; tokprof month this shows November 2026 so far");
         assert!(pick_month(Some("october"), nov).is_err());
+    }
+
+    #[test]
+    fn a_year_that_has_not_begun_is_refused() {
+        assert_eq!(pick_year(None, 2026).unwrap(), None, "the store decides the default");
+        assert_eq!(pick_year(Some("this"), 2026).unwrap(), Some(2026));
+        assert_eq!(pick_year(Some("2025"), 2026).unwrap(), Some(2025));
+        assert_eq!(pick_year(Some("2027"), 2026).unwrap_err().to_string(), "2027 has not begun; tokprof year this shows 2026 so far");
+        for bad in ["26", "2026-11", "+202", "twenty"] {
+            assert_eq!(pick_year(Some(bad), 2026).unwrap_err().to_string(), format!("bad year {bad:?}, expected YYYY or this"));
+        }
     }
 
     #[test]

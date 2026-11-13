@@ -1215,7 +1215,7 @@ fn the_key_help_names_the_keys_the_window_handles() {
     let groups: Vec<&str> = keys::GROUPS.iter().map(|g| g.0).collect();
     assert_eq!(
         groups,
-        ["Anywhere", "Lanes", "The day", "Palette", "Settings", "Sessions", "Inspector", "Flame", "Requests", "Week", "Month and Quarter", "Calendar"]
+        ["Anywhere", "Lanes", "The day", "Palette", "Settings", "Sessions", "Inspector", "Flame", "Requests", "Week", "Month and Quarter", "Year"]
     );
     for k in [
         "⌘K", "⌘,", "⌘0", "?", "Tab", "⇧Tab", "⏎", "esc", "⌫", "[", "]", "t", "/", "s", "r", "c", "f", "o", "q", "⌘Q", "⌘W", "Ctrl+C", "↑", "↓", "←", "→", "j",
@@ -1831,8 +1831,8 @@ fn a_frame_in_waiting_order() {
     assert!(!rt.state.settings.waiting, "without reading the saved settings");
 }
 
-#[path = "calendar_tests.rs"]
-mod calendar_view;
+#[path = "year_tests.rs"]
+mod year_view;
 
 #[path = "sessions_tests.rs"]
 mod sessions_view;

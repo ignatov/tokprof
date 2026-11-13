@@ -1,6 +1,8 @@
-//! The month in review: a card of one month, made to be posted, over Month, Quarter or Calendar,
-//! its image in Month and Quarter, and the same card alone as a 1080×1350 image. It names no project, title or path. "Save image" draws
-//! it in a frame without a window, by this program run again, and writes it to `~/Downloads`.
+//! The month in review: a card of one month, made to be posted, over Month or Quarter, its image
+//! in Month and Quarter, and the same card alone as a 1080×1350 image; and the year's card, Year
+//! in review, in the same look with its months in place of the days (see `year`). Neither names
+//! a project, title or path. "Save image" draws a card in a frame without a window, by this
+//! program run again, and writes it to `~/Downloads`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -10,10 +12,12 @@ use rune::{Color, El, Key as RuneKey, KeyEvent, TextStyle, Tx, col, el, row, spa
 use tokprof_browse::render_month::{big_numbers, cache, delta_cells, facts, headline, next_month_plain, weeks};
 use tokprof_core::calendar::level;
 use tokprof_core::month::{Month, Ym};
+use tokprof_core::period::Before;
+use tokprof_core::year::{MonthKind, Year};
 
-use crate::calendar::cell;
 use crate::overlay::{PILL, R_CARD};
 use crate::pal::{self, Pal};
+use crate::year::cell;
 use crate::{Desk, plain};
 
 /// The card's size in points; the image is drawn at twice that, 1080×1350.
@@ -131,15 +135,9 @@ fn this_month() -> Ym {
     Ym::of_date(tokprof_core::rhythm::date_of(tokprof_browse::browser::now_ms(), &tokprof_core::rhythm::local_offset))
 }
 
-/// The month of the cell cursor, or of the last day.
-fn cursor_month(s: &Desk) -> Option<Ym> {
-    crate::calendar::cursor_date(s).map(Ym::of_date)
-}
-
-/// The month a card opens on: `ym`, else the month of a cell cursor a key moved, else the last
-/// complete month, as `tokprof month` shows it.
-pub fn month_to_open(s: &Desk, ym: Option<Ym>) -> Ym {
-    ym.or_else(|| s.calendar.cursor.and(cursor_month(s))).unwrap_or_else(|| this_month().previous())
+/// The month a card opens on: `ym`, else the last complete month, as `tokprof month` shows it.
+pub fn month_to_open(_: &Desk, ym: Option<Ym>) -> Ym {
+    ym.unwrap_or_else(|| this_month().previous())
 }
 
 /// Opens the card of `ym` (see `month_to_open`), computed from the calendar's store.
@@ -479,6 +477,239 @@ pub fn card_el(m: &Month, p: &Pal, rounded: bool) -> El {
         body = body.child(text(n).key(format!("month-note-{k}")).font(RULE).color(p.ink3).single_line());
     }
     body
+}
+
+/// The year's card, `CARD` points, in the month card's look: the year and its title, the big
+/// numbers, the twelve months as bars of spend beside the facts, the cache, the change from the
+/// year before, and the line for next year. A card that is not ready is dimmed under a band that
+/// says when it will be.
+pub fn year_card_el(y: &Year, p: &Pal, rounded: bool) -> El {
+    let head = row()
+        .w_full()
+        .center_y()
+        .child(text("TOKPROF").font(BRAND).color(p.accent).single_line())
+        .child(spacer().grow(1.0))
+        .child(text("from local agent logs · nothing uploaded").font(RULE).color(p.ink3).single_line());
+    let sub = if y.sums.complete { "with agents" } else { "with agents, so far" };
+    let title = row()
+        .gap(10.0)
+        .items_end()
+        .child(text(format!("{}", y.year)).key("year-headline").font(HEADLINE).color(p.ink).single_line())
+        .child(text(sub).font(SUB).color(p.ink2).single_line().pb(4.0));
+    let radius = if rounded { R_CARD } else { 0.0 };
+    let frame = el().key("year-card").w(CARD.0).h(CARD.1).radius(radius).fill(p.bg).clip_rounded(radius);
+    let mut body = col().w(CARD.0).h(CARD.1).padding(PAD).gap(10.0).child(head).child(title);
+    if !y.any() {
+        return frame.child(body.child(text("No requests and no messages in this year.").font(SUB).color(p.ink2).single_line()));
+    }
+    let m = &y.sums.span;
+    if let Some(t) = &y.title {
+        body = body.child(
+            row()
+                .w_full()
+                .gap(10.0)
+                .center_y()
+                .child(
+                    row()
+                        .key("year-title")
+                        .h(26.0)
+                        .px(12.0)
+                        .center_y()
+                        .radius(PILL)
+                        .fill(p.accent)
+                        .child(text(t.name.to_uppercase()).font(BADGE).color(p.on_accent).single_line()),
+                )
+                .child(text(t.rule.clone()).key("year-rule").grow(1.0).min_w(0.0).wrap().max_lines(2).font(RULE).color(p.ink2)),
+        );
+    }
+    let third = (CARD.0 - 2.0 * PAD - 20.0) / 3.0;
+    let big = big_numbers(m);
+    let big_cell = |(v, what): &(String, &'static str)| {
+        col().w(third).gap(0.0).child(text(v.clone()).font(BIG).color(p.ink).single_line()).child(text(*what).font(LABEL).color(p.ink2).single_line())
+    };
+    body = body.child(
+        col()
+            .key("year-big")
+            .w_full()
+            .gap(8.0)
+            .child(row().w_full().gap(10.0).children(big[..3].iter().map(big_cell)))
+            .child(row().w_full().gap(10.0).children(big[3..].iter().map(big_cell))),
+    );
+    // The twelve months as bars of spend; a month without logs, a hairline.
+    let (bw, gap, bar_h) = (12.0, 5.0, 84.0);
+    let rows = y.months();
+    let most = rows.iter().filter_map(|r| r.month).map(|x| x.total.usd).fold(0.0, f64::max);
+    let mut strip = row().key("year-months").gap(gap).items_end();
+    for r in &rows {
+        let v = r.month.map_or(0.0, |x| x.total.usd);
+        let h = if most > 0.0 && v > 0.0 { ((v / most) as f32 * bar_h).max(2.0) } else { 0.0 };
+        let bar = if r.month.is_some() && h > 0.0 {
+            el().w(bw).h(h).corners([3.0, 3.0, 0.0, 0.0]).fill(p.accent)
+        } else {
+            el().w(bw).h(1.0).fill(if r.kind == MonthKind::NotBegun { Color::TRANSPARENT } else { p.row_line })
+        };
+        let letter = r.ym.month_name()[..1].to_string();
+        strip = strip.child(
+            col().w(bw).gap(4.0).items_center().child(col().h(bar_h).justify_end().child(bar)).child(text(letter).font(FACT_HEAD).color(p.ink3).single_line()),
+        );
+    }
+    let strip = col().gap(4.0).child(strip).child(text("spend per month").font(RULE).color(p.ink3).single_line());
+    let mut side = col().key("year-facts").grow(1.0).min_w(0.0).gap(8.0).pt(6.0);
+    for (label, value) in year_facts(y) {
+        side = side.child(
+            row()
+                .w_full()
+                .gap(8.0)
+                .items_start()
+                .child(row().w(104.0).pt(1.5).child(text(label.to_uppercase()).font(FACT_HEAD).color(p.ink3).single_line()))
+                .child(text(value).grow(1.0).min_w(0.0).single_line().truncate().font(FACT).color(p.ink)),
+        );
+    }
+    body = body.child(row().w_full().gap(22.0).items_start().child(strip).child(side));
+    let quarter = |n: usize| (CARD.0 - 2.0 * PAD - 12.0 * (n as f32 - 1.0)) / n as f32;
+    let stats = |key: &'static str, head: String, cells: Vec<(String, String)>| {
+        let w = quarter(cells.len().max(1));
+        col().key(key).w_full().gap(5.0).child(text(head).font(FACT_HEAD).color(p.ink3).single_line()).child(row().w_full().gap(12.0).children(
+            cells.into_iter().map(move |(v, what)| {
+                col().w(w).gap(0.0).child(text(v).font(STAT).color(p.ink).single_line()).child(text(what).font(RULE).color(p.ink2).w_full().wrap().max_lines(2))
+            }),
+        ))
+    };
+    let (cache_cells, unpriced) = cache(m);
+    let short = |what: &'static str| -> &'static str {
+        match what {
+            "of input read from cache" => "read from cache",
+            "avoidable on misses" => "lost to misses",
+            w => w,
+        }
+    };
+    let cache_cells: Vec<(String, String)> =
+        cache_cells.into_iter().map(|(v, what)| (v.split(' ').next().unwrap_or("").to_string(), short(what).to_string())).collect();
+    let deltas = year_deltas(y);
+    if deltas.is_none() {
+        body = body.child(spacer().grow(1.0));
+    }
+    body = body.child(stats("year-cache", "CACHE".to_string(), cache_cells));
+    if let Some((name, cells)) = deltas {
+        body = body.child(stats("year-deltas", format!("VS {}", name.to_uppercase()), cells));
+    }
+    body = body.child(spacer().grow(1.0));
+    if let Some(line) = next_month_plain(m) {
+        // `… cost $1,120. Compact …` reads `… cost $1,120 this year. Compact …`.
+        let line = match line.split_once(". ") {
+            Some((a, b)) => format!("{a} this year. {b}"),
+            None => line,
+        };
+        body = body.child(
+            col()
+                .key("year-next")
+                .w_full()
+                .px(14.0)
+                .py(9.0)
+                .gap(2.0)
+                .radius(12.0)
+                .fill(pal::mix_srgb(p.bg, p.accent, 0.12))
+                .child(text("FOR NEXT YEAR").font(FACT_HEAD).color(p.accent).single_line())
+                .child(text(line).w_full().wrap().max_lines(2).font(NEXT).color(p.ink)),
+        );
+    }
+    let mut notes: Vec<String> = y.ready.since_text().into_iter().collect();
+    notes.extend(tokprof_browse::render_year::notes(y));
+    notes.extend(unpriced);
+    if !notes.is_empty() {
+        body = body.child(text(notes.join(" · ")).key("year-notes").w_full().wrap().max_lines(2).font(RULE).color(p.ink3));
+    }
+    body = body.child(
+        row()
+            .key("year-brand")
+            .w_full()
+            .center_y()
+            .child(text(format!("tokprof year {}", y.year)).font(RULE).color(p.ink2).single_line())
+            .child(spacer().grow(1.0))
+            .child(text("API-equivalent dollars").font(RULE).color(p.ink3).single_line()),
+    );
+    if y.ready.ready {
+        return frame.child(body);
+    }
+    // Not ready: the numbers so far, dimmed, under the day it gets ready.
+    let band = col()
+        .key("year-lockband")
+        .w(CARD.0 - 2.0 * PAD)
+        .px(18.0)
+        .py(14.0)
+        .gap(4.0)
+        .radius(14.0)
+        .fill(p.panel)
+        .border(1.0, p.row_line)
+        .shadow(12.0, 30.0, Color::BLACK.alpha(0.16))
+        .child(text(y.ready.ready_on_text().map_or("No logs".to_string(), |d| format!("Ready on {d}"))).font(SUB).color(p.ink).single_line())
+        .child(
+            text(format!("{}. The card opens at the end of the year, or once the year holds 90 days of logs.", y.ready.logs_text(y.year)))
+                .w_full()
+                .wrap()
+                .font(FACT)
+                .color(p.ink2),
+        );
+    frame.child(body.dim(0.4)).child(band.absolute(PAD, CARD.1 * 0.42))
+}
+
+/// The facts of the year's card, short enough for a line each: the biggest day and week, the
+/// longest streak, the most at once, the busiest hour and the night share.
+pub fn year_facts(y: &Year) -> Vec<(&'static str, String)> {
+    let r = &y.sums.records;
+    let day = |d: i64| tokprof_browse::render_calendar::day_name(d);
+    let mut out = Vec::new();
+    if let Some((d, v)) = r.biggest_day {
+        out.push(("biggest day", format!("{}, {}", day(d), tokprof_core::fmt::usd(v))));
+    }
+    if let Some(w) = y.biggest_week() {
+        out.push(("biggest week", format!("{}, {}", tokprof_core::week::dates(w.first, w.last, false), tokprof_core::fmt::usd(w.amounts.usd))));
+    }
+    if let Some((streak, going)) = r.streak {
+        let days = tokprof_core::fmt::count(streak.days() as u64, "day", "days");
+        out.push(("longest streak", if going { format!("{days}, still going") } else { format!("{days}, to {}", day(streak.to)) }));
+    }
+    if let Some((n, ts)) = r.most_at_once {
+        out.push((
+            "most at once",
+            format!("{}, {}", tokprof_core::fmt::count(u64::from(n), "session", "sessions"), tokprof_core::fmt::local_time(ts, "%-d %b %H:%M")),
+        ));
+    }
+    let m = &y.sums.span;
+    if let Some((h, share)) = m.busiest_hour {
+        out.push(("busiest hour", format!("{h:02}:00–{:02}:00, {:.0}%", (h + 1) % 24, 100.0 * share)));
+    }
+    if let Some(n) = m.night_share {
+        out.push(("night share", format!("{:.0}% of agent time", 100.0 * n)));
+    }
+    out
+}
+
+/// The changes from the year before, as the month card's cells give them; none without a
+/// comparison.
+fn year_deltas(y: &Year) -> Option<(String, Vec<(String, String)>)> {
+    let Before::Against { numbers, .. } = &y.sums.before else { return None };
+    let k = &y.sums.key;
+    let arrow = |d: f64| {
+        if d > 0.0 {
+            "↑"
+        } else if d < 0.0 {
+            "↓"
+        } else {
+            "="
+        }
+    };
+    let rel = |d: f64, base: f64| if base > 0.0 { format!(", {}{:.0}%", if d < 0.0 { "−" } else { "+" }, (100.0 * d / base).abs()) } else { String::new() };
+    let mut out = Vec::new();
+    let d = k.usd - numbers.usd;
+    out.push((format!("{} {}", arrow(d), tokprof_core::fmt::usd(d.abs())), format!("spend{}", rel(d, numbers.usd))));
+    let d = k.agent_minutes as f64 - numbers.agent_minutes as f64;
+    out.push((format!("{} {}", arrow(d), tokprof_browse::render_month::hours(d.abs())), format!("agent time{}", rel(d, numbers.agent_minutes as f64))));
+    if let (Some(now), Some(was)) = (k.avoidable_share(), numbers.avoidable_share()) {
+        let d = 100.0 * (now - was);
+        out.push((format!("{} {:.1} pt", arrow(d), d.abs()), format!("avoidable, {:.1}% from {:.1}%", 100.0 * now, 100.0 * was)));
+    }
+    Some((format!("{}", y.year - 1), out))
 }
 
 #[cfg(test)]

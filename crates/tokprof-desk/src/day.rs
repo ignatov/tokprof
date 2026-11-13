@@ -850,8 +850,8 @@ mod tests {
     #[test]
     fn a_lane_label_keeps_its_head_whole_and_its_title_only_with_room() {
         assert_eq!(label_parts("rex", "Migrate terminal to Rex", true), (None, Some("Migrate terminal to Rex".into())), "a short head as it is");
-        assert_eq!(label_parts("json-profiler", "Fix the login redirect", true), (None, Some("Fix the login redirect".into())));
-        assert_eq!(label_parts("json-profiler", "", true).1, None);
+        assert_eq!(label_parts("kestrel-tools", "Fix the login redirect", true), (None, Some("Fix the login redirect".into())));
+        assert_eq!(label_parts("kestrel-tools", "", true).1, None);
         // A head that would leave the title under 60 points takes the room alone, cut to it.
         let (cut, title) = label_parts("fix-spelling-hey-we-ve-never-met-before", "Fix spelling in greeting", true);
         assert_eq!((cut, title), (Some(LABEL_WIDTH - 24.0 - 14.0), None));

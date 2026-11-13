@@ -43,6 +43,12 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     {
         return col().key("root").w_full().h_full().fill(p.bg).child(crate::month::card_el(&card.month, &p, false));
     }
+    // The image of a year in review.
+    if s.year.alone
+        && let Some(y) = crate::year::card_year(s)
+    {
+        return col().key("root").w_full().h_full().fill(p.bg).child(crate::month::year_card_el(y, &p, false));
+    }
     let mut root = col()
         .key("root")
         .w_full()
@@ -61,8 +67,6 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
         root = root.child(crate::reports::view(s, cx, &p));
     } else if s.reports.mode == crate::reports::Mode::Sessions {
         root = root.child(crate::sessions::view(s, cx, &p));
-    } else if s.reports.mode == crate::reports::Mode::Calendar {
-        root = root.child(crate::calendar::view(s, cx, &p));
     } else if s.browser.zoomed() && s.current().is_some() {
         root = root.child(inspector(cx));
     } else {
@@ -92,10 +96,11 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     if s.help {
         root = root.child(crate::keys::view(&p, height));
     }
-    if let Some(card) =
-        s.month.card.as_ref().filter(|_| matches!(s.reports.mode, crate::reports::Mode::Calendar | crate::reports::Mode::Month | crate::reports::Mode::Quarter))
-    {
+    if let Some(card) = s.month.card.as_ref().filter(|_| matches!(s.reports.mode, crate::reports::Mode::Month | crate::reports::Mode::Quarter)) {
         root = root.child(crate::month::view(card, &p));
+    }
+    if s.year.card.is_some() && s.reports.mode == crate::reports::Mode::Year {
+        root = root.child(crate::year::view(s, &p));
     }
     root
 }
@@ -264,7 +269,6 @@ fn bar(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
         .center_y()
         .child(crate::reports::switch(s, p))
         .child(crate::sessions::bar_button(s, p));
-    // Calendar has no day and no filter: the bar keeps the switch, the status and the live mark.
     let day = s.reports.mode == crate::reports::Mode::Day;
     let sessions = s.reports.mode == crate::reports::Mode::Sessions;
     let week = s.reports.mode == crate::reports::Mode::Week;
@@ -327,7 +331,7 @@ fn filter_field(s: &Desk, p: &Pal) -> El {
     field = overlay::ring(field, editing, p);
     // The placeholder, or what is typed; while typing, it ends at the caret, its start cut when long.
     if !(empty && editing) {
-        // The filter of Week, Month and Quarter has no titles: the day store holds none.
+        // The filter of Week, Month, Quarter and Year has no titles: the day store holds none.
         let store = s.reports.mode == crate::reports::Mode::Week || s.reports.mode.period();
         let hint = if store { "Filter by agent, project or id" } else { "Filter by project, id or title" };
         let (shown, color) = if empty { (hint, p.ink3) } else { (b.filter(), p.ink) };

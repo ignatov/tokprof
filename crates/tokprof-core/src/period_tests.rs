@@ -494,3 +494,36 @@ fn spend_by_day_breaks_its_line_before_the_first_log() {
     assert_eq!(s.before_at(date(2026, 11, 7)), Some(6.0));
     assert_eq!(s.before_at(date(2026, 11, 8)), Some(0.0));
 }
+
+#[test]
+fn the_weeks_add_up_to_the_quarter_by_their_windows() {
+    // Nights that cross midnight: Wed 30 Sep into Thu 1 Oct, the quarter's first midnight, and
+    // Sun 11 Oct into Mon 12 Oct, a Monday. The weeks count by the clock from Monday 00:00, cut at
+    // the quarter's first midnight, as Week's totals do.
+    let mut a = entry("claude", "a", "~/src/heron");
+    let mut b = entry("claude", "b", "~/src/kestrel");
+    a.actions = vec![
+        (at(date(2026, 9, 30), 22, 0), true),
+        (at(date(2026, 10, 1), 1, 30), true),
+        (at(date(2026, 10, 11), 22, 0), true),
+        (at(date(2026, 10, 12), 1, 30), true),
+    ];
+    a.minutes = vec![
+        spend(at(date(2026, 9, 30), 23, 0), 7.0),
+        spend(at(date(2026, 10, 1), 1, 0), 40.0),
+        spend(at(date(2026, 10, 11), 23, 0), 10.0),
+        spend(at(date(2026, 10, 12), 1, 0), 100.0),
+    ];
+    b.minutes = vec![spend(at(date(2026, 10, 14), 12, 0), 50.0), spend(at(date(2026, 12, 31), 23, 30), 3.0)];
+    let q = sums(&[a, b], Period::Quarter(Q4), at(date(2027, 1, 20), 12, 0));
+    let weeks: Vec<f64> = q.weeks.iter().map(|w| w.amounts.usd).collect();
+    assert_eq!((weeks[0], weeks[1], weeks[2], weeks[13]), (40.0, 10.0, 150.0, 3.0));
+    assert_eq!(weeks.iter().sum::<f64>(), q.key.usd, "the columns add up to the quarter's spend");
+    assert_eq!(q.key.usd, 203.0, "the night before 1 Oct is September's");
+    for (i, w) in q.weeks.iter().enumerate() {
+        let parts: f64 = q.projects.iter().map(|p| p.weeks[i]).sum();
+        assert_eq!(parts, w.amounts.usd, "the projects stack to the column of week {i}");
+    }
+    assert_eq!(q.weeks[2].amounts.requests, 2);
+    assert_eq!(q.records.biggest_week, Some((date(2026, 10, 12), 150.0)));
+}

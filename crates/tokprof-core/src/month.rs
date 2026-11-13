@@ -200,8 +200,8 @@ impl Month {
         m
     }
 
-    /// The month alone, up to `until` when given, else to its end or now.
-    fn alone(entries: &[Entry], filters: &Filters, ym: Ym, until: Option<i64>, now_ms: i64, offset: Offset) -> Month {
+    /// The month alone, with no month before, up to `until` when given, else to its end or now.
+    pub(crate) fn alone(entries: &[Entry], filters: &Filters, ym: Ym, until: Option<i64>, now_ms: i64, offset: Offset) -> Month {
         let (first, next) = (ym.first_date(), ym.next().first_date());
         let from_ms = rhythm::midnight(first, offset);
         let end = rhythm::midnight(next, offset);
@@ -348,6 +348,12 @@ fn shown_pct(x: f64) -> f64 {
 /// hour in hundredths, so that a printed `33%` meets `from 33%` and a printed `5.0%` is not
 /// `under 5%`.
 pub fn title(m: &Month) -> Option<Title> {
+    title_over(m, MARATHON_DAYS)
+}
+
+/// The title by the same rules, with `Marathon` from `marathon_days` in a row: a year takes 100
+/// (see year-review, Titles of a year).
+pub fn title_over(m: &Month, marathon_days: i64) -> Option<Title> {
     if let Some(s) = m.night_share.filter(|&s| shown_pct(s) >= shown_pct(NIGHT_OWL_SHARE)) {
         return Some(Title { name: "Night owl", rule: format!("{} of agent time 22:00–05:00 (title from {})", pct(s), pct(NIGHT_OWL_SHARE)) });
     }
@@ -360,8 +366,8 @@ pub fn title(m: &Month) -> Option<Title> {
             rule: format!("{} of agent time with {CONDUCTED_SESSIONS} or more sessions at once (title from {})", pct(s), pct(CONDUCTOR_SHARE)),
         });
     }
-    if let Some(s) = m.longest.filter(|s| s.days() >= MARATHON_DAYS) {
-        return Some(Title { name: "Marathon", rule: format!("{} days in a row with the agents (title from {MARATHON_DAYS})", s.days()) });
+    if let Some(s) = m.longest.filter(|s| s.days() >= marathon_days) {
+        return Some(Title { name: "Marathon", rule: format!("{} days in a row with the agents (title from {marathon_days})", s.days()) });
     }
     if let Some(s) = m.avoidable_share().filter(|&s| (1000.0 * s).round() / 10.0 < 100.0 * CACHE_KEEPER_SHARE) {
         return Some(Title {

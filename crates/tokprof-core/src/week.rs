@@ -619,7 +619,7 @@ pub struct Week {
     pub projects: Vec<Project>,
     /// The days the pace per day counts over, when there is no comparison.
     pub pace_days: Option<i64>,
-    /// The date of the store's first day with data, of any entry.
+    /// The day the logs begin (see `period::logs_begin`): the rows before it read `no logs`.
     pub first_data: Option<i64>,
 }
 
@@ -656,11 +656,8 @@ impl Week {
         // The rows: the calendar's cells, and their layers by the same days.
         let rule = rule_at(end);
         let cal = Calendar::span(entries, filters, (monday, monday + 6), now_ms, offset);
-        let first_ts = entries
-            .iter()
-            .flat_map(|e| e.minutes.iter().filter(|m| m.minute > 0).map(|m| m.minute * MINUTE_MS).chain(e.actions.iter().map(|a| a.0).filter(|&t| t > 0)))
-            .min();
-        let first_data = first_ts.map(|t| rule.date_of(t, offset));
+        // The day the logs begin, as Month, Quarter and Year have it.
+        let first_data = crate::period::logs_begin(entries, filters, offset);
         let mut rows: Vec<Row> = (monday..monday + 7)
             .map(|date| {
                 let kind = match (cal.day(date), first_data) {

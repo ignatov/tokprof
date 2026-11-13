@@ -71,10 +71,11 @@ pub enum Action {
     LastMonth,
     ThisQuarter,
     LastQuarter,
-    Calendar,
-    /// Calendar with one of its metrics.
-    CalendarOf(tokprof_core::calendar::Metric),
+    /// Year on this year, with one of its metrics, and Year in review.
+    Year,
+    YearOf(tokprof_core::calendar::Metric),
     MonthReview,
+    YearReview,
     Handoff,
     Jfr,
     Html,
@@ -98,7 +99,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 40] = [
+    pub const ALL: [Action; 41] = [
         Action::Settings,
         Action::KeyHelp,
         Action::DayView,
@@ -111,14 +112,15 @@ impl Action {
         Action::LastMonth,
         Action::ThisQuarter,
         Action::LastQuarter,
-        Action::Calendar,
-        Action::CalendarOf(Metric::Spend),
-        Action::CalendarOf(Metric::Agent),
-        Action::CalendarOf(Metric::Keyboard),
-        Action::CalendarOf(Metric::Messages),
-        Action::CalendarOf(Metric::Commits),
-        Action::CalendarOf(Metric::Avoidable),
+        Action::Year,
+        Action::YearOf(Metric::Spend),
+        Action::YearOf(Metric::Agent),
+        Action::YearOf(Metric::Keyboard),
+        Action::YearOf(Metric::Messages),
+        Action::YearOf(Metric::Commits),
+        Action::YearOf(Metric::Avoidable),
         Action::MonthReview,
+        Action::YearReview,
         Action::Handoff,
         Action::Jfr,
         Action::Html,
@@ -143,15 +145,16 @@ impl Action {
 
     pub fn title(self) -> &'static str {
         match self {
-            Action::Calendar => "Calendar",
+            Action::Year => "Year",
             Action::MonthReview => "Month in review",
-            Action::CalendarOf(m) => match m {
-                Metric::Spend => "Calendar: spend",
-                Metric::Agent => "Calendar: agent time",
-                Metric::Keyboard => "Calendar: at the keyboard",
-                Metric::Messages => "Calendar: messages",
-                Metric::Commits => "Calendar: commits",
-                Metric::Avoidable => "Calendar: avoidable",
+            Action::YearReview => "Year in review",
+            Action::YearOf(m) => match m {
+                Metric::Spend => "Year: spend",
+                Metric::Agent => "Year: agent time",
+                Metric::Keyboard => "Year: at the keyboard",
+                Metric::Messages => "Year: messages",
+                Metric::Commits => "Year: commits",
+                Metric::Avoidable => "Year: avoidable",
             },
             Action::Settings => "Settings…",
             Action::KeyHelp => "Key help",
@@ -200,9 +203,9 @@ impl Action {
             Action::Month => &["⌘3"],
             Action::Quarter => &["⌘4"],
             Action::ThisMonth | Action::LastMonth | Action::ThisQuarter | Action::LastQuarter => &[],
-            Action::Calendar => &["⌘5"],
-            Action::CalendarOf(_) => &[],
-            Action::MonthReview => &["r"],
+            Action::Year => &["⌘5"],
+            Action::YearOf(_) => &[],
+            Action::MonthReview | Action::YearReview => &["r"],
             Action::Handoff => &["c"],
             Action::Jfr => &["f"],
             Action::Html => &["o"],
@@ -244,9 +247,10 @@ impl Action {
                     | Action::LastMonth
                     | Action::ThisQuarter
                     | Action::LastQuarter
-                    | Action::Calendar
-                    | Action::CalendarOf(_)
+                    | Action::Year
+                    | Action::YearOf(_)
                     | Action::MonthReview
+                    | Action::YearReview
                     | Action::Handoff
                     | Action::Jfr
                     | Action::Html
@@ -271,8 +275,8 @@ impl Action {
             Action::Week => s.reports.mode != Mode::Week,
             Action::Month => s.reports.mode != Mode::Month,
             Action::Quarter => s.reports.mode != Mode::Quarter,
-            Action::Calendar => s.reports.mode != Mode::Calendar,
-            Action::MonthReview => s.calendar.data.get().is_some_and(|c| c.store.is_some()),
+            Action::Year => s.reports.mode != Mode::Year,
+            Action::MonthReview | Action::YearReview => s.calendar.data.get().is_some_and(|c| c.store.is_some()),
             _ => true,
         }
     }
@@ -698,20 +702,24 @@ impl Desk {
                 let yq = if a == Action::LastQuarter { yq.previous() } else { yq };
                 crate::reports::show_period(self, tokprof_core::period::Period::Quarter(yq), tx);
             }
-            Action::Calendar => crate::reports::show(self, Mode::Calendar),
-            // Over Calendar, the card Calendar opens; elsewhere Month with the card `r` opens.
+            Action::Year => crate::reports::show(self, Mode::Year),
+            // Month with the card `r` opens there.
             Action::MonthReview => {
-                if self.reports.mode == Mode::Calendar {
-                    crate::month::open(self, None);
-                } else {
-                    crate::reports::show(self, Mode::Month);
-                    let ym = crate::reports::review_month(self);
-                    crate::month::open(self, Some(ym));
-                }
+                crate::reports::show(self, Mode::Month);
+                let ym = crate::reports::review_month(self);
+                crate::month::open(self, Some(ym));
             }
-            Action::CalendarOf(m) => {
-                crate::reports::show(self, Mode::Calendar);
-                crate::calendar::pick_metric(self, m);
+            // Year in review of the year Year shows, or of this year.
+            Action::YearReview => {
+                if self.reports.mode != Mode::Year {
+                    crate::reports::show(self, Mode::Year);
+                }
+                let y = self.reports.shown_year();
+                crate::year::open(self, y);
+            }
+            Action::YearOf(m) => {
+                crate::reports::show(self, Mode::Year);
+                crate::year::pick_metric(self, m);
             }
             Action::Handoff => self.browser_key(key('c'), tx),
             Action::Jfr => self.browser_key(key('f'), tx),

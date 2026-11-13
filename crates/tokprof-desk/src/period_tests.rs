@@ -176,7 +176,7 @@ fn the_switch_shows_month_and_quarter_and_steps_their_periods() {
     fill(&mut rt);
     assert_eq!(text_of(&rt, "period-name"), "September 2026");
     command(&mut rt, '5');
-    assert_eq!(rt.state.reports.mode, reports::Mode::Calendar, "⌘5 shows Calendar");
+    assert_eq!(rt.state.reports.mode, reports::Mode::Year, "⌘5 shows Year");
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn the_palette_offers_the_periods_and_last_month_shows_october() {
     run_from_palette(&mut rt, "last quarter", palette::Pick::Act(palette::Action::LastQuarter));
     fill(&mut rt);
     assert_eq!((rt.state.reports.mode, rt.state.reports.shown_quarter()), (reports::Mode::Quarter, Q4.previous()));
-    assert_eq!(palette::Action::Calendar.keys(), ["⌘5"]);
+    assert_eq!(palette::Action::Year.keys(), ["⌘5"]);
 }
 
 #[test]
@@ -408,6 +408,32 @@ fn month_in_review_opens_from_month_and_keeps_the_keys() {
     fill(&mut rt);
     click(&mut rt, "review-open");
     assert_eq!(rt.state.month.card.as_ref().and_then(|c| c.month.ym), Some(Ym { year: 2026, month: 9 }));
+}
+
+#[test]
+fn the_weeks_of_the_quarter_add_up_to_it_and_open_a_week_of_the_same_total() {
+    // A night from Sunday 11 October into Monday 12 October: Week's total counts it from Monday
+    // 00:00, and so does the column of that week.
+    let mut store = store();
+    let mut k = entry("id2", "~/src/kestrel");
+    k.actions = vec![(at(date("2026-10-11"), 22, 0), true), (at(date("2026-10-12"), 1, 30), true)];
+    spend(&mut k, at(date("2026-10-11"), 23, 0), 30.0, 0.0);
+    spend(&mut k, at(date("2026-10-12"), 1, 0), 300.0, 0.0);
+    store.entries.push(k);
+    let mut rt = runtime(period_desk_of(store.clone()), (1500.0, 1800.0));
+    command(&mut rt, '4');
+    fill(&mut rt);
+    let sums = rt.state.reports.sums().unwrap().clone();
+    let bars: f64 = sums.weeks.iter().map(|w| w.amounts.usd).sum();
+    assert!((bars - sums.key.usd).abs() < 1e-6, "the columns add up to the quarter: {bars} against {}", sums.key.usd);
+    let i = sums.weeks.iter().position(|w| w.monday == date("2026-10-12")).unwrap();
+    let week = tokprof_browse::week::week_of(&store, &Query::default(), &tokprof_browse::week::Key::new(sums.weeks[i].monday, ""), now());
+    assert!((week.totals.usd - sums.weeks[i].amounts.usd).abs() < 1e-6, "Week's total is the column's");
+    assert_eq!(text_of(&rt, &format!("qweek-value-{i}")), reports::usd_whole(week.totals.usd));
+    for (j, w) in sums.weeks.iter().enumerate() {
+        let parts: f64 = sums.projects.iter().map(|p| p.weeks[j]).sum();
+        assert!((parts - w.amounts.usd).abs() < 1e-6, "the projects stack to the column of week {j}");
+    }
 }
 
 #[test]

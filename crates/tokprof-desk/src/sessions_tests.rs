@@ -201,7 +201,7 @@ fn header(rt: &Runtime<Desk>, days_ago: i64) -> String {
 
 #[test]
 fn the_button_command_0_and_the_palette_show_sessions_from_every_screen() {
-    for from in [reports::Mode::Day, reports::Mode::Month, reports::Mode::Calendar] {
+    for from in [reports::Mode::Day, reports::Mode::Month, reports::Mode::Year] {
         let mut rt = runtime(table_desk(true), (1400.0, 900.0));
         reports::show(&mut rt.state, from);
         settle(&mut rt);
@@ -725,9 +725,9 @@ fn a_session_picked_in_the_palette_opens_on_its_day_or_is_selected_in_sessions()
 
 #[test]
 fn sort_by_in_the_palette_shows_sessions_sorted_as_a_header_click_sorts() {
-    // The test's calendar is empty: Calendar is drawn without the store.
-    for from in [reports::Mode::Day, reports::Mode::Month, reports::Mode::Calendar] {
-        let mut rt = runtime(table_desk(from != reports::Mode::Calendar), (1400.0, 900.0));
+    // The test's calendar is empty: Year is drawn without the store.
+    for from in [reports::Mode::Day, reports::Mode::Month, reports::Mode::Year] {
+        let mut rt = runtime(table_desk(from != reports::Mode::Year), (1400.0, 900.0));
         reports::show(&mut rt.state, from);
         settle(&mut rt);
         run_from_palette(&mut rt, "sort by cost", palette::Pick::Act(palette::Action::SortCost));
@@ -773,8 +773,8 @@ fn back_to_the_lanes_and_the_full_size_inspector_are_offered_when_they_do_someth
 
 #[test]
 fn a_pick_in_the_menu_bar_opens_the_session_in_day_on_its_day() {
-    for from in [reports::Mode::Month, reports::Mode::Sessions, reports::Mode::Calendar, reports::Mode::Day] {
-        let mut rt = runtime(table_desk(from != reports::Mode::Calendar), (1400.0, 900.0));
+    for from in [reports::Mode::Month, reports::Mode::Sessions, reports::Mode::Year, reports::Mode::Day] {
+        let mut rt = runtime(table_desk(from != reports::Mode::Year), (1400.0, 900.0));
         rt.update(|s, tx| {
             if from == reports::Mode::Sessions {
                 sessions::show(s, tx);

@@ -189,7 +189,7 @@ pub fn days_card(s: &Desk, sums: &PeriodSums, p: &Pal, w: f32) -> El {
         let mut c = el().key(format!("mday-{date}")).absolute(x, y).w(cw).h(CELL_H).radius(8.0);
         c = match kind {
             DateKind::Day if lvl == 0 && p.dark => c.border(1.0, p.row_line),
-            DateKind::Day => c.fill(crate::calendar::level_color(lvl, p.accent, p)),
+            DateKind::Day => c.fill(crate::year::level_color(lvl, p.accent, p)),
             _ => c.border(1.0, p.row_line),
         };
         let day_n = local_time(noon(date), "%-d");
@@ -262,7 +262,7 @@ pub fn days_card(s: &Desk, sums: &PeriodSums, p: &Pal, w: f32) -> El {
         let ty = if y + CELL_H + 4.0 + 76.0 <= rows_h + 40.0 { y + CELL_H + 4.0 } else { (y - 80.0).max(0.0) };
         grid = grid.child(t.absolute(x.min(inner - tip_w).max(0.0), ty));
     }
-    let swatch = |lvl: usize| crate::calendar::cell(lvl, p.accent, p, 11.0, 11.0, 3.0);
+    let swatch = |lvl: usize| crate::year::cell(lvl, p.accent, p, 11.0, 11.0, 3.0);
     let mut legend = row().key("mgrid-legend").w_full().flex_wrap().gaps(4.0, 6.0).center_y();
     legend = legend.child(text("less").font(pal::SMALL).color(p.ink2).single_line()).children((0..5).map(swatch));
     let more = match cuts {

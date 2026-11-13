@@ -14,6 +14,8 @@
 //! a golden: the runs give no window ending at "now", and the reports that print local times
 //! (`scan`, `sessions`, `day`, `calendar`, `month`, the list of `misses`, the rhythm of `pauses`)
 //! are left out or cut before them. A Windows binary ignores TZ, so these must hold in any zone.
+//! `year` runs on a synthetic day store of a year that is over, with no log, no agent time and
+//! no action, its requests at noon UTC: it prints dates but no time of day.
 //! Printed paths start with `<home>` or `<repo>` and use `/`, and the read line's timing is
 //! `<time>`, so the files are the same on every platform.
 
@@ -32,6 +34,8 @@ enum View {
     Prices,
     /// Stdout, and the file of this name that the command wrote in the home.
     File(&'static str),
+    /// Stdout whole, of a run on no log with the synthetic day store of `year_store`.
+    Store,
 }
 
 macro_rules! goldens {
@@ -64,6 +68,7 @@ goldens! {
     handoff: ["handoff", "5e5510f0"] View::Out;
     flame: ["flame", "-o", "<home>/f.folded"] View::File("f.folded");
     flame_misses: ["flame", "--value", "avoidable", "--stack", "agent,model,cause", "-o", "<home>/m.collapsed"] View::File("m.collapsed");
+    year: ["year", "2025"] View::Store;
 }
 
 const PRICES: &str = "tests/golden/prices.toml";
@@ -81,12 +86,18 @@ fn check(name: &str, args: &[&str], view: View) {
     let shown = home.to_string_lossy().to_string();
     let args: Vec<String> = args.iter().map(|a| a.replace("<home>", &shown)).collect();
     let prices = Path::new(env!("CARGO_MANIFEST_DIR")).join(PRICES);
-    let out = common::tokprof_fixtures(&home, true).arg("--prices").arg(&prices).args(&args).output().unwrap();
+    let mut command = if matches!(view, View::Store) {
+        year_store(&home);
+        common::tokprof(&home)
+    } else {
+        common::tokprof_fixtures(&home, true)
+    };
+    let out = command.arg("--prices").arg(&prices).args(&args).output().unwrap();
     let paths = |text: &str| normalize(text, &home);
     let (stdout, stderr) = (paths(&String::from_utf8_lossy(&out.stdout)), paths(&String::from_utf8_lossy(&out.stderr)));
     assert!(out.status.success(), "tokprof {} failed with {}:\n{stdout}{stderr}", args.join(" "), out.status);
     let stdout = match view {
-        View::Out | View::File(_) => stdout,
+        View::Out | View::File(_) | View::Store => stdout,
         View::Before(start) => {
             let at = stdout.find(&format!("\n{start}")).unwrap_or_else(|| panic!("no line starts with {start:?}:\n{stdout}"));
             stdout[..at + 1].to_string()
@@ -117,15 +128,81 @@ fn normalize(text: &str, home: &Path) -> String {
     lines.collect::<Vec<_>>().join("\n")
 }
 
-/// The read line's ` in 0.1s` as ` in <time>`.
+/// The read line's ` in 0.1s` as ` in <time>`, at its end or before the store's `;`.
 fn timing(stderr: &str) -> String {
     stderr
         .split_inclusive('\n')
-        .map(|line| match (line.starts_with("read "), line.rfind(" in ")) {
-            (true, Some(at)) if line.trim_end().ends_with('s') => format!("{} in <time>\n", &line[..at]),
-            _ => line.to_string(),
+        .map(|line| {
+            let Some(at) = line.rfind(" in ").filter(|_| line.starts_with("read ")) else { return line.to_string() };
+            let rest = &line[at + 4..];
+            let digits = rest.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(rest.len());
+            match rest[digits..].strip_prefix('s') {
+                Some(tail) if digits > 0 => format!("{} in <time>{tail}", &line[..at]),
+                _ => line.to_string(),
+            }
         })
         .collect()
+}
+
+/// The day store of 2025 that `year` reads, in the home's cache folder: Claude Code from Mon 17
+/// Mar, a request a day at noon UTC with a break in July, and Codex on weekdays from September;
+/// with spend, avoidable dollars by cause, models, cache reads, commits and cold returns, and
+/// nothing in 2024. Its logs are gone, so the refresh keeps its entries as they are.
+fn year_store(home: &Path) {
+    use tokprof_core::daystore::{Entry, Minute, Store};
+    let day = |y: i32, m: u32, d: u32| chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap();
+    let noon = |d: chrono::NaiveDate| d.and_hms_opt(12, 0, 0).unwrap().and_utc().timestamp_millis();
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut date = day(2025, 3, 17);
+    while date <= day(2025, 12, 31) {
+        use chrono::Datelike;
+        let (month, dom, weekday) = (date.month(), date.day(), date.weekday().num_days_from_monday());
+        let ts = noon(date);
+        let hour = ts / 3_600_000;
+        let week = date.iso_week().week();
+        let mut log = |agent: &str, usd: f64, commits: u32| {
+            let id = format!("{agent}-{week}");
+            let project = if week % 3 == 0 { "~/src/zebrafish" } else { "~/src/heron" };
+            let at = entries.iter().position(|e| e.session == id).unwrap_or_else(|| {
+                let key = format!("/logs/{agent}/{id}.jsonl");
+                entries.push(Entry { key, agent: agent.into(), session: id.clone(), main: id.clone(), project: project.into(), ..Entry::default() });
+                entries.len() - 1
+            });
+            let e = &mut entries[at];
+            let avoidable = (usd * 0.08 * 100.0).round() / 100.0;
+            e.minutes.push(Minute {
+                minute: ts / 60_000,
+                usd,
+                avoidable_usd: avoidable,
+                requests: 40,
+                commits,
+                read_tokens: 3_800_000,
+                prompt_tokens: 4_000_000,
+                saved_usd: usd * 6.0,
+                ..Minute::default()
+            });
+            let model = if agent == "codex" { "gpt-5.6-codex" } else { "claude-opus-5-5" };
+            e.models.push((hour, model.into(), usd));
+            e.misses.push((hour, "idle > TTL".into(), (avoidable * 0.7 * 100.0).round() / 100.0));
+            e.misses.push((hour, "model switch".into(), (avoidable * 0.3 * 100.0).round() / 100.0));
+            if dom % 3 == 0 {
+                e.cold.push(ts);
+            }
+        };
+        let paused = month == 7 && (14..=27).contains(&dom);
+        if !paused {
+            let base = [0.0, 0.0, 20.0, 30.0, 35.0, 25.0, 15.0, 40.0, 45.0, 60.0, 50.0, 30.0][month as usize - 1];
+            log("claude", base + f64::from(dom % 7) * 3.0, dom % 4);
+        }
+        if month >= 9 && weekday < 5 {
+            log("codex", 5.0 + f64::from(dom % 5), u32::from(dom % 2 == 0));
+        }
+        date = date.succ_opt().unwrap();
+    }
+    let cache = home.join("cache");
+    std::fs::create_dir_all(&cache).unwrap();
+    let store = Store { path: cache.join(tokprof_core::daystore::FILE_NAME), entries, ..Store::default() };
+    store.save().unwrap();
 }
 
 /// The lines of `tokprof prices` that the test's price file decides: everything but the table's

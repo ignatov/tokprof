@@ -110,6 +110,19 @@ pub fn month(store: &Store, select: &Query, ym: tokprof_core::month::Ym, now_ms:
     tokprof_core::month::Month::of(&store.entries, &f, ym, now_ms, &rhythm::local_offset)
 }
 
+/// The year `year` of the store's entries that `select` keeps, whatever its time window, as of
+/// `now_ms`, in the machine's time zone.
+pub fn year(store: &Store, select: &Query, year: i32, now_ms: i64) -> tokprof_core::year::Year {
+    let f = Filters { since_ms: None, until_ms: None, ..filters(select) };
+    tokprof_core::year::Year::of(&store.entries, &f, year, now_ms, &rhythm::local_offset)
+}
+
+/// The year `tokprof year` shows by default for the entries `select` keeps.
+pub fn default_year(store: &Store, select: &Query, now_ms: i64) -> i32 {
+    let f = Filters { since_ms: None, until_ms: None, ..filters(select) };
+    tokprof_core::year::default_year(&store.entries, &f, now_ms, &rhythm::local_offset)
+}
+
 /// The line on what the refresh read: the logs read again as other commands name them, the logs
 /// taken from the store, and those that are gone.
 pub fn read_line(catalog: &Catalog, r: &Refreshed, secs: f64, path: &Path) -> String {

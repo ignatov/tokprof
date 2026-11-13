@@ -24,6 +24,7 @@ mod settings;
 mod themes;
 mod view;
 mod week;
+mod year;
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -86,10 +87,14 @@ struct Cli {
     /// merino-light or ink-meridian).
     #[arg(long)]
     colors: Option<String>,
-    /// With --snap or --tree: the calendar's metric (spend, agent, keyboard, messages, commits,
+    /// With --snap or --tree: Year's metric (spend, agent, keyboard, messages, commits,
     /// avoidable), as `tokprof calendar --metric` takes it.
     #[arg(long)]
     metric: Option<String>,
+    /// With --snap or --tree: the year (YYYY) of the scenes `year`, `year-day`, `year-review` and
+    /// `year-card`; this year by default.
+    #[arg(long)]
+    year: Option<String>,
     /// With --snap or --tree: the week that holds this date (YYYY-MM-DD), for the scene `week`;
     /// this week by default.
     #[arg(long)]
@@ -257,9 +262,11 @@ pub struct Desk {
     pub flame_w: f32,
     /// The view under the bar, and the state of Month and Quarter.
     pub reports: reports::State,
-    /// The state of Calendar.
+    /// The day store's worker, which Week, Month, Quarter, Year and Sessions count from.
     pub calendar: calendar::State,
-    /// The month in review over Month, Quarter or Calendar.
+    /// Year's metric and Year in review.
+    pub year: year::State,
+    /// The month in review over Month or Quarter.
     pub month: month::State,
     /// The cache countdown in the macOS menu bar.
     pub menu_bar: menubar::MenuBar,
@@ -347,6 +354,7 @@ impl Desk {
             flame_w: 0.0,
             reports: reports::State::new(tokprof_browse::reports::Reports::detached(), tokprof_browse::period::Periods::detached()),
             calendar: calendar::State::new(tokprof_browse::calendar::Calendars::detached()),
+            year: year::State::default(),
             month: month::State::default(),
             menu_bar: menubar::MenuBar::default(),
             requests: requests::State::default(),
@@ -646,7 +654,7 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
         tx.wake_after(at.saturating_duration_since(Instant::now()).max(Duration::from_millis(1)));
     }
     // A countdown on the screen moves every second; the parts that show time move every minute.
-    // Week, Month, Quarter and Calendar show neither.
+    // Week, Month, Quarter and Year show neither.
     let day = matches!(s.reports.mode, reports::Mode::Day | reports::Mode::Sessions);
     let counting = match s.reports.mode {
         reports::Mode::Sessions => sessions::counting(s, now),
@@ -668,7 +676,7 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
     if s.status_shown() {
         tx.wake_after(Duration::from_secs(view::STATUS_SECS).saturating_sub(s.status.1.elapsed()) + Duration::from_millis(5));
     }
-    let reported = reports::poll(s, tx) | calendar::poll(s, tx) | month::poll(s) | sessions::poll(s, tx) | week::poll(s, tx);
+    let reported = reports::poll(s, tx) | month::poll(s) | year::poll(s) | sessions::poll(s, tx) | week::poll(s, tx);
     // The menu bar counts down whether the window shows or not; it draws nothing in the window.
     menubar::poll(s, now, tx);
     arrived || relisted || cooled || waited || filtered || counting || turned || reported || dropped || revealed
@@ -745,8 +753,12 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     // The month in review takes every other key while it is open.
-    if s.month.card.is_some() && matches!(s.reports.mode, reports::Mode::Calendar | reports::Mode::Month | reports::Mode::Quarter) {
+    if s.month.card.is_some() && matches!(s.reports.mode, reports::Mode::Month | reports::Mode::Quarter) {
         return month::on_key(s, e, tx);
+    }
+    // So does Year in review.
+    if s.year.card.is_some() && s.reports.mode == reports::Mode::Year {
+        return year::card_key(s, e, tx);
     }
     // ⌘K and ⌘, open and close the palette and the settings, as their menu items do where the
     // menu does not take them first; while a card is open, every other key is its own.
@@ -771,7 +783,7 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
         tx.close_window();
         return true;
     }
-    // ⌘1 shows Day, ⌘2 Week, ⌘3 Month, ⌘4 Quarter, ⌘5 Calendar and ⌘0 Sessions.
+    // ⌘1 shows Day, ⌘2 Week, ⌘3 Month, ⌘4 Quarter, ⌘5 Year and ⌘0 Sessions.
     if reports::switch_key(s, e) {
         if s.reports.mode == reports::Mode::Sessions {
             sessions::show(s, tx);
@@ -788,6 +800,9 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
         if key_of(e) == Some(Key::Interrupt) {
             tx.quit();
             return true;
+        }
+        if s.reports.mode == reports::Mode::Year {
+            return year::on_key(s, e, tx);
         }
         return reports::on_key(s, e, tx);
     }
@@ -808,17 +823,6 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
             return true;
         }
         return sessions::on_key(s, e, tx);
-    }
-    if s.reports.mode == reports::Mode::Calendar {
-        if matches!(&e.key, RuneKey::Text(t) if t == "?") && !e.mods.cmd && !e.mods.ctrl {
-            s.open_help();
-            return true;
-        }
-        if key_of(e) == Some(Key::Interrupt) {
-            tx.quit();
-            return true;
-        }
-        return calendar::on_key(s, e, tx);
     }
     // The pane with the keyboard takes its keys first; a filter being typed takes them all.
     if !s.browser.editing() && plain(e) {
@@ -977,7 +981,8 @@ fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk>
     desk.week.client_ignored = client_ignored;
     desk.week_wanted = week_of(cli)?;
     desk.sessions.narrowed = !cli.agent.is_empty() || [&cli.project, &cli.session, &cli.client, &cli.since, &cli.until].iter().any(|f| f.is_some());
-    desk.calendar.metric = metric(cli)?.unwrap_or(tokprof_core::calendar::Metric::Spend);
+    desk.year.metric = metric(cli)?.unwrap_or(tokprof_core::calendar::Metric::Spend);
+    desk.year.wanted = year_of(cli)?;
     desk.calendar.select = Query { since_ms: None, until_ms: None, ..desk_select.clone() };
     desk.month.wanted = month_of(cli)?;
     desk.quarter_wanted = quarter_of(cli)?;
@@ -987,7 +992,7 @@ fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk>
             desk.settings = settings::Settings::of_theme(t);
         }
         // The image of a month in review needs no session, no X-ray and no day.
-        if std::env::args().any(|a| a == "month-card") {
+        if std::env::args().any(|a| a == "month-card" || a == "year-card") {
             return Ok(desk);
         }
         // `--tab` shows that tab of the newest session, selected on its day; else the frame shows
@@ -1049,6 +1054,7 @@ fn checked(cli: &Cli, catalog: &Catalog) -> Result<(Query, tokprof_core::pricing
     month_of(cli)?;
     quarter_of(cli)?;
     week_of(cli)?;
+    year_of(cli)?;
     Ok((select, pricing, tab))
 }
 
@@ -1081,6 +1087,14 @@ fn quarter_of(cli: &Cli) -> Result<Option<tokprof_core::period::Yq>> {
     Ok(Some(yq))
 }
 
+/// The year `--year` names, if it names one: a year that has begun.
+fn year_of(cli: &Cli) -> Result<Option<i32>> {
+    let Some(y) = cli.year.as_deref() else { return Ok(None) };
+    let Some(year) = (y.len() == 4 && y.bytes().all(|b| b.is_ascii_digit())).then(|| y.parse::<i32>().ok()).flatten() else { bail!("--year takes YYYY") };
+    begun(tokprof_core::period::Period::Year(year))?;
+    Ok(Some(year))
+}
+
 /// A period of `--month` or `--quarter` must have begun: `May 2027 has not begun`.
 fn begun(period: tokprof_core::period::Period) -> Result<()> {
     if !period.begun(now_ms(), &rhythm::local_offset) {
@@ -1092,7 +1106,10 @@ fn begun(period: tokprof_core::period::Period) -> Result<()> {
 /// The desk of `--card-image`: no sessions, only the month in review of `--month` from the store
 /// as it is, and an error when the card cannot be drawn, so that no other picture is saved as it.
 fn card_image(cli: &Cli, catalog: Arc<Catalog>, pricing: tokprof_core::pricing::Pricing, select: Query, store: &std::path::Path) -> Result<Desk> {
-    let ym = month_of(cli)?.ok_or_else(|| anyhow::anyhow!("--card-image needs --month"))?;
+    if let Some(y) = year_of(cli)? {
+        return year_image(cli, catalog, pricing, select, store, y);
+    }
+    let ym = month_of(cli)?.ok_or_else(|| anyhow::anyhow!("--card-image needs --month or --year"))?;
     let store = tokprof_core::daystore::Store::load(store, now_ms());
     if let Some(e) = &store.unreadable {
         bail!("could not draw the month card: the day store cannot be read ({e})");
@@ -1109,6 +1126,29 @@ fn card_image(cli: &Cli, catalog: Arc<Catalog>, pricing: tokprof_core::pricing::
     desk.month.card = Some(month::Card { month, status: None });
     desk.month.alone = true;
     desk.reports.mode = reports::Mode::Month;
+    Ok(desk)
+}
+
+/// The desk of `--card-image --year`: Year in review of that year alone, from the store as it is,
+/// and an error when it cannot be drawn or has no logs.
+fn year_image(cli: &Cli, catalog: Arc<Catalog>, pricing: tokprof_core::pricing::Pricing, select: Query, store: &std::path::Path, y: i32) -> Result<Desk> {
+    let store = tokprof_core::daystore::Store::load(store, now_ms());
+    if let Some(e) = &store.unreadable {
+        bail!("could not draw the year card: the day store cannot be read ({e})");
+    }
+    let year = tokprof_browse::calendar::year(&store, &Query { since_ms: None, until_ms: None, ..select }, y, now_ms());
+    if year.ready.ready_on.is_none() {
+        bail!("could not draw the year card: {y} has no logs");
+    }
+    let browser = Browser::detached(catalog, Vec::new(), pricing, frontend());
+    let mut desk = Desk::new(browser, false);
+    if let Some(t) = colors(cli)? {
+        desk.settings = settings::Settings::of_theme(t);
+    }
+    desk.year.years.insert(y, (0, Arc::new(year)));
+    desk.year.card = Some(year::Card { year: y, next: None, status: None });
+    desk.year.alone = true;
+    desk.reports.mode = reports::Mode::Year;
     Ok(desk)
 }
 
@@ -1211,7 +1251,7 @@ type Scene = (&'static str, fn(&mut Desk));
 /// The scenes: a pane with the keyboard, the flame graph zoomed two levels in, a filter being typed
 /// that matches nothing, the settings open, the palette open with a query, the key help, Week,
 /// Month and Quarter waited for, Month with the sessions of its first saving open and with its
-/// card, and Calendar.
+/// card, and Year with a day's tooltip, with Year in review and its card alone.
 const SCENES: &[Scene] = &[
     ("settings", |s| s.panel = Some(settings::Panel::default())),
     ("waiting", |s| {
@@ -1238,10 +1278,36 @@ const SCENES: &[Scene] = &[
         let date = s.week_wanted;
         week::scene(s, date);
     }),
-    ("calendar", |s| {
-        reports::show(s, reports::Mode::Calendar);
-        let changes = s.browser.changes();
-        s.calendar.data.settle(changes, Duration::from_secs(120));
+    // Year on the year of --year, or this year, with the store, the sums and the card waited for.
+    ("year", year::scene),
+    // The same with the grid's cursor a week before the last day, showing its tooltip.
+    ("year-day", |s| {
+        year::scene(s);
+        if let Some(sums) = s.reports.sums().cloned() {
+            let last = charts::openable_dates(&sums).last().copied();
+            s.reports.part = Some(reports::Part::Grid);
+            s.reports.day = last.map(|d| d - 7);
+        }
+    }),
+    ("year-review", |s| {
+        year::scene(s);
+        let y = s.reports.shown_year();
+        year::open(s, y);
+    }),
+    ("year-card", |s| {
+        // Drawn from the store already, with --card-image.
+        if s.year.alone {
+            return;
+        }
+        year::scene(s);
+        let y = s.reports.shown_year();
+        year::open(s, y);
+        s.year.alone = true;
+        // Never a picture of something else under the card's name.
+        if year::card_year(s).is_none_or(|x| x.ready.ready_on.is_none()) {
+            eprintln!("could not draw the year card: {y} has no logs");
+            std::process::exit(2);
+        }
     }),
     // Month on the month of --month and Quarter on the quarter of --quarter, or the current
     // ones, with the store, the sums, the period's logs and the card's image waited for.
@@ -1288,13 +1354,6 @@ const SCENES: &[Scene] = &[
             eprintln!("could not draw the month card: the day store gave no month");
             std::process::exit(2);
         }
-    }),
-    ("calendar-day", |s| {
-        reports::show(s, reports::Mode::Calendar);
-        let changes = s.browser.changes();
-        s.calendar.data.settle(changes, Duration::from_secs(120));
-        // The cursor a week back, with its day's tooltip.
-        s.calendar.cursor = s.calendar.calendar().map(|c| c.last - 7);
     }),
     ("lanes-keyboard", |s| s.pane = Focus::Lanes),
     ("inspector-keyboard", |s| {

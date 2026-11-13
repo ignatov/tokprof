@@ -1,0 +1,37 @@
+$ tokprof --prices tests/golden/prices.toml year 2025
+--- stdout
+tokprof · year · 2025 with agents
+
+Marathon
+157 days in a row with the agents (title from 100)
+
+$13,188 spent           0.0h agents worked      0.0h at the keyboard
+58 sessions             0 messages              464 commits by agents
+
+Jan  no logs
+Feb  no logs
+Mar  ██████                           $435  from 17 Mar
+Apr  ███████████████                $1,161
+May  ██████████████████             $1,355
+Jun  █████████████                  $1,011
+Jul  █████                            $399
+Aug  ████████████████████           $1,510
+Sep  ███████████████████████        $1,765
+Oct  ██████████████████████████████ $2,291
+Nov  █████████████████████████      $1,901
+Dec  ██████████████████             $1,360
+
+biggest day    Mon 13 Oct, $86.00
+biggest week   Mon 6 – Sun 12 Oct, $518
+longest streak 157 days, Mon 28 Jul – Wed 31 Dec
+most commits   Wed 19 Mar, 3
+weekday        Wednesdays, $1,945
+weekend        27% of spend on Saturdays and Sundays
+top model      claude-opus-5-5, $12,573, 95% of spend
+cache          95% of input read from cache, $79,128 saved by the cache, $1,055 (8.0%) avoidable on misses, 119 cold returns
+pace           $45 a day, 0.0h of agents, 0.0h at the keyboard, 0.2 sessions and 1.6 commits; over 290 days of logs
+note           no comparison with 2024: no logs
+ready          yes: 2025 has 290 days of logs, from 17 Mar
+next year      $739 went to idle > TTL. Compact or wrap up a big session before a long break.
+--- stderr
+read no log in <time>; 0 logs from the store, 58 gone from disk (~/cache/days-2.json)

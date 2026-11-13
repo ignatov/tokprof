@@ -5,8 +5,10 @@
 //! months of a quarter and its project shifts.
 //!
 //! The key numbers count the window by local midnights, as `tokprof month` counts a month. The
-//! cells of the dates and the weeks are calendar days, so a night across the first of the period
-//! lies in a cell of the period before (`$139` of October 2026 fell in 30 September's cell).
+//! cells of the dates are calendar days, so a night across the first of the period lies in a cell
+//! of the period before (`$139` of October 2026 fell in 30 September's cell). The weeks count
+//! their clock windows from Monday 00:00 cut at the period's window, as Week's totals do, so they
+//! add up to the key numbers' spend.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -81,11 +83,13 @@ impl Yq {
     }
 }
 
-/// A calendar month or quarter.
+/// A calendar month, quarter or year.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Period {
     Month(Ym),
     Quarter(Yq),
+    /// 1 January to 31 December (see year-review).
+    Year(i32),
 }
 
 impl Period {
@@ -104,16 +108,22 @@ impl Period {
         Period::Quarter(Yq::of(Ym::of_date(date)))
     }
 
+    /// The year of a local date.
+    pub fn year_of(date: i64) -> Period {
+        Period::Year(Ym::of_date(date).year)
+    }
+
     /// The month or the quarter, as this one is, that holds `now_ms`.
     pub fn current(self, now_ms: i64, offset: Offset) -> Period {
         let today = rhythm::date_of(now_ms, offset);
         match self {
             Period::Month(_) => Period::month_of(today),
             Period::Quarter(_) => Period::quarter_of(today),
+            Period::Year(_) => Period::year_of(today),
         }
     }
 
-    /// The quarter that holds this period.
+    /// The quarter that holds this period; a year is its own.
     pub fn quarter(self) -> Period {
         match self {
             Period::Month(ym) => Period::Quarter(Yq::of(ym)),
@@ -126,6 +136,7 @@ impl Period {
         match self {
             Period::Month(ym) => vec![ym],
             Period::Quarter(yq) => yq.months().to_vec(),
+            Period::Year(year) => (1..=12).map(|month| Ym { year, month }).collect(),
         }
     }
 
@@ -140,6 +151,7 @@ impl Period {
         match self {
             Period::Month(ym) => Period::Month(ym.previous()),
             Period::Quarter(yq) => Period::Quarter(yq.previous()),
+            Period::Year(y) => Period::Year(y - 1),
         }
     }
 
@@ -147,6 +159,7 @@ impl Period {
         match self {
             Period::Month(ym) => Period::Month(ym.next()),
             Period::Quarter(yq) => Period::Quarter(yq.next()),
+            Period::Year(y) => Period::Year(y + 1),
         }
     }
 
@@ -165,32 +178,35 @@ impl Period {
         self.next_date() - 1
     }
 
-    /// How many dates it has: 28 to 31, or 90 to 92.
+    /// How many dates it has: 28 to 31, 90 to 92, or 365 and 366.
     pub fn days(self) -> i64 {
         self.next_date() - self.first_date()
     }
 
-    /// `November 2026`, `Q4 2026`.
+    /// `November 2026`, `Q4 2026`, `2026`.
     pub fn name(self) -> String {
         match self {
             Period::Month(ym) => ym.name(),
             Period::Quarter(yq) => yq.name(),
+            Period::Year(y) => format!("{y:04}"),
         }
     }
 
-    /// The name month-review's notes give the period before: `September`, `Q3 2026`.
+    /// The name month-review's notes give the period before: `September`, `Q3 2026`, `2025`.
     pub fn short_name(self) -> String {
         match self {
             Period::Month(ym) => ym.month_name(),
             Period::Quarter(yq) => yq.name(),
+            Period::Year(y) => format!("{y:04}"),
         }
     }
 
-    /// `2026-10`, `2026-Q4`.
+    /// `2026-10`, `2026-Q4`, `2026`.
     pub fn key(self) -> String {
         match self {
             Period::Month(ym) => ym.key(),
             Period::Quarter(yq) => yq.key(),
+            Period::Year(y) => format!("{y:04}"),
         }
     }
 
@@ -362,8 +378,9 @@ pub enum WeekKind {
     Ended,
 }
 
-/// A Monday-to-Sunday week that touches the period, cut at its bounds: the calendar cells of its
-/// dates inside the period, summed.
+/// A Monday-to-Sunday week that touches the period, cut at its bounds: the requests of its window
+/// from Monday 00:00 to the next Monday 00:00, cut at the period's window, as Week's totals count
+/// it. The weeks partition the period's window, so their spend adds up to the key numbers'.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WeekSum {
     pub monday: i64,
@@ -371,6 +388,9 @@ pub struct WeekSum {
     pub first: i64,
     pub last: i64,
     pub kind: WeekKind,
+    /// The minutes of its window, summed: Quarter's columns, its trends and the biggest week's
+    /// record, so that Week of that week shows the same total. Only what the minutes hold is
+    /// counted: no agent time, time at the keyboard, sittings or messages.
     pub amounts: Amounts,
     pub cold: usize,
 }
@@ -432,12 +452,14 @@ pub struct Records {
     /// from 22:00 to 05:00 (as month-review counts them).
     pub busiest_hour: Option<(usize, f64)>,
     pub night_share: Option<f64>,
-    /// The week with the most spend, by its Monday.
+    /// The week with the most spend in its window (see `WeekSum::usd`), by its Monday.
     pub biggest_week: Option<(i64, f64)>,
     /// The most main sessions whose agents worked in one minute, and the first such minute.
     pub most_at_once: Option<(u32, i64)>,
     /// The week with the highest share of prompt tokens read from the cache.
     pub best_cache_week: Option<(i64, f64)>,
+    /// The date with the most commits by the agents.
+    pub most_commits: Option<(i64, u64)>,
 }
 
 impl Records {
@@ -531,15 +553,14 @@ pub struct PeriodSums {
     pub cold_by_date: Vec<usize>,
     /// The current day by the calendar's rule while the period runs.
     pub today: Option<i64>,
-    /// The local date of the store's first request of the agents the filters keep, of any
-    /// project: the dates before it read `no logs`.
+    /// The day the logs begin (see `logs_begin`): the dates before it read `no logs`.
     pub first_data: Option<i64>,
     /// The weeks that touch the period, Monday first.
     pub weeks: Vec<WeekSum>,
     /// Every project with a request in the weeks, the most spend first.
     pub projects: Vec<ProjectWeeks>,
-    /// The months of a quarter that have begun, each as `tokprof month` counts it; empty for a
-    /// month.
+    /// The months of a quarter or a year that have begun, each as `tokprof month` counts it
+    /// (a year's without the month before each: `previous` is not set); empty for a month.
     pub months: Vec<Month>,
     pub before: Before,
     /// The days the pace per day counts over, when there is no comparison.
@@ -551,6 +572,12 @@ pub struct PeriodSums {
     /// of the whole month before, by date, first to last, from the date of the store's first
     /// request on; empty for a quarter and when the key numbers have no comparison.
     pub before_cells: Vec<(i64, f64)>,
+    /// The calendar's cells of the period's dates with their punchcard, as `tokprof calendar`
+    /// counts the same dates: Year's grid, its numbers and its punchcard.
+    pub cells: Calendar,
+    /// A year's spend by agent and by model and its avoidable dollars by cause (see
+    /// `year::StoreCards`); none for a week, month or quarter.
+    pub cards: Option<crate::year::StoreCards>,
 }
 
 impl PeriodSums {
@@ -581,10 +608,8 @@ impl PeriodSums {
             }
         }
 
-        // The store's history per agent: the project, session and text filters do not move it.
-        let agent_kept = |e: &Entry| filters.agents.is_empty() || filters.agents.contains(&e.agent);
         let first_request = |e: &Entry| e.minutes.iter().filter(|m| m.requests > 0 && m.minute > 0).map(|m| m.minute * MINUTE_MS).min();
-        let first_data = entries.iter().filter(|e| agent_kept(e)).filter_map(first_request).min().map(|ts| rhythm::date_of(ts, offset));
+        let first_data = logs_begin(entries, filters, offset);
 
         // The weeks: the calendar's cells as Week has them, as of now, cut by the window's filters.
         let cal = Calendar::span(entries, filters, (first, period.last_date()), now_ms, offset);
@@ -596,12 +621,6 @@ impl PeriodSums {
             .iter()
             .map(|&monday| {
                 let (a, b) = (monday.max(first), (monday + 6).min(next - 1));
-                let mut amounts = Amounts::default();
-                for d in a..=b {
-                    if let Some(day) = cal.day(d) {
-                        add(&mut amounts, &day.amounts);
-                    }
-                }
                 let kind = if first_data.is_none_or(|f| b < f) {
                     WeekKind::NoLogs
                 } else if cal.day(a).is_none() {
@@ -611,23 +630,25 @@ impl PeriodSums {
                 } else {
                     WeekKind::Ended
                 };
-                WeekSum { monday, first: a, last: b, kind, amounts, cold: 0 }
+                WeekSum { monday, first: a, last: b, kind, amounts: Amounts::default(), cold: 0 }
             })
             .collect();
         let inside = |ts: i64| ts > 0 && filters.since_ms.is_none_or(|s| ts >= s) && filters.until_ms.is_none_or(|u| ts < u);
         let week_of = |date: i64| (date >= first && date < next).then(|| ((date - monday_of(first)) / 7) as usize);
         let mut by_project: HashMap<&str, (Vec<f64>, Vec<u64>)> = HashMap::new();
         for e in &kept {
+            // The week's window by the clock, as Week's totals count it, and its projects.
+            for m in e.minutes.iter().filter(|m| m.minute > 0 && (from_ms..to_ms).contains(&(m.minute * MINUTE_MS))) {
+                let Some(w) = week_of(rhythm::date_of(m.minute * MINUTE_MS, offset)) else { continue };
+                calendar::add_minute(&mut weeks[w].amounts, m);
+                let p = by_project.entry(e.project.as_str()).or_insert_with(|| (vec![0.0; mondays.len()], vec![0; mondays.len()]));
+                p.0[w] += m.usd;
+                p.1[w] += m.requests as u64;
+            }
             for &ts in e.cold.iter().filter(|&&t| inside(t)) {
                 if let Some(w) = week_of(week_rule.date_of(ts, offset)) {
                     weeks[w].cold += 1;
                 }
-            }
-            for m in e.minutes.iter().filter(|m| inside(m.minute * MINUTE_MS)) {
-                let Some(w) = week_of(week_rule.date_of(m.minute * MINUTE_MS, offset)) else { continue };
-                let p = by_project.entry(e.project.as_str()).or_insert_with(|| (vec![0.0; mondays.len()], vec![0; mondays.len()]));
-                p.0[w] += m.usd;
-                p.1[w] += m.requests as u64;
             }
         }
         let mut projects: Vec<ProjectWeeks> = by_project
@@ -637,24 +658,32 @@ impl PeriodSums {
             .collect();
         projects.sort_by(|a, b| b.usd.total_cmp(&a.usd).then_with(|| a.name.cmp(&b.name)));
 
+        let begun = period.months().into_iter().filter(|ym| rhythm::midnight(ym.first_date(), offset) <= now_ms);
         let months = match period {
             Period::Month(_) => Vec::new(),
-            Period::Quarter(_) => period
-                .months()
-                .into_iter()
-                .filter(|ym| rhythm::midnight(ym.first_date(), offset) <= now_ms)
-                .map(|ym| Month::of(entries, filters, ym, now_ms, offset))
-                .collect(),
+            Period::Quarter(_) => begun.map(|ym| Month::of(entries, filters, ym, now_ms, offset)).collect(),
+            // A year's bars need no month before each month: one pass a month.
+            Period::Year(_) => begun.map(|ym| Month::alone(entries, filters, ym, None, now_ms, offset)).collect(),
         };
 
         let before = before(entries, filters, period, (from_ms, to_ms), now_ms, offset);
-        let first_kept = kept.iter().filter_map(|e| first_request(e)).min().map(|ts| rhythm::date_of(ts, offset));
+        // A year's pace counts its days with logs, whatever project the filters keep (see
+        // year-review, When the logs begin); a week, month or quarter's from the first request
+        // the filters keep.
+        let first_kept = match period {
+            Period::Year(_) => first_data,
+            _ => kept.iter().filter_map(|e| first_request(e)).min().map(|ts| rhythm::date_of(ts, offset)),
+        };
         let pace_days = match before {
             Before::Against { .. } => None,
             _ => {
                 let since = filters.since_ms.map(|s| rhythm::date_of(s, offset));
                 let from = [Some(first), first_kept, since].into_iter().flatten().max().unwrap_or(first);
-                let last = (next - 1).min(rhythm::date_of((to_ms - 1).max(from_ms), offset));
+                let mut last = (next - 1).min(rhythm::date_of((to_ms - 1).max(from_ms), offset));
+                // A year's days of logs end on the calendar's current day, as its cells do.
+                if let (Period::Year(_), Some(t)) = (period, today) {
+                    last = last.min(t);
+                }
                 (last >= from && to_ms > from_ms).then_some(last - from + 1)
             }
         };
@@ -662,8 +691,8 @@ impl PeriodSums {
         let peak = most_at_once(&kept, (from_ms, to_ms));
         let records = records(&span, &cold_by_date, &weeks, today, peak);
         let shifts = match period {
-            Period::Month(_) => Vec::new(),
             Period::Quarter(_) => shifts(entries, filters, &kept, &weeks, &projects, offset),
+            _ => Vec::new(),
         };
         // Only against a period before that is compared, and only over its dates with logs: a
         // date before the store's first request is no zero.
@@ -676,6 +705,7 @@ impl PeriodSums {
             }
             _ => Vec::new(),
         };
+        let cards = matches!(period, Period::Year(_)).then(|| crate::year::StoreCards::of(&kept, (from_ms, to_ms), offset));
         PeriodSums {
             period,
             from_ms,
@@ -694,6 +724,8 @@ impl PeriodSums {
             records,
             shifts,
             before_cells,
+            cells: cal,
+            cards,
         }
     }
 
@@ -788,23 +820,6 @@ fn signed_pct(x: f64) -> String {
     }
 }
 
-fn add(a: &mut Amounts, b: &Amounts) {
-    a.usd += b.usd;
-    a.avoidable_usd += b.avoidable_usd;
-    a.requests += b.requests;
-    a.agent_minutes += b.agent_minutes;
-    a.keyboard_ms += b.keyboard_ms;
-    a.sittings += b.sittings;
-    a.messages += b.messages;
-    a.commits += b.commits;
-    a.pushes += b.pushes;
-    a.pull_requests += b.pull_requests;
-    a.read_tokens += b.read_tokens;
-    a.prompt_tokens += b.prompt_tokens;
-    a.saved_usd += b.saved_usd;
-    a.unpriced += b.unpriced;
-}
-
 /// The comparison of the period, by the rules of An incomplete period before and A small agent
 /// in the period before.
 fn before(entries: &[Entry], filters: &Filters, period: Period, shown: (i64, i64), now_ms: i64, offset: Offset) -> Before {
@@ -831,6 +846,23 @@ fn before(entries: &[Entry], filters: &Filters, period: Period, shown: (i64, i64
     }
     let minor = compare::minor_gaps(entries, filters, shown, window.0);
     Before::Against { window, partial: !period.complete(now_ms, offset), numbers: Box::new(numbers), minor }
+}
+
+/// The local date the logs begin: the earliest request, or action of a main session the rhythm
+/// keeps, that the store holds for the agents the filters keep. The project, session, text and
+/// time filters do not move it: a project that started later still had logs around it. Week,
+/// Month, Quarter and Year draw the dates before it as `no logs`.
+pub fn logs_begin(entries: &[Entry], filters: &Filters, offset: Offset) -> Option<i64> {
+    entries
+        .iter()
+        .filter(|e| filters.agents.is_empty() || filters.agents.contains(&e.agent))
+        .flat_map(|e| {
+            let requests = e.minutes.iter().filter(|m| m.requests > 0 && m.minute > 0).map(|m| m.minute * MINUTE_MS);
+            let actions = e.actions.iter().filter(|_| !e.subagent && !e.left_out).map(|a| a.0).filter(|&t| t > 0);
+            requests.chain(actions)
+        })
+        .min()
+        .map(|ts| rhythm::date_of(ts, offset))
 }
 
 /// Whether the store holds a request, a miss, a cold return or a message in `[from, to)` of the
@@ -877,6 +909,7 @@ fn records(span: &Month, cold: &[usize], weeks: &[WeekSum], today: Option<i64>, 
     let days = &span.days;
     let quietest_weekday = best(days.iter().filter(|d| weekday(d.date) < 5 && d.amounts.usd > 0.0).map(|d| (d.date, d.amounts.usd)), |v, b| v < b);
     let most_cold = best(days.iter().zip(cold).filter(|(_, n)| **n > 0).map(|(d, n)| (d.date, *n)), |v, b| v > b);
+    let most_commits = best(days.iter().filter(|d| d.amounts.commits > 0).map(|d| (d.date, d.amounts.commits)), |v, b| v > b);
     let streak = span.longest.map(|s| {
         let going = today.is_some_and(|t| s.to == t);
         (s, going)
@@ -895,6 +928,7 @@ fn records(span: &Month, cold: &[usize], weeks: &[WeekSum], today: Option<i64>, 
         biggest_week,
         most_at_once: peak,
         best_cache_week,
+        most_commits,
     }
 }
 

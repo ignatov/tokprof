@@ -47,6 +47,7 @@ pub mod tools;
 pub mod trigger;
 pub mod week;
 pub mod xray;
+pub mod year;
 
 pub use analysis::{Sink, analyze};
 pub use catalog::Catalog;

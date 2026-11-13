@@ -212,7 +212,7 @@ fn command_2_and_the_switch_show_week_on_this_week_and_esc_goes_back() {
     command(&mut rt, '4');
     assert_eq!(rt.state.reports.mode, reports::Mode::Quarter);
     command(&mut rt, '5');
-    assert_eq!(rt.state.reports.mode, reports::Mode::Calendar);
+    assert_eq!(rt.state.reports.mode, reports::Mode::Year);
     command(&mut rt, '1');
     assert_eq!(rt.state.reports.mode, reports::Mode::Day);
     // The palette offers Week and the week before it.
@@ -225,7 +225,7 @@ fn command_2_and_the_switch_show_week_on_this_week_and_esc_goes_back() {
     assert_eq!(keys, ["⌘2"]);
     assert_eq!(palette::Action::Month.keys(), ["⌘3"]);
     assert_eq!(palette::Action::Quarter.keys(), ["⌘4"]);
-    assert_eq!(palette::Action::Calendar.keys(), ["⌘5"]);
+    assert_eq!(palette::Action::Year.keys(), ["⌘5"]);
 }
 
 #[test]

@@ -93,6 +93,13 @@ pub fn cache(m: &Month) -> (Vec<(String, &'static str)>, Option<String>) {
 /// no data.
 pub fn deltas(m: &Month) -> Option<(String, Vec<String>)> {
     let p = m.previous.as_ref()?;
+    let now = (m.total.usd, m.total.agent_minutes, m.avoidable_share());
+    Some((before_name(p), delta_lines(now, (p.usd, p.agent_minutes, p.avoidable_share))))
+}
+
+/// The changes of spend, agent time and the avoidable share from `was` to `now`, each given as
+/// dollars, agent minutes and the share: `spend ↑ $2,100 (+21%)`; a year's too.
+pub fn delta_lines(now: (f64, u64, Option<f64>), was: (f64, u64, Option<f64>)) -> Vec<String> {
     let arrow = |d: f64| {
         if d > 0.0 {
             "↑"
@@ -104,15 +111,15 @@ pub fn deltas(m: &Month) -> Option<(String, Vec<String>)> {
     };
     let rel = |d: f64, base: f64| if base > 0.0 { format!(" ({:+.0}%)", 100.0 * d / base).replace('-', "−") } else { String::new() };
     let mut out = Vec::new();
-    let d = m.total.usd - p.usd;
-    out.push(format!("spend {} {}{}", arrow(d), usd(d.abs()), rel(d, p.usd)));
-    let d = m.total.agent_minutes as f64 - p.agent_minutes as f64;
-    out.push(format!("agent time {} {}{}", arrow(d), hours(d.abs()), rel(d, p.agent_minutes as f64)));
-    if let (Some(now), Some(was)) = (m.avoidable_share(), p.avoidable_share) {
+    let d = now.0 - was.0;
+    out.push(format!("spend {} {}{}", arrow(d), usd(d.abs()), rel(d, was.0)));
+    let d = now.1 as f64 - was.1 as f64;
+    out.push(format!("agent time {} {}{}", arrow(d), hours(d.abs()), rel(d, was.1 as f64)));
+    if let (Some(now), Some(was)) = (now.2, was.2) {
         let d = 100.0 * (now - was);
         out.push(format!("avoidable share {} {:.1} points ({:.1}%, was {:.1}%)", arrow(d), d.abs(), 100.0 * now, 100.0 * was));
     }
-    Some((before_name(p), out))
+    out
 }
 
 /// What the month compares with: `September`, or for a month in progress the same days of the
@@ -231,6 +238,23 @@ pub fn weeks(m: &Month) -> Vec<[Option<usize>; 7]> {
     rows
 }
 
+/// The big numbers as `tokprof month` prints them: three to a line, 24 columns each.
+pub fn big_lines(m: &Month, style: &Style) -> Vec<String> {
+    big_numbers(m)
+        .chunks(3)
+        .map(|row| {
+            let cells: Vec<String> = row
+                .iter()
+                .map(|(v, what)| {
+                    let width = v.chars().count() + 1 + what.chars().count();
+                    format!("{} {what}{}", style.bold(v), " ".repeat(24usize.saturating_sub(width)))
+                })
+                .collect();
+            cells.join("").trim_end().to_string()
+        })
+        .collect()
+}
+
 /// The whole text of `tokprof month`.
 pub fn text(m: &Month, style: &Style) -> String {
     let mut out = format!("tokprof · month · {}\n", headline(m));
@@ -249,16 +273,8 @@ pub fn text(m: &Month, style: &Style) -> String {
         }
     }
     out.push('\n');
-    let big = big_numbers(m);
-    for row in big.chunks(3) {
-        let cells: Vec<String> = row
-            .iter()
-            .map(|(v, what)| {
-                let width = v.chars().count() + 1 + what.chars().count();
-                format!("{} {what}{}", style.bold(v), " ".repeat(24usize.saturating_sub(width)))
-            })
-            .collect();
-        let _ = writeln!(out, "{}", cells.join("").trim_end());
+    for line in big_lines(m, style) {
+        let _ = writeln!(out, "{line}");
     }
     out.push('\n');
     let _ = writeln!(out, "     Mo Tu We Th Fr Sa Su");

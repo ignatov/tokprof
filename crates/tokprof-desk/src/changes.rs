@@ -1,4 +1,4 @@
-//! What to change, in Month and Quarter: what could have been saved, by cause; the ways to come back after
+//! What to change, in Month and Quarter (and Year's sessions behind a row, see `year`): what could have been saved, by cause; the ways to come back after
 //! a cold break; and the habits that cost the most, each with what tokprof's advice says to do.
 //! The rows are those `tokprof share` prints for the period (see `tokprof_core::savings`); a row
 //! split by session opens its top sessions under it, and a session opens in Day.
@@ -76,7 +76,8 @@ pub fn toggle(s: &mut Desk, part: Part, name: &str) {
 /// Opens a session behind a row in Day: selected in the list, with its day in the lanes. One the
 /// list does not hold, as its filter left it out, says so in the bar.
 pub fn open_session(s: &mut Desk, x: &SessionCost, tx: &mut Tx) {
-    let Some(row) = s.browser.row_of_short(&x.agent, &x.session) else {
+    // Year's sessions come from the store, by their main session's id.
+    let Some(row) = s.browser.row_of_short(&x.agent, &x.session).or_else(|| s.browser.row_of(&x.session)) else {
         s.status = (format!("session {} is not in the list", x.session), std::time::Instant::now());
         return;
     };
@@ -218,15 +219,15 @@ fn line_count_until(s: &Desk, part: Part, name: &str) -> usize {
 
 /// A session behind a row: its title, or its project and id while it has none, and its dollars;
 /// a click opens it in Day.
-fn session_line(s: &Desk, part: Part, at: usize, x: &SessionCost, p: &Pal) -> El {
+pub fn session_line(s: &Desk, part: Part, at: usize, x: &SessionCost, p: &Pal) -> El {
     let b = &s.browser;
-    let listed = b.row_of_short(&x.agent, &x.session);
+    let listed = b.row_of_short(&x.agent, &x.session).or_else(|| b.row_of(&x.session));
     let (title, project) = match listed {
         Some(row) => {
             let cells = b.cells(row, now_ms());
             (cells.title.map_or_else(|| format!("{} {}", cells.agent, x.session), str::to_string), cells.project.to_string())
         }
-        None => (format!("{} {}", x.agent.name(), x.session), "not in the list".to_string()),
+        None => (format!("{} {}", x.agent.name(), x.session.chars().take(8).collect::<String>()), "not in the list".to_string()),
     };
     let color = if listed.is_some() { p.ink } else { p.ink3 };
     let target = x.clone();
