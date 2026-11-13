@@ -6,9 +6,28 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-/// A home directory with one Claude Code transcript of two requests, written today.
+/// A home directory with one Claude Code transcript of two requests, written just before the
+/// latest noon that has passed (see `written_at`).
 fn home(name: &str) -> PathBuf {
     home_with_model(name, |_| "claude-opus-5-5".to_string())
+}
+
+/// The date of a moment in the zone tokprof runs in under `common::tokprof`: UTC, as its `TZ`
+/// says, except on Windows, which ignores `TZ` and keeps the machine's zone.
+fn tokprof_date(t: chrono::DateTime<chrono::Utc>) -> chrono::NaiveDate {
+    if cfg!(windows) { t.with_timezone(&chrono::Local).date_naive() } else { t.date_naive() }
+}
+
+/// When the transcript's requests end: the latest 12:00 in tokprof's zone at least five minutes
+/// ago, so that the requests are in the past, on one date, whatever the time of the test.
+fn written_at() -> chrono::DateTime<chrono::Utc> {
+    let now = chrono::Utc::now();
+    let noon = |date: chrono::NaiveDate| {
+        let t = date.and_hms_opt(12, 0, 0).unwrap();
+        if cfg!(windows) { t.and_local_timezone(chrono::Local).earliest().unwrap().with_timezone(&chrono::Utc) } else { t.and_utc() }
+    };
+    let today = noon(tokprof_date(now));
+    if today + chrono::Duration::minutes(5) <= now { today } else { noon(tokprof_date(now) - chrono::Duration::days(1)) }
 }
 
 /// The same home, with the model its requests name made from the home's path.
@@ -19,8 +38,8 @@ fn home_with_model(name: &str, model: impl Fn(&Path) -> String) -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     // As a JSON string: a Windows home path holds `\`, which JSON escapes.
     let model = serde_json::to_string(&model(&home)).unwrap();
-    let now = chrono::Utc::now();
-    let at = |min: i64| (now - chrono::Duration::minutes(min)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let end = written_at();
+    let at = |min: i64| (end - chrono::Duration::minutes(min)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let assistant = |id: &str, min: i64| {
         format!(
             r#"{{"type":"assistant","sessionId":"5e5510f0-0000-0000-0000-000000000000","cwd":"/w/p","entrypoint":"sdk-ts","requestId":"{id}","timestamp":"{}","message":{{"id":"{id}","model":{model},"content":[{{"type":"text","text":"ok"}}],"usage":{{"input_tokens":5,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000,"output_tokens":10}}}}}}"#,
@@ -43,12 +62,19 @@ fn tokprof(home: &Path, args: &[&str]) -> Output {
 #[test]
 fn the_file_goes_to_the_profile_directory_by_default() {
     let home = home("default");
+    // The file is named for the date tokprof writes it on, in its zone: the date before the run or
+    // after it, when the run crosses midnight.
+    let before = tokprof_date(chrono::Utc::now());
     let out = tokprof(&home, &["share"]);
+    let after = tokprof_date(chrono::Utc::now());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{stdout}{}", String::from_utf8_lossy(&out.stderr));
-    let name = format!("share-{}.json", chrono::Local::now().format("%Y-%m-%d"));
     let sep = std::path::MAIN_SEPARATOR;
-    assert!(stdout.starts_with(&format!("wrote ~{sep}tokprof{sep}{name}\n")), "{stdout}");
+    let name = [before, after]
+        .map(|d| format!("share-{}.json", d.format("%Y-%m-%d")))
+        .into_iter()
+        .find(|name| stdout.starts_with(&format!("wrote ~{sep}tokprof{sep}{name}\n")))
+        .unwrap_or_else(|| panic!("{stdout}"));
     assert!(stdout.ends_with("Nothing was sent anywhere: review the file, then send it yourself.\n"), "{stdout}");
     let text = std::fs::read_to_string(home.join("tokprof").join(&name)).unwrap();
     assert!(text.contains("\"format\": 3") && text.contains("\"claude\"") && !text.contains("\"totals\""), "{text}");
@@ -58,13 +84,15 @@ fn the_file_goes_to_the_profile_directory_by_default() {
 
 #[test]
 fn the_filters_pick_the_requests_and_the_window() {
+    // The date of the requests, read on both sides of the home's making, should it cross 12:05.
+    let first = tokprof_date(written_at());
     let home = home("filters");
+    let last = tokprof_date(written_at());
     let target = home.join("out/pilot.json");
     let out = tokprof(&home, &["--agent", "claude", "--since", "30d", "share", "-o", target.to_str().unwrap()]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let text = std::fs::read_to_string(&target).unwrap();
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    assert!(text.contains(&format!("\"first\":\"{today}\"")), "{text}");
+    assert!([first, last].iter().any(|d| text.contains(&format!("\"first\":\"{}\"", d.format("%Y-%m-%d")))), "{text}");
     assert!(text.contains("\"requests\":2"), "{text}");
     std::fs::remove_dir_all(&home).unwrap();
 }

@@ -9,6 +9,7 @@ pub mod contain;
 pub mod day;
 pub mod filters;
 pub mod paths;
+pub mod period;
 pub mod reading;
 pub mod render_calendar;
 pub mod render_month;

@@ -266,7 +266,7 @@ pub fn tab_fit(pane_w: f32) -> (f32, bool) {
     ((room / 20.0).floor().clamp(3.0, 8.0), false)
 }
 
-/// A card: its title and a note at its right over a soft group, as Reports draws its cards.
+/// A card: its title and a note at its right over a soft group, as Month draws its cards.
 fn boxed(key: &str, title: &str, aside: Option<String>, body: El, p: &Pal) -> El {
     let mut head = row().w_full().gap(8.0).center_y().child(text(title.to_string()).font(pal::HEAD).color(p.ink2).single_line());
     if let Some(a) = aside {

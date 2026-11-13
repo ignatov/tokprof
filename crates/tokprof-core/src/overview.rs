@@ -214,6 +214,23 @@ pub fn collect(catalog: &Catalog, select: &Query, pricing: &Pricing, progress: i
     collect_logs(catalog, &files, select, pricing, |_, _| true, None, progress).map(|(o, _)| o)
 }
 
+/// Reads the logs a report reads for `select` into an overview as `collect` does, keeping only the
+/// sessions whose agent, project, session id or main session id contains `text`, ignoring case,
+/// as the day store's entries are kept by the window's filter text (see `calendar::Filters`).
+pub fn collect_text(
+    catalog: &Catalog,
+    select: &Query,
+    text: Option<&str>,
+    pricing: &Pricing,
+    progress: impl Fn(usize, usize) + Sync + Send,
+) -> Result<Overview> {
+    let files = report_logs(catalog, select);
+    let keep = |s: &Session, f: &crate::source::SessionRef| {
+        text.is_none_or(|t| crate::calendar::text_matches(t, f.agent.name(), &s.project, &f.session_id, &f.main_id))
+    };
+    collect_logs(catalog, &files, select, pricing, keep, None, progress).map(|(o, _)| o)
+}
+
 /// Reads `files` into an overview as `collect` does, keeping only the sessions `keep` keeps, and,
 /// with `temp` (the temporary folders, see `rhythm::Timeline::of`), the rhythm's timeline of each
 /// main session kept that has a request of the client `select` asks for, as `tokprof pauses` reads

@@ -57,7 +57,7 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     let inspector = |cx: &Cx<Desk>| rune::memo("inspector", crate::inspector::version(s, cx, &theme.id), || crate::inspector::inspector(s, cx, &p));
     if s.reports.mode == crate::reports::Mode::Week {
         root = root.child(crate::week::view(s, cx, &p));
-    } else if s.reports.mode == crate::reports::Mode::Reports {
+    } else if s.reports.mode.period() {
         root = root.child(crate::reports::view(s, cx, &p));
     } else if s.reports.mode == crate::reports::Mode::Sessions {
         root = root.child(crate::sessions::view(s, cx, &p));
@@ -92,7 +92,9 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     if s.help {
         root = root.child(crate::keys::view(&p, height));
     }
-    if let Some(card) = s.month.card.as_ref().filter(|_| s.reports.mode == crate::reports::Mode::Calendar) {
+    if let Some(card) =
+        s.month.card.as_ref().filter(|_| matches!(s.reports.mode, crate::reports::Mode::Calendar | crate::reports::Mode::Month | crate::reports::Mode::Quarter))
+    {
         root = root.child(crate::month::view(card, &p));
     }
     root
@@ -262,15 +264,19 @@ fn bar(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
         .center_y()
         .child(crate::reports::switch(s, p))
         .child(crate::sessions::bar_button(s, p));
-    // Reports and Calendar have no day: the bar keeps the switch, the status and the live mark.
+    // Calendar has no day and no filter: the bar keeps the switch, the status and the live mark.
     let day = s.reports.mode == crate::reports::Mode::Day;
     let sessions = s.reports.mode == crate::reports::Mode::Sessions;
     let week = s.reports.mode == crate::reports::Mode::Week;
+    let period = s.reports.mode.period();
     if sessions {
         bar = bar.children(crate::sessions::bar_controls(s, p));
     }
     if week {
         bar = bar.children(crate::week::bar_controls(s, cx, p));
+    }
+    if period {
+        bar = bar.children(crate::reports::bar_controls(s, cx, p));
     }
     if day {
         bar = bar
@@ -283,7 +289,7 @@ fn bar(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
     if s.status_shown() {
         bar = bar.child(text(s.status.0.clone()).key("status").font(pal::BODY).color(p.ink2).single_line().truncate().shrink().min_w(0.0));
     }
-    if day || sessions || week {
+    if day || sessions || week || period {
         bar = bar.child(filter_field(s, p));
     }
     if s.live {
@@ -298,20 +304,32 @@ fn filter_field(s: &Desk, p: &Pal) -> El {
     let b = &s.browser;
     let editing = b.editing();
     let empty = b.filter().is_empty();
-    let mut field =
-        row().key("filter").w(210.0).h(28.0).pl(12.0).pr(5.0).gap(1.0).center_y().radius(PILL).fill(p.panel).role("searchbox").label("Filter").on_press(
-            |s: &mut Desk| {
-                if !s.browser.editing() {
-                    let view = s.viewport();
-                    s.browser.on_key(Key::Char('/'), view);
-                }
-            },
-        );
+    let mut field = row()
+        .key("filter")
+        .w(210.0)
+        .shrink()
+        .min_w(150.0)
+        .h(28.0)
+        .pl(12.0)
+        .pr(5.0)
+        .gap(1.0)
+        .center_y()
+        .radius(PILL)
+        .fill(p.panel)
+        .role("searchbox")
+        .label("Filter")
+        .on_press(|s: &mut Desk| {
+            if !s.browser.editing() {
+                let view = s.viewport();
+                s.browser.on_key(Key::Char('/'), view);
+            }
+        });
     field = overlay::ring(field, editing, p);
     // The placeholder, or what is typed; while typing, it ends at the caret, its start cut when long.
     if !(empty && editing) {
-        // Week's filter has no titles: the day store holds none.
-        let hint = if s.reports.mode == crate::reports::Mode::Week { "Filter by agent, project or id" } else { "Filter by project, id or title" };
+        // The filter of Week, Month and Quarter has no titles: the day store holds none.
+        let store = s.reports.mode == crate::reports::Mode::Week || s.reports.mode.period();
+        let hint = if store { "Filter by agent, project or id" } else { "Filter by project, id or title" };
         let (shown, color) = if empty { (hint, p.ink3) } else { (b.filter(), p.ink) };
         let t = text(shown.to_string()).key("filter-text").font(pal::BODY).color(color).single_line().min_w(0.0);
         field = field.child(if editing { t.truncate_head().shrink() } else { t.truncate().grow(1.0) });

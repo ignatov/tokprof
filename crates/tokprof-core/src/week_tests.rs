@@ -400,3 +400,17 @@ fn the_filter_text_keeps_agents_projects_and_session_ids_in_any_case() {
     assert_eq!(kept("CODEX"), ["77aa"]);
     assert!(kept("zzz").is_empty());
 }
+
+#[test]
+fn a_project_new_this_week_compares_with_nothing_spent_not_with_no_logs() {
+    // zebrafish starts on Tue 3 Nov; heron ran in the week before.
+    let mut heron = Entry { project: "~/src/heron".into(), ..entry("h") };
+    heron.minutes = vec![spend(at(-30, 10, 0), 5.0), spend(at(-5, 10, 0), 8.0)];
+    let mut zebra = Entry { project: "~/src/zebrafish".into(), ..entry("z") };
+    zebra.minutes = vec![spend(at(1, 10, 0), 12.0)];
+    let f = Filters { text: Some("zebrafish".into()), ..Filters::default() };
+    let w = Week::of(&[heron, zebra], &f, NOV2, at(9, 12, 0), &off);
+    assert_eq!(w.before.note(&off), "against 26 Oct – 1 Nov");
+    assert_eq!((w.totals.usd, w.before.sums().map(|s| s.usd)), (12.0, Some(0.0)), "growth from nothing");
+    assert_eq!(w.pace_days, None);
+}

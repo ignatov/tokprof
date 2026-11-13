@@ -135,6 +135,7 @@ pub const STRONG_NUM: TextStyle = TextStyle::new(12.5, 650.0).features(TNUM);
 pub const SMALL: TextStyle = TextStyle::new(11.5, 400.0);
 pub const SMALL_NUM: TextStyle = TextStyle::new(11.5, 400.0).features(TNUM);
 pub const SMALL_STRONG: TextStyle = TextStyle::new(11.5, 650.0);
+pub const SMALL_STRONG_NUM: TextStyle = TextStyle::new(11.5, 650.0).features(TNUM);
 pub const HEAD: TextStyle = TextStyle::new(12.0, 650.0);
 pub const TITLE: TextStyle = TextStyle::new(18.0, 700.0).tracking(-0.2);
 pub const DAY: TextStyle = TextStyle::new(14.5, 700.0).tracking(-0.15);

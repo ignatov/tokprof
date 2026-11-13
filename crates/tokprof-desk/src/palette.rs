@@ -64,9 +64,13 @@ pub enum Action {
     /// Week on this week, and on the week before.
     Week,
     WeekLast,
-    Reports,
-    Period30,
-    Period90,
+    /// Month and Quarter on the current period, and on the one before.
+    Month,
+    Quarter,
+    ThisMonth,
+    LastMonth,
+    ThisQuarter,
+    LastQuarter,
     Calendar,
     /// Calendar with one of its metrics.
     CalendarOf(tokprof_core::calendar::Metric),
@@ -94,16 +98,19 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 37] = [
+    pub const ALL: [Action; 40] = [
         Action::Settings,
         Action::KeyHelp,
         Action::DayView,
         Action::Sessions,
         Action::Week,
         Action::WeekLast,
-        Action::Reports,
-        Action::Period30,
-        Action::Period90,
+        Action::Month,
+        Action::Quarter,
+        Action::ThisMonth,
+        Action::LastMonth,
+        Action::ThisQuarter,
+        Action::LastQuarter,
         Action::Calendar,
         Action::CalendarOf(Metric::Spend),
         Action::CalendarOf(Metric::Agent),
@@ -152,9 +159,12 @@ impl Action {
             Action::Sessions => "Sessions",
             Action::Week => "Week",
             Action::WeekLast => "Week: last week",
-            Action::Reports => "Reports",
-            Action::Period30 => "Reports: the last 30 days",
-            Action::Period90 => "Reports: the last 90 days",
+            Action::Month => "Month",
+            Action::Quarter => "Quarter",
+            Action::ThisMonth => "This month",
+            Action::LastMonth => "Last month",
+            Action::ThisQuarter => "This quarter",
+            Action::LastQuarter => "Last quarter",
             Action::Handoff => "Copy the handoff line",
             Action::Jfr => "Write the JFR for IntelliJ",
             Action::Html => "Write the HTML flame graph and open it",
@@ -187,9 +197,10 @@ impl Action {
             Action::Sessions => &["⌘0"],
             Action::Week => &["⌘2"],
             Action::WeekLast => &[],
-            Action::Reports => &["⌘3"],
-            Action::Period30 | Action::Period90 => &[],
-            Action::Calendar => &["⌘4"],
+            Action::Month => &["⌘3"],
+            Action::Quarter => &["⌘4"],
+            Action::ThisMonth | Action::LastMonth | Action::ThisQuarter | Action::LastQuarter => &[],
+            Action::Calendar => &["⌘5"],
             Action::CalendarOf(_) => &[],
             Action::MonthReview => &["r"],
             Action::Handoff => &["c"],
@@ -227,9 +238,12 @@ impl Action {
                     | Action::Sessions
                     | Action::Week
                     | Action::WeekLast
-                    | Action::Reports
-                    | Action::Period30
-                    | Action::Period90
+                    | Action::Month
+                    | Action::Quarter
+                    | Action::ThisMonth
+                    | Action::LastMonth
+                    | Action::ThisQuarter
+                    | Action::LastQuarter
                     | Action::Calendar
                     | Action::CalendarOf(_)
                     | Action::MonthReview
@@ -255,7 +269,8 @@ impl Action {
             Action::DayView => s.reports.mode != Mode::Day,
             Action::Sessions => s.reports.mode != Mode::Sessions,
             Action::Week => s.reports.mode != Mode::Week,
-            Action::Reports => s.reports.mode != Mode::Reports,
+            Action::Month => s.reports.mode != Mode::Month,
+            Action::Quarter => s.reports.mode != Mode::Quarter,
             Action::Calendar => s.reports.mode != Mode::Calendar,
             Action::MonthReview => s.calendar.data.get().is_some_and(|c| c.store.is_some()),
             _ => true,
@@ -671,20 +686,32 @@ impl Desk {
                 crate::week::this_week(self, tx);
                 crate::week::step(self, -1, tx);
             }
-            Action::Reports => crate::reports::show(self, Mode::Reports),
+            Action::Month => crate::reports::show(self, Mode::Month),
+            Action::Quarter => crate::reports::show(self, Mode::Quarter),
+            Action::ThisMonth | Action::LastMonth => {
+                let ym = self.reports.this_month();
+                let ym = if a == Action::LastMonth { ym.previous() } else { ym };
+                crate::reports::show_period(self, tokprof_core::period::Period::Month(ym), tx);
+            }
+            Action::ThisQuarter | Action::LastQuarter => {
+                let yq = self.reports.this_quarter();
+                let yq = if a == Action::LastQuarter { yq.previous() } else { yq };
+                crate::reports::show_period(self, tokprof_core::period::Period::Quarter(yq), tx);
+            }
             Action::Calendar => crate::reports::show(self, Mode::Calendar),
+            // Over Calendar, the card Calendar opens; elsewhere Month with the card `r` opens.
             Action::MonthReview => {
-                crate::reports::show(self, Mode::Calendar);
-                crate::month::open(self, None);
+                if self.reports.mode == Mode::Calendar {
+                    crate::month::open(self, None);
+                } else {
+                    crate::reports::show(self, Mode::Month);
+                    let ym = crate::reports::review_month(self);
+                    crate::month::open(self, Some(ym));
+                }
             }
             Action::CalendarOf(m) => {
                 crate::reports::show(self, Mode::Calendar);
                 crate::calendar::pick_metric(self, m);
-            }
-            Action::Period30 | Action::Period90 => {
-                crate::reports::show(self, Mode::Reports);
-                let days = if a == Action::Period30 { 30 } else { 90 };
-                crate::reports::pick_period(self, days, tx);
             }
             Action::Handoff => self.browser_key(key('c'), tx),
             Action::Jfr => self.browser_key(key('f'), tx),

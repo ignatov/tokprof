@@ -1,7 +1,8 @@
-//! The month in review: a card of one month, made to be posted, over the Calendar view, and the
-//! same card alone as a 1080×1350 image. It names no project, title or path. "Save image" draws
+//! The month in review: a card of one month, made to be posted, over Month, Quarter or Calendar,
+//! its image in Month and Quarter, and the same card alone as a 1080×1350 image. It names no project, title or path. "Save image" draws
 //! it in a frame without a window, by this program run again, and writes it to `~/Downloads`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -42,6 +43,9 @@ pub struct Card {
 /// What a save in the background sends back: the path written, or why not.
 pub type Saved = Arc<Mutex<Option<Result<PathBuf, String>>>>;
 
+/// Where a worker puts a month it computed.
+pub type Slot = Arc<Mutex<Option<Month>>>;
+
 /// The card's state in the window.
 #[derive(Default)]
 pub struct State {
@@ -56,6 +60,67 @@ pub struct State {
     /// The month ← or → asked for, computed on a worker; the card shows the month before it until
     /// it arrives.
     pub next: Option<Arc<Mutex<Option<Month>>>>,
+    /// The cards Month and Quarter show as images, by month, each with the store it was computed
+    /// from, and those being computed.
+    pub images: HashMap<Ym, (usize, Arc<Month>)>,
+    pub drawing: HashMap<Ym, (usize, Slot)>,
+}
+
+/// The address of the calendar's store, which the images are computed from.
+fn store_at(s: &Desk) -> Option<(usize, Arc<tokprof_core::daystore::Store>)> {
+    s.calendar.data.get().and_then(|c| c.store.clone()).map(|st| (Arc::as_ptr(&st) as usize, st))
+}
+
+/// Asks for the cards of `months` from the store as it is now, on a worker, and takes in those
+/// computed. Returns whether one arrived.
+pub fn want_images(s: &mut Desk, months: &[Ym]) -> bool {
+    let mut arrived = false;
+    let done: Vec<Ym> = s.month.drawing.iter().filter(|(_, (_, slot))| slot.lock().map(|m| m.is_some()).unwrap_or(true)).map(|(ym, _)| *ym).collect();
+    for ym in done {
+        if let Some((at, slot)) = s.month.drawing.remove(&ym)
+            && let Some(m) = slot.lock().unwrap_or_else(|e| e.into_inner()).take()
+        {
+            s.month.images.insert(ym, (at, Arc::new(m)));
+            arrived = true;
+        }
+    }
+    let Some((at, store)) = store_at(s) else { return arrived };
+    for &ym in months {
+        let fresh = s.month.images.get(&ym).is_some_and(|(a, _)| *a == at) || s.month.drawing.get(&ym).is_some_and(|(a, _)| *a == at);
+        if fresh {
+            continue;
+        }
+        let slot: Arc<Mutex<Option<Month>>> = Arc::default();
+        s.month.drawing.insert(ym, (at, slot.clone()));
+        let (store, select) = (store.clone(), s.calendar.select.clone());
+        std::thread::spawn(move || {
+            let month = tokprof_browse::contain::run_on(None, || tokprof_browse::calendar::month(&store, &select, ym, tokprof_browse::browser::now_ms()));
+            if let Ok(m) = month {
+                *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(m);
+            }
+            crate::wake();
+        });
+    }
+    arrived
+}
+
+/// Computes the cards of `months` at once, for a frame without a window.
+pub fn settle_images(s: &mut Desk, months: &[Ym]) {
+    let Some((at, store)) = store_at(s) else { return };
+    for &ym in months {
+        let m = tokprof_browse::calendar::month(&store, &s.calendar.select, ym, tokprof_browse::browser::now_ms());
+        s.month.images.insert(ym, (at, Arc::new(m)));
+    }
+}
+
+/// The card of `ym` to show as an image, once computed; from an older store while a newer one is.
+pub fn image_of(s: &Desk, ym: Ym) -> Option<&Month> {
+    s.month.images.get(&ym).map(|(_, m)| m.as_ref())
+}
+
+/// What identifies the images computed, for the view's memo.
+pub fn images_version(s: &Desk) -> usize {
+    s.month.images.values().map(|(_, m)| Arc::as_ptr(m) as usize).fold(s.month.images.len(), |a, b| a.wrapping_mul(31).wrapping_add(b))
 }
 
 /// How long the program that draws the image may take.
@@ -142,6 +207,11 @@ pub fn free_path(path: &Path) -> PathBuf {
 /// program again without a window; the bar says where it went.
 pub fn save(s: &mut Desk) {
     let Some(ym) = s.month.card.as_ref().and_then(|c| c.month.ym) else { return };
+    save_month(s, ym);
+}
+
+/// Draws the card of `ym` as an image, as Save image does, whether the card is open or not.
+pub fn save_month(s: &mut Desk, ym: Ym) {
     if s.month.saving.is_some() {
         return;
     }

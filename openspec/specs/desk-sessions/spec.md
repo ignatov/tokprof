@@ -17,7 +17,7 @@ The bar SHALL have a `Sessions` button right of the switch, apart from it, and â
 - **THEN** Day shows the day and the selection it showed before
 
 #### Scenario: From Reports
-- **WHEN** Reports is shown and the user clicks `Sessions`
+- **WHEN** Month or Quarter, which took Reports' place, is shown and the user clicks `Sessions`
 - **THEN** the Sessions screen is shown
 
 ### Requirement: Table columns

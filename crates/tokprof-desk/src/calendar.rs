@@ -1,6 +1,6 @@
 //! The Calendar view: the days of `tokprof calendar` as a grid of rounded squares, a column per
 //! week, with the metric as pills, the legend, the numbers beside the grid and the punchcard
-//! below, in the cards of Reports. The calendar is computed on a worker from the day store (see
+//! below, in the cards of Month. The calendar is computed on a worker from the day store (see
 //! `tokprof_browse::calendar`); a day under the pointer or the cursor shows all its numbers.
 
 use rune::{Color, Cx, El, Key as RuneKey, KeyEvent, ScrollSpec, Tx, col, el, row, spacer, text};

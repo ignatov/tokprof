@@ -29,6 +29,12 @@ fn today_at(k: i64) -> i64 {
     if t >= midnight(today()) { t } else { midnight(today()) + (120 - k) * 1000 }
 }
 
+/// The day the window finds a moment in before the store comes, and the day Day opens a selected
+/// session on: the local date five hours earlier. Just after midnight that is yesterday.
+fn early_day(ms: i64) -> i64 {
+    rhythm::date_of(ms - 5 * HOUR, &rhythm::local_offset)
+}
+
 /// A time `days` days before today, at `hour`.
 fn day_at(days: i64, hour: i64) -> i64 {
     midnight(today() - days) + hour * HOUR
@@ -195,7 +201,7 @@ fn header(rt: &Runtime<Desk>, days_ago: i64) -> String {
 
 #[test]
 fn the_button_command_0_and_the_palette_show_sessions_from_every_screen() {
-    for from in [reports::Mode::Day, reports::Mode::Reports, reports::Mode::Calendar] {
+    for from in [reports::Mode::Day, reports::Mode::Month, reports::Mode::Calendar] {
         let mut rt = runtime(table_desk(true), (1400.0, 900.0));
         reports::show(&mut rt.state, from);
         settle(&mut rt);
@@ -326,8 +332,14 @@ fn days_headers_count_the_day_s_spend_of_what_the_filters_keep() {
 
 #[test]
 fn headers_wait_for_the_store_go_in_other_orders_and_open_their_day() {
+    // Before the store, the rows go under the days of the local dates five hours earlier: after
+    // 05:00 id0 and id1 are today's, and just after midnight they are yesterday's with id2 and id3.
     let rt = in_sessions(table_desk(false), (1400.0, 900.0));
-    assert_eq!(header(&rt, 0), "2 sessions · … spent", "the store is not there yet");
+    let current = early_day(now_ms());
+    let n = (0..rt.state.browser.len()).filter(|&r| early_day(rt.state.browser.active_ms(r)) == current).count();
+    assert!(n >= 1, "the newest session is on the current day");
+    let want = format!("{n} session{} · … spent", if n == 1 { "" } else { "s" });
+    assert_eq!(text_in(&rt, &format!("sday-{current}"), "day-total"), want, "the store is not there yet");
     let mut rt = in_sessions(table_desk(true), (1400.0, 900.0));
     rt.update(|s, _| s.browser.sort_by(Sort::Cost));
     settle(&mut rt);
@@ -680,7 +692,8 @@ fn a_session_picked_in_the_palette_opens_on_its_day_or_is_selected_in_sessions()
     run_from_palette(&mut rt, "skip old logs", palette::Pick::Session("id1".into()));
     settle(&mut rt);
     assert_eq!((rt.state.reports.mode, selected_id(&rt).as_deref()), (reports::Mode::Day, Some("id1")));
-    assert_eq!(lanes_date(&rt), today());
+    let r1 = rt.state.browser.row_of("id1").unwrap();
+    assert_eq!(lanes_date(&rt), early_day(rt.state.browser.active_ms(r1)), "today, or yesterday's night just after midnight");
 
     // In Sessions it is selected there, scrolled to, with its Summary in the inspector.
     command(&mut rt, '0');
@@ -713,7 +726,7 @@ fn a_session_picked_in_the_palette_opens_on_its_day_or_is_selected_in_sessions()
 #[test]
 fn sort_by_in_the_palette_shows_sessions_sorted_as_a_header_click_sorts() {
     // The test's calendar is empty: Calendar is drawn without the store.
-    for from in [reports::Mode::Day, reports::Mode::Reports, reports::Mode::Calendar] {
+    for from in [reports::Mode::Day, reports::Mode::Month, reports::Mode::Calendar] {
         let mut rt = runtime(table_desk(from != reports::Mode::Calendar), (1400.0, 900.0));
         reports::show(&mut rt.state, from);
         settle(&mut rt);
@@ -760,7 +773,7 @@ fn back_to_the_lanes_and_the_full_size_inspector_are_offered_when_they_do_someth
 
 #[test]
 fn a_pick_in_the_menu_bar_opens_the_session_in_day_on_its_day() {
-    for from in [reports::Mode::Reports, reports::Mode::Sessions, reports::Mode::Calendar, reports::Mode::Day] {
+    for from in [reports::Mode::Month, reports::Mode::Sessions, reports::Mode::Calendar, reports::Mode::Day] {
         let mut rt = runtime(table_desk(from != reports::Mode::Calendar), (1400.0, 900.0));
         rt.update(|s, tx| {
             if from == reports::Mode::Sessions {

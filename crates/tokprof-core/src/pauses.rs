@@ -280,11 +280,32 @@ struct Last {
     client: String,
 }
 
+/// The largest main prompt of the requests read: its tokens, when it was sent, and its session.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Largest {
+    pub tokens: u64,
+    pub ts_ms: i64,
+    pub agent: String,
+    pub session: String,
+    pub project: String,
+}
+
+impl Largest {
+    /// The larger of two, the earlier of equal ones.
+    fn max(a: Option<Largest>, b: Option<Largest>) -> Option<Largest> {
+        match (a, b) {
+            (Some(a), Some(b)) => Some(if b.tokens > a.tokens || (b.tokens == a.tokens && b.ts_ms < a.ts_ms) { b } else { a }),
+            (a, b) => a.or(b),
+        }
+    }
+}
+
 /// The session being read.
 #[derive(Clone, Debug)]
 struct Current {
     agent: AgentId,
     session: String,
+    project: String,
     /// The session's whole id, which each of its cold returns names.
     id: Arc<str>,
     /// The chain of each request the analysis reports, in its order.
@@ -302,6 +323,8 @@ struct Current {
 pub struct Pauses {
     filter: Filter,
     pub agents: BTreeMap<AgentId, AgentPauses>,
+    /// The largest main prompt of any session, as Records of the quarter name it.
+    pub largest: Option<Largest>,
     current: Option<Current>,
 }
 
@@ -325,6 +348,7 @@ impl Pauses {
         for (agent, a) in o.agents {
             self.agents.entry(agent).or_default().merge(a);
         }
+        self.largest = Largest::max(self.largest.take(), o.largest);
     }
 }
 
@@ -349,6 +373,7 @@ impl Sink for Pauses {
         self.current = Some(Current {
             agent: s.agent.clone(),
             session: s.short_id().to_string(),
+            project: s.project.clone(),
             id: s.id.as_str().into(),
             order,
             next: 0,
@@ -359,7 +384,7 @@ impl Sink for Pauses {
     }
 
     fn request(&mut self, r: &RequestRecord) {
-        let Pauses { agents, current, .. } = self;
+        let Pauses { agents, current, largest, .. } = self;
         let Some(cur) = current else { return };
         // A miss comes right after its request: the one before this request had none.
         cur.last = None;
@@ -377,6 +402,15 @@ impl Sink for Pauses {
             return;
         }
         size.largest = size.largest.max(r.usage.prompt());
+        if r.usage.prompt() > largest.as_ref().map_or(0, |l| l.tokens) {
+            *largest = Some(Largest {
+                tokens: r.usage.prompt(),
+                ts_ms: r.ts_ms,
+                agent: cur.agent.name().to_string(),
+                session: cur.session.clone(),
+                project: cur.project.clone(),
+            });
+        }
         if let Some(rules) = r.api.rules() {
             agent.lifetimes.insert(rules.short.0);
             agent.lifetimes.extend(rules.long.map(|l| l.0));
@@ -641,5 +675,14 @@ mod tests {
     fn the_lifetimes_of_the_agents_apis() {
         let p = pauses_of(&[with_return("s", 2.0, Prompt, 0)]);
         assert_eq!(p.lifetimes.iter().copied().collect::<Vec<_>>(), [5 * MINUTE, HOUR]);
+    }
+
+    #[test]
+    fn the_largest_prompt_is_the_larger_and_of_equal_ones_the_earlier() {
+        let l = |tokens: u64, ts_ms: i64| Some(Largest { tokens, ts_ms, project: "~/src/zebrafish".into(), ..Largest::default() });
+        assert_eq!(Largest::max(l(900, 5), l(800, 1)).map(|x| x.tokens), Some(900));
+        assert_eq!(Largest::max(l(900, 5), l(900, 1)).map(|x| x.ts_ms), Some(1));
+        assert_eq!(Largest::max(None, l(7, 2)).map(|x| x.tokens), Some(7));
+        assert_eq!(Largest::max(None, None), None);
     }
 }

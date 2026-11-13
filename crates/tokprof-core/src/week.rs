@@ -731,8 +731,10 @@ fn before(entries: &[Entry], filters: &Filters, kept: &[&Entry], window: &Window
         (Some(c), None) | (None, Some(c)) => return Before::Within(c),
         (None, None) => {}
     }
+    // No logs: the store's history of the agents kept holds nothing then. The project, session
+    // and text filters do not make logs missing: a project new this week compares with nothing.
     let sums = Sums::of(kept, window.before, rule, offset);
-    if !sums.any() {
+    if !crate::period::stored_any(entries, filters, window.before) {
         return Before::NoLogs(window.before);
     }
     let gaps = crate::compare::gaps(entries, filters, shown, window.before.0);

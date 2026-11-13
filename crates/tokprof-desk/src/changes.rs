@@ -1,4 +1,4 @@
-//! What to change, in Reports: what could have been saved, by cause; the ways to come back after
+//! What to change, in Month and Quarter: what could have been saved, by cause; the ways to come back after
 //! a cold break; and the habits that cost the most, each with what tokprof's advice says to do.
 //! The rows are those `tokprof share` prints for the period (see `tokprof_core::savings`); a row
 //! split by session opens its top sessions under it, and a session opens in Day.
@@ -6,6 +6,7 @@
 use rune::{Color, El, Tx, col, el, row, spacer, text};
 use tokprof_browse::browser::now_ms;
 use tokprof_core::fmt::{int, usd};
+use tokprof_core::period::KeyNumbers;
 use tokprof_core::pool::Row;
 use tokprof_core::rhythm::RETURNS_HINT;
 use tokprof_core::savings::{Changes, SessionCost};
@@ -68,7 +69,7 @@ pub fn toggle(s: &mut Desk, part: Part, name: &str) {
     r.open = if r.open.as_ref() == Some(&key) { None } else { Some(key) };
     // The cursor stays on the row.
     let at = lines(r.changes().expect("read above"), part, r.open.as_ref()).iter().position(|l| *l == Line::Row(name.to_string()));
-    r.part = part;
+    r.part = Some(part);
     r.row = at.unwrap_or(0);
 }
 
@@ -108,18 +109,20 @@ pub fn line_count(s: &Desk, part: Part) -> usize {
 
 /// The cards of what to change: the savings and the ways back side by side, the habits under
 /// them.
-pub fn cards(s: &Desk, c: &Changes, p: &Pal) -> El {
+pub fn cards(s: &Desk, c: &Changes, p: &Pal, narrow: bool) -> El {
     let r = &s.reports;
     let total: f64 = c.saved.iter().map(|x| x.usd).sum();
     let share: f64 = c.saved.iter().map(|x| x.share).sum();
     let saved_aside = format!("{} could have been saved, {:.1}% of spend", usd(total), 100.0 * share);
-    let top = row()
-        .w_full()
-        .gap(20.0)
-        .items_start()
-        .child(reports::card(Some(Part::Saved), "Could have been saved", Some(saved_aside), saved(s, c, p), r, p).grow(3.0))
-        .child(reports::card(Some(Part::Ways), "Coming back after a cold break", Some("as tokprof bench replays it".into()), ways(s, c, p), r, p).grow(2.0));
-    col().key("rep-changes").w_full().gap(20.0).child(top).child(reports::card(
+    let saved = reports::card(Some(Part::Saved), "Could have been saved", Some(saved_aside), saved(s, c, p), r, p);
+    let ways = reports::card(Some(Part::Ways), "Coming back after a cold break", Some("as tokprof bench replays it".into()), ways(s, c, p), r, p);
+    // Side by side where both have room, else one over the other.
+    let top = if narrow {
+        col().w_full().gap(reports::GAP).child(saved).child(ways)
+    } else {
+        row().w_full().gap(reports::GAP).items_start().child(saved.grow(3.0)).child(ways.grow(2.0))
+    };
+    col().key("rep-changes").w_full().gap(reports::GAP).child(top).child(reports::card(
         Some(Part::Habits),
         "Habits that cost the most",
         Some("where to look, not what could be saved; the rows overlap".into()),
@@ -151,7 +154,7 @@ fn amount_cell(t: String, w: f32, color: Color, font: rune::TextStyle) -> El {
 const BEFORE_W: f32 = 150.0;
 
 #[allow(clippy::too_many_arguments)]
-fn money_row(s: &Desk, c: &Changes, part: Part, at: usize, r: &Row, first: f64, before: Option<&crate::deltas::Before>, p: &Pal) -> (El, usize) {
+fn money_row(s: &Desk, c: &Changes, part: Part, at: usize, r: &Row, first: f64, before: Option<&KeyNumbers>, p: &Pal) -> (El, usize) {
     let rate = part == Part::Saved;
     let st = &s.reports;
     let split = c.sessions_of(&r.name).is_some_and(|l| !l.is_empty());
@@ -178,7 +181,7 @@ fn money_row(s: &Desk, c: &Changes, part: Part, at: usize, r: &Row, first: f64, 
     if rate {
         line = line.child(amount_cell(r.per_hour.map_or("–".into(), usd), 104.0, p.ink2, pal::BODY_NUM));
     }
-    if let Some(b) = before.filter(|b| b.totals().is_some()) {
+    if let Some(b) = before {
         let (t, color) = crate::deltas::cause_cell(&r.name, r.usd, b, p).unwrap_or_else(|| ("–".into(), p.ink3));
         line = line.child(amount_cell(t, BEFORE_W, color, pal::BODY_NUM).key("before"));
     }
@@ -189,7 +192,7 @@ fn money_row(s: &Desk, c: &Changes, part: Part, at: usize, r: &Row, first: f64, 
         let name = r.name.clone();
         line = line.on_press(move |s: &mut Desk| {
             let at = line_count_until(s, part, &name);
-            s.reports.part = part;
+            s.reports.part = Some(part);
             s.reports.row = at;
         });
     }
@@ -243,20 +246,20 @@ fn session_line(s: &Desk, part: Part, at: usize, x: &SessionCost, p: &Pal) -> El
 }
 
 fn saved(s: &Desk, c: &Changes, p: &Pal) -> El {
-    let before = s.reports.report().map_or(crate::deltas::Before::Waiting, |r| crate::deltas::before(s, r));
-    let gone = crate::deltas::gone_rows(c, &before, p);
+    let before = crate::deltas::causes_before(s);
+    let gone = crate::deltas::gone_rows(s, p);
     if c.saved.is_empty() && gone.is_empty() {
         return text("No cache misses that could have been saved.").font(pal::BODY).color(p.ink2).single_line();
     }
     let first = c.saved.first().map_or(0.0, |r| r.usd);
     let mut cols = vec![("cause", 0.0), ("share", 52.0), ("avoidable", 70.0), ("per active hour", 104.0)];
-    if before.totals().is_some() {
+    if before.is_some() {
         cols.push(("period before", BEFORE_W));
     }
     let mut out = col().w_full().gap(2.0).child(head(&cols, p));
     let mut at = 0;
     for r in &c.saved {
-        let (e, used) = money_row(s, c, Part::Saved, at, r, first, Some(&before), p);
+        let (e, used) = money_row(s, c, Part::Saved, at, r, first, before, p);
         out = out.child(e);
         at += used;
     }

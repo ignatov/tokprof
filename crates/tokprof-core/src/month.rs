@@ -182,7 +182,7 @@ impl Month {
         // A month in progress compares with the same stretch of the month before, never with
         // all of it.
         let prev_from = rhythm::midnight(ym.previous().first_date(), offset);
-        let same = (!m.complete).then(|| (prev_from + (m.to_ms - m.from_ms)).min(m.from_ms));
+        let same = (!m.complete).then(|| crate::period::same_point(prev_from, (m.from_ms, m.to_ms), m.from_ms).1);
         let prev = Month::alone(entries, filters, ym.previous(), same, now_ms, offset);
         // As Reports judge a period before: incomplete when an agent's data starts inside it.
         m.before_gaps = crate::compare::gaps(entries, filters, (m.from_ms, m.to_ms), prev.from_ms);
@@ -206,9 +206,17 @@ impl Month {
         let from_ms = rhythm::midnight(first, offset);
         let end = rhythm::midnight(next, offset);
         let to_ms = until.unwrap_or(end).min(end).min(now_ms).max(from_ms);
+        Month { ym: Some(ym), complete: end <= now_ms, ..Month::span(entries, filters, (first, next), (from_ms, to_ms), now_ms, offset) }
+    }
+
+    /// The numbers of the window `[from_ms, to_ms)` of the entries the filters keep (their own
+    /// time window is replaced by it), with the calendar's cells of the dates `first..next`, as
+    /// a month counts them; `ym` is not set and the span is not complete. A quarter is counted
+    /// so too (see `period`).
+    pub fn span(entries: &[Entry], filters: &Filters, (first, next): (i64, i64), (from_ms, to_ms): (i64, i64), now_ms: i64, offset: Offset) -> Month {
         let window = Filters { since_ms: Some(from_ms), until_ms: Some(to_ms), ..filters.clone() };
         let cal = Calendar::of(entries, &window, now_ms.max(from_ms + 1), offset);
-        let mut m = Month { ym: Some(ym), from_ms, to_ms, complete: end <= now_ms, ..Month::default() };
+        let mut m = Month { from_ms, to_ms, ..Month::default() };
         for d in &cal.days {
             add(&mut m.total, &d.amounts);
         }

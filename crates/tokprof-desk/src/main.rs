@@ -5,6 +5,7 @@
 mod ansi;
 mod calendar;
 mod changes;
+mod charts;
 mod day;
 mod deltas;
 mod details;
@@ -93,10 +94,14 @@ struct Cli {
     /// this week by default.
     #[arg(long)]
     week: Option<String>,
-    /// With --snap or --tree: the month of the month in review (YYYY-MM), for the scenes `month`
-    /// and `month-card`.
+    /// With --snap or --tree: the month (YYYY-MM) of the scenes `month`, `month-advice`,
+    /// `month-review` and `month-card`; the current month by default.
     #[arg(long)]
     month: Option<String>,
+    /// With --snap or --tree: the quarter (YYYY-Qn) of the scene `quarter`; the current quarter by
+    /// default.
+    #[arg(long)]
+    quarter: Option<String>,
     /// With --snap: draw only the month in review of --month, from the day store as it is, without
     /// listing or costing sessions; fail when the card cannot be drawn. Save image runs this.
     #[arg(long, hide = true)]
@@ -250,11 +255,11 @@ pub struct Desk {
     /// key, is not taken by a later X-ray.
     pub xray_seen: RefCell<Option<Arc<tokprof_core::xray::XRay>>>,
     pub flame_w: f32,
-    /// Day, Reports or Calendar, and the state of Reports.
+    /// The view under the bar, and the state of Month and Quarter.
     pub reports: reports::State,
     /// The state of Calendar.
     pub calendar: calendar::State,
-    /// The month in review over Calendar.
+    /// The month in review over Month, Quarter or Calendar.
     pub month: month::State,
     /// The cache countdown in the macOS menu bar.
     pub menu_bar: menubar::MenuBar,
@@ -264,8 +269,9 @@ pub struct Desk {
     pub sessions: sessions::State,
     /// The state of Week.
     pub week: week::State,
-    /// The week `--week` names, for its scene.
+    /// The week `--week` names, and the quarter `--quarter` names, for their scenes.
     pub week_wanted: Option<i64>,
+    pub quarter_wanted: Option<tokprof_core::period::Yq>,
     /// When the clock next takes a session out of what the quick filters keep, as the last poll
     /// found it.
     pub next_filter: Option<i64>,
@@ -339,7 +345,7 @@ impl Desk {
             flame_memo: RefCell::default(),
             xray_seen: RefCell::default(),
             flame_w: 0.0,
-            reports: reports::State::new(tokprof_browse::reports::Reports::detached()),
+            reports: reports::State::new(tokprof_browse::reports::Reports::detached(), tokprof_browse::period::Periods::detached()),
             calendar: calendar::State::new(tokprof_browse::calendar::Calendars::detached()),
             month: month::State::default(),
             menu_bar: menubar::MenuBar::default(),
@@ -347,6 +353,7 @@ impl Desk {
             sessions: sessions::State::default(),
             week: week::State::new(tokprof_browse::week::Weeks::detached()),
             week_wanted: None,
+            quarter_wanted: None,
             next_filter: None,
         }
     }
@@ -639,7 +646,7 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
         tx.wake_after(at.saturating_duration_since(Instant::now()).max(Duration::from_millis(1)));
     }
     // A countdown on the screen moves every second; the parts that show time move every minute.
-    // Week, Reports and Calendar show neither.
+    // Week, Month, Quarter and Calendar show neither.
     let day = matches!(s.reports.mode, reports::Mode::Day | reports::Mode::Sessions);
     let counting = match s.reports.mode {
         reports::Mode::Sessions => sessions::counting(s, now),
@@ -737,8 +744,8 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
         tx.quit();
         return true;
     }
-    // The month in review over Calendar takes every other key while it is open.
-    if s.month.card.is_some() && s.reports.mode == reports::Mode::Calendar {
+    // The month in review takes every other key while it is open.
+    if s.month.card.is_some() && matches!(s.reports.mode, reports::Mode::Calendar | reports::Mode::Month | reports::Mode::Quarter) {
         return month::on_key(s, e, tx);
     }
     // ⌘K and ⌘, open and close the palette and the settings, as their menu items do where the
@@ -764,16 +771,16 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
         tx.close_window();
         return true;
     }
-    // ⌘1 shows Day, ⌘2 Week, ⌘3 Reports, ⌘4 Calendar and ⌘0 Sessions; Reports takes every other key.
+    // ⌘1 shows Day, ⌘2 Week, ⌘3 Month, ⌘4 Quarter, ⌘5 Calendar and ⌘0 Sessions.
     if reports::switch_key(s, e) {
         if s.reports.mode == reports::Mode::Sessions {
             sessions::show(s, tx);
         }
         return true;
     }
-    if s.reports.mode == reports::Mode::Reports {
-        // `?` opens the key help there too.
-        if matches!(&e.key, RuneKey::Text(t) if t == "?") && !e.mods.cmd && !e.mods.ctrl {
+    if s.reports.mode.period() {
+        // `?` opens the key help there too, where it is not typed into a filter.
+        if !s.browser.editing() && matches!(&e.key, RuneKey::Text(t) if t == "?") && !e.mods.cmd && !e.mods.ctrl {
             s.open_help();
             return true;
         }
@@ -952,6 +959,7 @@ fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk>
         return card_image(cli, catalog, pricing, select, &paths::day_store());
     }
     let reports = tokprof_browse::reports::Reports::start(catalog.clone(), pricing.clone(), select.clone(), wake.clone());
+    let periods = tokprof_browse::period::Periods::start(select.clone(), wake.clone());
     let weeks = tokprof_browse::week::Weeks::start(catalog.clone(), pricing.clone(), select.clone(), wake.clone());
     let desk_select = select.clone();
     let calendars =
@@ -961,6 +969,8 @@ fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk>
     let mut desk = Desk::new(browser, !headless);
     desk.tab = tab;
     desk.reports.data = reports;
+    desk.reports.sums = periods;
+    desk.reports.client_ignored = client_ignored;
     desk.calendar.data = calendars;
     desk.calendar.client_ignored = client_ignored;
     desk.week.data = weeks;
@@ -970,6 +980,7 @@ fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk>
     desk.calendar.metric = metric(cli)?.unwrap_or(tokprof_core::calendar::Metric::Spend);
     desk.calendar.select = Query { since_ms: None, until_ms: None, ..desk_select.clone() };
     desk.month.wanted = month_of(cli)?;
+    desk.quarter_wanted = quarter_of(cli)?;
     desk.month.args = filter_args(cli);
     if headless {
         if let Some(t) = colors(cli)? {
@@ -1036,6 +1047,7 @@ fn checked(cli: &Cli, catalog: &Catalog) -> Result<(Query, tokprof_core::pricing
     colors(cli)?;
     metric(cli)?;
     month_of(cli)?;
+    quarter_of(cli)?;
     week_of(cli)?;
     Ok((select, pricing, tab))
 }
@@ -1053,13 +1065,28 @@ fn week_of(cli: &Cli) -> Result<Option<i64>> {
     Ok(Some(date))
 }
 
-/// The month `--month` names, if it names one.
+/// The month `--month` names, if it names one: a month that has begun.
 fn month_of(cli: &Cli) -> Result<Option<tokprof_core::month::Ym>> {
     let Some(m) = cli.month.as_deref() else { return Ok(None) };
-    match tokprof_core::month::Ym::parse(m) {
-        Some(ym) => Ok(Some(ym)),
-        None => bail!("--month takes YYYY-MM"),
+    let Some(ym) = tokprof_core::month::Ym::parse(m) else { bail!("--month takes YYYY-MM") };
+    begun(tokprof_core::period::Period::Month(ym))?;
+    Ok(Some(ym))
+}
+
+/// The quarter `--quarter` names, if it names one: a quarter that has begun.
+fn quarter_of(cli: &Cli) -> Result<Option<tokprof_core::period::Yq>> {
+    let Some(q) = cli.quarter.as_deref() else { return Ok(None) };
+    let Some(yq) = tokprof_core::period::Yq::parse(q) else { bail!("--quarter takes YYYY-Qn") };
+    begun(tokprof_core::period::Period::Quarter(yq))?;
+    Ok(Some(yq))
+}
+
+/// A period of `--month` or `--quarter` must have begun: `May 2027 has not begun`.
+fn begun(period: tokprof_core::period::Period) -> Result<()> {
+    if !period.begun(now_ms(), &rhythm::local_offset) {
+        bail!("{} has not begun", period.name());
     }
+    Ok(())
 }
 
 /// The desk of `--card-image`: no sessions, only the month in review of `--month` from the store
@@ -1081,7 +1108,7 @@ fn card_image(cli: &Cli, catalog: Arc<Catalog>, pricing: tokprof_core::pricing::
     }
     desk.month.card = Some(month::Card { month, status: None });
     desk.month.alone = true;
-    desk.reports.mode = reports::Mode::Calendar;
+    desk.reports.mode = reports::Mode::Month;
     Ok(desk)
 }
 
@@ -1182,9 +1209,9 @@ fn main() -> Result<()> {
 type Scene = (&'static str, fn(&mut Desk));
 
 /// The scenes: a pane with the keyboard, the flame graph zoomed two levels in, a filter being typed
-/// that matches nothing, the settings open, the palette open with a query, the key help, Week, and
-/// Reports on the last 30 days, waited for, also with the sessions of its first saving open, and
-/// Calendar.
+/// that matches nothing, the settings open, the palette open with a query, the key help, Week,
+/// Month and Quarter waited for, Month with the sessions of its first saving open and with its
+/// card, and Calendar.
 const SCENES: &[Scene] = &[
     ("settings", |s| s.panel = Some(settings::Panel::default())),
     ("waiting", |s| {
@@ -1206,48 +1233,55 @@ const SCENES: &[Scene] = &[
     }),
     ("palette", |s| s.palette = Some(palette::Palette { query: "to".into(), at: 0 })),
     ("keys", |s| s.help = true),
-    ("reports", |s| {
-        reports::show(s, reports::Mode::Reports);
-        let (days, changes) = (s.reports.days, s.browser.changes());
-        s.reports.data.settle(days, changes, Duration::from_secs(120));
-        // The day store, for the period before.
-        s.calendar.data.settle(changes, Duration::from_secs(120));
-    }),
     // Week on the week of --week, or this week, with the store and the week's logs waited for.
     ("week", |s| {
         let date = s.week_wanted;
         week::scene(s, date);
-    }),
-    ("reports-advice", |s| {
-        reports::show(s, reports::Mode::Reports);
-        let (days, changes) = (s.reports.days, s.browser.changes());
-        s.reports.data.settle(days, changes, Duration::from_secs(120));
-        // The first cause that opens, open, with the keyboard on it.
-        let first = s.reports.changes().and_then(|c| c.saved.iter().find(|r| c.sessions_of(&r.name).is_some_and(|l| !l.is_empty())).map(|r| r.name.clone()));
-        if let Some(name) = first {
-            changes::toggle(s, reports::Part::Saved, &name);
-        }
     }),
     ("calendar", |s| {
         reports::show(s, reports::Mode::Calendar);
         let changes = s.browser.changes();
         s.calendar.data.settle(changes, Duration::from_secs(120));
     }),
+    // Month on the month of --month and Quarter on the quarter of --quarter, or the current
+    // ones, with the store, the sums, the period's logs and the card's image waited for.
     ("month", |s| {
-        reports::show(s, reports::Mode::Calendar);
-        let changes = s.browser.changes();
-        s.calendar.data.settle(changes, Duration::from_secs(120));
-        month::open(s, s.month.wanted);
+        let ym = s.month.wanted.map(tokprof_core::period::Period::Month);
+        reports::scene(s, ym, false);
+    }),
+    ("quarter", |s| {
+        let yq = s.quarter_wanted.map(tokprof_core::period::Period::Quarter);
+        reports::scene(s, yq, true);
+    }),
+    // Month with the sessions of the first cause that has any open, with the keyboard on it.
+    ("month-advice", |s| {
+        let ym = s.month.wanted.map(tokprof_core::period::Period::Month);
+        reports::scene(s, ym, false);
+        let first = s.reports.changes().and_then(|c| c.saved.iter().find(|r| c.sessions_of(&r.name).is_some_and(|l| !l.is_empty())).map(|r| r.name.clone()));
+        if let Some(name) = first {
+            changes::toggle(s, reports::Part::Saved, &name);
+            // Its last session on the screen, so that the row and its sessions all show.
+            let n = s.reports.changes().and_then(|c| c.sessions_of(&name)).map_or(0, |l| l.len().min(changes::SESSIONS));
+            s.reports.reveal = Some(format!("{}-{}", reports::Part::Saved.key(), s.reports.row + n));
+        }
+    }),
+    // Month with its card open, as `r` opens it there.
+    ("month-review", |s| {
+        let ym = s.month.wanted.map(tokprof_core::period::Period::Month);
+        reports::scene(s, ym, false);
+        let open = reports::review_month(s);
+        month::open(s, Some(open));
     }),
     ("month-card", |s| {
         // Drawn from the store already, with --card-image.
         if s.month.alone {
             return;
         }
-        reports::show(s, reports::Mode::Calendar);
+        reports::show(s, reports::Mode::Month);
         let changes = s.browser.changes();
         s.calendar.data.settle(changes, Duration::from_secs(120));
-        month::open(s, s.month.wanted);
+        let ym = month::month_to_open(s, s.month.wanted);
+        month::open(s, Some(ym));
         s.month.alone = true;
         // Never a picture of something else under the card's name.
         if s.month.card.is_none() {
