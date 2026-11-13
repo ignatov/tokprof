@@ -1,8 +1,9 @@
-//! The day's lanes in the window: an hours row, the `You` lane with the sittings, a lane per
-//! session with its work, waits, messages, questions and stops at the times of the log, a tail as
-//! long as its cache stays warm, the now line, and under them the legend, the line about the time
-//! under the pointer and the day's `sittings`, `agents`, `answers`, `queue` and `cache` lines; the
-//! `Agents at work` lane under `You` counts the sessions whose agents worked at each moment.
+//! The day's lanes in the window: a header with the day's caption and the zoom, an hours row, the
+//! `You` lane with the sittings, a lane per session with its work, waits, messages, questions and
+//! stops at the times of the log, a tail as long as its cache stays warm, the now line, and under
+//! them the legend with the line about the time under the pointer; the `Agents at work` lane under
+//! `You` counts the sessions whose agents worked at each moment. The day's `sittings`, `agents`,
+//! `answers`, `queue` and `cache` lines are the day summary's cards.
 
 use rune::{Color, Cx, El, ScrollSpec, Shape, canvas, col, el, row, spacer, text};
 use tokprof_browse::browser::now_ms;
@@ -28,12 +29,12 @@ const RIGHT: f32 = 16.0;
 /// The key of the hours row's scale, whose width every lane's track has.
 pub const SCALE: &str = "scale";
 const HOUR_MS: i64 = 3_600_000;
-/// The height under the lanes: the legend with the pointer's line (22), the day's five lines
-/// (15 each, 1 apart), the room under them and the line under the lanes.
-const UNDER: f32 = 22.0 + 5.0 * DAY_LINE + 4.0 + 8.0 + 1.0;
+/// The height of the lanes' header, and under the lanes: the legend with the pointer's line (22),
+/// the room under it and the line under the lanes.
+pub const HEADER: f32 = 32.0;
+const UNDER: f32 = 22.0 + 8.0 + 1.0;
 /// The pointer's lane over the `Agents at work` lane: no session has this id.
 pub const AGENTS: &str = "\u{0}agents";
-const DAY_LINE: f32 = 15.0;
 
 /// Where the pointer rests over the lanes: the lane's session, `None` for the `You` lane, and how
 /// far into the track, in points.
@@ -182,28 +183,86 @@ fn filtered_in(s: &Desk, lane: &tokprof_core::rhythm::StripLane) -> bool {
     s.browser.filter().is_empty() || s.browser.row_of(&lane.id).is_some()
 }
 
-/// The day's summary in the bar: when its first action was, to now or to its last, its sittings
-/// and its sessions with actions, of them the ones a filter lists while one is set.
-pub fn summary(s: &Desk) -> Option<String> {
-    let parts = s.browser.day_parts()?;
-    let (_, lanes) = parts.strip.as_ref()?;
+/// The lanes' caption: the day's name, when its first action was, to now or to its last, its
+/// sittings, its sessions with a lane (of them the ones a filter lists while one is set) and the
+/// Spend card's dollars once the day store gives them: `Thursday: 09:24 to now, 7 sittings, 11 in
+/// the lanes, $146`. The current day is named by its weekday, another by its date.
+pub fn caption(s: &Desk) -> (String, Option<String>) {
+    let b = &s.browser;
+    let name = if b.day_is_latest() { local_time(b.day_noon(), "%A") } else { local_time(b.day_noon(), "%a %-d %b") };
+    let Some(parts) = b.day_parts() else { return (name, None) };
+    let Some((_, lanes)) = parts.strip.as_ref() else { return (name, None) };
     let marks = lanes.lanes.iter().flat_map(|l| l.marks.iter().map(|m| (m.0, m.1)));
-    let first = lanes.you.iter().copied().chain(marks.clone()).map(|m| m.0).min()?;
-    let last = lanes.you.iter().copied().chain(marks).map(|m| m.1).max()?;
-    let to = if s.browser.day_is_latest() { "now".to_string() } else { local_time(last, "%H:%M") };
+    let (Some(first), Some(last)) =
+        (lanes.you.iter().copied().chain(marks.clone()).map(|m| m.0).min(), lanes.you.iter().copied().chain(marks).map(|m| m.1).max())
+    else {
+        return (name, None);
+    };
+    let to = if b.day_is_latest() { "now".to_string() } else { local_time(last, "%H:%M") };
     let sittings = line_of(&parts.below, "sittings").and_then(|l| l.split(|c: char| !c.is_ascii_digit()).find(|n| !n.is_empty()).map(str::to_string));
     let sittings = sittings.unwrap_or_else(|| lanes.you.len().to_string());
     let plural = |n: &str, one: &str, many: &str| format!("{n} {}", if n == "1" { one } else { many });
     let all = lanes.lanes.len().to_string();
-    let sessions = match s.browser.filter().is_empty() {
-        true => plural(&all, "session", "sessions"),
-        false => format!("{} of {}", lanes.lanes.iter().filter(|l| filtered_in(s, l)).count(), plural(&all, "session", "sessions")),
+    let sessions = match b.filter().is_empty() {
+        true => format!("{all} in the lanes"),
+        false => format!("{} of {all} in the lanes", lanes.lanes.iter().filter(|l| filtered_in(s, l)).count()),
     };
-    Some(format!("{} to {to}, {}, {sessions}", local_time(first, "%H:%M"), plural(&sittings, "sitting", "sittings")))
+    let mut rest = format!("{} to {to}, {}, {sessions}", local_time(first, "%H:%M"), plural(&sittings, "sitting", "sittings"));
+    if let Some(Ok(spend)) = crate::details::day_spend(s) {
+        rest.push_str(&format!(", {}", tokprof_core::fmt::usd(spend.day.usd)));
+    }
+    (name, Some(rest))
+}
+
+/// The line of the lanes' header that says the selected session has no lane on the day shown:
+/// `no lane: nobody typed in 3f951d this day`.
+pub fn no_lane(s: &Desk) -> Option<String> {
+    let r = s.current()?;
+    let parts = s.browser.day_parts()?;
+    let has = parts.strip.as_ref().is_some_and(|(_, lanes)| lanes.lanes.iter().any(|l| s.browser.row_of(&l.id) == Some(r)));
+    (!has).then(|| format!("no lane: nobody typed in {} this day", s.browser.short_id(r)))
+}
+
+/// The lanes' header: the caption at its left, the line about a session without a lane, and the
+/// zoom at its right.
+fn header(s: &Desk, p: &Pal) -> El {
+    let (name, rest) = caption(s);
+    let shown = match &rest {
+        Some(r) => format!("{name}: {r}"),
+        None => name.clone(),
+    };
+    let caption = rune::rich(shown, vec![rune::Span::new(0, name.len()).color(p.ink).weight(700.0)])
+        .key("day-caption")
+        .font(pal::BODY)
+        .color(p.ink2)
+        .single_line()
+        .truncate()
+        .shrink()
+        .min_w(0.0);
+    let zoom = view::segments(
+        "zoom",
+        vec![
+            view::segment("zoom-fit".into(), "Fit", s.fit, p).on_press(|s: &mut Desk| s.fit = true),
+            view::segment("zoom-day".into(), "24 h", !s.fit, p).on_press(|s: &mut Desk| s.fit = false),
+        ],
+        p.panel,
+    );
+    row()
+        .key("lanes-header")
+        .w_full()
+        .h(HEADER)
+        .pl(14.0)
+        .pr(RIGHT)
+        .gap(12.0)
+        .center_y()
+        .child(caption)
+        .children(no_lane(s).map(|t| text(t).key("no-lane").font(pal::SMALL).color(p.ink3).single_line().truncate().shrink().min_w(0.0)))
+        .child(spacer().grow(1.0))
+        .child(zoom)
 }
 
 /// The line of a day's text that starts with `label`, without its color codes or its label.
-fn line_of(text: &str, label: &str) -> Option<String> {
+pub fn line_of(text: &str, label: &str) -> Option<String> {
     text.lines().map(|l| ansi::parse(l).text).find(|l| l.starts_with(label)).map(|l| l[label.len()..].trim().to_string())
 }
 
@@ -215,10 +274,11 @@ pub fn version(s: &Desk, cx: &Cx<Desk>, max_h: f32, theme: &str) -> u64 {
     let lanes: Vec<_> =
         parts.and_then(|p| p.strip.as_ref()).map_or(Vec::new(), |(_, l)| l.lanes.iter().map(|l| (b.cache_life(&l.id), b.row_of(&l.id))).collect());
     let (known, pending) = b.known_total();
+    let spend = crate::details::day_spend(s).and_then(|d| d.ok()).map(|d| d.day.usd.to_bits());
     view::hash_of((
         (parts.map(|p| p as *const DayParts as usize), b.day_noon(), b.day_is_latest(), s.fit, theme, max_h.to_bits()),
-        (cx.layout_size(SCALE).map(|sz| sz[0].to_bits()), b.selected().map(|r| b.session(r)), s.pointer.as_ref().map(|p| (p.lane.clone(), p.x.to_bits()))),
-        (view::minute(), lanes, known.to_bits(), pending, s.pane == crate::Focus::Lanes, b.filter()),
+        (cx.layout_size(SCALE).map(|sz| sz[0].to_bits()), s.current().map(|r| b.session(r)), s.pointer.as_ref().map(|p| (p.lane.clone(), p.x.to_bits()))),
+        (view::minute(), lanes, known.to_bits(), pending, s.pane == crate::Focus::Lanes, b.filter(), spend),
     ))
 }
 
@@ -228,20 +288,21 @@ pub fn lanes(s: &Desk, cx: &Cx<Desk>, p: &Pal, max_h: f32) -> El {
         Some(parts) => lanes_of(s, parts, cx, p, max_h),
         None => {
             let note = format!("computing the day of {}…", local_time(s.browser.day_noon(), "%Y-%m-%d"));
-            frame(row().h(3.0 * LANE).px(16.0).center_y().child(text(note).key("lanes-note").font(pal::BODY).color(p.ink2)), p)
+            frame(s, row().h(3.0 * LANE).px(16.0).center_y().child(text(note).key("lanes-note").font(pal::BODY).color(p.ink2)), p)
         }
     }
 }
 
-fn frame(body: El, p: &Pal) -> El {
-    col().key("lanes").w_full().fill(p.track).child(body).child(el().w_full().h(1.0).fill(p.line))
+/// The lanes' frame: their header over `body`, and the line under them.
+fn frame(s: &Desk, body: El, p: &Pal) -> El {
+    col().key("lanes").w_full().fill(p.track).child(header(s, p)).child(body).child(el().w_full().h(1.0).fill(p.line))
 }
 
 /// The lanes of a day.
 pub fn lanes_of(s: &Desk, parts: &DayParts, cx: &Cx<Desk>, p: &Pal, max_h: f32) -> El {
     let keys = s.pane == crate::Focus::Lanes && !s.browser.zoomed();
     let b = &s.browser;
-    let frame = |body: El| frame(body, p);
+    let frame = |body: El| frame(s, body, p);
     let Some((_, lanes)) = &parts.strip else {
         return frame(
             row().h(3.0 * LANE).px(16.0).center_y().child(text("nobody typed in a session this day").key("lanes-note").font(pal::BODY).color(p.ink2)),
@@ -260,7 +321,7 @@ pub fn lanes_of(s: &Desk, parts: &DayParts, cx: &Cx<Desk>, p: &Pal, max_h: f32) 
     if agents {
         body = body.child(agents_lane(lanes, &grid, p));
     }
-    let selected = b.selected().map(|r| b.session(r).to_string());
+    let selected = s.current().map(|r| b.session(r).to_string());
     let mut shown = 0;
     for (lane, life) in lanes.lanes.iter().zip(&lives) {
         if !filtered_in(s, lane) {
@@ -288,26 +349,28 @@ pub fn lanes_of(s: &Desk, parts: &DayParts, cx: &Cx<Desk>, p: &Pal, max_h: f32) 
     let pointer = s.pointer.as_ref().map(|ptr| pointer_text(lanes, &lives, range, ptr, width)).unwrap_or_default();
     // Under the tracks when they leave room; from the window's edge in a narrow one.
     let lead = if width >= 900.0 { LABEL_WIDTH + 14.0 } else { 14.0 };
-    frame(col().w_full().pb(8.0).child(scroller).child(legend(pointer, lead, p)).child(day_lines(&parts.below, lead, p)))
+    frame(col().w_full().pb(8.0).child(scroller).child(legend(pointer, lead, p)))
 }
 
 /// The height of the line under the lanes that says how many more there are.
 const MORE_H: f32 = 16.0;
 
-/// The height the lanes take to show `sessions` session lanes whole, with the hours, the You
-/// and Agents at work lanes, the line that says how many more there are, and what is under them.
+/// The height the lanes take to show `sessions` session lanes whole, with their header, the
+/// hours, the You and Agents at work lanes, the line that says how many more there are, and what
+/// is under them.
 pub fn height_for(sessions: usize) -> f32 {
-    RULER + LANE + AGENTS_H + sessions as f32 * LANE + MORE_H + UNDER
+    HEADER + RULER + LANE + AGENTS_H + sessions as f32 * LANE + MORE_H + UNDER
 }
 
-/// How many of `rows` lanes show whole in lanes at most `max_h` high with what is under them,
-/// and how many more scroll; when some do, the line that says so takes room too. At least two.
+/// How many of `rows` lanes show whole in lanes at most `max_h` high with their header and what
+/// is under them, and how many more scroll; when some do, the line that says so takes room too.
+/// At least two.
 pub fn lanes_fit(max_h: f32, rows: usize) -> (usize, usize) {
-    let room = ((max_h - UNDER - RULER) / LANE).floor().max(2.0) as usize;
+    let room = ((max_h - HEADER - UNDER - RULER) / LANE).floor().max(2.0) as usize;
     if rows <= room {
         return (rows, 0);
     }
-    let fit = (((max_h - UNDER - RULER - MORE_H) / LANE).floor().max(2.0) as usize).min(rows);
+    let fit = (((max_h - HEADER - UNDER - RULER - MORE_H) / LANE).floor().max(2.0) as usize).min(rows);
     (fit, rows - fit)
 }
 
@@ -564,19 +627,31 @@ fn session_lane(
     let (head, rest, agent) = match b.row_of(&lane.id) {
         Some(r) => {
             let c = b.cells(r, now_ms());
-            let project = c.project.rsplit(['/', '\\']).next().unwrap_or(c.project).to_string();
+            let project = crate::view::project_name(c.project).to_string();
             (project, c.title.unwrap_or(c.project).to_string(), Some(p.agents[c.agent_place % p.agents.len()]))
         }
         None => (lane.label.split_whitespace().next().unwrap_or("").to_string(), lane.label.split_once(' ').map_or(String::new(), |x| x.1.to_string()), None),
     };
     let is_selected = selected.is_some_and(|id| b.row_of(&lane.id).is_some_and(|r| b.session(r) == id));
-    let id = lane.id.clone();
-    let mut lane_row = row().key(format!("lane-{}", lane.id)).w_full().h(LANE).role("button").label(lane.label.clone()).checked(is_selected).on_press_tx(
-        move |s: &mut Desk, tx| {
+    let (id, open) = (lane.id.clone(), lane.id.clone());
+    // A click selects the lane's session; a double click shows its inspector full size, as ⏎ does.
+    let mut lane_row = row()
+        .key(format!("lane-{}", lane.id))
+        .w_full()
+        .h(LANE)
+        .role("button")
+        .label(lane.label.clone())
+        .checked(is_selected)
+        .on_press_tx(move |s: &mut Desk, tx| {
             s.pane = crate::Focus::Lanes;
             s.open_lane(&id, tx);
-        },
-    );
+        })
+        .on_double_press_tx(move |s: &mut Desk, tx| {
+            s.open_lane(&open, tx);
+            if s.current().is_some() {
+                s.browser.zoom_in();
+            }
+        });
     if is_selected {
         // The selected lane: a light inset band under its marks, so the waits still show through,
         // with an accent bar at its label, ringed while the lanes have the keyboard.
@@ -602,33 +677,6 @@ fn legend(pointer: String, lead: f32, p: &Pal) -> El {
     let tail = el().w(14.0).h(TAIL).linear_gradient(std::f32::consts::FRAC_PI_2, [(0.0, p.tail), (1.0, p.tail.alpha(0.0))]);
     line = line.child(row().gap(6.0).center_y().child(tail).child(text("cache warm").font(pal::SMALL).color(p.ink2).single_line()));
     line.child(spacer().grow(1.0)).child(text(pointer).key("pointer-text").font(pal::SMALL_NUM).color(p.ink2).single_line().truncate().shrink().min_w(0.0))
-}
-
-/// The day's `sittings`, `agents`, `answers`, `queue` and `cache` lines, one under the other, each after its label;
-/// in the cache line the count of cold returns and the dollars in the cold color when the day had
-/// cold returns.
-fn day_lines(below: &str, lead: f32, p: &Pal) -> El {
-    let mut lines = col().key("day-lines").w_full().pl(lead).pr(RIGHT).gap(1.0);
-    for label in ["sittings", "agents", "answers", "queue", "cache"] {
-        if let Some(rest) = line_of(below, label) {
-            let cold = label == "cache" && rest.contains("cold return") && !rest.starts_with("no ");
-            let mut line = row()
-                .key(format!("day-{label}"))
-                .w_full()
-                .h(DAY_LINE)
-                .center_y()
-                .child(text(format!("{label} ")).font(pal::SMALL_STRONG).color(p.ink).single_line().w(64.0));
-            let runs = if cold { cold_runs(&rest) } else { vec![(rest, false)] };
-            let last = runs.len() - 1;
-            for (i, (run, hot)) in runs.into_iter().enumerate() {
-                let t =
-                    text(run).font(if hot { pal::SMALL_STRONG } else { pal::SMALL }).color(if hot { p.cold } else { p.ink2 }).single_line().selectable(true);
-                line = line.child(if i == last { t.truncate().shrink().min_w(0.0) } else { t });
-            }
-            lines = lines.child(line);
-        }
-    }
-    lines
 }
 
 /// A cache line cut into runs, each marked when it is the count of cold returns or an amount of
@@ -779,14 +827,15 @@ mod tests {
 
     #[test]
     fn the_lanes_show_whole_and_say_how_many_more_scroll() {
-        // 900 points high: 384 for the lanes, 110 under them, 24 for the hours: 10 lanes of 24.
+        // 900 points high: 384 for the lanes, 32 for their header, 31 under them, 24 for the
+        // hours: 12 lanes of 24.
         let max_h = (900.0 - 46.0) * 0.45;
-        assert_eq!(lanes_fit(max_h, 9), (9, 0), "all fit");
-        assert_eq!(lanes_fit(max_h, 10), (10, 0));
-        assert_eq!(lanes_fit(max_h, 11), (9, 2), "the line under them takes room");
-        assert_eq!(lanes_fit(max_h, 14), (9, 5));
+        assert_eq!(lanes_fit(max_h, 11), (11, 0), "all fit");
+        assert_eq!(lanes_fit(max_h, 12), (12, 0));
+        assert_eq!(lanes_fit(max_h, 13), (11, 2), "the line under them takes room");
+        assert_eq!(lanes_fit(max_h, 16), (11, 5));
         let (fit, _) = lanes_fit(max_h, 30);
-        assert!(RULER + fit as f32 * LANE + MORE_H + UNDER <= max_h + 0.01, "whole lanes and the line within the room");
+        assert!(HEADER + RULER + fit as f32 * LANE + MORE_H + UNDER <= max_h + 0.01, "whole lanes and the line within the room");
         assert_eq!(lanes_fit(100.0, 5), (2, 3), "two at least");
         // The room the window gives: 8 session lanes at 900 points, 3 at 640, with You and Agents
         // at work over them and the line under them.

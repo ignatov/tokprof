@@ -1,26 +1,29 @@
-//! What the window draws: its own title bar with the day's controls, the day's lanes under it,
-//! and under them the list of sessions on the left and the inspector of the selected one.
+//! What the window draws: its own title bar with the day's controls, and in Day the lanes of the
+//! day across the window's width, the border that moves, and the details pane under them: the
+//! day summary, or the inspector of the selected session (desk-window, Day layout A).
 
-use std::borrow::Cow;
-
-use rune::{Color, Cx, El, GrowthSpec, ScrollSpec, col, el, row, spacer, text};
-use tokprof_browse::browser::{Key, Sort, now_ms};
+use rune::{Color, Cursor, Cx, Drag, El, Phase, col, el, row, spacer, text};
+use tokprof_browse::browser::{Key, now_ms};
 use tokprof_core::fmt::{local_time, usd};
 use tokprof_core::rhythm;
 
-use crate::overlay::{self, PILL, R_ROW};
+use crate::Desk;
+use crate::overlay::{self, PILL};
 use crate::pal::{self, Pal};
-use crate::{Desk, Slot};
 
-/// The height of the title bar, of a row of the list, and the width of the list.
+/// The height of the title bar.
 pub const BAR_H: f32 = 46.0;
-pub const ROW: f32 = 28.0;
-pub const LIST_WIDTH: f32 = 380.0;
-/// The height of the heads over the list and the inspector, so that the lines under them meet.
+/// The height of the heads of the panes, so that the lines under them meet.
 pub const HEAD_H: f32 = 44.0;
-/// The keys of the list's and the inspector's scroll viewports.
-pub const LIST: &str = "list";
+/// The key of the details pane's scroll viewport, the inspector's or the day summary's.
 pub const PANE: &str = "pane";
+/// The height of the border between the lanes and the details, which a drag moves.
+pub const BORDER_H: f32 = 6.0;
+/// The least room the details pane keeps under a dragged border, and the shares of the height
+/// under the bar the lanes take at least and at most.
+pub const DETAILS_MIN: f32 = 200.0;
+pub const SHARE_MIN: f32 = 0.25;
+pub const SHARE_MAX: f32 = 0.75;
 /// The size, in characters, the browser lays the day's text out for; the window draws the lanes
 /// itself and keeps only the text around them.
 pub const DAY_PANE: (u16, u16) = (200, 400);
@@ -33,7 +36,6 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     let theme = s.settings.theme(cx.system_dark());
     s.theme.set(theme);
     let p = pal::pal(theme);
-    *s.slots.borrow_mut() = slots(s);
     let height = window_size(s, cx).1;
     // The image of a month in review: the card alone, filling the frame.
     if s.month.alone
@@ -55,15 +57,29 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     let inspector = |cx: &Cx<Desk>| rune::memo("inspector", crate::inspector::version(s, cx, &theme.id), || crate::inspector::inspector(s, cx, &p));
     if s.reports.mode == crate::reports::Mode::Reports {
         root = root.child(crate::reports::view(s, cx, &p));
+    } else if s.reports.mode == crate::reports::Mode::Sessions {
+        root = root.child(crate::sessions::view(s, cx, &p));
     } else if s.reports.mode == crate::reports::Mode::Calendar {
         root = root.child(crate::calendar::view(s, cx, &p));
-    } else if s.browser.zoomed() {
+    } else if s.browser.zoomed() && s.current().is_some() {
         root = root.child(inspector(cx));
     } else {
-        let max_h = lanes_max_h(height);
+        // The lanes take the room Room for the lanes gives them, up to it, or the dragged
+        // border's place exactly.
+        let fixed = s.lanes_share.map(|share| border_h(share, height - BAR_H - 1.0));
+        let max_h = fixed.unwrap_or_else(|| lanes_max_h(height));
         let lanes = rune::memo("lanes", crate::day::version(s, cx, max_h, &theme.id), || crate::day::lanes(s, cx, &p, max_h));
-        let body = row().key("body").w_full().grow(1.0).min_h(0.0).child(list_pane(s, &p)).child(el().w(1.0).h_full().fill(p.line)).child(inspector(cx));
-        root = root.child(lanes).child(body);
+        let lanes = col().key("lanes-block").w_full().fill(p.track).on_layout(|s: &mut Desk, r| s.lanes_h = r[3]).child(lanes);
+        let lanes = match fixed {
+            Some(h) => lanes.h(h),
+            None => lanes,
+        };
+        let details = match s.current() {
+            Some(_) => inspector(cx),
+            None => rune::memo("day-summary", crate::details::version(s, cx, &theme.id), || crate::details::summary(s, cx, &p)),
+        };
+        let details = col().key("details").w_full().grow(1.0).min_h(0.0).child(details);
+        root = root.child(lanes).child(border(&p)).child(details);
     }
     if let Some(panel) = s.panel {
         root = root.child(crate::settings::panel(s, panel, &p, height));
@@ -90,11 +106,64 @@ pub fn window_size(s: &Desk, cx: &Cx<Desk>) -> (f32, f32) {
     }
 }
 
+/// The height of the lanes, their header and what is under them, for a border dragged to `share`
+/// of the `room` under the bar: from 25% to 75% of it, the details pane keeping 200 points.
+pub fn border_h(share: f32, room: f32) -> f32 {
+    (share.clamp(SHARE_MIN, SHARE_MAX) * room).min(room - DETAILS_MIN - BORDER_H).max(0.0)
+}
+
+/// The border between the lanes and the details: a drag moves it and saves its place when it
+/// ends, a double click gives back the room Room for the lanes gives.
+fn border(p: &Pal) -> El {
+    row()
+        .key("border")
+        .w_full()
+        .h(BORDER_H)
+        .center()
+        .fill(p.bg)
+        .hover(p.hover)
+        .cursor(Cursor::ResizeRow)
+        .role("separator")
+        .label("The border between the lanes and the details")
+        .on_drag(|s: &mut Desk, d: &mut Drag, _| drag_border(s, d))
+        .on_double_press(|s: &mut Desk| s.save_lanes_share(None))
+        .child(el().key("border-grip").w(36.0).h(3.0).radius(1.5).fill(p.line))
+}
+
+/// A press, drag or release on the border: the lanes take the height they had and what the
+/// pointer moved, within the places the drag allows; the place is saved when the drag ends.
+pub fn drag_border(s: &mut Desk, d: &Drag) {
+    let room = s.window.1 - BAR_H - 1.0;
+    match d.phase {
+        Phase::Down => s.border_from = Some(s.lanes_h),
+        Phase::Move => {
+            if let Some(from) = s.border_from
+                && room > 0.0
+                && d.dy != 0.0
+            {
+                let h = border_h((from + d.dy) / room, room);
+                s.lanes_share = Some(h / room);
+            }
+        }
+        Phase::Up => {
+            let Some(from) = s.border_from.take() else { return };
+            if d.cancelled() {
+                s.lanes_share = crate::settings::lanes_share(&s.prefs);
+                return;
+            }
+            if d.dy != 0.0 && room > 0.0 {
+                let share = border_h((from + d.dy) / room, room) / room;
+                s.save_lanes_share(Some(share));
+            }
+        }
+    }
+}
+
 /// The most the lanes take with what is under them, in a window `height` points high.
 pub fn lanes_max_h(height: f32) -> f32 {
     // 45% of the room under the bar, or more, up to 55%, to show 8 session lanes at 900 points
     // high and 3 at 640, and in between as many as a straight line between them gives.
-    let room = height - BAR_H;
+    let room = height - BAR_H - 1.0;
     let sessions = (3.0 + (height - 640.0) / 260.0 * 5.0).floor().clamp(3.0, 8.0) as usize;
     (room * LANES_SHARE).max(crate::day::height_for(sessions)).min(room * 0.55)
 }
@@ -172,9 +241,9 @@ pub fn dot(c: Color, size: f32) -> El {
     el().w(size).h(size).radius(size / 2.0).fill(c)
 }
 
-/// The window's own title bar: the room for the window's buttons, the day's name with the steps
-/// to the days before and after, Today, the day's summary, the status, the lanes' zoom, the
-/// filter and the live mark. Dragging it where it has no control moves the window.
+/// The window's own title bar: the room for the window's buttons, the switch and `Sessions`, the
+/// day's name with the steps to the days before and after, Today, the status, the filter and the
+/// live mark. Dragging it where it has no control moves the window.
 fn bar(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
     let b = &s.browser;
     let inset = cx.titlebar_inset();
@@ -189,33 +258,27 @@ fn bar(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
         .pr(14.0)
         .gap(10.0)
         .center_y()
-        .child(crate::reports::switch(s, p));
+        .child(crate::reports::switch(s, p))
+        .child(crate::sessions::bar_button(s, p));
     // Reports and Calendar have no day: the bar keeps the switch, the status and the live mark.
     let day = s.reports.mode == crate::reports::Mode::Day;
+    let sessions = s.reports.mode == crate::reports::Mode::Sessions;
+    if sessions {
+        bar = bar.children(crate::sessions::bar_controls(s, p));
+    }
     if day {
         bar = bar
-            .child(step_button("day-back", "‹", "The day before", true, p).on_press(|s: &mut Desk| s.browser.step_day_by(-1)))
+            .child(step_button("day-back", "‹", "The day before", true, p).on_press(|s: &mut Desk| s.step_day(-1)))
             .child(text(local_time(b.day_noon(), "%A, %-d %B")).key("day-name").font(pal::DAY).color(p.ink).single_line())
-            .child(step_button("day-on", "›", "The day after", !latest, p).on_press(|s: &mut Desk| s.browser.step_day_by(1)))
-            .child(button("today", "Today", !latest, p.panel, p).on_press(|s: &mut Desk| s.browser.show_latest_day()));
-    }
-    if let Some(summary) = crate::day::summary(s).filter(|_| day) {
-        bar = bar.child(text(summary).key("day-summary").font(pal::BODY).color(p.ink2).single_line().truncate().shrink().min_w(0.0));
+            .child(step_button("day-on", "›", "The day after", !latest, p).on_press(|s: &mut Desk| s.step_day(1)))
+            .child(button("today", "Today", !latest, p.panel, p).on_press(|s: &mut Desk| s.show_latest()));
     }
     bar = bar.child(spacer().grow(1.0));
     if s.status_shown() {
         bar = bar.child(text(s.status.0.clone()).key("status").font(pal::BODY).color(p.ink2).single_line().truncate().shrink().min_w(0.0));
     }
-    let zoom = segments(
-        "zoom",
-        vec![
-            segment("zoom-fit".into(), "Fit", s.fit, p).on_press(|s: &mut Desk| s.fit = true),
-            segment("zoom-day".into(), "24 h", !s.fit, p).on_press(|s: &mut Desk| s.fit = false),
-        ],
-        p.panel,
-    );
-    if day {
-        bar = bar.child(zoom).child(filter_field(s, p));
+    if day || sessions {
+        bar = bar.child(filter_field(s, p));
     }
     if s.live {
         bar = bar
@@ -241,7 +304,7 @@ fn filter_field(s: &Desk, p: &Pal) -> El {
     field = overlay::ring(field, editing, p);
     // The placeholder, or what is typed; while typing, it ends at the caret, its start cut when long.
     if !(empty && editing) {
-        let (shown, color) = if empty { ("Filter by project or id", p.ink3) } else { (b.filter(), p.ink) };
+        let (shown, color) = if empty { ("Filter by project, id or title", p.ink3) } else { (b.filter(), p.ink) };
         let t = text(shown.to_string()).key("filter-text").font(pal::BODY).color(color).single_line().min_w(0.0);
         field = field.child(if editing { t.truncate_head().shrink() } else { t.truncate().grow(1.0) });
     }
@@ -268,42 +331,10 @@ fn filter_field(s: &Desk, p: &Pal) -> El {
     field
 }
 
-/// The slots of the list: a row per listed session and, in time order, a separator row before
-/// the first session of each day; in waiting order, `Waiting for you` (or `Nobody waits for
-/// you`) on top and `Others` after the last session that waits.
-pub fn slots(s: &Desk) -> Vec<Slot> {
-    let b = &s.browser;
-    let mut out = Vec::with_capacity(b.len() + 16);
-    if b.sort_order() == Sort::Waiting {
-        let now = now_ms();
-        let last = (0..b.len()).rev().find(|&r| b.wait(r, now).is_some());
-        out.push(Slot::Label(if last.is_some() { "Waiting for you" } else { "Nobody waits for you" }));
-        let others = last.map_or(0, |l| l + 1);
-        for r in 0..b.len() {
-            if r == others {
-                out.push(Slot::Label("Others"));
-            }
-            out.push(Slot::Row(r));
-        }
-        if others >= b.len() && last.is_none() {
-            out.push(Slot::Label("Others"));
-        }
-        return out;
-    }
-    let by_time = b.sort_order() == Sort::Time;
-    let offset = &rhythm::local_offset;
-    let mut last = None;
-    for r in 0..b.len() {
-        if by_time {
-            let date = rhythm::date_of(b.active_ms(r), offset);
-            if last != Some(date) {
-                out.push(Slot::Day(date));
-                last = Some(date);
-            }
-        }
-        out.push(Slot::Row(r));
-    }
-    out
+/// A project's name as the lanes label it: the last folder of its path (`app` of `~/src/app`), or
+/// a group's name as it is (`temporary folders`). The full path is in the inspector.
+pub fn project_name(project: &str) -> &str {
+    project.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().filter(|n| !n.is_empty()).unwrap_or(project)
 }
 
 /// A day's name in the list: Today, Yesterday, the weekday within the week, the date before.
@@ -317,83 +348,6 @@ pub fn day_label(date: i64, today: i64) -> String {
     }
 }
 
-fn list_pane(s: &Desk, p: &Pal) -> El {
-    let b = &s.browser;
-    let offset = s.list_offset.clone();
-    let count = s.slots.borrow().len();
-    let rows = col().key("rows").w_full().growth(GrowthSpec::default()).virtual_rows(
-        count,
-        ROW,
-        |s: &Desk, i| match s.slots.borrow().get(i) {
-            Some(Slot::Row(r)) => Cow::Borrowed(s.browser.session(*r)),
-            Some(Slot::Day(d)) => Cow::Owned(format!("day-{d}")),
-            Some(Slot::Label(l)) => Cow::Owned(format!("label-{l}")),
-            None => Cow::Borrowed("gone"),
-        },
-        list_row,
-    );
-    // Where the rows on the screen go when sessions come and go is the browser's: the poll scrolls
-    // the list to the first row it keeps there.
-    let list = col()
-        .key(LIST)
-        .w_full()
-        .grow(1.0)
-        .min_h(0.0)
-        .scroll(ScrollSpec { stick_bottom: false })
-        .on_scroll_offset(move |at| offset.set(at.offset[1]))
-        .on_layout(|s: &mut Desk, r| s.list_height = r[3])
-        .child(rows);
-    let (total, pending) = b.known_total();
-    let n = b.len() as u64;
-    let none = n == 0 && !b.filter().is_empty();
-    let title = format!("{} {}, {}", tokprof_core::fmt::int(n), if n == 1 { "session" } else { "sessions" }, usd(total));
-    // The sessions still being costed, quieter, after the title while there are any.
-    let costing = (pending > 0)
-        .then(|| text(format!("costing {pending}")).key("list-costing").font(pal::SMALL).color(p.ink3).single_line().truncate().shrink().min_w(0.0));
-    // The title keeps its room; the costing count gives way first.
-    let title_w = pal::text_w(&title, pal::SMALL_STRONG).min(LIST_WIDTH * 0.5);
-    let sorts = b.sorts().iter().map(|&sort| {
-        let label = match sort {
-            Sort::Time => "Time",
-            Sort::Cost => "Cost",
-            Sort::Next => "Next",
-            Sort::Waiting => "Waiting",
-        };
-        segment(format!("sort-{label}"), label, b.sort_order() == sort, p).px(9.0).on_press(move |s: &mut Desk| s.browser.sort_by(sort))
-    });
-    let head = row()
-        .key("list-head")
-        .w_full()
-        .h(HEAD_H)
-        .px(12.0)
-        .gap(8.0)
-        .center_y()
-        .child(
-            text(title)
-                .key("list-title")
-                .font(pal::SMALL_STRONG)
-                .color(if list_has_keys(s) { p.accent } else { p.ink2 })
-                .single_line()
-                .truncate()
-                .min_w(title_w),
-        )
-        .children(costing)
-        .child(spacer().grow(1.0))
-        .child(segments("sort", sorts.collect(), p.bar));
-    col()
-        .key("list-pane")
-        .w(LIST_WIDTH)
-        .h_full()
-        .min_h(0.0)
-        .child(head)
-        .child(el().w_full().h(1.0).fill(p.line))
-        .children(none.then(|| {
-            let what = format!("No session matches “{}”", b.filter());
-            col().w_full().padding(12.0).child(overlay::empty("list-empty", what, Some(overlay::hint(&["esc"], "clears the filter", p)), p))
-        }))
-        .child(list)
-}
-
 /// The time a cache stays warm, as the list counts it down: `24:47`, `1:02:03` past an hour.
 pub fn countdown(ms: i64) -> String {
     let secs = (ms.max(0) + 999) / 1000;
@@ -401,41 +355,10 @@ pub fn countdown(ms: i64) -> String {
     if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
 }
 
-/// Slot `i` of the list. A row's handlers find the session by its id: the row may hold another
-/// one by the time it is pressed.
-fn list_row(s: &Desk, i: usize) -> El {
-    let p = pal::pal(s.theme.get());
-    let slot = s.slots.borrow().get(i).copied();
-    let r = match slot {
-        Some(Slot::Row(r)) => r,
-        Some(Slot::Day(date)) => {
-            let today = rhythm::date_of(now_ms(), &rhythm::local_offset);
-            return row()
-                .w_full()
-                .h(ROW)
-                .px(18.0)
-                .pt(10.0)
-                .center_y()
-                .child(text(day_label(date, today)).key("day-label").font(pal::SMALL_STRONG).color(p.ink3).single_line());
-        }
-        Some(Slot::Label(label)) => {
-            return row()
-                .w_full()
-                .h(ROW)
-                .px(18.0)
-                .pt(10.0)
-                .center_y()
-                .child(text(label).key("group-label").font(pal::SMALL_STRONG).color(p.ink3).single_line());
-        }
-        None => return el().h(ROW),
-    };
-    let b = &s.browser;
-    let now = now_ms();
-    let c = b.cells(r, now);
-    let selected = b.selected() == Some(r);
-    let (ink, ink2) = (p.ink, p.ink2);
-    let (press, open) = (b.session(r).to_string(), b.session(r).to_string());
-    let next = match (c.warm_until, c.next_usd) {
+/// The next-request cell of a row at `now`: `…` while it is being costed, the countdown in green
+/// while its cache is warm, the next request's cost in red once it is cold, `none` without one.
+pub fn next_cell(c: &tokprof_browse::browser::Cells, now: i64, p: &Pal) -> El {
+    match (c.warm_until, c.next_usd) {
         // Still being costed.
         _ if c.usd.is_none() => row().key("next").child(text("…").key("next-text").font(pal::SMALL).color(p.ink3).single_line()),
         (Some(until), _) => row()
@@ -451,52 +374,5 @@ fn list_row(s: &Desk, i: usize) -> El {
             .child(dot(p.cold_dot, 7.0))
             .child(text(usd(usd_next)).key("next-text").font(pal::SMALL_NUM).color(p.cold).single_line()),
         (None, None) => row().key("next").child(text("none").key("next-text").font(pal::SMALL).color(p.ink3).single_line()),
-    };
-    let name = c.title.map_or_else(|| c.project.to_string(), str::to_string);
-    let agent = p.agents[c.agent_place % p.agents.len()];
-    // The selected row is a rounded row inset in the pane, ringed while the list has the keyboard.
-    let inner = row()
-        .key("cells")
-        .w_full()
-        .h_full()
-        .px(6.0)
-        .gap(8.0)
-        .center_y()
-        .radius(R_ROW)
-        .fill(if selected { p.sel } else { Color::TRANSPARENT })
-        .hover(if selected { p.sel } else { p.hover })
-        .child(match b.wait(r, now) {
-            // A wait in place of the time, in the color of a wait in the lanes.
-            Some(wait) => text(rhythm::duration(wait)).key("time").font(pal::SMALL_NUM).color(p.wait).single_line().w(36.0),
-            None => text(local_time(c.active_ms, "%H:%M")).key("time").font(pal::SMALL_NUM).color(ink2).single_line().w(36.0),
-        })
-        .child(dot(agent, 7.0).key("agent"))
-        .child(text(name.clone()).key("title").font(pal::BODY).color(ink).single_line().truncate().grow(1.0).shrink().min_w(0.0))
-        .child(row().w(58.0).justify_end().child(text(c.cost.to_string()).key("cost").font(pal::STRONG_NUM).color(ink).single_line()))
-        .child(row().w(68.0).justify_end().child(next));
-    let inner = overlay::ring_at(inner, selected && list_has_keys(s), 1.0, &p);
-    row()
-        .w_full()
-        .h(ROW)
-        .px(6.0)
-        .py(1.0)
-        .role("option")
-        .label(format!("{} {} {} {}", local_time(c.active_ms, "%H:%M"), c.agent, name, c.cost))
-        .checked(selected)
-        .help_when_truncated(format!("{name}\n{}", c.project))
-        .on_press_tx(move |s: &mut Desk, tx| {
-            s.select_session(&press);
-            s.pane = crate::Focus::List;
-            tx.scroll_to_y(PANE, 0.0);
-        })
-        .on_double_press(move |s: &mut Desk| {
-            s.select_session(&open);
-            s.browser.zoom_in();
-        })
-        .child(inner)
-}
-
-/// Whether the list has the keyboard: as the pane that has it, while no filter is being typed.
-pub fn list_has_keys(s: &Desk) -> bool {
-    s.pane == crate::Focus::List && !s.browser.editing() && !s.browser.zoomed()
+    }
 }

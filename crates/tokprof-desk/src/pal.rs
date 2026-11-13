@@ -139,6 +139,8 @@ pub const HEAD: TextStyle = TextStyle::new(12.0, 650.0);
 pub const TITLE: TextStyle = TextStyle::new(18.0, 700.0).tracking(-0.2);
 pub const DAY: TextStyle = TextStyle::new(14.5, 700.0).tracking(-0.15);
 pub const KPI: TextStyle = TextStyle::new(28.0, 700.0).tracking(-0.4);
+/// The large number of a card of the day summary.
+pub const CARD: TextStyle = TextStyle::new(20.0, 650.0).tracking(-0.2).features(TNUM);
 pub const HOURS: TextStyle = TextStyle::new(10.5, 400.0).features(TNUM);
 
 /// About how wide `t` is in `style`, in points: for a least width that keeps a short text whole

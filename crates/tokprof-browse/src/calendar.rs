@@ -318,6 +318,11 @@ impl Calendars {
         self.kept.as_mut()
     }
 
+    /// Whether a worker computes it; a detached one holds only what it is given.
+    pub fn computes(&self) -> bool {
+        self.jobs.is_some()
+    }
+
     /// Whether it is being computed, a first time or again.
     pub fn reading(&self) -> bool {
         self.pending.is_some()

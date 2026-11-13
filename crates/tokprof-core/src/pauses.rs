@@ -6,6 +6,7 @@
 //! comes from, by the analysis's own rule: a request with usage that the filter keeps.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 
 use crate::analysis::cache::Cause;
 use crate::analysis::{Fact, Filter, MissEvent, RequestRecord, Sink};
@@ -65,8 +66,8 @@ impl Starter {
 }
 
 /// A cold return: the pause before it, what its first request cost and could have saved, the
-/// context it came back to, and who started it.
-#[derive(Clone, Copy, Debug)]
+/// context it came back to, who started it, and its session.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ColdReturn {
     /// When the return's request was sent.
     pub ts_ms: i64,
@@ -75,6 +76,8 @@ pub struct ColdReturn {
     pub premium_usd: f64,
     pub context: u64,
     pub starter: Starter,
+    /// The id of the session whose main conversation came back.
+    pub session: Arc<str>,
 }
 
 /// One session: its largest main prompt, what all its requests spent, its cold returns, the
@@ -282,6 +285,8 @@ struct Last {
 struct Current {
     agent: AgentId,
     session: String,
+    /// The session's whole id, which each of its cold returns names.
+    id: Arc<str>,
     /// The chain of each request the analysis reports, in its order.
     order: Vec<usize>,
     next: usize,
@@ -344,6 +349,7 @@ impl Sink for Pauses {
         self.current = Some(Current {
             agent: s.agent.clone(),
             session: s.short_id().to_string(),
+            id: s.id.as_str().into(),
             order,
             next: 0,
             conversation_of,
@@ -424,6 +430,7 @@ impl Sink for Pauses {
             premium_usd: m.premium_usd.unwrap_or(0.0),
             context: last.context,
             starter: Starter::of(last.trigger),
+            session: cur.id.clone(),
         });
         if let Some(size) = agent.sessions.get_mut(&cur.session) {
             size.cold_returns += 1;
@@ -571,6 +578,14 @@ mod tests {
         let p = pauses_of(&[s]);
         assert!(p.returns.is_empty() && p.return_rows().is_empty() && p.typed.is_empty());
         assert_eq!(p.sessions["s"].largest, 0, "a subagent's prompt does not size the session");
+    }
+
+    #[test]
+    fn each_cold_return_names_its_session() {
+        let p = pauses_of(&[with_return("3f951de0-14bc-4966-880b-81f649966ccf", 2.0, Prompt, 0), with_return("b", 3.0, Prompt, 1)]);
+        let mut named: Vec<(&str, i64)> = p.returns.iter().map(|r| (&*r.session, r.pause_ms)).collect();
+        named.sort_unstable();
+        assert_eq!(named, [("3f951de0-14bc-4966-880b-81f649966ccf", 120 * MINUTE), ("b", 180 * MINUTE)], "by the whole id, not the short one");
     }
 
     #[test]

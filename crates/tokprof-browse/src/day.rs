@@ -123,7 +123,7 @@ pub fn build(
         None => rhythm::date_of(now_ms, offset),
     };
     let bounds = view.days.bounds(date, offset);
-    let returns: Vec<_> = cold.agents.values().flat_map(|a| a.returns.iter().copied()).filter(|r| r.ts_ms >= bounds.0 && r.ts_ms < bounds.1).collect();
+    let returns: Vec<_> = cold.agents.values().flat_map(|a| a.returns.iter().cloned()).filter(|r| r.ts_ms >= bounds.0 && r.ts_ms < bounds.1).collect();
     let priced = cold.agents.values().any(|a| a.priced);
     let hour = axis_hour.unwrap_or_else(|| (bounds.0 + offset(bounds.0)).rem_euclid(24 * HOUR_MS) / HOUR_MS);
     let axis = axis_at(bounds.0, hour, offset);

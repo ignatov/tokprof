@@ -25,21 +25,18 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
         &[
             k(&["⌘K"], "command palette"),
             k(&["⌘,"], "settings"),
+            k(&["⌘0"], "Sessions"),
             k(&["⌘1", "⌘2", "⌘3"], "Day, Reports, Calendar"),
             k(&["?"], "this key help"),
             k(&["Tab", "⇧Tab"], "keyboard to the next, previous pane"),
-            k(&["⏎"], "inspector full size; in Flame, zoom in"),
-            k(&["esc", "⌫"], "back from full size"),
-            k(&["[", "]"], "day before, day after"),
-            k(&["d"], "the selected session's day"),
-            k(&["/"], "filter by project, agent or id"),
+            k(&["/"], "filter by project, agent, id or title"),
             k(&["s"], "sort by time, cost, next request"),
             k(&["r"], "sort again"),
             k(&["c"], "copy the handoff line"),
             k(&["f"], "write the JFR for IntelliJ"),
             k(&["o"], "write the HTML flame graph, open it"),
             k(&["⌘W"], "close the window"),
-            k(&["q", "⌘Q", "Ctrl+C"], "quit"),
+            k(&["q", "⌘Q", "Ctrl+C"], "quit; esc never quits"),
         ],
     ),
     (
@@ -48,7 +45,20 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
             k(&["↑", "↓", "k", "j"], "the lane above, below"),
             k(&["Home", "End"], "the first, the last lane"),
             k(&["←", "→", "h", "l"], "day before, day after"),
-            k(&["esc"], "keyboard back to the list"),
+            k(&["[", "]"], "day before, day after"),
+            k(&["t"], "the day of the latest action"),
+            k(&["⏎"], "inspector full size"),
+            k(&["esc"], "no session selected, then clear the filter"),
+        ],
+    ),
+    (
+        "The day",
+        &[
+            k(&["↑", "↓", "k", "j"], "row above, below"),
+            k(&["Home", "End", "g", "G"], "the first, the last row"),
+            k(&["PgUp", "PgDn", "Space"], "scroll a page"),
+            k(&["⏎"], "select the row's session"),
+            k(&["esc"], "keyboard back to the lanes"),
         ],
     ),
     (
@@ -72,13 +82,16 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
         ],
     ),
     (
-        "List",
+        "Sessions",
         &[
             k(&["↑", "↓", "k", "j"], "session above, below"),
             k(&["PgUp", "PgDn"], "a page up, down"),
             k(&["Home", "End", "g", "G"], "the first, the last session"),
-            k(&["←", "→", "h", "l"], "day before, day after"),
-            k(&["esc"], "clear the filter, or quit"),
+            k(&["⏎"], "open in Day; on a project, fold or unfold"),
+            k(&["→", "←", "l", "h"], "unfold, fold the project"),
+            k(&["t"], "time order, from the top"),
+            k(&["Tab"], "keyboard to the inspector and back"),
+            k(&["esc"], "close the inspector, then clear the filter"),
             k(&["⏎"], "while typing a filter: keep it"),
         ],
     ),
@@ -93,7 +106,8 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
             k(&["PgUp", "PgDn"], "ten rows up, down"),
             k(&["Home", "End", "g", "G"], "the first, the last row"),
             k(&["Space"], "a page down"),
-            k(&["esc"], "keyboard back to the list"),
+            k(&["esc", "⌫"], "back from full size"),
+            k(&["esc"], "keyboard back to the lanes"),
         ],
     ),
     (
@@ -126,7 +140,7 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
             k(&["↑", "↓", "k", "j"], "row above, below"),
             k(&["PgUp", "PgDn"], "ten rows up, down"),
             k(&["Home", "End", "g", "G"], "the first, the last"),
-            k(&["⏎"], "open the day, the project, a row's sessions or a session"),
+            k(&["⏎"], "open the day, the project in Sessions, a row's sessions or a session"),
             k(&["esc", "⌘1"], "back to Day"),
         ],
     ),
@@ -146,7 +160,7 @@ pub const GROUPS: &[(&str, &[Keys])] = &[
 ];
 
 /// The groups in the left column; the rest go in the right one.
-const LEFT: usize = 4;
+const LEFT: usize = 6;
 
 /// The card's width and the width of a column of groups in it.
 const CARD_W: f32 = 860.0;

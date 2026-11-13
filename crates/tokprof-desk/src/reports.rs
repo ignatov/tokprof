@@ -34,6 +34,8 @@ pub enum Mode {
     Day,
     Reports,
     Calendar,
+    /// The Sessions screen (see `sessions`), apart from the switch.
+    Sessions,
 }
 
 /// The parts of the report that take the keyboard, in the order Tab moves through them.
@@ -141,8 +143,11 @@ pub fn poll(s: &mut Desk, tx: &mut Tx) -> bool {
     arrived || moved || stored
 }
 
-/// Shows Day, Reports or Calendar.
+/// Shows Day, Reports, Calendar or Sessions.
 pub fn show(s: &mut Desk, mode: Mode) {
+    if mode == Mode::Sessions && s.reports.mode != Mode::Sessions {
+        crate::sessions::entered(s);
+    }
     s.reports.mode = mode;
     s.reports.hover = None;
     s.calendar.hover = None;
@@ -162,9 +167,11 @@ pub fn pick_period(s: &mut Desk, days: u32, tx: &mut Tx) {
     }
 }
 
-/// ⌘1 shows Day, ⌘2 Reports and ⌘3 Calendar, whichever shows now.
+/// ⌘1 shows Day, ⌘2 Reports, ⌘3 Calendar and ⌘0 Sessions, whichever shows now.
 pub fn switch_key(s: &mut Desk, e: &KeyEvent) -> bool {
-    let mode = if e.is_command('1') {
+    let mode = if e.is_command('0') {
+        Mode::Sessions
+    } else if e.is_command('1') {
         Mode::Day
     } else if e.is_command('2') {
         Mode::Reports
@@ -187,20 +194,16 @@ pub fn dates(r: &Report) -> Vec<i64> {
 /// Opens the lanes of `date` in Day, as a click on its bar does.
 pub fn open_day(s: &mut Desk, date: i64, tx: &mut Tx) {
     s.browser.show_day(date);
+    // The selection stays where its session has a lane that day.
+    s.stepped = true;
     show(s, Mode::Day);
     tx.scroll_to_y(view::PANE, 0.0);
 }
 
-/// Filters the list to `project` and shows Day, as a click on its bar does.
+/// Shows Sessions with `project` picked in its project picker, as a click on its bar does.
 pub fn open_project(s: &mut Desk, project: &str, tx: &mut Tx) {
-    s.browser.set_filter(project);
-    s.cursor = 0;
-    show(s, Mode::Day);
-    tx.scroll_to_y(view::LIST, 0.0);
-    if let Some(row) = s.browser.selected() {
-        tx.scroll_into_view(s.browser.session(row).to_string());
-    }
-    tx.scroll_to_y(view::PANE, 0.0);
+    crate::sessions::show(s, tx);
+    crate::sessions::pick_project(s, &format!("p:{project}"), tx);
 }
 
 /// The rows a part's cursor moves through in the report.

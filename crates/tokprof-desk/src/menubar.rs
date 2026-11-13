@@ -11,7 +11,7 @@ use rune::{AppHandle, Tx};
 use tokprof_core::fmt::{clip_end, usd};
 
 use crate::view::countdown;
-use crate::{Book, Desk, Focus, reports, settings, view};
+use crate::{Book, Desk, settings};
 
 /// A session counts while one more request would cost at least this much once its cache is cold.
 pub const THRESHOLD_USD: f64 = 1.00;
@@ -207,8 +207,8 @@ pub fn poll(s: &mut Desk, now: i64, tx: &mut Tx) {
     let _ = nudge;
 }
 
-/// A pick in the menu, once the window comes forward: a session is selected in Day as a click on
-/// its row selects it, over no card; `Settings…` opens the settings panel.
+/// A pick in the menu, once the window comes forward: a session opens in Day on its day, as
+/// `Open in Day` of Sessions opens it, over no card; `Settings…` opens the settings panel.
 pub fn pick(s: &mut Desk, p: Pick, tx: &mut Tx) {
     match p {
         Pick::Open => {}
@@ -224,18 +224,8 @@ pub fn pick(s: &mut Desk, p: Pick, tx: &mut Tx) {
                 return;
             }
             (s.panel, s.palette, s.help) = (None, None, false);
-            reports::show(s, reports::Mode::Day);
-            let zoomed = s.browser.zoomed();
-            if s.browser.open_session(&id) {
-                if zoomed {
-                    s.restore_list(tx);
-                }
-                s.pane = Focus::List;
-                s.cursor = 0;
-                tx.scroll_to_y(view::PANE, 0.0);
-                tx.scroll_into_view(id.clone());
-                tx.scroll_into_view(format!("lane-{id}"));
-            }
+            // In Day on its day, with its Summary from the top, from whichever screen shows.
+            crate::sessions::open_in_day(s, &id, tx);
         }
     }
 }

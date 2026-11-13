@@ -130,10 +130,7 @@ pub(crate) fn cursor_row(n: Option<usize>) {
 pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
     ROWS.set((0, keyboard(s).then_some(s.cursor)));
     // The pane's padding and a card's.
-    let pane_w = cx.layout_size(view::PANE).map(|sz| sz[0]).unwrap_or_else(|| {
-        let list = if s.browser.zoomed() { 0.0 } else { view::LIST_WIDTH + 1.0 };
-        view::window_size(s, cx).0 - list
-    });
+    let pane_w = cx.layout_size(view::PANE).map(|sz| sz[0]).unwrap_or_else(|| view::window_size(s, cx).0);
     ROOM.set(pane_w - 36.0 - 28.0);
     // What stays above the scrolling pane: the request timeline and its card.
     let mut pinned = None;
@@ -177,31 +174,35 @@ pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
     // The chosen tab is a pill; while the inspector has the keyboard and its tab has no rows for a
     // cursor, the ring marks it instead.
     let ring_tab = keyboard(s) && s.tab_rows.get() == 0 && s.tab != Tab::Flame;
-    let (pad, digits) = tab_fit(pane_w);
-    let tabs = row().key("tabs").w_full().h(view::HEAD_H).px(10.0).gap(1.0).center_y().children(Tab::ALL.into_iter().enumerate().map(|(i, t)| {
-        let on = s.tab == t;
-        let tab = row()
-            .key(format!("tab-{}", t.name()))
-            .h(28.0)
-            // Where the digits fit, a tab keeps their room without the keyboard too, around its
-            // name, so that the tabs stay where they are when the keyboard comes and goes.
-            .px(if digits && !keyboard(s) { pad + (DIGIT_W + 5.0) / 2.0 } else { pad })
-            .gap(5.0)
-            .center_y()
-            .radius(PILL)
-            .fill(if on { p.sel } else { Color::TRANSPARENT })
-            .hover(if on { p.sel } else { p.hover })
-            .role("tab")
-            .checked(on)
-            .label(t.name())
-            .on_press_tx(move |s: &mut Desk, tx| {
-                s.show_tab(t, tx);
-                s.pane = crate::Focus::Inspector;
-            })
-            .child(text(t.name()).font(pal::HEAD).color(if on { if keyboard(s) { p.accent } else { p.ink } } else { p.ink2 }).single_line())
-            .children((digits && keyboard(s)).then(|| overlay::keycap_on(&((i + 1) % 10).to_string(), p.panel, p).key("tab-digit")));
-        overlay::ring(tab, on && ring_tab, p)
-    }));
+    // Under the lanes, `‹ The day` before the tabs goes back to the day summary.
+    let back = (!s.browser.zoomed()).then(|| back_button(p));
+    let (pad, digits) = tab_fit(pane_w - if back.is_some() { BACK_W + 8.0 } else { 0.0 });
+    let tabs = row().key("tabs").w_full().h(view::HEAD_H).px(10.0).gap(1.0).center_y().children(back.map(|b| b.mr(8.0))).children(
+        Tab::ALL.into_iter().enumerate().map(|(i, t)| {
+            let on = s.tab == t;
+            let tab = row()
+                .key(format!("tab-{}", t.name()))
+                .h(28.0)
+                // Where the digits fit, a tab keeps their room without the keyboard too, around its
+                // name, so that the tabs stay where they are when the keyboard comes and goes.
+                .px(if digits && !keyboard(s) { pad + (DIGIT_W + 5.0) / 2.0 } else { pad })
+                .gap(5.0)
+                .center_y()
+                .radius(PILL)
+                .fill(if on { p.sel } else { Color::TRANSPARENT })
+                .hover(if on { p.sel } else { p.hover })
+                .role("tab")
+                .checked(on)
+                .label(t.name())
+                .on_press_tx(move |s: &mut Desk, tx| {
+                    s.show_tab(t, tx);
+                    s.pane = crate::Focus::Inspector;
+                })
+                .child(text(t.name()).font(pal::HEAD).color(if on { if keyboard(s) { p.accent } else { p.ink } } else { p.ink2 }).single_line())
+                .children((digits && keyboard(s)).then(|| overlay::keycap_on(&((i + 1) % 10).to_string(), p.panel, p).key("tab-digit")));
+            overlay::ring(tab, on && ring_tab, p)
+        }),
+    );
     let offset = s.pane_offset.clone();
     let pane = col()
         .key(view::PANE)
@@ -214,6 +215,34 @@ pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
         .child(col().key("pane-body").w_full().px(18.0).pt(14.0).pb(26.0).gap(14.0).children(body));
     let pinned = pinned.map(|t| col().key("pinned").w_full().px(18.0).pt(14.0).child(t));
     col().key("inspector").grow(1.0).h_full().min_w(0.0).min_h(0.0).child(tabs).child(el().w_full().h(1.0).fill(p.line)).children(pinned).child(pane)
+}
+
+/// The width of `‹ The day` with its keycap.
+const BACK_W: f32 = 108.0;
+
+/// `‹ The day`, with esc as its keycap: it deselects the session, and the details pane shows the
+/// day summary.
+fn back_button(p: &Pal) -> El {
+    row()
+        .key("back-to-day")
+        .w(BACK_W)
+        .h(28.0)
+        .pl(10.0)
+        .pr(4.0)
+        .gap(6.0)
+        .center_y()
+        .radius(PILL)
+        .fill(p.bar)
+        .hover(p.hover)
+        .role("button")
+        .label("The day")
+        .on_press_tx(|s: &mut Desk, tx| {
+            s.deselect(tx);
+            s.pane = crate::Focus::Lanes;
+        })
+        .child(text("‹ The day").font(pal::STRONG).color(p.ink).single_line())
+        .child(spacer().grow(1.0))
+        .child(overlay::keycap_on("esc", p.panel, p))
 }
 
 fn note(s: impl Into<String>, p: &Pal) -> El {
@@ -809,6 +838,81 @@ fn summary(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal) -> Vec<El> {
     );
     out.extend(tips(x, p));
     out
+}
+
+/// The Summary in one column, as the Sessions inspector shows it (desk-sessions, Sessions
+/// inspector): the header without its button, the request track, the next request, the ways and
+/// the spend one under another, the cache of the session's glance, the tips, and a line on the
+/// tabs that open in Day.
+pub fn summary_column(s: &Desk, x: &XRay, cx: &Cx<Desk>, p: &Pal) -> Vec<El> {
+    let mut out = vec![narrow_header(s, x, p)];
+    if x.requests == 0 {
+        out.push(note("no requests", p));
+    } else {
+        out.extend(request_track(s, x, cx, p, TRACK_H));
+        out.extend([next_box(s, x, p), ways_box(x, p), spend_box(x, p)]);
+        out.extend(cache_line(s, p));
+        out.extend(tips(x, p));
+    }
+    out.push(
+        text("Requests, Spend, Work, Waits, Prompts, Tools, Context, Cache and Flame open in Day.")
+            .key("in-day-note")
+            .w_full()
+            .wrap()
+            .font(pal::SMALL)
+            .color(p.ink3),
+    );
+    out
+}
+
+/// The header of a narrow column: the title, then the agent and the project, the id and the
+/// models, the folder, and the span, each on a line of its own.
+fn narrow_header(s: &Desk, x: &XRay, p: &Pal) -> El {
+    let agent = s.browser.selected().map(|r| s.browser.cells(r, now_ms()).agent_place).map_or(p.ink2, |place| p.agents[place % p.agents.len()]);
+    let title = x.title.clone().unwrap_or_else(|| "Untitled session".to_string());
+    let facts = row()
+        .key("facts")
+        .w_full()
+        .gap(10.0)
+        .center_y()
+        .child(row().gap(6.0).center_y().child(dot(agent, 7.0)).child(text(x.agent.name().to_string()).font(pal::STRONG).color(agent).single_line()))
+        .child(text(x.project.clone()).font(pal::STRONG).color(p.ink).single_line().truncate_head().shrink().min_w(0.0))
+        .child(text(x.short_id.clone()).font(pal::BODY_NUM).color(p.ink2).single_line().selectable(true));
+    let mut lines = col()
+        .key("header")
+        .w_full()
+        .gap(5.0)
+        .child(text(title).key("title").w_full().wrap().max_lines(3).font(pal::DAY).color(p.ink).selectable(true))
+        .child(facts);
+    if let Some(folder) = folder_line(x) {
+        lines = lines.child(text(folder).key("folder").w_full().font(pal::BODY).color(p.ink2).single_line().truncate_head().selectable(true));
+    }
+    if !x.models.is_empty() {
+        let models = x.models.iter().map(|(m, n)| format!("{m} ×{n}")).collect::<Vec<_>>().join(", ");
+        lines = lines.child(text(models).key("models").w_full().wrap().font(pal::BODY).color(p.ink2));
+    }
+    let mut what = count(x.requests, "request", "requests");
+    if let Some((a, b)) = x.span_ms {
+        what = format!("{} to {}, {}; {what}", local_time(a, "%m-%d %H:%M"), local_time(b, "%H:%M"), human_duration((b - a) as f64 / 1000.0));
+    }
+    lines.child(text(what).key("what").w_full().wrap().font(pal::BODY).color(p.ink2).selectable(true))
+}
+
+/// The cache of the selected session, as its row counts it: its cold returns, and its avoidable
+/// dollars with their share of its cost.
+fn cache_line(s: &Desk, p: &Pal) -> Option<El> {
+    let g = s.browser.selected().and_then(|r| s.browser.glance(r))?;
+    let returns = match g.cold_returns {
+        0 => text("No cold returns").key("cache-returns").font(pal::STRONG).color(p.ink2).single_line(),
+        n => text(count(n, "cold return", "cold returns")).key("cache-returns").font(pal::STRONG).color(p.cold).single_line(),
+    };
+    let avoidable = if g.avoidable >= 0.005 {
+        let share = if g.cost > 0.0 { format!(" ({:.1}% of its cost)", 100.0 * g.avoidable / g.cost) } else { String::new() };
+        text(format!("{} avoidable on cache misses{share}", usd(g.avoidable))).key("cache-avoidable").w_full().wrap().font(pal::BODY).color(p.cold)
+    } else {
+        text("Nothing avoidable on cache misses").key("cache-avoidable").w_full().wrap().font(pal::BODY).color(p.ink2)
+    };
+    Some(boxed("cache-line", "Cache", None, col().w_full().gap(5.0).child(returns).child(avoidable), p))
 }
 
 fn spend_tab(x: &XRay, p: &Pal) -> Vec<El> {

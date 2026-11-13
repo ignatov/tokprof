@@ -313,6 +313,24 @@ impl Lane {
         let asked = self.questions.last().filter(|(q, answer)| answer.is_none() && *q >= last.start && quiet_since(*q)).map(|(q, _)| *q);
         end.max(asked)
     }
+
+    /// The latest event of the turn still open at the end of the log, while the agent does not
+    /// wait for the answer to its own question: its request, question, answer or start. The agent
+    /// works until a silence after it (see [`GAP_MS`] and [`works_at`]). `None` once the turn
+    /// ended, was interrupted, or asked.
+    pub fn working_last(&self) -> Option<i64> {
+        // A turn that a message closed is followed by the message's own turn, so only the last
+        // turn can be unlogged because the log ends inside it.
+        let last = self.turns.last().filter(|t| t.how == End::Unlogged)?;
+        let asked = self.questions.last().is_some_and(|(q, answer)| answer.is_none() && *q >= last.start);
+        (!asked).then_some(last.end)
+    }
+}
+
+/// Whether an agent whose open turn's latest event was at `last` still works at `now_ms`: no
+/// silence has begun since (see Work).
+pub fn works_at(last: i64, now_ms: i64) -> bool {
+    now_ms - last < GAP_MS
 }
 
 /// How long after its end of turn or question a session still counts as waiting for the user.
@@ -2025,6 +2043,7 @@ mod tests {
             premium_usd,
             context: 0,
             starter: Starter::Typed,
+            session: "s".into(),
         };
         let mut p = Pauses::default();
         p.agents

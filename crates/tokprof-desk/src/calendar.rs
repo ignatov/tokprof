@@ -45,7 +45,7 @@ pub struct State {
     /// The window's filters, for the month in review.
     pub select: tokprof_core::query::Query,
     /// The worker's progress as the last poll saw it.
-    seen: Option<(usize, usize)>,
+    pub seen: Option<(usize, usize)>,
 }
 
 impl State {

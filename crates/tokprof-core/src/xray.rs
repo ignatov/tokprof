@@ -690,6 +690,24 @@ pub struct Glance {
     /// Since when the session waits for the user, as the rhythm says (see
     /// [`crate::rhythm::waiting_since`]); the waiting limit is not applied.
     pub waiting_since: Option<i64>,
+    /// The requests of all its logs, subagents included.
+    pub requests: u64,
+    /// When the session started, in epoch ms: its first request, subagents included, or without
+    /// one the first record of its main log with a time, when its source can tell.
+    pub started_ms: Option<i64>,
+    /// The premium of its unexpected misses, expected rebuilds left out, as the summary's
+    /// `avoidable on cache misses` counts it (see cache-misses).
+    pub avoidable: f64,
+    /// Its cold returns: requests of its main conversations whose miss has the cause
+    /// `idle > TTL`, as `tokprof pauses --session` counts them (see pause-report).
+    pub cold_returns: u64,
+    /// The models of its requests with their request counts, most requests first.
+    pub models: Vec<(String, u64)>,
+    /// While the agent's latest turn is open and it does not wait for the answer to its own
+    /// question, the latest event of that turn (see [`crate::rhythm::Lane::working_last`]);
+    /// `None` for a session the rhythm leaves out. The session runs while this is less than 15
+    /// minutes old (see [`Glance::runs_at`]).
+    pub working_last: Option<i64>,
 }
 
 impl Glance {
@@ -698,27 +716,72 @@ impl Glance {
         let cold = now_ms >= self.cold_at_ms;
         if cold { self.next_cold } else { self.next_warm }.map(|usd| (usd, cold))
     }
+
+    /// Whether the session runs at `now_ms`: its agent works as work-rhythm's Work counts it,
+    /// in a turn that has not ended, not waiting for an answer, and not silent for 15 minutes.
+    pub fn runs_at(&self, now_ms: i64) -> bool {
+        self.working_last.is_some_and(|last| crate::rhythm::works_at(last, now_ms))
+    }
+
+    /// Whether the main conversation's cache is warm at `now_ms`, as the next-request cell counts
+    /// it down: the session has a next request, and a cache lifetime that has not run out. A
+    /// cache without a known lifetime has nothing to count down and is not warm.
+    pub fn warm_at(&self, now_ms: i64) -> bool {
+        self.cold_at_ms != i64::MAX && self.next(now_ms).is_some_and(|(_, cold)| !cold)
+    }
+
+    /// The model of most of its requests, and how many other models it used.
+    pub fn model(&self) -> Option<(&str, usize)> {
+        self.models.first().map(|(m, _)| (m.as_str(), self.models.len() - 1))
+    }
 }
 
-/// What a session costs and what its next request would cost now. `temp` lists the temporary
-/// folders, whose sessions never wait for the user.
+/// What a session costs and what its next request would cost now, with its counts. `temp` lists
+/// the temporary folders, whose sessions never wait for the user and never run.
 pub fn glance(catalog: &Catalog, row: &SessionRow, pricing: &Pricing, now_ms: i64, temp: &[String]) -> Glance {
-    let mut t = Totals::default();
+    // A log that cannot be read is left out; each is dropped once analyzed, but the main one.
+    let logs = row.files().enumerate().filter_map(|(k, file)| catalog.parse(file).ok().map(|s| (k == 0, s)));
+    let mut g = glance_of_logs(logs, pricing, now_ms, temp);
+    if g.started_ms.is_none() {
+        g.started_ms = catalog.first_active(&row.file);
+    }
+    g
+}
+
+/// The glance of a session from its logs, each with whether it is the main one, in one pass:
+/// the totals and the cold returns of all of them, the rest from the main log.
+fn glance_of_logs(logs: impl Iterator<Item = (bool, Session)>, pricing: &Pricing, now_ms: i64, temp: &[String]) -> Glance {
+    let mut sink = (Totals::default(), crate::pauses::Pauses::new(Filter::default()));
     let mut main = None;
-    for (k, file) in row.files().enumerate() {
-        if let Ok(s) = catalog.parse(file) {
-            analysis::analyze(&s, pricing, &Filter::default(), &mut t);
-            if k == 0 {
-                main = Some(s);
-            }
+    for (is_main, s) in logs {
+        analysis::analyze(&s, pricing, &Filter::default(), &mut sink);
+        if is_main {
+            main = Some(s);
         }
     }
-    glance_of(main, t.components.iter().map(|v| v.usd).sum(), pricing, now_ms, temp)
+    let (totals, mut pauses) = sink;
+    pauses.finish();
+    let mut g = glance_of(main, &totals, pricing, now_ms, temp);
+    g.cold_returns = pauses.agents.values().map(|a| a.returns.len() as u64).sum();
+    g
 }
 
-/// The glance of a session from its main log, and what all its logs cost.
-fn glance_of(main: Option<Session>, cost: f64, pricing: &Pricing, now_ms: i64, temp: &[String]) -> Glance {
-    let mut g = Glance { cost, cold_at_ms: i64::MAX, ..Glance::default() };
+/// The glance of a session from its main log and the totals of all its logs; its cold returns
+/// and, without a request, its start are the caller's.
+fn glance_of(main: Option<Session>, totals: &Totals, pricing: &Pricing, now_ms: i64, temp: &[String]) -> Glance {
+    let mut g = Glance {
+        cost: totals.components.iter().map(|v| v.usd).sum(),
+        cold_at_ms: i64::MAX,
+        requests: totals.requests,
+        started_ms: totals.rows.iter().map(|r| r.ts_ms).filter(|&t| t > 0).min(),
+        avoidable: totals.misses.iter().filter(|m| !m.cause.expected()).filter_map(|m| m.premium_usd).sum(),
+        models: {
+            let mut models: Vec<(String, u64)> = totals.models.iter().map(|(m, n)| (m.clone(), *n)).collect();
+            models.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            models
+        },
+        ..Glance::default()
+    };
     if let Some((s, live)) = main.as_ref().and_then(|s| analysis::live_context(s).map(|l| (s, l))) {
         let cache = cache_state(s, &live, pricing, now_ms);
         g.next_warm = cache.next_warm_usd;
@@ -727,7 +790,15 @@ fn glance_of(main: Option<Session>, cost: f64, pricing: &Pricing, now_ms: i64, t
         g.cold_at_ms = live.ts_ms.saturating_add(cache.ttl_ms);
         g.last_ms = live.ts_ms;
     }
-    g.waiting_since = main.as_ref().and_then(|s| crate::rhythm::waiting_since(s, temp));
+    // The rhythm's lane of the main log, as `crate::rhythm::waiting_since` reads it.
+    if let Some(s) = main.as_ref() {
+        let t = crate::rhythm::Timeline::of(s, temp);
+        if !t.left_out {
+            let lane = crate::rhythm::Lane::of(&t);
+            g.waiting_since = lane.waiting_since();
+            g.working_last = lane.working_last();
+        }
+    }
     g.title = main.and_then(|s| s.title);
     g
 }
@@ -1002,8 +1073,99 @@ mod tests {
         for r in &mut s.chains[0].requests {
             r.api = crate::api::ApiId::Unknown;
         }
-        let g = glance_of(Some(s), 1.0, &Pricing::defaults(), crate::TEST_NOW_MS, &[]);
+        let g = glance_of(Some(s), &Totals::default(), &Pricing::defaults(), crate::TEST_NOW_MS, &[]);
         assert_eq!((g.last_ms, g.cold_at_ms), (60 * MIN, i64::MAX));
+        assert!(!g.warm_at(crate::TEST_NOW_MS), "a cache without a lifetime has nothing to count down");
+    }
+
+    /// A request of the main conversation or of a subagent, `min` minutes in, on the 1-hour cache:
+    /// it reads `read` tokens from the cache and writes `write`.
+    fn glanced_request(min: i64, model: &str, read: u64, write: u64, trigger: Trigger) -> Request {
+        Request {
+            ts_ms: crate::TEST_NOW_MS - 600 * MIN + min * MIN,
+            api: crate::api::ApiId::Anthropic,
+            model: model.into(),
+            usage: Usage { cache_read: read, write_long: write, output: 100, ..Usage::default() },
+            trigger: Some(trigger),
+            ..Request::default()
+        }
+    }
+
+    #[test]
+    fn the_glance_counts_requests_models_avoidable_dollars_and_cold_returns() {
+        let pricing = Pricing::defaults();
+        // Three requests with one model and one with another; the user comes back after 2 hours
+        // to a cache gone cold.
+        let mut main = Session::new(crate::testing::claude(), "s".into());
+        let requests = vec![
+            glanced_request(0, "claude-opus-5-5", 0, 100_000, Trigger::Prompt),
+            glanced_request(1, "claude-opus-5-5", 100_000, 1_000, Trigger::Lookup),
+            glanced_request(121, "claude-opus-5-5", 0, 101_000, Trigger::Prompt),
+            glanced_request(122, "claude-fable-5-2", 101_000, 1_000, Trigger::Lookup),
+        ];
+        main.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+        // A subagent that started 3 minutes in, also cold after 2 hours, which is no cold return.
+        let mut sub = Session::new(crate::testing::claude(), "agent-1".into());
+        let requests =
+            vec![glanced_request(3, "claude-opus-5-5", 0, 20_000, Trigger::Prompt), glanced_request(125, "claude-opus-5-5", 0, 20_000, Trigger::Prompt)];
+        sub.chains.push(Chain { name: "subagent".into(), kind: ChainKind::Subagent, requests });
+
+        let g = glance_of_logs([(true, main.clone()), (false, sub.clone())].into_iter(), &pricing, crate::TEST_NOW_MS, &[]);
+        assert_eq!(g.requests, 6, "subagents included");
+        assert_eq!(g.models, [("claude-opus-5-5".to_string(), 5), ("claude-fable-5-2".to_string(), 1)]);
+        assert_eq!(g.model(), Some(("claude-opus-5-5", 1)));
+        assert_eq!(g.started_ms, Some(crate::TEST_NOW_MS - 600 * MIN));
+        assert_eq!(g.cold_returns, 1, "the main conversation's return; the subagent's miss is no cold return");
+
+        // The same numbers as the X-ray's misses and `tokprof pauses`.
+        let mut x = (Totals::default(), crate::pauses::Pauses::new(Filter::default()));
+        for s in [&main, &sub] {
+            analysis::analyze(s, &pricing, &Filter::default(), &mut x);
+        }
+        let unexpected: Vec<&MissEvent> = x.0.misses.iter().filter(|m| !m.cause.expected()).collect();
+        assert!(unexpected.len() >= 2, "both idle misses are unexpected: {:?}", x.0.misses);
+        let premium: f64 = unexpected.iter().filter_map(|m| m.premium_usd).sum();
+        assert!(g.avoidable > 0.0 && (g.avoidable - premium).abs() < 1e-9);
+        x.1.finish();
+        assert_eq!(x.1.agents[&crate::testing::claude()].returns.len() as u64, g.cold_returns);
+        assert!((g.cost - x.0.components.iter().map(|v| v.usd).sum::<f64>()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_session_runs_while_its_turn_is_open_and_not_silent() {
+        use crate::model::{Handoff, HandoffKind};
+        let at = |min: i64| crate::TEST_NOW_MS - 600 * MIN + min * MIN;
+        // Typed at 0, requests at 0 and 4; then what `handoff` adds.
+        let session = |handoff: Option<(i64, HandoffKind)>| {
+            let mut s = Session::new(crate::testing::claude(), "s".into());
+            s.typed.push(TypedMessage { ts_ms: at(0), label: "go".into() });
+            let requests =
+                vec![glanced_request(0, "claude-opus-5-5", 0, 10_000, Trigger::Prompt), glanced_request(4, "claude-opus-5-5", 10_000, 1_000, Trigger::Lookup)];
+            s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+            s.handoffs.extend(handoff.map(|(min, kind)| Handoff { ts_ms: at(min), kind }));
+            s
+        };
+        let glance = |s: Session| glance_of_logs(std::iter::once((true, s)), &Pricing::defaults(), crate::TEST_NOW_MS, &[]);
+
+        let open = glance(session(None));
+        assert_eq!(open.working_last, Some(at(4)));
+        assert!(open.runs_at(at(8)), "4 minutes after its latest request");
+        assert!(open.runs_at(at(18)) && !open.runs_at(at(19)), "a silence of 15 minutes ends it");
+
+        let ended = glance(session(Some((5, HandoffKind::TurnEnd))));
+        assert_eq!((ended.working_last, ended.runs_at(at(6))), (None, false), "the turn ended");
+        assert_eq!(ended.waiting_since, Some(at(5)));
+
+        let asked = glance(session(Some((5, HandoffKind::Question))));
+        assert_eq!((asked.working_last, asked.runs_at(at(6))), (None, false), "it waits for the answer");
+
+        let stopped = glance(session(Some((5, HandoffKind::Interrupt))));
+        assert!(!stopped.runs_at(at(6)), "the user stopped it");
+
+        // A program ran it: the rhythm leaves it out, and it never runs.
+        let mut scripted = session(None);
+        scripted.scripted = true;
+        assert!(!glance(scripted).runs_at(at(6)));
     }
 
     #[test]

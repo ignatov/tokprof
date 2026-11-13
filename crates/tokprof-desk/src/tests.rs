@@ -43,6 +43,13 @@ fn desk_of(n: usize) -> Desk {
     Desk::new(Browser::detached(Arc::new(Catalog::new(Vec::new(), PathBuf::new())), rows, Pricing::defaults(), frontend()), false)
 }
 
+/// The desk with its browser's current session selected, as a click on its lane selects it.
+fn with_selection(mut desk: Desk) -> Desk {
+    desk.none = false;
+    desk.browser.hold_reports(false);
+    desk
+}
+
 fn runtime(desk: Desk, size: (f32, f32)) -> Runtime<Desk> {
     let mut rt = Runtime::new(desk, view::view, size, Env::new(true, 1.0));
     rt.poll = Some(poll);
@@ -173,13 +180,16 @@ fn a_cost_from_the_worker_shows_after_one_poll() {
         assert!(Instant::now() < deadline, "the costing did not wake the window");
         std::thread::sleep(Duration::from_millis(10));
     }
-    let mut rt = Runtime::new(Desk::new(browser, false), view::view, (1400.0, 900.0), Env::new(true, 1.0));
+    // The cost shows in the Sessions table.
+    let mut desk = Desk::new(browser, false);
+    reports::show(&mut desk, reports::Mode::Sessions);
+    let mut rt = Runtime::new(desk, view::view, (1400.0, 900.0), Env::new(true, 1.0));
     rt.frame(0.0);
-    assert_eq!(text_in(&rt, &session, "cost"), "…", "a frame that does not poll shows no cost");
+    assert_eq!(text_in(&rt, &session, "col-cost"), "…", "a frame that does not poll shows no cost");
     assert_eq!(text_in(&rt, &session, "next-text"), "…", "nor a next request");
     rt.poll = Some(poll);
     rt.frame(1.0 / 60.0);
-    let shown = text_in(&rt, &session, "cost");
+    let shown = text_in(&rt, &session, "col-cost");
     assert_eq!(shown, rt.state.browser.cells(0, now_ms()).cost, "the next poll shows it");
     assert!(shown.starts_with('$'), "{shown}");
 }
@@ -189,7 +199,7 @@ fn the_inspector_shows_the_numbers_of_tokprof_scan() {
     let (catalog, select) = fixture();
     let mut browser = Browser::start(catalog.clone(), Pricing::defaults(), select.clone(), false, Arc::new(|| {}), frontend()).unwrap();
     browser.settle();
-    let mut rt = runtime(Desk::new(browser, false), (1400.0, 900.0));
+    let mut rt = runtime(with_selection(Desk::new(browser, false)), (1400.0, 900.0));
     let x = rt.state.browser.xray().cloned_x();
     let scan = tokprof_browse::render_xray::text(&x, &tokprof_core::fmt::Style::with_color(false), &paths::profile_dir(), catalog.home());
     // The total spend and every component's amount, as the spend block prints them.
@@ -248,7 +258,7 @@ fn desk_in(name: &str, parts: &[&str]) -> (Runtime<Desk>, PathBuf) {
     let select = Query { agents: catalog.agents(), ..Query::default() };
     let mut browser = Browser::start(catalog, Pricing::defaults(), select, false, Arc::new(|| {}), frontend()).unwrap();
     browser.settle();
-    (runtime(Desk::new(browser, false), (1400.0, 900.0)), home)
+    (runtime(with_selection(Desk::new(browser, false)), (1400.0, 900.0)), home)
 }
 
 #[test]
@@ -276,7 +286,7 @@ fn the_inspector_names_the_folder_under_the_project() {
     let (catalog, select) = fixture();
     let mut browser = Browser::start(catalog, Pricing::defaults(), select, false, Arc::new(|| {}), frontend()).unwrap();
     browser.settle();
-    let rt = runtime(Desk::new(browser, false), (1400.0, 900.0));
+    let rt = runtime(with_selection(Desk::new(browser, false)), (1400.0, 900.0));
     assert_eq!(rt.state.browser.xray().map(|x| x.placed), Some(Some(tokprof_core::place::Placed::NotFound)));
     assert!(inside(&rt, "header", "folder").is_none());
 }
@@ -323,7 +333,12 @@ fn synthetic_day() -> tokprof_browse::render_rhythm::DayParts {
     };
     let strip = tokprof_core::rhythm::Strip { lines: vec!["(the strip in characters)".into()] };
     let below = "\nsittings  1, 50m at the keyboard\nanswers   the agent's turn took a median 30m\nqueue     no answer while another session waited\ncache     no cold returns\n";
-    tokprof_browse::render_rhythm::DayParts { above: "tokprof · day\nday       …\n\n".into(), strip: Some((strip, lanes)), below: below.into() }
+    tokprof_browse::render_rhythm::DayParts {
+        above: "tokprof · day\nday       …\n\n".into(),
+        strip: Some((strip, lanes)),
+        below: below.into(),
+        ..Default::default()
+    }
 }
 
 #[test]
@@ -361,12 +376,7 @@ fn the_lanes_draw_the_log_s_times_name_them_under_the_pointer_and_select_a_lane(
     assert!((message[0] + message[2] / 2.0 - (track[0] + at)).abs() < 0.5, "at 14:40: {message:?}");
     assert!(inside(&rt, "track-you", "present-0").is_some());
     assert!(rt.elements().iter().any(|e| e.key.as_deref() == Some("legend")));
-    assert_eq!(text_in(&rt, "day-cache", ""), "", "the day's lines under the lanes");
-    assert!(texts(&rt).iter().any(|t| t == "no cold returns"), "{:?}", texts(&rt));
-    let all = texts(&rt);
-    let at = |t: &str| all.iter().position(|x| x == t).unwrap_or_else(|| panic!("no {t:?} in {all:?}"));
-    assert!(at("the agent's turn took a median 30m") < at("no answer while another session waited"), "the queue line under answers");
-    assert!(at("no answer while another session waited") < at("no cold returns"), "and over cache");
+    assert!(rt.presented("day-lines").is_none() && !texts(&rt).iter().any(|t| t == "no cold returns"), "the day's lines are the summary's cards now");
 
     // A click on the lane selects its session in the list, with the day beside it.
     click(&mut rt, &format!("lane-{}", lane.id));
@@ -401,13 +411,19 @@ fn a_countdown_reads_minutes_and_seconds_rounded_up() {
 }
 
 #[test]
-fn the_list_keeps_its_width_and_the_inspector_takes_the_rest() {
+fn the_details_pane_takes_the_window_s_width_with_the_ten_tabs_on_one_line() {
     for width in [1400.0, 960.0] {
-        let rt = runtime(desk_of(3), (width, 640.0));
-        let list = rt.presented("list-pane").unwrap().0;
+        let rt = runtime(with_selection(desk_of(3)), (width, 640.0));
+        assert!(rt.presented("list-pane").is_none(), "no list in Day");
+        let lanes = rt.presented("lanes").unwrap().0;
+        let details = rt.presented("details").unwrap().0;
         let inspector = rt.presented("inspector").unwrap().0;
-        assert_eq!(list[2], view::LIST_WIDTH, "at {width}");
-        assert_eq!(inspector[2], width - view::LIST_WIDTH - 1.0, "at {width}: the rest, less the line between them");
+        assert_eq!((lanes[2], details[2], inspector[2]), (width, width, width), "at {width}: the lanes and the details, each the window's width");
+        assert!(details[1] > lanes[1] + lanes[3], "the details under the lanes");
+        let tabs: Vec<[f32; 4]> = inspector::Tab::ALL.iter().map(|t| rt.presented(&format!("tab-{}", t.name())).unwrap().0).collect();
+        assert!(tabs.iter().all(|t| t[1] == tabs[0][1] && t[0] + t[2] <= width), "at {width}: the ten tabs on one line: {tabs:?}");
+        let back = rt.presented("back-to-day").unwrap().0;
+        assert!(back[0] + back[2] <= tabs[0][0], "`‹ The day` before them");
     }
 }
 
@@ -464,28 +480,44 @@ fn the_bar_names_the_day_and_its_buttons_step_it() {
 }
 
 #[test]
-fn the_list_title_counts_the_sessions_and_the_sorts_switch() {
+fn the_sessions_footer_counts_the_sessions_and_a_header_click_sorts() {
+    // The list left Day: its title's count lives on in the Sessions footer, its sorts in the
+    // table's header.
     let mut rt = runtime(desk_of(30), (1400.0, 900.0));
-    assert_eq!(text_in(&rt, "list-head", "list-title"), "30 sessions, $0.00");
-    assert_eq!(text_in(&rt, "list-head", "list-costing"), "costing 30", "and, quieter, the sessions being costed");
-    assert!(texts(&rt).iter().any(|t| t == "Thu 1 Jan 1970"), "a separator names the day: {:?}", &texts(&rt)[..20]);
-    click(&mut rt, "sort-Cost");
+    assert!(rt.presented("list-head").is_none());
+    command(&mut rt, '0');
+    settle(&mut rt);
+    let foot = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("foot-title")).and_then(|e| e.text).unwrap_or_default();
+    assert!(foot.starts_with("30 sessions") && foot.ends_with("costing 30…"), "and, quieter, the sessions being costed: {foot}");
+    // Their day as Day's days run: without the store, the date five hours earlier.
+    let days = crate::sessions::days(&rt.state);
+    let day = view::day_label(days.date_of(rt.state.browser.active_ms(0)), days.date_of(now_ms()));
+    assert!(texts(&rt).contains(&day), "a header names the day {day}: {:?}", &texts(&rt)[..20]);
+    click(&mut rt, "head-cost");
     settle(&mut rt);
     assert_eq!(rt.state.browser.sort_order(), tokprof_browse::browser::Sort::Cost);
-    assert!(!texts(&rt).iter().any(|t| t == "Thu 1 Jan 1970"), "no separators but in time order");
+    assert!(!texts(&rt).contains(&day), "no headers but in time order");
 }
 
 #[test]
 fn keys_move_filter_sort_and_quit() {
+    // ↓, G and g move through the sessions in Sessions, from none selected.
     let mut rt = runtime(desk_of(30), (1400.0, 900.0));
-    let selected = |rt: &Runtime<Desk>| rt.state.browser.selected();
+    let selected = |rt: &Runtime<Desk>| rt.state.current();
+    assert_eq!(selected(&rt), None, "the window starts with no session selected");
+    command(&mut rt, '0');
+    settle(&mut rt);
+    press(&mut rt, RuneKey::Text("j".into()));
+    assert_eq!(selected(&rt), Some(0), "j selects the first session");
     press(&mut rt, RuneKey::Text("j".into()));
     assert_eq!(selected(&rt), Some(1));
     press(&mut rt, RuneKey::Text("G".into()));
     assert_eq!(selected(&rt), Some(29), "G goes to the last session");
-    assert!(rt.presented("id29").is_some_and(|(r, _)| r[1] < 900.0), "and the list scrolls to show it");
+    assert!(rt.presented("id29").is_some_and(|(r, _)| r[1] < 900.0), "and the table scrolls to show it");
     press(&mut rt, RuneKey::Text("g".into()));
     assert_eq!(selected(&rt), Some(0), "g to the first");
+    command(&mut rt, '1');
+    settle(&mut rt);
 
     typed(&mut rt, "/air");
     assert!(rt.state.browser.editing());
@@ -493,7 +525,9 @@ fn keys_move_filter_sort_and_quit() {
     press(&mut rt, RuneKey::Enter);
     assert!(!rt.state.browser.editing() && rt.state.browser.filter() == "air", "⏎ keeps the filter");
     press(&mut rt, RuneKey::Escape);
-    assert_eq!(rt.state.browser.len(), 30, "esc clears it");
+    assert_eq!(rt.state.current(), None, "esc deselects the session");
+    press(&mut rt, RuneKey::Escape);
+    assert_eq!(rt.state.browser.len(), 30, "then esc clears the filter");
 
     press(&mut rt, RuneKey::Text("s".into()));
     assert_eq!(rt.state.browser.sort_order(), tokprof_browse::browser::Sort::Cost, "s sorts by cost");
@@ -510,7 +544,7 @@ fn keys_move_filter_sort_and_quit() {
 }
 
 #[test]
-fn command_q_and_w_quit_and_esc_quits_but_from_full_size() {
+fn command_q_and_w_quit_and_esc_steps_back_but_never_quits() {
     let mut rt = runtime(desk_of(3), (1400.0, 900.0));
     command(&mut rt, 'w');
     assert_eq!(rt.shell_request, Some(Shell::Close));
@@ -519,19 +553,35 @@ fn command_q_and_w_quit_and_esc_quits_but_from_full_size() {
     assert_eq!(rt.shell_request, Some(Shell::Quit));
     let mut rt = runtime(desk_of(3), (1400.0, 900.0));
     press(&mut rt, RuneKey::Enter);
+    assert!(!rt.state.browser.zoomed(), "⏎ with no session selected shows nothing full size");
+    rt.update(|s, tx| {
+        s.pick("id0", tx);
+    });
+    settle(&mut rt);
+    press(&mut rt, RuneKey::Enter);
     assert!(rt.state.browser.zoomed() && rt.presented("lanes").is_none(), "⏎ shows the inspector full size");
     press(&mut rt, RuneKey::Escape);
     assert_eq!(rt.shell_request, None, "esc in the full-size inspector goes back");
-    assert!(rt.presented("lanes").is_some());
+    assert!(rt.presented("lanes").is_some() && rt.presented("inspector").is_some(), "to the lanes and the session's inspector");
     press(&mut rt, RuneKey::Escape);
-    assert_eq!(rt.shell_request, Some(Shell::Quit), "esc with no filter quits");
+    assert_eq!((rt.state.current(), rt.shell_request), (None, None), "esc deselects the session");
+    assert!(rt.presented("day-summary").is_some(), "and the details pane shows the day");
+    press(&mut rt, RuneKey::Escape);
+    assert_eq!(rt.shell_request, None, "esc with nothing to step back from changes nothing");
+    assert!(rt.presented("day-summary").is_some());
+    press(&mut rt, RuneKey::Text("q".into()));
+    assert_eq!(rt.shell_request, Some(Shell::Quit), "q quits");
 }
 
 #[test]
-fn a_click_selects_a_session_a_double_click_zooms_and_the_wheel_scrolls() {
+fn a_click_selects_a_session_a_double_click_opens_it_and_the_wheel_scrolls() {
+    // In Sessions: a click selects a row, a double click opens it in Day.
     let mut rt = runtime(desk_of(60), (1400.0, 900.0));
+    command(&mut rt, '0');
+    settle(&mut rt);
     click(&mut rt, "id4");
-    assert_eq!(rt.state.browser.selected(), Some(4), "a click selects its row");
+    settle(&mut rt);
+    assert_eq!(rt.state.current(), Some(4), "a click selects its row");
     let (x, y) = rt.find("id4").unwrap();
     rt.frame(0.6);
     rt.pointer_down(x, y);
@@ -540,20 +590,22 @@ fn a_click_selects_a_session_a_double_click_zooms_and_the_wheel_scrolls() {
     rt.pointer_down(x, y);
     rt.pointer_up(x, y);
     settle(&mut rt);
-    assert!(rt.state.browser.zoomed(), "a double click shows its inspector full size");
-    assert!(rt.presented("list-pane").is_none(), "the list is not drawn");
+    assert_eq!((rt.state.reports.mode, rt.state.current()), (reports::Mode::Day, Some(4)), "a double click opens it in Day");
 
     let mut rt = runtime(desk_of(60), (1400.0, 900.0));
+    command(&mut rt, '0');
+    settle(&mut rt);
+    click(&mut rt, "id0");
     let (x, y) = rt.find("id3").unwrap();
     rt.wheel(x, y, -400.0);
     settle(&mut rt);
-    assert!(rt.state.list_offset.get() > 300.0, "the wheel scrolls the list");
-    assert_eq!(rt.state.browser.selected(), Some(0), "and leaves the selection where it was");
+    assert!(rt.state.sessions.offset.get() > 300.0, "the wheel scrolls the table");
+    assert_eq!(rt.state.current(), Some(0), "and leaves the selection where it was");
 }
 
 #[test]
 fn a_click_on_a_tab_shows_it() {
-    let mut rt = runtime(desk_of(3), (1400.0, 900.0));
+    let mut rt = runtime(with_selection(desk_of(3)), (1400.0, 900.0));
     for t in inspector::Tab::ALL.iter().rev() {
         click(&mut rt, &format!("tab-{}", t.name()));
         settle(&mut rt);
@@ -561,42 +613,52 @@ fn a_click_on_a_tab_shows_it() {
     }
 }
 
+/// The window in Sessions with the first session selected.
+fn sessions_of(n: usize) -> Runtime<Desk> {
+    let mut rt = runtime(with_selection(desk_of(n)), (1400.0, 900.0));
+    command(&mut rt, '0');
+    settle(&mut rt);
+    rt
+}
+
 #[test]
 fn rows_on_the_screen_stay_when_a_session_joins_above_them() {
-    let mut rt = runtime(desk_of(80), (1400.0, 900.0));
+    let mut rt = sessions_of(80);
     let (x, y) = rt.find("id3").unwrap();
     rt.wheel(x, y, -480.0);
     settle(&mut rt);
     let on_screen = ["id25", "id30", "id33"];
     let before: Vec<[f32; 4]> = on_screen.iter().map(|k| rt.presented(k).unwrap().0).collect();
-    rt.update(|s, _| s.browser.apply_change(Change::Session(Box::new(row(80, "~/src/new", 20_000)))));
+    rt.update(|s, _| s.browser.apply_change(Change::Session(Box::new(row(80, "~/src/new", 10_050)))));
     settle(&mut rt);
     assert_eq!(rt.state.browser.session(0), "id80", "the new session is first in time order");
     let after: Vec<[f32; 4]> = on_screen.iter().map(|k| rt.presented(k).unwrap().0).collect();
     assert_eq!(after, before, "the rows on the screen stay where they are");
 
-    // At the top of the list, a new session is on the screen, and the rows below it move down.
-    let mut rt = runtime(desk_of(80), (1400.0, 900.0));
+    // At the top of the table, a new session is on the screen, and the rows below it move down.
+    let mut rt = sessions_of(80);
     let first = rt.presented("id0").unwrap().0;
-    rt.update(|s, _| s.browser.apply_change(Change::Session(Box::new(row(80, "~/src/new", 20_000)))));
+    rt.update(|s, _| s.browser.apply_change(Change::Session(Box::new(row(80, "~/src/new", 10_050)))));
     settle(&mut rt);
     let moved = rt.presented("id0").unwrap().0;
-    assert_eq!(moved[1], first[1] + view::ROW, "the rows below it move down by one");
+    assert_eq!(moved[1], first[1] + sessions::ROW, "the rows below it move down by one");
     assert_eq!(rt.state.browser.selected().map(|r| rt.state.browser.session(r).to_string()), Some("id0".into()), "the selection stays on its session");
 }
 
 #[test]
-fn the_list_comes_back_where_it_was_after_the_full_size_inspector() {
+fn the_details_come_back_with_the_session_after_the_full_size_inspector() {
     let mut rt = runtime(desk_of(80), (1400.0, 900.0));
-    let (x, y) = rt.find("id3").unwrap();
-    rt.wheel(x, y, -480.0);
+    rt.update(|s, tx| {
+        s.pick("id30", tx);
+    });
     settle(&mut rt);
-    click(&mut rt, "id30");
-    let row = rt.presented("id30").unwrap().0;
+    click(&mut rt, "tab-Tools");
+    settle(&mut rt);
     press(&mut rt, RuneKey::Enter);
-    assert!(rt.presented("list-pane").is_none());
+    assert!(rt.presented("lanes").is_none() && rt.presented("inspector").is_some(), "full size");
     press(&mut rt, RuneKey::Escape);
-    assert_eq!(rt.presented("id30").map(|p| p.0), Some(row), "the selected row is where it was");
+    assert!(rt.presented("lanes").is_some() && rt.presented("back-to-day").is_some(), "the lanes over the inspector again");
+    assert_eq!((rt.state.current(), rt.state.tab), (Some(30), inspector::Tab::Tools), "on the same session and tab");
 }
 
 #[test]
@@ -620,27 +682,27 @@ fn shift_tab(rt: &mut Runtime<Desk>) {
 
 #[test]
 fn tab_moves_the_keyboard_between_the_panes_and_esc_brings_it_back() {
-    let mut rt = runtime(desk_of(30), (1400.0, 900.0));
-    assert_eq!(rt.state.pane, Focus::List, "the list has the keyboard to start with");
+    let mut rt = runtime(with_selection(desk_of(30)), (1400.0, 900.0));
+    assert_eq!(rt.state.pane, Focus::Lanes, "the lanes have the keyboard to start with");
     press(&mut rt, RuneKey::Tab);
-    assert_eq!(rt.state.pane, Focus::Inspector, "Tab: lanes, list, inspector");
+    assert_eq!(rt.state.pane, Focus::Inspector, "Tab: the lanes, then the details");
     press(&mut rt, RuneKey::Text("j".into()));
     press(&mut rt, RuneKey::Down);
-    assert_eq!(rt.state.browser.selected(), Some(0), "the list's keys are the list's");
+    assert_eq!(rt.state.current(), Some(0), "↓ moves in the inspector, not through the lanes");
     press(&mut rt, RuneKey::Tab);
     assert_eq!(rt.state.pane, Focus::Lanes, "and round again");
     shift_tab(&mut rt);
     assert_eq!(rt.state.pane, Focus::Inspector, "Shift+Tab back");
     press(&mut rt, RuneKey::Escape);
-    assert_eq!((rt.state.pane, rt.shell_request), (Focus::List, None), "esc gives the keyboard back to the list");
-    press(&mut rt, RuneKey::Down);
-    assert_eq!(rt.state.browser.selected(), Some(1), "and ↓ moves in the list again");
+    assert_eq!(
+        (rt.state.pane, rt.shell_request, rt.state.current()),
+        (Focus::Lanes, None, Some(0)),
+        "esc gives the keyboard back to the lanes, the session still selected"
+    );
 
     // A click gives the pane it lands in the keyboard.
     click(&mut rt, "tab-Tools");
     assert_eq!((rt.state.pane, rt.state.tab), (Focus::Inspector, inspector::Tab::Tools));
-    click(&mut rt, "id4");
-    assert_eq!(rt.state.pane, Focus::List);
 }
 
 #[test]
@@ -652,7 +714,8 @@ fn the_lanes_step_to_the_lane_above_below_first_and_last() {
     assert_eq!(to(Some(0), LaneStep::Up), Some(0), "the first stays");
     assert_eq!(to(Some(1), LaneStep::First), Some(0));
     assert_eq!(to(Some(0), LaneStep::Last), Some(2));
-    assert_eq!(to(None, LaneStep::Down), Some(0), "from a session without a lane that day, the first");
+    assert_eq!(to(None, LaneStep::Down), Some(0), "with none selected, or one without a lane that day, ↓ the first");
+    assert_eq!(to(None, LaneStep::Up), Some(2), "and ↑ the last");
     assert_eq!(lane_to(0, None, LaneStep::Down), None, "no lanes, nowhere to go");
     let step = |k: RuneKey| lane_step(&KeyEvent::from(k));
     assert_eq!((step(RuneKey::Text("j".into())), step(RuneKey::Text("k".into()))), (Some(LaneStep::Down), Some(LaneStep::Up)));
@@ -662,7 +725,7 @@ fn the_lanes_step_to_the_lane_above_below_first_and_last() {
     let mut rt = runtime(desk_of(30), (1400.0, 900.0));
     rt.update(|s, _| s.pane = Focus::Lanes);
     press(&mut rt, RuneKey::Down);
-    assert_eq!(rt.state.browser.selected(), Some(0), "↓ with the lanes' keyboard leaves the list alone");
+    assert_eq!(rt.state.current(), None, "↓ without lanes selects nothing");
 }
 
 #[test]
@@ -670,7 +733,7 @@ fn the_inspector_s_keys_switch_tabs_and_move_the_cursor_through_rows() {
     let (catalog, select) = fixture();
     let mut browser = Browser::start(catalog, Pricing::defaults(), select, false, Arc::new(|| {}), frontend()).unwrap();
     browser.settle();
-    let mut rt = runtime(Desk::new(browser, false), (1400.0, 900.0));
+    let mut rt = runtime(with_selection(Desk::new(browser, false)), (1400.0, 900.0));
     press(&mut rt, RuneKey::Tab);
     press(&mut rt, RuneKey::Text("7".into()));
     assert_eq!(rt.state.tab, inspector::Tab::Tools, "7 shows the seventh tab");
@@ -881,16 +944,19 @@ fn the_settings_scene_opens_the_panel_on_the_defaults() {
 #[test]
 fn a_click_outside_the_card_closes_the_panel_and_reaches_nothing_behind_it() {
     let mut rt = runtime(desk_of(5), (1400.0, 900.0));
-    let selected = rt.state.browser.selected();
+    command(&mut rt, '0');
+    settle(&mut rt);
+    let selected = rt.state.current();
     command(&mut rt, ',');
     settle(&mut rt);
-    // The list's fourth row lies under the scrim, left of the card.
-    let (x, y) = rt.find("id3").expect("the row is on the screen");
+    // The table's fourth row lies under the scrim, its start left of the card.
+    let r = rt.presented("id3").expect("the row is on the screen").0;
+    let (x, y) = (r[0] + 30.0, r[1] + r[3] / 2.0);
     rt.pointer_down(x, y);
     rt.pointer_up(x, y);
     settle(&mut rt);
     assert!(rt.state.panel.is_none(), "the panel closed");
-    assert_eq!(rt.state.browser.selected(), selected, "the row under the scrim was not selected");
+    assert_eq!(rt.state.current(), selected, "the row under the scrim was not selected");
 }
 
 fn ctrl(rt: &mut Runtime<Desk>, c: &str) {
@@ -997,29 +1063,33 @@ fn picking_a_session_selects_it_scrolls_to_it_and_shows_its_summary() {
     assert!(rt.presented(&palette::row_key(at)).is_some(), "the highlight is scrolled into view");
     press(&mut rt, RuneKey::Enter);
     settle(&mut rt);
-    assert_eq!(rt.state.browser.selected(), rt.state.browser.row_of("id58"));
-    assert!(rt.presented("id58").is_some_and(|(r, _)| r[1] < 900.0), "the list scrolled to it");
+    assert_eq!(rt.state.current(), rt.state.browser.row_of("id58"));
+    assert!(rt.presented("back-to-day").is_some() && rt.presented("day-summary").is_none(), "the details pane shows its inspector");
     assert_eq!(rt.state.tab, Tab::Summary);
 
-    // From the full-size inspector, the list is drawn again.
+    // From the full-size inspector, the full-size inspector shows the session picked.
     press(&mut rt, RuneKey::Enter);
     assert!(rt.state.browser.zoomed());
+    rt.update(|s, tx| s.show_tab(Tab::Tools, tx));
     command(&mut rt, 'k');
     typed(&mut rt, "air");
     press(&mut rt, RuneKey::Enter);
     settle(&mut rt);
-    assert!(!rt.state.browser.zoomed() && rt.presented("list-pane").is_some());
-    assert_eq!(rt.state.browser.selected(), rt.state.browser.row_of("id1"), "the most recent of ~/src/air first");
+    assert!(rt.state.browser.zoomed() && rt.presented("lanes").is_none(), "still full size");
+    assert_eq!(rt.state.current(), rt.state.browser.row_of("id1"), "the most recent of ~/src/air first");
+    assert_eq!(rt.state.tab, Tab::Summary, "from its Summary");
 }
 
 #[test]
 fn picking_a_day_shows_it_in_the_lanes() {
     let mut rt = runtime(desk_of(5), (1400.0, 900.0));
     let selected = rt.state.browser.selected();
+    // The sessions' day as the Sessions headers have it: without the store, the local date five
+    // hours earlier.
+    let date = crate::sessions::days(&rt.state).date_of(10_000_000);
     command(&mut rt, 'k');
-    typed(&mut rt, "1970");
+    typed(&mut rt, &tokprof_core::fmt::local_time(rhythm::midnight(date, &rhythm::local_offset) + 12 * 3_600_000, "%Y"));
     let list = listed(&rt);
-    let date = rhythm::date_of(10_000_000, &rhythm::local_offset);
     assert_eq!(list[0].pick, palette::Pick::Day(Some(date)), "{:?}", list.iter().map(|e| &e.title).collect::<Vec<_>>());
     assert_eq!(list[0].right, "5 sessions, $0.00");
     press(&mut rt, RuneKey::Enter);
@@ -1040,7 +1110,8 @@ fn the_entries_with_nothing_typed_and_their_limits() {
     let sessions: Vec<&palette::Pick> = list.iter().filter(|e| e.group == Sessions).map(|e| &e.pick).collect();
     assert_eq!(sessions[0], &palette::Pick::Session("id0".into()), "the most recent first");
     assert_eq!(list.iter().find(|e| e.group == Days).unwrap().title, "Today");
-    assert!(!list.iter().any(|e| e.title == "Clear the filter" || e.title == "Back to the list"), "no filter, not full size");
+    assert!(!list.iter().any(|e| e.title == "Clear the filter" || e.title == "Back to the lanes"), "no filter, not full size");
+    assert!(!list.iter().any(|e| e.title == "Full-size inspector"), "no session selected");
     let matched = palette::entries(&desk, "src");
     assert_eq!(matched.iter().filter(|e| e.group == Sessions).count(), palette::MATCHED_SESSIONS);
 }
@@ -1056,7 +1127,9 @@ fn a_click_on_a_row_runs_it_and_a_click_outside_closes_the_palette() {
     assert_eq!(rt.state.tab, Tab::Work);
     assert!(rt.state.palette.is_none());
 
-    let selected = rt.state.browser.selected();
+    command(&mut rt, '0');
+    settle(&mut rt);
+    let selected = rt.state.current();
     command(&mut rt, 'k');
     settle(&mut rt);
     let (x, y) = rt.find("id3").expect("the row is on the screen");
@@ -1064,7 +1137,7 @@ fn a_click_on_a_row_runs_it_and_a_click_outside_closes_the_palette() {
     rt.pointer_up(x, y);
     settle(&mut rt);
     assert!(rt.state.palette.is_none(), "the palette closed");
-    assert_eq!(rt.state.browser.selected(), selected, "the row under the scrim was not selected");
+    assert_eq!(rt.state.current(), selected, "the row under the scrim was not selected");
 }
 
 #[test]
@@ -1125,9 +1198,10 @@ fn question_mark_opens_the_key_help_and_closes_it() {
     typed(&mut rt, "key help");
     press(&mut rt, RuneKey::Enter);
     assert!(rt.state.help);
-    for name in ["Anywhere", "List", "Lanes", "Inspector", "Settings", "Palette"] {
+    for name in ["Anywhere", "Lanes", "The day", "Palette", "Settings", "Sessions", "Inspector"] {
         assert!(texts(&rt).iter().any(|t| t == name), "{name}");
     }
+    assert!(!texts(&rt).iter().any(|t| t == "List"), "no list in the window any more");
 }
 
 /// Every key the key help names.
@@ -1138,11 +1212,26 @@ fn helped() -> Vec<&'static str> {
 #[test]
 fn the_key_help_names_the_keys_the_window_handles() {
     let named = helped();
+    let groups: Vec<&str> = keys::GROUPS.iter().map(|g| g.0).collect();
+    assert_eq!(groups, ["Anywhere", "Lanes", "The day", "Palette", "Settings", "Sessions", "Inspector", "Flame", "Requests", "Reports", "Calendar"]);
     for k in [
-        "⌘K", "⌘,", "?", "Tab", "⇧Tab", "⏎", "esc", "⌫", "[", "]", "d", "/", "s", "r", "c", "f", "o", "q", "⌘Q", "⌘W", "Ctrl+C", "↑", "↓", "←", "→", "j", "k",
-        "h", "l", "g", "G", "PgUp", "PgDn", "Home", "End", "1–9", "Space", "Ctrl+P", "Ctrl+N", "⌘1", "⌘2", "0", "⇧←", "⇧→",
+        "⌘K", "⌘,", "⌘0", "?", "Tab", "⇧Tab", "⏎", "esc", "⌫", "[", "]", "t", "/", "s", "r", "c", "f", "o", "q", "⌘Q", "⌘W", "Ctrl+C", "↑", "↓", "←", "→", "j",
+        "k", "h", "l", "g", "G", "PgUp", "PgDn", "Home", "End", "1–9", "Space", "Ctrl+P", "Ctrl+N", "⌘1", "⌘2", "⌘3", "0", "⇧←", "⇧→",
     ] {
         assert!(named.contains(&k), "the key help names {k}");
+    }
+    // `d` is gone: the window takes it and does nothing with it.
+    assert!(!named.contains(&"d"), "the key help does not name d");
+    let mut rt = runtime(with_selection(desk_of(3)), (1400.0, 900.0));
+    rt.update(|s, _| s.browser.select_row(1));
+    let before = (rt.state.current(), rt.state.browser.day_noon(), rt.state.browser.zoomed());
+    typed(&mut rt, "d");
+    assert_eq!((rt.state.current(), rt.state.browser.day_noon(), rt.state.browser.zoomed()), before, "d does nothing in Day");
+    for (group, keys) in [("Sessions", &["⏎", "→", "←", "t", "Tab", "esc"][..]), ("The day", &["↑", "↓", "⏎", "esc"][..])] {
+        let of: Vec<&str> = keys::GROUPS.iter().find(|g| g.0 == group).unwrap().1.iter().flat_map(|r| r.keys.iter().copied()).collect();
+        for k in keys {
+            assert!(of.contains(k), "{group} names {k}");
+        }
     }
     let flame: Vec<&str> = keys::GROUPS.iter().find(|g| g.0 == "Flame").expect("a Flame group").1.iter().flat_map(|r| r.keys.iter().copied()).collect();
     // Every key the graph takes is named in its group, as the browser's are below.
@@ -1158,9 +1247,9 @@ fn the_key_help_names_the_keys_the_window_handles() {
         assert!(!taken || flame.contains(&c.as_str()), "Flame takes {c:?}, its group does not name it");
     }
     // Every character the browser does something with is named; c, f and o copy and write
-    // files, so they are only named above.
+    // files, so they are only named above, and the window keeps `d` from the browser.
     let fingerprint = |b: &Book| (b.selected(), b.zoomed(), b.editing(), b.sort_order(), b.day_noon(), b.day_is_latest(), b.status().to_string());
-    for c in (' '..='~').filter(|c| !"cfo".contains(*c)) {
+    for c in (' '..='~').filter(|c| !"cfod".contains(*c)) {
         let mut desk = desk_of(3);
         desk.browser.select_row(1);
         let view = desk.viewport();
@@ -1199,7 +1288,7 @@ fn a_short_group_goes_above_a_long_one_as_good_and_loose_matches_are_left_out() 
     assert!(!list.iter().any(|e| e.title == "Copy the handoff line"), "t and o far apart");
     let titles: Vec<&str> = list.iter().map(|e| e.title.as_str()).collect();
     let at = |t: &str| titles.iter().position(|x| *x == t).unwrap_or_else(|| panic!("{t} in {titles:?}"));
-    assert!(at("Today") < at("Keyboard to the list"), "{titles:?}");
+    assert!(at("Today") < at("Keyboard to the lanes"), "{titles:?}");
 }
 
 /// The window on the fixture's session, its inspector showing `Flame` with the keyboard.
@@ -1207,7 +1296,7 @@ fn flame_desk() -> (Runtime<Desk>, Arc<Catalog>, Query) {
     let (catalog, select) = fixture();
     let mut browser = Browser::start(catalog.clone(), Pricing::defaults(), select.clone(), false, Arc::new(|| {}), frontend()).unwrap();
     browser.settle();
-    let mut rt = runtime(Desk::new(browser, false), (1400.0, 900.0));
+    let mut rt = runtime(with_selection(Desk::new(browser, false)), (1400.0, 900.0));
     press(&mut rt, RuneKey::Tab);
     typed(&mut rt, "0");
     settle(&mut rt);
@@ -1309,7 +1398,7 @@ fn flame_zooms_by_click_and_enter_and_out_by_crumb_and_esc() {
     press(&mut rt, RuneKey::Backspace);
     assert!(rt.state.flame.root.is_empty(), "Backspace zooms out");
     press(&mut rt, RuneKey::Escape);
-    assert_eq!(rt.state.pane, Focus::List, "esc at the top gives the keyboard back");
+    assert_eq!(rt.state.pane, Focus::Lanes, "esc at the top gives the keyboard back");
 
     // Shift+← leaves the graph for the tab before.
     press(&mut rt, RuneKey::Tab);
@@ -1368,7 +1457,7 @@ fn the_switch_and_its_keys_show_reports_and_back() {
     settle(&mut rt);
     assert_eq!(rt.state.reports.mode, reports::Mode::Reports);
     assert!(rt.presented(reports::PANE).is_some(), "the report under the bar");
-    for gone in ["lanes", view::LIST, "inspector", "day-name", "today", "zoom", "filter"] {
+    for gone in ["lanes", "details", "inspector", "day-name", "today", "zoom", "filter"] {
         assert!(rt.presented(gone).is_none(), "{gone} is not shown in Reports");
     }
     assert!(rt.presented("mode").is_some(), "the switch stays");
@@ -1456,17 +1545,41 @@ fn a_click_on_a_day_opens_it_in_day() {
 }
 
 #[test]
-fn a_click_on_a_project_filters_the_list_to_it() {
-    let (desk, _) = reports_desk(3);
+fn a_click_on_a_project_shows_sessions_with_the_project_picked() {
+    let (catalog, select) = fixture();
+    let o = tokprof_core::overview::collect(&catalog, &select, &Pricing::defaults(), |_, _| {}).unwrap();
+    let project = o.spread.projects()[0].0.to_string();
+    let last = *o.spread.days.keys().last().expect("the fixture has requests");
+    let offset = &rhythm::local_offset;
+    // Two sessions of the report's first project among three of another.
+    let rows = (0..5).map(|i| row(i, if i % 2 == 1 { &project } else { "~/src/other" }, 10_000 - i as u64)).collect();
+    let mut desk = Desk::new(Browser::detached(Arc::new(Catalog::new(Vec::new(), PathBuf::new())), rows, Pricing::defaults(), frontend()), false);
+    desk.reports.data.put(30, o, (rhythm::midnight(last - 4, offset), rhythm::midnight(last + 1, offset)), 0);
     let mut rt = runtime(desk, (1400.0, 2800.0));
     command(&mut rt, '2');
     settle(&mut rt);
-    let project = reports_of(&rt).spread.projects()[0].0.to_string();
     click(&mut rt, "rep-projects-0");
     settle(&mut rt);
-    assert_eq!(rt.state.reports.mode, reports::Mode::Day);
-    assert_eq!(rt.state.browser.filter(), project);
-    assert_eq!(text_in(&rt, "filter", "filter-text"), project, "the filter field shows it");
+    assert_eq!(rt.state.reports.mode, reports::Mode::Sessions, "Sessions, not Day");
+    assert_eq!(rt.state.browser.quick_filters().project.as_deref(), Some(project.as_str()));
+    assert_eq!(text_in(&rt, "project-picker", "picker-label"), view::project_name(&project), "the picker reads the project's name");
+    let s = &rt.state;
+    let listed: Vec<String> = (0..s.browser.len()).map(|r| s.browser.session(r).to_string()).collect();
+    assert_eq!(listed, ["id1", "id3"], "the table holds only its sessions");
+    assert!(s.browser.filter().is_empty(), "the bar's filter is left alone");
+
+    // ⏎ on the project's row by keys does the same.
+    rt.update(|s, tx| crate::sessions::pick_project(s, "any", tx));
+    command(&mut rt, '2');
+    settle(&mut rt);
+    rt.update(|s, _| {
+        s.reports.part = reports::Part::Projects;
+        s.reports.row = 0;
+    });
+    press(&mut rt, RuneKey::Enter);
+    settle(&mut rt);
+    assert_eq!(rt.state.reports.mode, reports::Mode::Sessions);
+    assert_eq!(rt.state.browser.quick_filters().project.as_deref(), Some(project.as_str()));
 }
 
 #[test]
@@ -1489,7 +1602,8 @@ fn keys_move_through_the_cards_days_and_rows_and_enter_drills_down() {
     press(&mut rt, RuneKey::Enter);
     assert_eq!(rt.state.reports.mode, reports::Mode::Day);
     assert_eq!(rhythm::date_of(rt.state.browser.day_noon(), &rhythm::local_offset), dates[2], "two days before the last");
-    // Back in Reports, Tab twice from the days reaches the projects; ↓ and ⏎ open the second.
+    // Back in Reports, Tab twice from the days reaches the projects; ↓ and ⏎ open the second in
+    // Sessions.
     command(&mut rt, '2');
     settle(&mut rt);
     press(&mut rt, RuneKey::Tab);
@@ -1502,7 +1616,7 @@ fn keys_move_through_the_cards_days_and_rows_and_enter_drills_down() {
     let want = projects.get(1).unwrap_or(&projects[0]).clone();
     assert_eq!(rt.state.reports.row, usize::from(projects.len() > 1));
     press(&mut rt, RuneKey::Enter);
-    assert_eq!((rt.state.reports.mode, rt.state.browser.filter().to_string()), (reports::Mode::Day, want));
+    assert_eq!((rt.state.reports.mode, rt.state.browser.quick_filters().project.clone()), (reports::Mode::Sessions, Some(want)));
     // Reports keeps its part; Shift+Tab from the period goes round to the last card.
     command(&mut rt, '2');
     settle(&mut rt);
@@ -1633,32 +1747,39 @@ fn ringed(rt: &Runtime<Desk>) -> Vec<String> {
 
 #[test]
 fn the_pane_with_the_keyboard_rings_its_selection_and_no_other_pane_does() {
+    // The Sessions table rings its selected row.
     let mut rt = runtime(desk_of(30), (1400.0, 900.0));
+    command(&mut rt, '0');
+    settle(&mut rt);
     press(&mut rt, RuneKey::Down);
-    assert_eq!(ringed(&rt), ["cells"], "the list's selected row");
-    let id = rt.state.browser.session(rt.state.browser.selected().unwrap()).to_string();
+    assert_eq!(ringed(&rt), ["cells"], "the table's selected row");
+    let id = rt.state.browser.session(rt.state.current().unwrap()).to_string();
     let row = inside(&rt, &id, "cells").expect("the selected row's cells");
     assert!(row.radius >= overlay::R_ROW - 0.01 && row.rect[0] > 0.0, "an inset rounded row: {:?}", row.rect);
     let p = pal::pal(rt.state.theme.get());
     assert_eq!(row.fill, p.sel, "in the selection color, not the accent");
-    assert_eq!(inside(&rt, &id, "title").and_then(|e| e.text_color), Some(p.ink), "with the ink's text");
-    assert_eq!(text_color(&rt, "list-title"), Some(p.accent), "the list's title in the accent");
 
-    // The inspector takes it: Summary has no rows, so its tab is ringed; the list's row is not.
+    // The Sessions inspector takes it; the row stays selected, quieter.
     press(&mut rt, RuneKey::Tab);
-    assert_eq!(rt.state.pane, Focus::Inspector);
-    assert_eq!(ringed(&rt), ["tab-Summary"]);
-    assert_eq!(inside(&rt, &id, "cells").map(|e| e.fill), Some(p.sel), "the row stays selected, quieter");
-    assert_ne!(text_color(&rt, "list-title"), Some(p.accent));
+    assert_eq!(ringed(&rt), [sessions::PANE]);
+    assert_eq!(inside(&rt, &id, "cells").map(|e| e.fill), Some(p.sel));
+    press(&mut rt, RuneKey::Tab);
 
-    // Typing a filter: the field has the ring, not the list.
-    press(&mut rt, RuneKey::Escape);
+    // Typing a filter: the field has the ring, not the table.
     press(&mut rt, RuneKey::Text("/".into()));
     assert!(rt.state.browser.editing());
     assert_eq!(ringed(&rt), ["filter"]);
     press(&mut rt, RuneKey::Escape);
-    assert_eq!(ringed(&rt), ["cells"], "the list has it again");
+    assert_eq!(ringed(&rt), ["cells"], "the table has it again");
     assert!(rt.presented("filter-key").is_some(), "the idle filter names its key");
+
+    // In Day, the inspector takes it from the lanes: Summary has no rows, so its tab is ringed.
+    command(&mut rt, '1');
+    settle(&mut rt);
+    press(&mut rt, RuneKey::Tab);
+    assert_eq!(rt.state.pane, Focus::Inspector);
+    assert_eq!(ringed(&rt), ["tab-Summary"]);
+    assert_eq!(text_color(&rt, "tab-Summary"), None);
 }
 
 fn text_color(rt: &Runtime<Desk>, key: &str) -> Option<rune::Color> {
@@ -1678,7 +1799,7 @@ fn the_lanes_ring_the_selected_lane_while_they_have_the_keyboard() {
     assert_eq!(ringed(&rt), ["lane-band"]);
     let p = pal::pal(crate::themes::default(true));
     assert_eq!(text_color(&rt, "lanes-title"), Some(p.accent));
-    rt.update(|s, _| s.pane = Focus::List);
+    rt.update(|s, _| s.pane = Focus::Inspector);
     settle(&mut rt);
     assert!(ringed(&rt).is_empty() && inside(&rt, "lane-id3", "lane-band").is_some(), "the band stays, without the ring");
 }
@@ -1688,17 +1809,19 @@ fn the_inspector_rings_the_cursor_s_row_and_an_empty_filter_says_so() {
     let (catalog, select) = fixture();
     let mut browser = Browser::start(catalog, Pricing::defaults(), select, false, Arc::new(|| {}), frontend()).unwrap();
     browser.settle();
-    let mut rt = runtime(Desk::new(browser, false), (1400.0, 900.0));
+    let mut rt = runtime(with_selection(Desk::new(browser, false)), (1400.0, 900.0));
     press(&mut rt, RuneKey::Tab);
     press(&mut rt, RuneKey::Text("7".into()));
     press(&mut rt, RuneKey::Down);
     assert_eq!(ringed(&rt), ["row-1"], "the cursor's row in Tools");
 
-    // A filter that lists nothing: the list says so, with the key that clears it.
+    // A filter that lists nothing: the Sessions table says so, with the key that clears it.
     press(&mut rt, RuneKey::Escape);
     typed(&mut rt, "/zzzz");
-    assert!(rt.presented("list-empty").is_some());
-    assert_eq!(text_in(&rt, "list-empty", "empty-head"), "No session matches “zzzz”");
+    command(&mut rt, '0');
+    settle(&mut rt);
+    assert!(rt.presented("sessions-empty").is_some());
+    assert_eq!(text_in(&rt, "sessions-empty", "empty-head"), "No session matches “zzzz”");
 }
 
 #[test]
@@ -1737,6 +1860,27 @@ fn in_a_small_window_the_lanes_and_what_is_under_them_take_at_most_45_percent() 
     assert!(lanes[3] <= 0.45 * (640.0 - view::BAR_H) + 1.0, "the first frame: {lanes:?}");
     // Whole lanes and the line of how many more leave at most a lane and that line unused.
     assert!(lanes[3] >= 0.45 * (640.0 - view::BAR_H) - day::LANE - 18.0, "and they take the room they have: {lanes:?}");
+}
+
+#[test]
+fn a_session_picked_on_a_day_not_computed_yet_has_its_lane_scrolled_to_once_it_is() {
+    let mut many = synthetic_day();
+    if let Some((_, lanes)) = &mut many.strip {
+        let lane = lanes.lanes[0].clone();
+        lanes.lanes = (0..30).map(|i| tokprof_core::rhythm::StripLane { id: format!("id{i}"), ..lane.clone() }).collect();
+    }
+    let mut rt = runtime(desk_of(30), (1400.0, 900.0));
+    // The pick shows the session's day, which is not computed yet.
+    rt.update(|s, tx| crate::sessions::open_in_day(s, "id29", tx));
+    settle(&mut rt);
+    assert!(rt.state.reveal_lane.is_some() && rt.presented("lane-id29").is_none(), "no lanes yet");
+    let date = rhythm::date_of(rt.state.browser.day_noon(), &rhythm::local_offset);
+    rt.update(|s, _| s.browser.put_day(Some(date), date, many));
+    settle(&mut rt);
+    let lanes = rt.presented("lanes-scroll").expect("the lanes").0;
+    let lane = rt.presented("lane-id29").expect("the lane of id29").0;
+    assert!(lane[1] >= lanes[1] - 0.5 && lane[1] + lane[3] <= lanes[1] + lanes[3] + 0.5, "the last lane is scrolled into view: {lane:?} in {lanes:?}");
+    assert!(rt.state.reveal_lane.is_none());
 }
 
 #[test]
@@ -1811,6 +1955,10 @@ fn the_palette_in_reports_shows_day_for_what_works_on_day() {
     assert_eq!(rt.state.reports.mode, reports::Mode::Day, "the filter is typed where it shows");
     assert!(rt.state.browser.editing());
     press(&mut rt, RuneKey::Escape);
+    // The full-size inspector, of a session selected.
+    rt.update(|s, tx| {
+        s.pick("id0", tx);
+    });
     command(&mut rt, '2');
     run(&mut rt, "full-size");
     assert_eq!((rt.state.reports.mode, rt.state.browser.zoomed()), (reports::Mode::Day, true));
@@ -2035,11 +2183,16 @@ fn a_pick_in_the_menu_bar_selects_the_session_in_day_over_no_card() {
 }
 
 #[test]
-fn the_heads_of_the_list_and_the_inspector_meet_and_the_tabs_stay_put() {
+fn the_heads_of_the_day_and_the_inspector_match_and_the_tabs_stay_put() {
     let mut rt = runtime(desk_of(30), (1400.0, 900.0));
     let rect = |rt: &Runtime<Desk>, key: &str| rt.elements().iter().find(|e| e.key.as_deref() == Some(key)).expect(key).rect;
-    let (head, tabs) = (rect(&rt, "list-head"), rect(&rt, "tabs"));
-    assert_eq!((head[1], head[3]), (tabs[1], tabs[3]), "one top and one height, so the lines under them are one line");
+    let head = rect(&rt, "day-head");
+    rt.update(|s, tx| {
+        s.pick("id0", tx);
+    });
+    settle(&mut rt);
+    let tabs = rect(&rt, "tabs");
+    assert_eq!((head[1], head[3]), (tabs[1], tabs[3]), "the day's head and the tabs in one place, so the details pane does not jump");
     let before: Vec<f32> = inspector::Tab::ALL.iter().map(|t| rect(&rt, &format!("tab-{}", t.name()))[0]).collect();
     press(&mut rt, RuneKey::Tab);
     assert_eq!(rt.state.pane, Focus::Inspector);
@@ -2068,8 +2221,10 @@ fn waiting_desk() -> Desk {
 #[test]
 fn the_waiting_order_is_a_setting_off_by_default() {
     let mut rt = runtime(waiting_desk(), (1400.0, 900.0));
+    command(&mut rt, '0');
+    settle(&mut rt);
     assert!(!rt.state.settings.waiting && rt.state.prefs.get::<String>("waiting").is_none(), "off without settings");
-    assert!(rt.find("sort-Waiting").is_none(), "the head offers Time, Cost and Next only");
+    assert!(rt.find("waiting-first").is_none(), "the toolbar offers no Waiting first");
     for _ in 0..3 {
         press(&mut rt, RuneKey::Text("s".into()));
     }
@@ -2087,9 +2242,9 @@ fn the_waiting_order_is_a_setting_off_by_default() {
     assert!(rt.state.settings.waiting, "→ picks On");
     assert_eq!(rt.state.prefs.get::<String>("waiting").as_deref(), Some("on"));
     press(&mut rt, RuneKey::Escape);
-    assert!(rt.find("sort-Waiting").is_some(), "the head offers Waiting at once");
+    assert!(rt.find("waiting-first").is_some(), "the toolbar offers Waiting first at once");
 
-    click(&mut rt, "sort-Waiting");
+    click(&mut rt, "waiting-first");
     settle(&mut rt);
     let all = texts(&rt);
     let at = |t: &str| all.iter().position(|x| x == t).unwrap_or_else(|| panic!("no {t:?} in {all:?}"));
@@ -2105,7 +2260,7 @@ fn the_waiting_order_is_a_setting_off_by_default() {
     press(&mut rt, RuneKey::Left);
     assert_eq!(rt.state.browser.sort_order(), tokprof_browse::browser::Sort::Time, "off in waiting order sorts by time");
     press(&mut rt, RuneKey::Escape);
-    assert!(rt.find("sort-Waiting").is_none(), "Waiting leaves the head");
+    assert!(rt.find("waiting-first").is_none(), "Waiting first leaves the toolbar");
 }
 
 #[test]
@@ -2118,6 +2273,8 @@ fn nobody_waits_and_the_palette_sorts_by_waiting() {
     press(&mut rt, RuneKey::Enter);
     settle(&mut rt);
     assert_eq!(rt.state.browser.sort_order(), tokprof_browse::browser::Sort::Waiting, "as the Waiting button sorts it");
+    command(&mut rt, '0');
+    settle(&mut rt);
     let all = texts(&rt);
     let at = |t: &str| all.iter().position(|x| x == t).unwrap_or_else(|| panic!("no {t:?} in {all:?}"));
     assert!(at("Nobody waits for you") < at("Others"), "{all:?}");
@@ -2136,3 +2293,9 @@ fn a_frame_in_waiting_order() {
 
 #[path = "calendar_tests.rs"]
 mod calendar_view;
+
+#[path = "sessions_tests.rs"]
+mod sessions_view;
+
+#[path = "details_tests.rs"]
+mod day_view;

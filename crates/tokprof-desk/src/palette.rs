@@ -59,6 +59,8 @@ pub enum Action {
     Settings,
     KeyHelp,
     DayView,
+    /// The Sessions screen.
+    Sessions,
     Reports,
     Period7,
     Period30,
@@ -81,21 +83,20 @@ pub enum Action {
     WholeDay,
     DayBack,
     DayOn,
-    SessionDay,
     FullSize,
-    BackToList,
+    BackToLanes,
     ToLanes,
-    ToList,
     ToInspector,
     CloseWindow,
     Quit,
 }
 
 impl Action {
-    pub const ALL: [Action; 37] = [
+    pub const ALL: [Action; 36] = [
         Action::Settings,
         Action::KeyHelp,
         Action::DayView,
+        Action::Sessions,
         Action::Reports,
         Action::Period7,
         Action::Period30,
@@ -122,11 +123,9 @@ impl Action {
         Action::WholeDay,
         Action::DayBack,
         Action::DayOn,
-        Action::SessionDay,
         Action::FullSize,
-        Action::BackToList,
+        Action::BackToLanes,
         Action::ToLanes,
-        Action::ToList,
         Action::ToInspector,
         Action::CloseWindow,
         Action::Quit,
@@ -147,6 +146,7 @@ impl Action {
             Action::Settings => "Settings…",
             Action::KeyHelp => "Key help",
             Action::DayView => "Day",
+            Action::Sessions => "Sessions",
             Action::Reports => "Reports",
             Action::Period7 => "Reports: the last 7 days",
             Action::Period30 => "Reports: the last 30 days",
@@ -165,11 +165,9 @@ impl Action {
             Action::WholeDay => "Show 24 h in the lanes",
             Action::DayBack => "Previous day",
             Action::DayOn => "Next day",
-            Action::SessionDay => "The selected session's day",
             Action::FullSize => "Full-size inspector",
-            Action::BackToList => "Back to the list",
+            Action::BackToLanes => "Back to the lanes",
             Action::ToLanes => "Keyboard to the lanes",
-            Action::ToList => "Keyboard to the list",
             Action::ToInspector => "Keyboard to the inspector",
             Action::CloseWindow => "Close the window",
             Action::Quit => "Quit",
@@ -182,6 +180,7 @@ impl Action {
             Action::Settings => &["⌘,"],
             Action::KeyHelp => &["?"],
             Action::DayView => &["⌘1"],
+            Action::Sessions => &["⌘0"],
             Action::Reports => &["⌘2"],
             Action::Period7 | Action::Period30 | Action::Period90 => &[],
             Action::Calendar => &["⌘3"],
@@ -197,36 +196,42 @@ impl Action {
             Action::Fit | Action::WholeDay => &[],
             Action::DayBack => &["←"],
             Action::DayOn => &["→"],
-            Action::SessionDay => &["d"],
             Action::FullSize => &["⏎"],
-            Action::BackToList => &["esc"],
-            Action::ToLanes | Action::ToList | Action::ToInspector => &["Tab"],
+            Action::BackToLanes => &["esc"],
+            Action::ToLanes | Action::ToInspector => &["Tab"],
             Action::CloseWindow => &["⌘W"],
             Action::Quit => &["⌘Q"],
         }
     }
 
-    /// Whether the action works on what Day shows (the list, the lanes, the inspector), so that
-    /// from Reports it shows Day first.
+    /// Whether the action sorts the Sessions table, so that it shows Sessions first.
+    pub fn in_sessions(self) -> bool {
+        matches!(self, Action::SortTime | Action::SortCost | Action::SortNext | Action::SortWaiting | Action::Resort)
+    }
+
+    /// Whether the action works on what Day shows (the lanes, the details pane, the inspector),
+    /// so that from another screen it shows Day first.
     pub fn in_day(self) -> bool {
-        !matches!(
-            self,
-            Action::Settings
-                | Action::KeyHelp
-                | Action::DayView
-                | Action::Reports
-                | Action::Period7
-                | Action::Period30
-                | Action::Period90
-                | Action::Calendar
-                | Action::CalendarOf(_)
-                | Action::MonthReview
-                | Action::Handoff
-                | Action::Jfr
-                | Action::Html
-                | Action::CloseWindow
-                | Action::Quit
-        )
+        !self.in_sessions()
+            && !matches!(
+                self,
+                Action::Settings
+                    | Action::KeyHelp
+                    | Action::DayView
+                    | Action::Sessions
+                    | Action::Reports
+                    | Action::Period7
+                    | Action::Period30
+                    | Action::Period90
+                    | Action::Calendar
+                    | Action::CalendarOf(_)
+                    | Action::MonthReview
+                    | Action::Handoff
+                    | Action::Jfr
+                    | Action::Html
+                    | Action::CloseWindow
+                    | Action::Quit
+            )
     }
 
     /// Whether the action does something in the window as it is.
@@ -235,10 +240,13 @@ impl Action {
         match self {
             Action::ClearFilter => !s.browser.filter().is_empty(),
             Action::SortWaiting => s.browser.waiting(),
-            // The full-size inspector has the keyboard.
-            Action::FullSize | Action::ToLanes | Action::ToList | Action::ToInspector => !zoomed,
-            Action::BackToList => zoomed,
+            // The full-size inspector has the keyboard; with no session selected there is none
+            // to show full size.
+            Action::FullSize => !zoomed && s.current().is_some(),
+            Action::ToLanes | Action::ToInspector => !zoomed,
+            Action::BackToLanes => zoomed,
             Action::DayView => s.reports.mode != Mode::Day,
+            Action::Sessions => s.reports.mode != Mode::Sessions,
             Action::Reports => s.reports.mode != Mode::Reports,
             Action::Calendar => s.reports.mode != Mode::Calendar,
             Action::MonthReview => s.calendar.data.get().is_some_and(|c| c.store.is_some()),
@@ -380,12 +388,14 @@ fn candidates(s: &Desk) -> Vec<Entry> {
         let keys = if t == Tab::Flame { &["0"][..] } else { DIGITS.get(i).map_or(&[][..], std::slice::from_ref) };
         Entry { keys, ..Entry::new(Group::Tabs, Pick::Tab(t), t.name()) }
     }));
-    // The sessions, and the days they were last active on, as the list's separators group them.
+    // The sessions, and the days they were last active on, as the Sessions table's headers group
+    // them.
     let offset = &rhythm::local_offset;
+    let rule = crate::sessions::days(s);
     let mut days: BTreeMap<i64, (usize, f64)> = BTreeMap::new();
     for r in 0..b.len() {
         let c = b.cells(r, now);
-        let day = days.entry(rhythm::date_of(c.active_ms, offset)).or_default();
+        let day = days.entry(rule.date_of(c.active_ms)).or_default();
         day.0 += 1;
         day.1 += c.usd.unwrap_or(0.0);
         let (title, detail) = match c.title {
@@ -400,7 +410,7 @@ fn candidates(s: &Desk) -> Vec<Entry> {
             ..Entry::new(Group::Sessions, Pick::Session(b.session(r).to_string()), title)
         });
     }
-    let today = rhythm::date_of(now, offset);
+    let today = rule.date_of(now);
     let count = |(n, cost): (usize, f64)| format!("{n} {}, {}", if n == 1 { "session" } else { "sessions" }, usd(cost));
     out.push(Entry {
         detail: "the day of the latest action".into(),
@@ -607,29 +617,31 @@ impl Desk {
     /// Does what an entry says, with the palette closed.
     pub fn run(&mut self, pick: Pick, tx: &mut Tx) {
         self.palette = None;
+        // A session picked while Sessions shows is selected there.
+        if let Pick::Session(id) = &pick
+            && self.reports.mode == Mode::Sessions
+        {
+            crate::sessions::pick(self, id, tx);
+            return;
+        }
         // A session, a tab, a day and what works on them are shown in Day.
         if !matches!(pick, Pick::Act(a) if !a.in_day()) {
             crate::reports::show(self, Mode::Day);
         }
         match pick {
+            // On its day, with its Summary from the top; the full-size inspector stays full size.
             Pick::Session(id) => {
-                let zoomed = self.browser.zoomed();
-                if self.browser.open_session(&id) {
-                    if zoomed {
-                        self.restore_list(tx);
-                    }
-                    self.pane = Focus::List;
-                    self.show_tab(Tab::Summary, tx);
-                    tx.scroll_into_view(id.clone());
-                    tx.scroll_into_view(format!("lane-{id}"));
+                if self.pick(&id, tx) {
+                    self.pane = Focus::Lanes;
+                    self.browser.show_selected_day();
                 }
             }
             Pick::Tab(t) => self.show_tab(t, tx),
-            Pick::Day(None) => self.browser.show_latest_day(),
+            Pick::Day(None) => self.show_latest(),
             Pick::Day(Some(date)) => {
                 self.browser.show_day(date);
                 // A step of no days makes the latest date the latest day, as the steps reach it.
-                self.browser.step_day_by(0);
+                self.step_day(0);
             }
             Pick::Act(a) => self.act(a, tx),
         }
@@ -641,6 +653,7 @@ impl Desk {
             Action::Settings => self.toggle_settings(),
             Action::KeyHelp => self.open_help(),
             Action::DayView => crate::reports::show(self, Mode::Day),
+            Action::Sessions => crate::sessions::show(self, tx),
             Action::Reports => crate::reports::show(self, Mode::Reports),
             Action::Calendar => crate::reports::show(self, Mode::Calendar),
             Action::MonthReview => {
@@ -665,25 +678,29 @@ impl Desk {
             Action::Html => self.browser_key(key('o'), tx),
             Action::Filter => self.browser_key(key('/'), tx),
             Action::ClearFilter => self.browser.clear_filter(),
+            // The sorts show Sessions, sorted as a click on the column's header sorts it.
             Action::SortTime | Action::SortCost | Action::SortNext | Action::SortWaiting => {
+                crate::sessions::show(self, tx);
                 self.browser.sort_by(match a {
                     Action::SortTime => Sort::Time,
                     Action::SortCost => Sort::Cost,
                     Action::SortNext => Sort::Next,
                     _ => Sort::Waiting,
                 });
-                self.scroll_to_selected(tx);
+                crate::sessions::sorted(self, tx);
             }
-            Action::Resort => self.browser_key(key('r'), tx),
+            Action::Resort => {
+                crate::sessions::show(self, tx);
+                self.browser_key(key('r'), tx);
+                crate::sessions::sorted(self, tx);
+            }
             Action::Fit => self.fit = true,
             Action::WholeDay => self.fit = false,
-            Action::DayBack => self.browser.step_day_by(-1),
-            Action::DayOn => self.browser.step_day_by(1),
-            Action::SessionDay => self.browser_key(key('d'), tx),
+            Action::DayBack => self.step_day(-1),
+            Action::DayOn => self.step_day(1),
             Action::FullSize => self.browser_key(Key::Enter, tx),
-            Action::BackToList => self.browser_key(Key::Esc, tx),
+            Action::BackToLanes => self.browser_key(Key::Esc, tx),
             Action::ToLanes => self.pane = Focus::Lanes,
-            Action::ToList => self.pane = Focus::List,
             Action::ToInspector => self.pane = Focus::Inspector,
             Action::CloseWindow => tx.close_window(),
             Action::Quit => tx.quit(),
@@ -694,12 +711,6 @@ impl Desk {
     fn browser_key(&mut self, key: Key, tx: &mut Tx) {
         if !crate::browser_key(self, key, tx) {
             tx.quit();
-        }
-    }
-
-    fn scroll_to_selected(&self, tx: &mut Tx) {
-        if let Some(row) = self.browser.selected() {
-            tx.scroll_into_view(self.browser.session(row).to_string());
         }
     }
 }

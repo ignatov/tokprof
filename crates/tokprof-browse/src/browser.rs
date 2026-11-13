@@ -35,9 +35,11 @@ use crate::watch::{self, Change};
 /// changed.
 const BESIDE_DAY_PAUSE: Duration = Duration::from_secs(20);
 
-/// The order of the list.
+/// The order of the list: the column it sorts by. Each order sorts numbers and times greatest
+/// first and text from A to Z, unless the list is reversed (see [`Browser::sort_reversed`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sort {
+    /// The last activity.
     Time,
     Cost,
     /// What the next request would cost now.
@@ -45,10 +47,43 @@ pub enum Sort {
     /// The sessions that wait for the user, the longest wait first, then the others by time;
     /// only with the waiting option.
     Waiting,
+    Agent,
+    Project,
+    Title,
+    /// When the session started.
+    Started,
+    /// From the start to the last activity.
+    Duration,
+    Requests,
+    /// The avoidable dollars of its misses.
+    Avoidable,
+    /// Its cold returns.
+    Cold,
+    /// The model of most of its requests.
+    Model,
 }
 
 impl Sort {
+    /// The orders `s` cycles through, the last one only with the waiting option.
     pub const ALL: [Sort; 4] = [Sort::Time, Sort::Cost, Sort::Next, Sort::Waiting];
+
+    /// The columns of the window's Sessions table, in their order (desk-sessions, Table
+    /// columns): last activity, the agent, project, title, started, duration, requests, cost,
+    /// avoidable, cold returns, next request and model.
+    pub const COLUMNS: [Sort; 12] = [
+        Sort::Time,
+        Sort::Agent,
+        Sort::Project,
+        Sort::Title,
+        Sort::Started,
+        Sort::Duration,
+        Sort::Requests,
+        Sort::Cost,
+        Sort::Avoidable,
+        Sort::Cold,
+        Sort::Next,
+        Sort::Model,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -56,18 +91,82 @@ impl Sort {
             Sort::Cost => "cost",
             Sort::Next => "next request",
             Sort::Waiting => "waiting",
+            Sort::Agent => "agent",
+            Sort::Project => "project",
+            Sort::Title => "title",
+            Sort::Started => "start",
+            Sort::Duration => "duration",
+            Sort::Requests => "requests",
+            Sort::Avoidable => "avoidable",
+            Sort::Cold => "cold returns",
+            Sort::Model => "model",
         }
     }
 
-    /// The order after this one, with or without the waiting option.
+    /// Whether the order sorts text, from A to Z first; the others sort numbers and times,
+    /// greatest first.
+    pub fn is_text(self) -> bool {
+        matches!(self, Sort::Agent | Sort::Project | Sort::Title | Sort::Model)
+    }
+
+    /// The order after this one, with or without the waiting option; from an order that `s` does
+    /// not cycle through, time.
     fn following(self, waiting: bool) -> Sort {
         match self {
             Sort::Time => Sort::Cost,
             Sort::Cost => Sort::Next,
             Sort::Next if waiting => Sort::Waiting,
-            Sort::Next | Sort::Waiting => Sort::Time,
+            _ => Sort::Time,
         }
     }
+}
+
+/// The quick filters of the window's Sessions screen. Each one that is set narrows the list
+/// together with the text filter; the agents keep the sessions of any of them. The terminal
+/// browser sets none.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QuickFilters {
+    /// The sessions whose agent works now (see [`Glance::runs_at`]).
+    pub running: bool,
+    /// The sessions whose cache is warm now, as their next-request cell counts down (see
+    /// [`Glance::warm_at`]).
+    pub warm: bool,
+    /// The sessions last active since 00:00 local time on Monday of the current week.
+    pub this_week: bool,
+    /// Agent names; empty keeps every agent.
+    pub agents: Vec<String>,
+    /// A project as the sessions name it; `None` keeps every project.
+    pub project: Option<String>,
+}
+
+impl QuickFilters {
+    /// Whether no quick filter is set.
+    pub fn is_empty(&self) -> bool {
+        *self == QuickFilters::default()
+    }
+
+    /// Whether the clock can take a session out of what these filters keep.
+    fn timed(&self) -> bool {
+        self.running || self.warm || self.this_week
+    }
+
+    /// Whether these filters keep a session with this row and glance at `now`; `monday` is the
+    /// start of the current week.
+    fn keep(&self, r: &SessionRow, g: Option<&Glance>, now: i64, monday: i64) -> bool {
+        (!self.running || g.is_some_and(|g| g.runs_at(now)))
+            && (!self.warm || g.is_some_and(|g| g.warm_at(now)))
+            && (!self.this_week || r.active_ms >= monday)
+            && (self.agents.is_empty() || self.agents.iter().any(|a| a == r.file.agent.name()))
+            && self.project.as_ref().is_none_or(|p| *p == r.project)
+    }
+}
+
+/// The value a session sorts by: a number or a time, a text, or not known yet.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SortKey<'a> {
+    Num(f64),
+    Text(&'a str),
+    Unknown,
 }
 
 /// A key as the browser takes it, from a terminal or a window.
@@ -249,7 +348,13 @@ pub struct Browser<T> {
     zoom: bool,
     filter: String,
     editing: bool,
+    /// The text filter also matches the session's title; only the window sets it.
+    match_titles: bool,
+    /// The window's quick filters, which narrow the list with the text filter.
+    quick: QuickFilters,
     sort: Sort,
+    /// The order runs the other way: least and Z first; unknown values still go last.
+    reversed: bool,
     status: String,
     notes: Receiver<Note>,
     notify: Notify,
@@ -281,6 +386,9 @@ pub struct Browser<T> {
     /// The screen shows a day beside the list at all times, as the window does (see
     /// `keep_day_beside`).
     beside: bool,
+    /// The screen shows no session, so the selected one's X-ray is not computed (see
+    /// `hold_reports`).
+    hold_reports: bool,
     /// The waiting option: the list may be sorted by waiting, and shows waits then.
     waiting: bool,
     /// The temporary folders, whose sessions never wait.
@@ -428,7 +536,10 @@ impl<T> Browser<T> {
             zoom: false,
             filter: String::new(),
             editing: false,
+            match_titles: false,
+            quick: QuickFilters::default(),
             sort: Sort::Time,
+            reversed: false,
             status: String::new(),
             notes,
             notify,
@@ -445,6 +556,7 @@ impl<T> Browser<T> {
             costs: true,
             relisted: 0,
             beside: false,
+            hold_reports: false,
             waiting: false,
             temp: Arc::new(crate::day::temp_folders()),
         };
@@ -457,6 +569,7 @@ impl<T> Browser<T> {
     /// arrived.
     pub fn tick(&mut self) -> bool {
         let arrived = self.absorb();
+        self.follow_clock(now_ms());
         self.request_glances();
         self.request_report();
         self.request_day();
@@ -470,7 +583,7 @@ impl<T> Browser<T> {
     pub fn next_due(&self) -> Option<Instant> {
         let now = Instant::now();
         let glance = self.entries.iter().filter(|e| !e.gone && !e.glancing && e.glanced < e.version && e.glance_after > now).map(|e| e.glance_after).min();
-        let report = self.selected_entry().filter(|&i| {
+        let report = self.selected_entry().filter(|_| !self.hold_reports).filter(|&i| {
             let e = &self.entries[i];
             e.reported != e.version && self.pending != Some((i, e.version)) && e.report.is_some() && now < self.report_after
         });
@@ -483,7 +596,7 @@ impl<T> Browser<T> {
     pub fn settle(&mut self) {
         let deadline = Instant::now() + Duration::from_secs(20);
         self.request_report();
-        while Instant::now() < deadline && self.selected_entry().is_some_and(|i| self.entries[i].report.is_none()) {
+        while Instant::now() < deadline && !self.hold_reports && self.selected_entry().is_some_and(|i| self.entries[i].report.is_none()) {
             std::thread::sleep(Duration::from_millis(50));
             self.absorb();
         }
@@ -614,6 +727,8 @@ impl<T> Browser<T> {
             arrived = true;
             match note {
                 Note::Glance(i, version, g, took) => {
+                    // A filter that reads the glance may now keep the session, or no longer.
+                    listed |= self.reads_glance();
                     let e = &mut self.entries[i];
                     e.glance = Some(g);
                     e.glanced = version;
@@ -646,10 +761,32 @@ impl<T> Browser<T> {
                 }
             }
         }
-        if listed {
+        if listed && self.listed_out_of_date(now_ms()) {
             self.relist();
         }
         arrived
+    }
+
+    /// Whether the filters read what a glance tells: the title, or whether the session runs or
+    /// is warm.
+    fn reads_glance(&self) -> bool {
+        (self.match_titles && !self.filter.is_empty()) || self.quick.running || self.quick.warm
+    }
+
+    /// Whether the rows listed are not the ones the filters keep at `now`.
+    fn listed_out_of_date(&self, now: i64) -> bool {
+        let monday = week_start(now, &rhythm::local_offset);
+        let kept = (0..self.entries.len()).filter(|&i| self.shows_at(i, now, monday)).count();
+        kept != self.visible.len() || self.visible.iter().any(|&i| !self.shows_at(i, now, monday))
+    }
+
+    /// Takes out, at `now`, the rows that the quick filters no longer keep as the clock turned
+    /// a session cold or idle or the week ended, without moving the rows that stay (see
+    /// `relist`).
+    fn follow_clock(&mut self, now: i64) {
+        if self.quick.timed() && self.listed_out_of_date(now) {
+            self.relist_at(now);
+        }
     }
 
     /// Takes in what the log directories changed without moving the rows that stay listed: a
@@ -658,22 +795,28 @@ impl<T> Browser<T> {
     /// with them, so the rows on it stay where they are. When the selected session is gone, the
     /// cursor stays on its row.
     fn relist(&mut self) {
+        self.relist_at(now_ms());
+    }
+
+    /// `relist` as the filters keep the sessions at `now`.
+    fn relist_at(&mut self, now: i64) {
         self.relisted += 1;
         let (kept, at) = (self.selected_entry(), self.selected);
         let first = self.top;
         let mut offset = first;
         let listed: HashSet<usize> = self.visible.iter().copied().collect();
         let mut rows = Vec::with_capacity(self.visible.len());
+        let monday = week_start(now, &rhythm::local_offset);
         for (row, &i) in self.visible.iter().enumerate() {
-            if self.shows(i) {
+            if self.shows_at(i, now, monday) {
                 rows.push(i);
             } else if row < first {
                 offset -= 1;
             }
         }
-        let keys = self.keys(now_ms());
-        for i in (0..self.entries.len()).filter(|&i| !listed.contains(&i) && self.shows(i)) {
-            let place = rows.iter().position(|&j| order(&keys, i, j) == Ordering::Less).unwrap_or(rows.len());
+        let keys = self.keys(now);
+        for i in (0..self.entries.len()).filter(|&i| !listed.contains(&i) && self.shows_at(i, now, monday)) {
+            let place = rows.iter().position(|&j| order(&keys, self.reversed, i, j) == Ordering::Less).unwrap_or(rows.len());
             if place < offset {
                 offset += 1;
             }
@@ -796,7 +939,7 @@ impl<T> Browser<T> {
     }
 
     fn request_report(&mut self) {
-        let Some(i) = self.selected_entry() else { return };
+        let Some(i) = self.selected_entry().filter(|_| !self.hold_reports) else { return };
         let e = &self.entries[i];
         if e.reported == e.version || self.pending == Some((i, e.version)) {
             return;
@@ -869,15 +1012,30 @@ impl<T> Browser<T> {
         self.scroll = 0;
     }
 
-    /// Whether entry `i` is listed: its main log is there and it matches the filter.
-    fn shows(&self, i: usize) -> bool {
-        let (e, r) = (&self.entries[i], &self.entries[i].row);
-        !e.gone && (self.filter.is_empty() || format!("{} {} {}", r.file.agent.name(), r.project, r.id).to_lowercase().contains(&self.filter.to_lowercase()))
+    /// Whether entry `i` is listed at `now`: its main log is there, it matches the text filter,
+    /// and the quick filters keep it; `monday` is the start of the current week.
+    fn shows_at(&self, i: usize, now: i64, monday: i64) -> bool {
+        let e = &self.entries[i];
+        !e.gone && self.matches_text(e) && self.quick.keep(&e.row, e.glance.as_ref(), now, monday)
+    }
+
+    /// Whether the text filter keeps an entry: its agent, project or id contain the text,
+    /// ignoring case, or, when the window asks for it, its title does.
+    fn matches_text(&self, e: &Entry<T>) -> bool {
+        if self.filter.is_empty() {
+            return true;
+        }
+        let r = &e.row;
+        let text = self.filter.to_lowercase();
+        format!("{} {} {}", r.file.agent.name(), r.project, r.id).to_lowercase().contains(&text)
+            || (self.match_titles && e.glance.as_ref().and_then(|g| g.title.as_deref()).is_some_and(|t| t.to_lowercase().contains(&text)))
     }
 
     fn refilter(&mut self) {
         let keep = self.selected_entry();
-        self.visible = (0..self.entries.len()).filter(|&i| self.shows(i)).collect();
+        let now = now_ms();
+        let monday = week_start(now, &rhythm::local_offset);
+        self.visible = (0..self.entries.len()).filter(|&i| self.shows_at(i, now, monday)).collect();
         self.sort_keeping(keep);
     }
 
@@ -888,27 +1046,48 @@ impl<T> Browser<T> {
         self.top = 0;
     }
 
-    /// The value of each entry that the current order sorts by, at `now`; an unknown one is -1.
-    fn keys(&self, now: i64) -> Vec<f64> {
-        let key = |e: &Entry<T>| match self.sort {
-            Sort::Time => e.row.active_ms as f64,
-            Sort::Cost => e.glance.as_ref().map_or(-1.0, |g| g.cost),
-            Sort::Next => e.glance.as_ref().and_then(|g| g.next(now)).map_or(-1.0, |(usd, _)| usd),
-            // A wait sorts above every time, the oldest first; the others follow by time.
-            Sort::Waiting => match &e.glance {
-                None => -1.0,
-                Some(g) => match g.waiting_since.filter(|&w| rhythm::waits_at(w, now)) {
-                    Some(since) => 2.0 * now as f64 - since as f64,
-                    None => e.row.active_ms as f64,
-                },
-            },
-        };
-        self.entries.iter().map(key).collect()
+    /// The value of each entry that the current order sorts by at `now`, with its last
+    /// activity, which breaks ties.
+    fn keys(&self, now: i64) -> Vec<(SortKey<'_>, i64)> {
+        use SortKey::{Num, Text, Unknown};
+        self.entries
+            .iter()
+            .map(|e| {
+                let g = e.glance.as_ref();
+                let num = |f: fn(&Glance) -> f64| g.map_or(Unknown, |g| Num(f(g)));
+                let k = match self.sort {
+                    Sort::Time => Num(e.row.active_ms as f64),
+                    Sort::Cost => num(|g| g.cost),
+                    Sort::Next => g.and_then(|g| g.next(now)).map_or(Unknown, |(usd, _)| Num(usd)),
+                    // A wait sorts above every time, the oldest first; the others follow by time.
+                    Sort::Waiting => match g {
+                        None => Unknown,
+                        Some(g) => match g.waiting_since.filter(|&w| rhythm::waits_at(w, now)) {
+                            Some(since) => Num(2.0 * now as f64 - since as f64),
+                            None => Num(e.row.active_ms as f64),
+                        },
+                    },
+                    Sort::Agent => Text(e.row.file.agent.name()),
+                    Sort::Project => Text(&e.row.project),
+                    Sort::Title => g.and_then(|g| g.title.as_deref()).map_or(Unknown, Text),
+                    Sort::Started => g.and_then(|g| g.started_ms).map_or(Unknown, |t| Num(t as f64)),
+                    Sort::Duration => g.and_then(|g| g.started_ms).map_or(Unknown, |t| Num((e.row.active_ms - t).max(0) as f64)),
+                    Sort::Requests => num(|g| g.requests as f64),
+                    Sort::Avoidable => num(|g| g.avoidable),
+                    Sort::Cold => num(|g| g.cold_returns as f64),
+                    Sort::Model => g.and_then(|g| g.model()).map_or(Unknown, |(m, _)| Text(m)),
+                };
+                (k, e.row.active_ms)
+            })
+            .collect()
     }
 
     fn sort_keeping(&mut self, keep: Option<usize>) {
+        let mut visible = std::mem::take(&mut self.visible);
         let keys = self.keys(now_ms());
-        self.visible.sort_by(|&a, &b| order(&keys, a, b));
+        visible.sort_by(|&a, &b| order(&keys, self.reversed, a, b));
+        drop(keys);
+        self.visible = visible;
         let at = keep.and_then(|k| self.visible.iter().position(|&i| i == k));
         self.select(if self.visible.is_empty() { None } else { Some(at.unwrap_or(0)) });
     }
@@ -916,7 +1095,7 @@ impl<T> Browser<T> {
     /// Whether sorting again at `now` would change the order of the list.
     fn out_of_date(&self, now: i64) -> bool {
         let keys = self.keys(now);
-        self.visible.windows(2).any(|w| order(&keys, w[0], w[1]) == Ordering::Greater)
+        self.visible.windows(2).any(|w| order(&keys, self.reversed, w[0], w[1]) == Ordering::Greater)
     }
 
     fn move_by(&mut self, delta: isize) {
@@ -1020,6 +1199,7 @@ impl<T> Browser<T> {
             Key::Char('/') => self.editing = true,
             Key::Char('s') => {
                 self.sort = self.sort.following(self.waiting);
+                self.reversed = false;
                 self.sort();
             }
             Key::Char('r') => self.sort(),
@@ -1122,7 +1302,11 @@ impl<T> Browser<T> {
         &self.entries[self.visible[row]].row.session_id
     }
 
-    /// The row of the session with this id.
+    /// The short id of row `row`'s session, as its lane and the X-ray name it.
+    pub fn short_id(&self, row: usize) -> &str {
+        &self.entries[self.visible[row]].row.id
+    }
+
     /// The row of the session with this id: the id its row names, or the one its log's file name
     /// gives, which the day's lanes may name it by.
     pub fn row_of(&self, session: &str) -> Option<usize> {
@@ -1218,6 +1402,15 @@ impl<T> Browser<T> {
             .min()
     }
 
+    /// Takes these parts as the day of `key` (`None` for the day of the latest action) that shows
+    /// `date`, as the day worker would give them; for the tests of a screen, whose browser
+    /// computes nothing itself.
+    #[doc(hidden)]
+    pub fn put_day(&mut self, key: Option<i64>, date: i64, parts: DayParts) {
+        let text = (self.frontend.show)(parts.text());
+        self.days.insert(key, DayText { date, text, parts: Some(Arc::new(parts)), changes: self.changes, size: self.pane });
+    }
+
     /// Takes this glance for the session with this id, as the costing would give it; for the
     /// tests of a screen, whose browser costs nothing itself.
     #[doc(hidden)]
@@ -1232,10 +1425,135 @@ impl<T> Browser<T> {
         self.sort
     }
 
-    /// Orders the list by `sort`, as `s` does until it gets there; the selection stays.
+    /// Orders the list by `sort`, as `s` does until it gets there: greatest or A first. The
+    /// selection stays.
     pub fn sort_by(&mut self, sort: Sort) {
+        self.set_sort(sort, false);
+    }
+
+    /// Orders the list by `sort`, reversed or not; the selection stays.
+    pub fn set_sort(&mut self, sort: Sort, reversed: bool) {
         self.sort = sort;
+        self.reversed = reversed;
         self.sort();
+    }
+
+    /// Orders the list by a column as a click on its header does: by another column greatest
+    /// or A first, by the same column the other way.
+    pub fn sort_by_column(&mut self, sort: Sort) {
+        let reversed = sort == self.sort && !self.reversed;
+        self.set_sort(sort, reversed);
+    }
+
+    /// Whether the order runs the other way: least, oldest or Z first.
+    pub fn sort_reversed(&self) -> bool {
+        self.reversed
+    }
+
+    /// Sets the window's quick filters; the selected session stays selected while they keep
+    /// it, otherwise the first row is selected, as for the text filter.
+    pub fn set_quick_filters(&mut self, quick: QuickFilters) {
+        if quick != self.quick {
+            self.quick = quick;
+            self.refilter();
+            self.follow_selection();
+        }
+    }
+
+    pub fn quick_filters(&self) -> &QuickFilters {
+        &self.quick
+    }
+
+    /// How many sessions the text filter and `quick` keep at `now`, whatever quick filters are
+    /// set: the count a pill shows.
+    pub fn quick_count(&self, quick: &QuickFilters, now: i64) -> usize {
+        let monday = week_start(now, &rhythm::local_offset);
+        self.entries.iter().filter(|e| !e.gone && self.matches_text(e) && quick.keep(&e.row, e.glance.as_ref(), now, monday)).count()
+    }
+
+    /// The projects of the sessions the text filter keeps, with their counts, the most sessions
+    /// first; for the project picker.
+    pub fn projects(&self) -> Vec<(String, usize)> {
+        self.counts(|r| r.project.as_str())
+    }
+
+    /// The agents of the sessions the text filter keeps, with their counts, in the registry's
+    /// order; one pill each.
+    pub fn agents(&self) -> Vec<(String, usize)> {
+        let mut out = self.counts(|r| r.file.agent.name());
+        out.sort_by_key(|(name, _)| self.catalog.agent(name).map_or(usize::MAX, |a| self.catalog.order(&a).0));
+        out
+    }
+
+    /// The place in the registry of the agent with this name, which picks its color.
+    pub fn agent_place(&self, name: &str) -> Option<usize> {
+        self.catalog.agent(name).ok().map(|a| self.catalog.order(&a).0)
+    }
+
+    fn counts<'a>(&'a self, of: impl Fn(&'a SessionRow) -> &'a str) -> Vec<(String, usize)> {
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for e in self.entries.iter().filter(|e| !e.gone && self.matches_text(e)) {
+            *counts.entry(of(&e.row)).or_default() += 1;
+        }
+        let mut out: Vec<(String, usize)> = counts.into_iter().map(|(k, n)| (k.to_string(), n)).collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        out
+    }
+
+    /// The text filter also matches the sessions' titles, as the window's does; `tokprof ui`
+    /// never sets it.
+    pub fn set_match_titles(&mut self, on: bool) {
+        if on != self.match_titles {
+            self.match_titles = on;
+            self.refilter();
+        }
+    }
+
+    pub fn match_titles(&self) -> bool {
+        self.match_titles
+    }
+
+    /// When the clock next takes a listed session out of what the quick filters keep, after
+    /// `now`: its cache goes cold, its agent falls silent, or the week ends.
+    pub fn next_filter_change(&self, now: i64) -> Option<i64> {
+        let glances = self.visible.iter().filter_map(|&i| self.entries[i].glance.as_ref());
+        let cold = glances.clone().filter(|_| self.quick.warm).map(|g| g.cold_at_ms);
+        let silent = glances.filter(|_| self.quick.running).filter_map(|g| g.working_last).map(|t| t + rhythm::GAP_MS);
+        let week = self.quick.this_week.then(|| {
+            let offset = &rhythm::local_offset;
+            let date = rhythm::date_of(week_start(now, offset), offset);
+            rhythm::midnight(date + 7, offset)
+        });
+        cold.chain(silent).chain(week).filter(|&t| t > now && t != i64::MAX).min()
+    }
+
+    /// Every session the browser lists, whatever the filters keep: how many there are, and when
+    /// the first of them started, as far as its glance or its log tells; for the window's `All
+    /// sessions` and `since <date>`.
+    pub fn all_sessions(&self) -> (usize, Option<i64>) {
+        let live = self.entries.iter().filter(|e| !e.gone);
+        let first = live
+            .clone()
+            .map(|e| e.glance.as_ref().and_then(|g| g.started_ms).or(e.row.file.created_ms).unwrap_or(e.row.active_ms).min(e.row.active_ms))
+            .filter(|&t| t > 0)
+            .min();
+        (live.count(), first)
+    }
+
+    /// Whether the browser costs its sessions in the background; a detached one does not.
+    pub fn costs(&self) -> bool {
+        self.costs
+    }
+
+    /// The glance of row `row`, once the session is costed: its cost, counts and state.
+    pub fn glance(&self, row: usize) -> Option<&Glance> {
+        self.entries[self.visible[row]].glance.as_ref()
+    }
+
+    /// The listed sessions as the day store names them: agent and main session id; for the
+    /// day store's spend of what the filters keep.
+    pub fn store_keys(&self) -> HashSet<(&str, &str)> {
+        self.visible.iter().map(|&i| (self.entries[i].row.file.agent.name(), self.entries[i].row.file.main_id.as_str())).collect()
     }
 
     /// The X-ray of the selected session as computed last, for a screen that draws it itself.
@@ -1256,6 +1574,12 @@ impl<T> Browser<T> {
             self.scroll = 0;
             self.follow_selection();
         }
+    }
+
+    /// Holds back the X-ray of the selected session while a screen shows no session, as the
+    /// window's Day does with none selected; the X-ray is asked for again once it is let go.
+    pub fn hold_reports(&mut self, hold: bool) {
+        self.hold_reports = hold;
     }
 
     /// Shows the selected session's X-ray full size, as ⏎ does.
@@ -1461,9 +1785,28 @@ fn opener(path: &Path) -> (&'static str, PathBuf) {
     }
 }
 
-/// The order of the list: the larger value first, then the session listed first.
-fn order(keys: &[f64], a: usize, b: usize) -> Ordering {
-    keys[b].total_cmp(&keys[a]).then(a.cmp(&b))
+/// The order of the list: the larger number or the text nearer A first, the other way when
+/// `reversed`; values not known yet last either way; then the session active last, then the one
+/// listed first.
+fn order(keys: &[(SortKey, i64)], reversed: bool, a: usize, b: usize) -> Ordering {
+    let ((ka, ta), (kb, tb)) = (&keys[a], &keys[b]);
+    let by_value = match (ka, kb) {
+        (SortKey::Unknown, SortKey::Unknown) => Ordering::Equal,
+        (SortKey::Unknown, _) => Ordering::Greater,
+        (_, SortKey::Unknown) => Ordering::Less,
+        (SortKey::Num(x), SortKey::Num(y)) => y.total_cmp(x),
+        (SortKey::Text(x), SortKey::Text(y)) => x.chars().flat_map(char::to_lowercase).cmp(y.chars().flat_map(char::to_lowercase)),
+        _ => Ordering::Equal,
+    };
+    let known = !matches!(ka, SortKey::Unknown) && !matches!(kb, SortKey::Unknown);
+    let by_value = if reversed && known { by_value.reverse() } else { by_value };
+    by_value.then(tb.cmp(ta)).then(a.cmp(&b))
+}
+
+/// The start of the current week at `now_ms`: 00:00 local time on its Monday.
+pub fn week_start(now_ms: i64, offset: rhythm::Offset) -> i64 {
+    let date = rhythm::date_of(now_ms, offset);
+    rhythm::midnight(date - tokprof_core::calendar::weekday(date) as i64, offset)
 }
 
 pub fn now_ms() -> i64 {
@@ -1873,6 +2216,242 @@ mod tests {
         assert!(!press(&mut a, Key::Char('q')));
     }
 
+    /// Session `i` of `agent` in `project`, last active `at` seconds after the epoch.
+    fn of_agent(i: usize, agent: &str, project: &str, at: u64) -> SessionRow {
+        let mut r = row(i, project, at);
+        r.file.agent = tokprof_core::source::AgentId::unknown(agent);
+        r
+    }
+
+    /// Four sessions; the last one is still being costed.
+    fn columns_app() -> Browser<String> {
+        let mut a = app_of(vec![
+            of_agent(0, "claude", "~/b", 4000),
+            of_agent(1, "codex", "~/a", 3000),
+            of_agent(2, "claude", "~/c", 2000),
+            of_agent(3, "codex", "~/d", 1000),
+        ]);
+        let glance = |cost, title: &str, started: i64, requests, avoidable, cold_returns, model: &str, next| xray::Glance {
+            cost,
+            title: Some(title.into()),
+            started_ms: Some(started * 1000),
+            requests,
+            avoidable,
+            cold_returns,
+            models: vec![(model.into(), 5)],
+            next_warm: Some(next),
+            next_cold: Some(next),
+            cold_at_ms: i64::MAX,
+            ..Default::default()
+        };
+        a.entries[0].glance = Some(glance(3.0, "Beta", 1000, 30, 2.0, 1, "m-b", 0.5));
+        a.entries[1].glance = Some(glance(1.0, "alpha", 2900, 10, 5.0, 3, "m-a", 0.2));
+        a.entries[2].glance = Some(glance(2.0, "gamma", 500, 20, 0.0, 0, "m-c", 0.9));
+        a
+    }
+
+    #[test]
+    fn every_column_sorts_both_ways_with_unknown_values_last() {
+        let mut a = columns_app();
+        let expected = [
+            (Sort::Time, ["id0", "id1", "id2", "id3"], ["id3", "id2", "id1", "id0"]),
+            (Sort::Agent, ["id0", "id2", "id1", "id3"], ["id1", "id3", "id0", "id2"]),
+            (Sort::Project, ["id1", "id0", "id2", "id3"], ["id3", "id2", "id0", "id1"]),
+            (Sort::Title, ["id1", "id0", "id2", "id3"], ["id2", "id0", "id1", "id3"]),
+            (Sort::Started, ["id1", "id0", "id2", "id3"], ["id2", "id0", "id1", "id3"]),
+            (Sort::Duration, ["id0", "id2", "id1", "id3"], ["id1", "id2", "id0", "id3"]),
+            (Sort::Requests, ["id0", "id2", "id1", "id3"], ["id1", "id2", "id0", "id3"]),
+            (Sort::Cost, ["id0", "id2", "id1", "id3"], ["id1", "id2", "id0", "id3"]),
+            (Sort::Avoidable, ["id1", "id0", "id2", "id3"], ["id2", "id0", "id1", "id3"]),
+            (Sort::Cold, ["id1", "id0", "id2", "id3"], ["id2", "id0", "id1", "id3"]),
+            (Sort::Next, ["id2", "id0", "id1", "id3"], ["id1", "id0", "id2", "id3"]),
+            (Sort::Model, ["id1", "id0", "id2", "id3"], ["id2", "id0", "id1", "id3"]),
+        ];
+        assert_eq!(expected.iter().map(|e| e.0).collect::<Vec<_>>(), Sort::COLUMNS, "every column of the table");
+        for (sort, first, second) in expected {
+            // A first click comes from another column.
+            a.sort_by(if sort == Sort::Time { Sort::Cost } else { Sort::Time });
+            a.sort_by_column(sort);
+            assert_eq!((sessions(&a), a.sort_reversed()), (first.to_vec(), false), "a first click on {}", sort.name());
+            a.sort_by_column(sort);
+            assert_eq!((sessions(&a), a.sort_reversed()), (second.to_vec(), true), "a second click on {}", sort.name());
+        }
+        // `alpha` before `Beta`: text ignores case.
+        a.set_sort(Sort::Title, false);
+        assert_eq!(&sessions(&a)[..2], ["id1", "id0"]);
+        // `s` goes on with time, in its first direction.
+        press(&mut a, Key::Char('s'));
+        assert_eq!((a.sort_order(), a.sort_reversed(), sessions(&a)), (Sort::Time, false, vec!["id0", "id1", "id2", "id3"]));
+        press(&mut a, Key::Char('s'));
+        assert_eq!(a.sort_order(), Sort::Cost);
+        assert!(a.list_title(now_ms()).contains(" · by cost"), "{}", a.list_title(now_ms()));
+    }
+
+    #[test]
+    fn ties_go_newest_last_activity_first_in_both_directions() {
+        let mut a = app_of(vec![row(0, "~/p", 1000), row(1, "~/p", 3000), row(2, "~/p", 2000)]);
+        for e in &mut a.entries {
+            e.glance = Some(xray::Glance { avoidable: 1.0, cold_at_ms: i64::MAX, ..Default::default() });
+        }
+        a.sort_by_column(Sort::Avoidable);
+        assert_eq!(sessions(&a), ["id1", "id2", "id0"]);
+        a.sort_by_column(Sort::Avoidable);
+        assert_eq!(sessions(&a), ["id1", "id2", "id0"]);
+        a.sort_by_column(Sort::Project);
+        assert_eq!(sessions(&a), ["id1", "id2", "id0"], "one project");
+    }
+
+    #[test]
+    fn rows_stay_in_place_in_a_reversed_order_as_costs_arrive() {
+        let mut a = columns_app();
+        a.sort_by_column(Sort::Avoidable);
+        a.sort_by_column(Sort::Avoidable);
+        let before = sessions(&a).iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let g = xray::Glance { avoidable: 0.5, cold_at_ms: i64::MAX, ..Default::default() };
+        a.notify.tx.send(Note::Glance(3, a.entries[3].version, g, Duration::ZERO)).unwrap();
+        a.absorb();
+        assert_eq!(sessions(&a), before, "the cost fills in its cell and moves no row");
+        assert!(a.out_of_date(now_ms()), "and r would sort it in");
+        press(&mut a, Key::Char('r'));
+        assert_eq!((sessions(&a), a.sort_reversed()), (vec!["id2", "id3", "id0", "id1"], true), "r keeps the direction");
+    }
+
+    #[test]
+    fn quick_filters_narrow_the_list_and_agents_keep_any_of_theirs() {
+        let now = now_ms();
+        let mut a = columns_app();
+        // id0 and id1 are warm for 10 minutes more, id2 went cold a minute ago; id3 is not costed.
+        for (i, cold_at) in [(0, now + 600_000), (1, now + 600_000), (2, now - 60_000)] {
+            let g = a.entries[i].glance.as_mut().unwrap();
+            g.cold_at_ms = cold_at;
+        }
+        let warm = QuickFilters { warm: true, ..QuickFilters::default() };
+        let codex = QuickFilters { agents: vec!["codex".into()], ..QuickFilters::default() };
+        assert_eq!((a.quick_count(&warm, now), a.quick_count(&codex, now)), (2, 2), "each pill counts what it alone keeps");
+        a.set_quick_filters(QuickFilters { warm: true, agents: vec!["codex".into()], ..QuickFilters::default() });
+        assert_eq!(sessions(&a), ["id1"], "the warm Codex sessions");
+        a.set_quick_filters(QuickFilters { agents: vec!["claude".into(), "codex".into()], ..QuickFilters::default() });
+        assert_eq!(sessions(&a).len(), 4, "either agent");
+        a.set_quick_filters(QuickFilters { agents: vec!["claude".into()], project: Some("~/c".into()), ..QuickFilters::default() });
+        assert_eq!(sessions(&a), ["id2"]);
+        // The text filter narrows the pills' counts too.
+        a.set_quick_filters(QuickFilters::default());
+        a.set_filter("codex");
+        assert_eq!((a.quick_count(&warm, now), a.quick_count(&codex, now)), (1, 2));
+        assert_eq!(a.agents(), [("codex".to_string(), 2)]);
+        a.set_filter("");
+        assert_eq!(a.projects().len(), 4);
+        assert!(a.quick_filters().is_empty());
+    }
+
+    #[test]
+    fn a_quick_filter_keeps_the_selection_while_it_keeps_the_session() {
+        let mut a = columns_app();
+        press(&mut a, Key::Down);
+        assert_eq!(a.selected_entry(), Some(1));
+        a.set_quick_filters(QuickFilters { agents: vec!["codex".into()], ..QuickFilters::default() });
+        assert_eq!((sessions(&a), a.selected_entry()), (vec!["id1", "id3"], Some(1)), "the selected session stays selected");
+        a.set_quick_filters(QuickFilters { agents: vec!["claude".into()], ..QuickFilters::default() });
+        assert_eq!(a.selected(), Some(0), "otherwise the first row");
+    }
+
+    #[test]
+    fn the_clock_takes_out_a_session_that_goes_cold_or_falls_silent() {
+        let now = now_ms();
+        let mut a = columns_app();
+        a.entries[0].glance.as_mut().unwrap().cold_at_ms = now + 60_000;
+        a.entries[1].glance.as_mut().unwrap().cold_at_ms = now + 600_000;
+        a.set_quick_filters(QuickFilters { warm: true, ..QuickFilters::default() });
+        assert_eq!(sessions(&a), ["id0", "id1"]);
+        assert_eq!(a.next_filter_change(now), Some(now + 60_000));
+        a.follow_clock(now + 60_000);
+        assert_eq!(sessions(&a), ["id1"], "gone cold, gone from the list");
+        assert_eq!(a.quick_count(a.quick_filters(), now + 60_000), 1);
+
+        let mut a = columns_app();
+        a.entries[2].glance.as_mut().unwrap().working_last = Some(now - 14 * 60_000);
+        a.set_quick_filters(QuickFilters { running: true, ..QuickFilters::default() });
+        assert_eq!(sessions(&a), ["id2"]);
+        assert_eq!(a.next_filter_change(now), Some(now + 60_000));
+        a.follow_clock(now + 60_000);
+        assert!(sessions(&a).is_empty(), "a silence of 15 minutes");
+
+        // A session that starts running joins the list when its glance arrives, and one that
+        // fell silent long ago stays out.
+        a.entries[2].glance.as_mut().unwrap().working_last = Some(now - 20 * 60_000);
+        let g = xray::Glance { working_last: Some(now), cold_at_ms: i64::MAX, ..Default::default() };
+        a.notify.tx.send(Note::Glance(3, a.entries[3].version, g, Duration::ZERO)).unwrap();
+        a.absorb();
+        assert_eq!(sessions(&a), ["id3"]);
+    }
+
+    #[test]
+    fn this_week_starts_on_monday_at_midnight() {
+        let offset = &rhythm::local_offset;
+        let now = now_ms();
+        let monday = week_start(now, offset);
+        assert!(monday <= now && now - monday < 7 * 86_400_000 + 3_600_000);
+        assert_eq!(tokprof_core::calendar::weekday(rhythm::date_of(monday, offset)), 0);
+        assert_eq!((monday + offset(monday)).rem_euclid(86_400_000), 0, "00:00 local time");
+        let secs = |ms: i64| (ms / 1000) as u64;
+        let mut a = app_of(vec![row(0, "~/p", secs(monday)), row(1, "~/p", secs(monday) - 1), row(2, "~/p", secs(now))]);
+        a.set_quick_filters(QuickFilters { this_week: true, ..QuickFilters::default() });
+        assert_eq!(sessions(&a), ["id2", "id0"], "Monday 00:00 is in the week, Sunday 23:59:59 is not");
+        let next = a.next_filter_change(now).expect("the end of the week");
+        assert_eq!(tokprof_core::calendar::weekday(rhythm::date_of(next, offset)), 0);
+        assert!(next > now && next - monday >= 6 * 86_400_000);
+    }
+
+    #[test]
+    fn this_week_on_a_thursday_starts_on_the_monday_before() {
+        // Thursday 12 November 2026, 15:00 in a zone one hour east of UTC.
+        let cet = |_: i64| 3_600_000;
+        let thursday = 1_793_574_000_000 + 10 * 86_400_000 + 15 * 3_600_000;
+        assert_eq!(week_start(thursday, &cet), 1_793_574_000_000 + 7 * 86_400_000, "Monday 9 November 00:00");
+        assert_eq!(week_start(1_793_574_000_000 + 7 * 86_400_000, &cet), 1_793_574_000_000 + 7 * 86_400_000, "Monday 00:00 itself");
+    }
+
+    #[test]
+    fn all_sessions_counts_what_the_filters_hide_and_starts_at_the_first_start() {
+        let mut a = columns_app();
+        a.set_quick_filters(QuickFilters { agents: vec!["codex".into()], ..QuickFilters::default() });
+        a.set_filter("~/d");
+        assert_eq!(a.len(), 1);
+        // id2 started at 500 s; id3 has no glance and was last active at 1000 s.
+        assert_eq!(a.all_sessions(), (4, Some(500_000)), "every session, the earliest start");
+        a.entries[2].gone = true;
+        assert_eq!(a.all_sessions(), (3, Some(1_000_000)), "a gone session is not counted");
+    }
+
+    #[test]
+    fn titles_match_only_where_the_window_asks() {
+        let mut a = columns_app();
+        a.entries[2].glance.as_mut().unwrap().title = Some("Python chat bugs".into());
+        a.set_filter("python");
+        assert!(sessions(&a).is_empty(), "`tokprof ui` matches agent, project and id only");
+        assert!(!a.match_titles());
+        a.set_match_titles(true);
+        assert_eq!(sessions(&a), ["id2"], "the window's filter matches the title, ignoring case");
+        a.set_filter("~/a");
+        assert_eq!(sessions(&a), ["id1"], "and still the project");
+        // A title that arrives with a glance brings its session into the list.
+        a.set_filter("delta");
+        assert!(sessions(&a).is_empty());
+        let g = xray::Glance { title: Some("Delta report".into()), cold_at_ms: i64::MAX, ..Default::default() };
+        a.notify.tx.send(Note::Glance(3, a.entries[3].version, g, Duration::ZERO)).unwrap();
+        a.absorb();
+        assert_eq!(sessions(&a), ["id3"]);
+    }
+
+    #[test]
+    fn the_listed_sessions_name_their_store_keys() {
+        let mut a = columns_app();
+        a.set_quick_filters(QuickFilters { agents: vec!["codex".into()], ..QuickFilters::default() });
+        let keys = a.store_keys();
+        assert_eq!(keys, [("codex", "id1"), ("codex", "id3")].into_iter().collect());
+        assert_eq!(a.glance(0).map(|g| g.requests), Some(10));
+    }
+
     #[test]
     fn ctrl_c_quits_while_a_filter_is_typed_and_q_is_typed_into_it() {
         let mut a = app(&["~/src/a"]);
@@ -2133,6 +2712,7 @@ mod tests {
             last_ms: last,
             title: Some("Fix the export".into()),
             waiting_since: None,
+            ..Default::default()
         });
         a.entries[1].glance = Some(xray::Glance { cost: 2.0, cold_at_ms: i64::MAX, ..Default::default() });
         assert_eq!(a.cache_life("id0"), Some((last, cold_at)));

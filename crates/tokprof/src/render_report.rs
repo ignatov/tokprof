@@ -539,8 +539,16 @@ mod tests {
             typed: vec![(30_000, 100_000), (7 * minute, 300_000), (90 * minute, 420_000), (100 * minute, 600_000)],
             lifetimes: [5 * minute, 60 * minute].into_iter().collect(),
             returns: vec![
-                ColdReturn { ts_ms: 0, pause_ms: 90 * minute, usd: 3.5, premium_usd: 3.3, context: 420_000, starter: Starter::Typed },
-                ColdReturn { ts_ms: 0, pause_ms: 570 * minute, usd: 7.0, premium_usd: 6.8, context: 878_000, starter: Starter::Background },
+                ColdReturn { ts_ms: 0, pause_ms: 90 * minute, usd: 3.5, premium_usd: 3.3, context: 420_000, starter: Starter::Typed, session: "a".into() },
+                ColdReturn {
+                    ts_ms: 0,
+                    pause_ms: 570 * minute,
+                    usd: 7.0,
+                    premium_usd: 6.8,
+                    context: 878_000,
+                    starter: Starter::Background,
+                    session: "a".into(),
+                },
             ],
             follows: vec![20, 2],
             cold_returns_by_client: Default::default(),

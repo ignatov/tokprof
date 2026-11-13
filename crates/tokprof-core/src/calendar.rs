@@ -208,6 +208,7 @@ pub fn weekday(date: i64) -> usize {
 }
 
 /// Where each moment's day starts, as the calendar has it.
+#[derive(Clone, Debug, Default)]
 struct DayRule {
     starts: Vec<DayStart>,
 }
@@ -254,16 +255,122 @@ fn clock(ts: i64, offset: Offset) -> (usize, usize) {
     (weekday(local.div_euclid(DAY_MS)), (local.rem_euclid(DAY_MS) / HOUR_MS) as usize)
 }
 
+/// The day rule of these entries' actions as of `end`: the main logs the rhythm keeps.
+fn rule_of<'a>(entries: impl Iterator<Item = &'a Entry>, end: i64, offset: Offset) -> DayRule {
+    let mut actions: Vec<i64> = entries.filter(|e| !e.subagent && !e.left_out).flat_map(|e| e.actions.iter().map(|a| a.0)).filter(|&t| t > 0).collect();
+    actions.sort_unstable();
+    actions.dedup();
+    DayRule::of(&actions, end, offset)
+}
+
+/// A main session as the day store names it: its agent and the id of its main session.
+pub type SessionKey = (String, String);
+
+/// What the requests of the store's entries spent in a time: in all, per local hour and per main
+/// session, subagents with their main session.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Spend {
+    pub usd: f64,
+    /// By the start of each local hour, in epoch ms, in time order; hours without a request are
+    /// left out.
+    pub hours: Vec<(i64, f64)>,
+    /// By main session, the most spend first.
+    pub sessions: Vec<(SessionKey, f64)>,
+}
+
+/// What the requests of the entries `keep` keeps spent from `from_ms` to before `to_ms`, as the
+/// calendar counts a day: an amount counts at the minute it starts in.
+pub fn spend_between(entries: &[Entry], keep: impl Fn(&Entry) -> bool, (from_ms, to_ms): (i64, i64), offset: Offset) -> Spend {
+    let mut hours: std::collections::BTreeMap<i64, f64> = std::collections::BTreeMap::new();
+    let mut sessions: HashMap<(&str, &str), f64> = HashMap::new();
+    let mut usd = 0.0;
+    for e in entries.iter().filter(|e| keep(e)) {
+        for m in &e.minutes {
+            let ts = m.minute * MINUTE_MS;
+            if m.minute <= 0 || ts < from_ms || ts >= to_ms {
+                continue;
+            }
+            usd += m.usd;
+            *hours.entry(local_hour(ts, offset)).or_default() += m.usd;
+            *sessions.entry((e.agent.as_str(), e.main.as_str())).or_default() += m.usd;
+        }
+    }
+    let mut sessions: Vec<(SessionKey, f64)> = sessions.into_iter().map(|((a, m), usd)| ((a.to_string(), m.to_string()), usd)).collect();
+    sessions.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    Spend { usd, hours: hours.into_iter().collect(), sessions }
+}
+
+/// The start of the local hour of a moment, in epoch ms.
+fn local_hour(ts: i64, offset: Offset) -> i64 {
+    let off = offset(ts);
+    (ts + off).div_euclid(HOUR_MS) * HOUR_MS - off
+}
+
+/// What each main session spent on each day, subagents included, by the days the calendar finds
+/// with no filter: the sum over every session of a date is that date's cell. A screen keeps the
+/// sums to the sessions it lists.
+#[derive(Clone, Debug, Default)]
+pub struct SessionDays {
+    days: HashMap<i64, HashMap<SessionKey, f64>>,
+    rule: DayRule,
+}
+
+impl SessionDays {
+    /// The spend of every entry by day and main session, as of `now_ms`.
+    pub fn of(entries: &[Entry], now_ms: i64, offset: Offset) -> SessionDays {
+        let rule = rule_of(entries.iter(), now_ms, offset);
+        let mut days: HashMap<i64, HashMap<SessionKey, f64>> = HashMap::new();
+        for e in entries {
+            let key = (e.agent.clone(), e.main.clone());
+            for m in e.minutes.iter().filter(|m| m.minute > 0) {
+                let date = rule.date_of(m.minute * MINUTE_MS, offset);
+                let day = days.entry(date).or_default();
+                match day.get_mut(&key) {
+                    Some(usd) => *usd += m.usd,
+                    None => {
+                        day.insert(key.clone(), m.usd);
+                    }
+                }
+            }
+        }
+        SessionDays { days, rule }
+    }
+
+    /// The date of the day a moment belongs to, as the days of the spend run: a moment before a
+    /// day's start belongs to the day before.
+    pub fn date_of(&self, ts: i64, offset: Offset) -> i64 {
+        self.rule.date_of(ts, offset)
+    }
+
+    /// What the sessions that `keep` keeps, by agent and main session id, spent on `date`.
+    pub fn spend(&self, date: i64, keep: impl Fn(&str, &str) -> bool) -> f64 {
+        self.days.get(&date).map_or(0.0, |d| d.iter().filter(|((a, m), _)| keep(a, m)).map(|(_, usd)| usd).sum())
+    }
+
+    /// What every session spent on `date`: the calendar's cell of the date.
+    pub fn total(&self, date: i64) -> f64 {
+        self.spend(date, |_, _| true)
+    }
+
+    /// What each session spent on `date`.
+    pub fn sessions(&self, date: i64) -> impl Iterator<Item = (&SessionKey, f64)> {
+        self.days.get(&date).into_iter().flatten().map(|(k, usd)| (k, *usd))
+    }
+}
+
+/// When the day of `date` starts and ends by the entries' actions, as the calendar with no filter
+/// finds it, as of `now_ms`; the current day ends at `now_ms`.
+pub fn day_bounds(entries: &[Entry], date: i64, now_ms: i64, offset: Offset) -> (i64, i64) {
+    rule_of(entries.iter(), now_ms, offset).bounds(date, now_ms, offset)
+}
+
 impl Calendar {
     /// The calendar of the entries the filters keep, as of `now_ms` (or `--until` when earlier).
     pub fn of(entries: &[Entry], filters: &Filters, now_ms: i64, offset: Offset) -> Calendar {
         let end = filters.until_ms.map_or(now_ms, |u| u.min(now_ms));
         let kept: Vec<&Entry> = entries.iter().filter(|e| filters.keeps(e)).collect();
         let rhythm: Vec<&Entry> = kept.iter().copied().filter(|e| !e.subagent && !e.left_out).collect();
-        let mut all_actions: Vec<i64> = rhythm.iter().flat_map(|e| e.actions.iter().map(|a| a.0)).filter(|&t| t > 0).collect();
-        all_actions.sort_unstable();
-        all_actions.dedup();
-        let rule = DayRule::of(&all_actions, end, offset);
+        let rule = rule_of(rhythm.iter().copied(), end, offset);
         let day = |ts: i64| rule.date_of(ts, offset);
         let last = day(end.max(1) - 1);
 
@@ -762,6 +869,75 @@ mod tests {
         assert_eq!(cal.weeks(), 13, "the grid does not stretch to 1970");
         assert_eq!((cal.total(Metric::Spend), cal.untimed), (1.0, (1, 5.0)));
         assert_eq!(cal.active(Metric::Spend), (1, 1));
+    }
+
+    #[test]
+    fn a_days_spend_counts_each_session_with_its_subagents() {
+        // s1 works on Nov 2 and Nov 3, its subagent spends on Nov 3; s2 only on Nov 3; a codex
+        // session that nobody typed in spends after the night's middle.
+        let night = (at(0, 22, 0), at(1, 9, 0));
+        let start = night.0 + (night.1 - night.0) / 2;
+        let s1 = main_log(&[at(0, 10, 0), night.0, night.1], vec![minute(at(0, 11, 0), 90.0), minute(at(1, 10, 0), 20.0), minute(at(1, 10, 1), 8.0)]);
+        let sub = Entry {
+            key: "/a/sub".into(),
+            session: "agent-1".into(),
+            subagent: true,
+            actions: Vec::new(),
+            minutes: vec![minute(at(1, 11, 30), 5.0)],
+            ..s1.clone()
+        };
+        let s2 = Entry {
+            key: "/b".into(),
+            session: "s2".into(),
+            main: "s2".into(),
+            actions: vec![(at(1, 12, 0), true)],
+            minutes: vec![minute(at(1, 12, 5), 3.0)],
+            ..s1.clone()
+        };
+        let quiet = Entry {
+            key: "/c".into(),
+            agent: "codex".into(),
+            session: "c".into(),
+            main: "c".into(),
+            left_out: true,
+            actions: vec![(at(1, 3, 0), true)],
+            minutes: vec![minute(start + MINUTE_MS, 1.0)],
+            ..s1.clone()
+        };
+        let entries = [s1, sub, s2, quiet];
+        let now = at(1, 20, 0);
+        let cal = Calendar::of(&entries, &Filters::default(), now, &off);
+        let days = SessionDays::of(&entries, now, &off);
+        let nov3 = NOV2 + 1;
+        assert_eq!(days.total(nov3), cal.day(nov3).unwrap().amounts.usd, "the sum is the calendar's cell");
+        assert_eq!(days.total(NOV2), cal.day(NOV2).unwrap().amounts.usd);
+        let s1_only = |_: &str, main: &str| main == "s1";
+        assert_eq!((days.spend(NOV2, s1_only), days.spend(nov3, s1_only)), (90.0, 33.0), "the session's subagent counts with it, on the day it spent");
+        assert_eq!(days.spend(nov3, |agent, _| agent == "codex"), 1.0, "a session the rhythm leaves out still spends");
+        // The night's middle, 03:30 on Nov 3, starts Nov 3: 02:00 belongs to Nov 2.
+        assert_eq!((days.date_of(at(1, 2, 0), &off), days.date_of(at(1, 4, 0), &off)), (NOV2, nov3), "a moment before the day's start is the day before's");
+
+        // The spend inside the day's bounds: the same sum, by hour and by session.
+        let bounds = day_bounds(&entries, nov3, now, &off);
+        assert_eq!(bounds, (cal.day(nov3).unwrap().from_ms, cal.day(nov3).unwrap().to_ms));
+        let spend = spend_between(&entries, |_| true, bounds, &off);
+        assert_eq!(spend.usd, days.total(nov3));
+        assert_eq!(spend.sessions[0], (("claude".to_string(), "s1".to_string()), 33.0));
+        assert_eq!(spend.hours.iter().map(|h| h.1).sum::<f64>(), spend.usd);
+        assert_eq!(spend.hours.iter().find(|h| h.0 == at(1, 10, 0)).map(|h| h.1), Some(28.0), "10:00 and 10:01 in the hour of 10:00");
+        let s2_spend = spend_between(&entries, |e| e.main == "s2", bounds, &off);
+        assert_eq!((s2_spend.usd, s2_spend.hours.clone()), (3.0, vec![(at(1, 12, 0), 3.0)]));
+        // Up to the same time of day: 10:00 to 11:00 holds the 10:00 and 10:01 minutes.
+        assert_eq!(spend_between(&entries, |_| true, (at(1, 10, 0), at(1, 11, 0)), &off).usd, 28.0);
+    }
+
+    #[test]
+    fn local_hours_start_on_the_local_hour() {
+        let half = |_: i64| 5 * HOUR_MS + 30 * MINUTE_MS;
+        let ts = 1_793_574_000_000 + 47 * MINUTE_MS;
+        let start = local_hour(ts, &half);
+        assert_eq!((start + half(start)).rem_euclid(HOUR_MS), 0, "a zone half an hour off starts its hours at :30 UTC");
+        assert!(start <= ts && ts - start < HOUR_MS);
     }
 
     #[test]

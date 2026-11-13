@@ -36,7 +36,7 @@ fn command_3_and_the_switch_show_the_calendar_and_esc_goes_back() {
     settle(&mut rt);
     assert_eq!(rt.state.reports.mode, reports::Mode::Calendar);
     assert!(rt.presented(calendar::PANE).is_some() && rt.presented("cal-grid").is_some());
-    for gone in ["lanes", view::LIST, "inspector", "day-name", "today", "zoom", "filter"] {
+    for gone in ["lanes", "details", "inspector", "day-name", "today", "zoom", "filter"] {
         assert!(rt.presented(gone).is_none(), "{gone} is not shown in Calendar");
     }
     typed(&mut rt, "q/");

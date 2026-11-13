@@ -32,13 +32,22 @@ pub fn day(
 }
 
 /// A day view in three parts, for a screen that draws the strip itself: the text above the strip,
-/// the strip with its lanes, and the text below it.
-#[derive(Clone, Debug, PartialEq)]
+/// the strip with its lanes, and the text below it; with the day's bounds and its cold returns,
+/// for a screen that lists them.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct DayParts {
     pub above: String,
     /// `None` on a day without a message, whose text is all above.
     pub strip: Option<(rhythm::Strip, rhythm::StripLanes)>,
     pub below: String,
+    /// When the day starts and ends, in epoch ms (see work-rhythm, Start of the day); the current
+    /// day ends at `i64::MAX`.
+    pub bounds: (i64, i64),
+    /// The day's cold returns in time order, each with its session: the ones the `cache` line
+    /// counts.
+    pub returns: Vec<ColdReturn>,
+    /// Whether any request read for the day had a price, as the `cache` line says.
+    pub priced: bool,
 }
 
 impl DayParts {
@@ -77,7 +86,7 @@ pub fn day_parts(
     let strip = view.strip(&summary, (from, to), layout, axis, style, offset).zip(view.strip_lanes(&summary, (from, to), axis, offset));
     if strip.is_none() {
         let _ = writeln!(above, "\nNo messages on {}.", date_name(date));
-        return DayParts { above, strip, below: String::new() };
+        return DayParts { above, strip, below: String::new(), bounds: (from, to), returns: in_order(returns), priced };
     }
     above.push('\n');
     let mut below = String::from("\n");
@@ -93,7 +102,14 @@ pub fn day_parts(
     let _ = writeln!(below, "{}", cache_line(returns, priced));
     let advice = summary.advice(&rhythm::Returns::of(returns, priced), &view.instruction_files((from, to)));
     advice_lines(&mut below, advice.iter().map(String::as_str), style);
-    DayParts { above, strip, below }
+    DayParts { above, strip, below, bounds: (from, to), returns: in_order(returns), priced }
+}
+
+/// The cold returns in time order.
+fn in_order(returns: &[ColdReturn]) -> Vec<ColdReturn> {
+    let mut out = returns.to_vec();
+    out.sort_by(|a, b| a.ts_ms.cmp(&b.ts_ms).then_with(|| a.session.cmp(&b.session)));
+    out
 }
 
 /// The `cache` line of a day.
@@ -147,7 +163,7 @@ mod tests {
     const MINUTE: i64 = 60_000;
 
     fn ret(usd: f64, premium_usd: f64) -> ColdReturn {
-        ColdReturn { ts_ms: 0, pause_ms: 0, usd, premium_usd, context: 0, starter: Starter::Typed }
+        ColdReturn { ts_ms: 0, pause_ms: 0, usd, premium_usd, context: 0, starter: Starter::Typed, session: "s".into() }
     }
 
     /// Three cold returns that a warm cache would have made $12 cheaper, after breaks of 1.4h.
@@ -210,6 +226,26 @@ mod tests {
         let parts = day_parts(&empty, date, empty.days.bounds(date, &|_| 0), &|_| 0, &[], true, rhythm::Layout::TERMINAL, None, &fmt::Style::with_color(false));
         assert_eq!((parts.strip.is_none(), parts.below.as_str()), (true, ""), "a day without a message is all above");
         assert!(parts.above.ends_with("\nNo messages on 2026-11-02.\n"));
+    }
+
+    #[test]
+    fn the_parts_list_the_days_cold_returns_with_their_sessions() {
+        let view = session(3, 4);
+        let date = NOV2 / 86_400_000;
+        let bounds = view.days.bounds(date, &|_| 0);
+        let mut returns = returns();
+        returns[0].session = "b".into();
+        returns.swap(0, 2);
+        let parts = day_parts(&view, date, bounds, &|_| 0, &returns, true, rhythm::Layout::TERMINAL, None, &fmt::Style::with_color(false));
+        assert_eq!(parts.bounds, bounds);
+        let named: Vec<(i64, &str)> = parts.returns.iter().map(|r| ((r.ts_ms - NOV2) / (60 * MINUTE), &*r.session)).collect();
+        assert_eq!(named, [(11, "b"), (12, "s"), (13, "s")], "in time order, each with its session");
+        // They add up to the cache line.
+        let first: f64 = parts.returns.iter().map(|r| r.usd).sum();
+        let avoidable: f64 = parts.returns.iter().map(|r| r.premium_usd).sum();
+        let line = format!("cache     {} cold returns, {} in their first requests, {} of it avoidable", parts.returns.len(), usd(first), usd(avoidable));
+        assert_eq!(line, cache_line(&parts.returns, parts.priced));
+        assert!(parts.below.contains(&format!("{line}\n")), "{}", parts.below);
     }
 
     fn day_of_colored(view: &View, returns: &[ColdReturn]) -> String {

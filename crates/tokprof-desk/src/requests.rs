@@ -1092,7 +1092,17 @@ mod tests {
         let (catalog, select) = fixture();
         let mut browser = Browser::start(catalog, Pricing::defaults(), select, false, Arc::new(|| {}), crate::frontend()).unwrap();
         browser.settle();
-        let mut rt = Runtime::new(Desk::new(browser, false), crate::view::view, (1400.0, 1300.0), Env::new(true, 1.0));
+        let mut rt = Runtime::new(
+            {
+                let mut d = Desk::new(browser, false);
+                d.none = false;
+                d.browser.hold_reports(false);
+                d
+            },
+            crate::view::view,
+            (1400.0, 1300.0),
+            Env::new(true, 1.0),
+        );
         rt.poll = Some(crate::poll);
         rt.on_key = Some(crate::on_key);
         settle(&mut rt);

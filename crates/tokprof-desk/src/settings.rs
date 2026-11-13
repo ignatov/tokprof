@@ -118,6 +118,12 @@ impl Settings {
     }
 }
 
+/// The saved place of the border between the lanes and the details, a share of the height under
+/// the bar; a value that is not a share is none. The view keeps it to the places a drag allows.
+pub fn lanes_share(prefs: &Prefs) -> Option<f32> {
+    prefs.get::<f64>("lanes_share").filter(|v| v.is_finite() && *v > 0.0 && *v < 1.0).map(|v| v as f32)
+}
+
 /// Writes a setting when the store holds another value; whether it wrote.
 fn store(prefs: &mut Prefs, key: &str, value: &str) -> Result<bool, PrefsError> {
     if prefs.get::<String>(key).as_deref() == Some(value) {
@@ -216,6 +222,21 @@ impl Desk {
         self.settings.waiting = on;
         self.browser.set_waiting(on);
         self.save("waiting", if on { "on" } else { "off" });
+    }
+
+    /// Puts the border between the lanes and the details at `share`, saved to three places as
+    /// `lanes_share`; `None` gives the room Room for the lanes gives and takes the key out.
+    pub fn save_lanes_share(&mut self, share: Option<f32>) {
+        let share = share.map(|v| (v * 1000.0).round() / 1000.0);
+        self.lanes_share = share;
+        let saved = match share {
+            Some(v) => self.prefs.set("lanes_share", &((v as f64 * 1000.0).round() / 1000.0)),
+            None if self.prefs.contains("lanes_share") => self.prefs.remove("lanes_share"),
+            None => Ok(()),
+        };
+        if let Err(e) = saved {
+            self.status = (format!("can't save settings: {e}"), Instant::now());
+        }
     }
 
     /// Saves a setting; the bar says so when the file cannot be written.

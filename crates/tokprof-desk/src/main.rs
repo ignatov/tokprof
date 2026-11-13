@@ -7,6 +7,7 @@ mod calendar;
 mod changes;
 mod day;
 mod deltas;
+mod details;
 mod flame;
 mod inspector;
 mod keys;
@@ -17,6 +18,7 @@ mod pal;
 mod palette;
 mod reports;
 mod requests;
+mod sessions;
 mod settings;
 mod themes;
 mod view;
@@ -171,29 +173,33 @@ fn start_apart(start: &Start, exe: &std::path::Path, args: &[String]) -> Result<
 
 pub type Book = Browser<Styled>;
 
-/// A slot of the list: a separator before the sessions of a day (its local date), or a session's
-/// row.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Slot {
-    Day(i64),
-    /// A group's label in waiting order: `Waiting for you`, `Nobody waits for you` or `Others`.
-    Label(&'static str),
-    Row(usize),
-}
-
 /// The window's state: the browser and what the window keeps of its own.
 pub struct Desk {
     pub browser: Book,
-    /// The theme the window draws in, as the view last chose it; rows built later, as the list
+    /// The theme the window draws in, as the view last chose it; rows built later, as a table
     /// scrolls, read it.
     pub theme: Cell<&'static themes::Theme>,
-    /// The list's slots as the view last laid them out, for the rows it builds as it scrolls.
-    pub slots: RefCell<Vec<Slot>>,
-    /// How far the list and the inspector are scrolled, in points, as their viewports last said.
-    pub list_offset: Rc<Cell<f32>>,
+    /// No session is selected in the window: Day shows the day summary under the lanes, and
+    /// Sessions highlights no row. The browser keeps a current row all the same.
+    pub none: bool,
+    /// The user stepped the lanes to another day: once that day is computed, a selected session
+    /// without a lane on it is deselected.
+    pub stepped: bool,
+    /// A session picked, whose lane is scrolled to once the day shown is computed: the pick may
+    /// show another day, whose lanes are not laid out yet.
+    pub reveal_lane: Option<String>,
+    /// The place of the border between the lanes and the details, a share of the height under
+    /// the bar, as dragged and saved; `None` for the room that Room for the lanes gives.
+    pub lanes_share: Option<f32>,
+    /// The lanes' height when a drag of the border started, and as last laid out.
+    pub border_from: Option<f32>,
+    pub lanes_h: f32,
+    /// The day summary's cursor among its rows, and what it computed of the day store.
+    pub day_cursor: usize,
+    pub day_spend: RefCell<details::Memo>,
+    /// How far the details pane is scrolled, in points, as its viewport last said.
     pub pane_offset: Rc<Cell<f32>>,
-    /// The heights of the list and the inspector, and the window's size, from their layout.
-    pub list_height: f32,
+    /// The height of the details pane, and the window's size, from their layout.
     pub pane_height: f32,
     pub window: (f32, f32),
     /// When a listed cache goes cold next, as the last poll found it.
@@ -222,8 +228,6 @@ pub struct Desk {
     pub panel: Option<settings::Panel>,
     pub palette: Option<palette::Palette>,
     pub help: bool,
-    /// The first slot on the screen is a day's separator, as the last poll found the list.
-    pub separator_on_top: bool,
     /// The minute of the last poll: the lanes' now line and the inspector's times move at a new
     /// one.
     pub minute: i64,
@@ -251,23 +255,28 @@ pub struct Desk {
     pub menu_bar: menubar::MenuBar,
     /// The `Requests` tab's selection, range, hover and unit.
     pub requests: requests::State,
+    /// The Sessions screen.
+    pub sessions: sessions::State,
+    /// When the clock next takes a session out of what the quick filters keep, as the last poll
+    /// found it.
+    pub next_filter: Option<i64>,
 }
 
-/// The panes that take the keyboard, in the order Tab moves through them.
+/// The panes of Day that take the keyboard: the lanes, and the details pane under them, which
+/// shows the selected session's inspector or the day summary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Focus {
     Lanes,
-    List,
     Inspector,
 }
 
 impl Focus {
-    const ORDER: [Focus; 3] = [Focus::Lanes, Focus::List, Focus::Inspector];
-
-    /// The next pane, or the one before.
-    fn step(self, back: bool) -> Focus {
-        let at = Focus::ORDER.iter().position(|&f| f == self).unwrap_or(1);
-        Focus::ORDER[if back { (at + 2) % 3 } else { (at + 1) % 3 }]
+    /// The other pane, as Tab and Shift+Tab move to it.
+    fn step(self) -> Focus {
+        match self {
+            Focus::Lanes => Focus::Inspector,
+            Focus::Inspector => Focus::Lanes,
+        }
     }
 }
 
@@ -279,8 +288,21 @@ impl Desk {
         let relisted = browser.relisted();
         let prefs = if live { rune::prefs::Prefs::open(settings::APP_ID) } else { rune::prefs::Prefs::memory() };
         let settings = settings::Settings::read(&prefs);
+        let lanes_share = settings::lanes_share(&prefs);
         browser.set_waiting(settings.waiting);
+        // The window's filter matches the sessions' titles too, in Day and in Sessions.
+        browser.set_match_titles(true);
+        // The window starts with no session selected: no X-ray is computed until one is.
+        browser.hold_reports(true);
         Desk {
+            none: true,
+            stepped: false,
+            reveal_lane: None,
+            lanes_share,
+            border_from: None,
+            lanes_h: 0.0,
+            day_cursor: 0,
+            day_spend: RefCell::default(),
             settings,
             prefs,
             panel: None,
@@ -289,10 +311,7 @@ impl Desk {
             browser_status: String::new(),
             browser,
             theme: Cell::new(themes::default(true)),
-            slots: RefCell::default(),
-            list_offset: Rc::default(),
             pane_offset: Rc::default(),
-            list_height: 0.0,
             pane_height: 0.0,
             window: (0.0, 0.0),
             next_cold: None,
@@ -303,9 +322,8 @@ impl Desk {
             fit: true,
             live,
             status: (String::new(), Instant::now()),
-            separator_on_top: false,
             minute: 0,
-            pane: Focus::List,
+            pane: Focus::Lanes,
             cursor: 0,
             tab_rows: Cell::new(0),
             flame: flame::State::default(),
@@ -317,12 +335,15 @@ impl Desk {
             month: month::State::default(),
             menu_bar: menubar::MenuBar::default(),
             requests: requests::State::default(),
+            sessions: sessions::State::default(),
+            next_filter: None,
         }
     }
 
     /// The desk with its settings in this store instead.
     pub fn with_prefs(mut self, prefs: rune::prefs::Prefs) -> Desk {
         self.settings = settings::Settings::read(&prefs);
+        self.lanes_share = settings::lanes_share(&prefs);
         self.browser.set_waiting(self.settings.waiting);
         self.prefs = prefs;
         self
@@ -344,17 +365,63 @@ impl Desk {
         tx.scroll_to_y(view::PANE, 0.0);
     }
 
-    /// Selects the session of a lane, as a click on the lane does: in the list, scrolled to, and
-    /// in the inspector from its top.
+    /// The session selected in the window, by its row: none while the window shows none.
+    pub fn current(&self) -> Option<usize> {
+        if self.none { None } else { self.browser.selected() }
+    }
+
+    /// Selects the session of a lane, as a click on the lane does: its lane scrolled to, and the
+    /// inspector on the tab it shows, from its top.
     pub fn open_lane(&mut self, id: &str, tx: &mut Tx) {
-        if self.browser.open_session(id)
-            && let Some(row) = self.browser.selected()
-        {
+        if self.browser.open_session(id) {
+            self.none = false;
             self.cursor = 0;
-            tx.scroll_into_view(self.browser.session(row).to_string());
             tx.scroll_into_view(format!("lane-{id}"));
             tx.scroll_to_y(view::PANE, 0.0);
         }
+    }
+
+    /// Selects a session as the palette, the menu bar, Sessions and the day summary do: on its
+    /// day (desk-window, The selected session's day), its `Summary` from the top, the full-size
+    /// inspector left as it is. Returns whether the session is listed.
+    pub fn pick(&mut self, id: &str, tx: &mut Tx) -> bool {
+        let Some(row) = self.browser.row_of(id) else { return false };
+        self.none = false;
+        self.browser.select_row(row);
+        self.show_tab(Tab::Summary, tx);
+        tx.scroll_into_view(format!("lane-{id}"));
+        self.reveal_lane = Some(id.to_string());
+        true
+    }
+
+    /// No session selected: the details pane shows the day summary from its top, as esc and
+    /// `‹ The day` do.
+    pub fn deselect(&mut self, tx: &mut Tx) {
+        if self.browser.zoomed() {
+            self.browser.on_key(Key::Backspace, self.viewport());
+        }
+        self.none = true;
+        self.day_cursor = 0;
+        tx.scroll_to_y(view::PANE, 0.0);
+    }
+
+    /// Steps the lanes' day by `delta` days, as the buttons beside its name and ← → do.
+    pub fn step_day(&mut self, delta: i64) {
+        self.browser.step_day_by(delta);
+        self.stepped = true;
+    }
+
+    /// Shows the day of the latest action, as Today and `t` do.
+    pub fn show_latest(&mut self) {
+        self.browser.show_latest_day();
+        self.stepped = true;
+    }
+
+    /// Whether the selected session has a lane on the day shown.
+    pub fn has_lane(&self) -> bool {
+        let Some(r) = self.current() else { return false };
+        let Some((_, lanes)) = self.browser.day_parts().and_then(|p| p.strip.as_ref()) else { return false };
+        lanes.lanes.iter().any(|l| self.browser.row_of(&l.id) == Some(r))
     }
 
     /// The lanes of the day shown whose sessions are listed, in their order.
@@ -367,7 +434,7 @@ impl Desk {
     /// the last; the rest go on to the browser.
     fn lanes_key(&mut self, e: &KeyEvent, tx: &mut Tx) -> bool {
         let lanes = self.listed_lanes();
-        let selected = self.browser.selected();
+        let selected = self.current();
         let at = selected.and_then(|r| lanes.iter().position(|id| self.browser.row_of(id) == Some(r)));
         let Some(step) = lane_step(e) else { return false };
         // The keys that move through the lanes stay with them, lanes or none.
@@ -444,42 +511,19 @@ impl Desk {
         true
     }
 
-    /// The slot of the list that row `row` sits in.
-    fn slot_of(&self, row: usize) -> usize {
-        self.slots.borrow().iter().position(|s| *s == Slot::Row(row)).unwrap_or(row)
-    }
-
-    /// The row in slot `slot`, or the next row after a separator.
-    fn row_at(&self, slot: usize) -> usize {
-        let slots = self.slots.borrow();
-        slots.iter().skip(slot).find_map(|s| if let Slot::Row(r) = s { Some(*r) } else { None }).unwrap_or(0)
-    }
-
-    /// Scrolls the list so that its first row on the screen is the browser's, keeping how far
-    /// into that row it was scrolled, and the separator above it when it was the first on the
-    /// screen. The slots are laid out again for the list as it is now.
-    fn restore_list(&self, tx: &mut Tx) {
-        *self.slots.borrow_mut() = view::slots(self);
-        let into = self.list_offset.get().rem_euclid(view::ROW);
-        let mut slot = self.slot_of(self.browser.top());
-        if self.separator_on_top && slot > 0 && matches!(self.slots.borrow().get(slot - 1), Some(Slot::Day(_) | Slot::Label(_))) {
-            slot -= 1;
-        }
-        tx.scroll_to_y(view::LIST, slot as f32 * view::ROW + into);
-    }
-
     /// Selects the session with this id, as a click on its row does; the inspector shows its
     /// top.
     pub fn select_session(&mut self, session: &str) {
         if let Some(row) = self.browser.row_of(session) {
             self.browser.select_row(row);
+            self.none = false;
             self.cursor = 0;
         }
     }
 
-    /// The rows of the list a page moves by, and the lines of the inspector.
+    /// The rows of the Sessions table a page moves by, and the lines of the inspector.
     fn viewport(&self) -> Viewport {
-        Viewport { page: ((self.list_height / view::ROW) as usize).max(1), lines: (self.pane_height / 20.0) as usize }
+        Viewport { page: ((self.sessions.height / sessions::ROW) as usize).max(1), lines: (self.pane_height / 20.0) as usize }
     }
 
     /// Whether the bar shows the browser's status: for some seconds after it came.
@@ -522,19 +566,43 @@ fn setup(_: &mut Desk, waker: Waker) {
 fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
     // Where the list is scrolled to, unless the list was put in place since and the browser
     // knows better.
-    if s.browser.relisted() == s.relisted {
-        let slot = (s.list_offset.get() / view::ROW).max(0.0) as usize;
-        let top = s.row_at(slot);
-        s.separator_on_top = matches!(s.slots.borrow().get(slot), Some(Slot::Day(_) | Slot::Label(_)));
-        s.browser.set_top(top);
+    let in_sessions = s.reports.mode == reports::Mode::Sessions;
+    if s.browser.relisted() == s.relisted && in_sessions {
+        sessions::sync_top(s);
     }
+    // No X-ray while the window shows no session.
+    s.browser.hold_reports(s.none);
     let arrived = s.browser.tick() | s.flame_dive();
+    // A day the user stepped to keeps the selection only when its session has a lane there.
+    let mut dropped = false;
+    if s.stepped && s.browser.day_parts().is_some() {
+        s.stepped = false;
+        if !s.none && !s.has_lane() {
+            s.deselect(tx);
+            dropped = true;
+        }
+    }
+    // The lane of a session picked on another day, once that day's lanes are laid out.
+    let mut revealed = false;
+    if s.reports.mode == reports::Mode::Day
+        && let Some(id) = s.reveal_lane.clone()
+        && let Some(parts) = s.browser.day_parts()
+    {
+        if parts.strip.as_ref().is_some_and(|(_, lanes)| lanes.lanes.iter().any(|l| l.id == id)) {
+            tx.scroll_into_view(format!("lane-{id}"));
+            revealed = true;
+        }
+        s.reveal_lane = None;
+    }
     // Rune would keep the first row on the screen there whatever came or went; the browser keeps
     // the rows on the screen in place instead, as `tokprof ui` does, so the list scrolls to its
     // first row.
-    if s.browser.relisted() != s.relisted {
+    let relisted = s.browser.relisted() != s.relisted;
+    if relisted {
         s.relisted = s.browser.relisted();
-        s.restore_list(tx);
+        if in_sessions {
+            sessions::restore(s, tx);
+        }
     }
     let now = now_ms();
     // A cache that went cold since turns its cell red now.
@@ -545,18 +613,28 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
     }
     // A wait on the screen grows, and passes the waiting limit.
     let waited = s.next_wait.is_some_and(|at| now >= at);
-    s.next_wait = s.browser.next_wait_change(now);
+    s.next_wait = s.browser.next_wait_change(now).into_iter().chain(details::next_wait(s, now)).min();
     if let Some(at) = s.next_wait {
+        tx.wake_after(Duration::from_millis((at - now).max(1) as u64));
+    }
+    // The clock takes a session out of the quick filters: its agent fell silent, or the week
+    // ended; a cache that goes cold is the cold one above.
+    let filtered = s.next_filter.is_some_and(|at| now >= at);
+    s.next_filter = s.browser.next_filter_change(now);
+    if let Some(at) = s.next_filter {
         tx.wake_after(Duration::from_millis((at - now).max(1) as u64));
     }
     if let Some(at) = s.browser.next_due() {
         tx.wake_after(at.saturating_duration_since(Instant::now()).max(Duration::from_millis(1)));
     }
     // A countdown on the screen moves every second; the parts that show time move every minute.
-    // Reports shows neither.
-    let day = s.reports.mode == reports::Mode::Day;
-    let (top, page) = (s.browser.top(), s.viewport().page + 2);
-    let counting = day && (top..(top + page).min(s.browser.len())).any(|r| s.browser.cells(r, now).warm_until.is_some());
+    // Reports and Calendar show neither.
+    let day = matches!(s.reports.mode, reports::Mode::Day | reports::Mode::Sessions);
+    let counting = match s.reports.mode {
+        reports::Mode::Sessions => sessions::counting(s, now),
+        reports::Mode::Day => details::counting(s, now),
+        _ => false,
+    };
     if counting {
         tx.wake_after(Duration::from_millis((1000 - now.rem_euclid(1000)) as u64 + 5));
     } else if day {
@@ -572,10 +650,10 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
     if s.status_shown() {
         tx.wake_after(Duration::from_secs(view::STATUS_SECS).saturating_sub(s.status.1.elapsed()) + Duration::from_millis(5));
     }
-    let reported = reports::poll(s, tx) | calendar::poll(s, tx) | month::poll(s);
+    let reported = reports::poll(s, tx) | calendar::poll(s, tx) | month::poll(s) | sessions::poll(s, tx);
     // The menu bar counts down whether the window shows or not; it draws nothing in the window.
     menubar::poll(s, now, tx);
-    arrived || cooled || waited || counting || turned || reported
+    arrived || relisted || cooled || waited || filtered || counting || turned || reported || dropped || revealed
 }
 
 /// The browser's key for a key of the window, when it takes one.
@@ -631,13 +709,13 @@ fn lane_step(e: &KeyEvent) -> Option<LaneStep> {
     })
 }
 
-/// The lane a step goes to among `count`, from the selected session's lane `at` (none when its
-/// session has no lane that day, which goes to the first).
+/// The lane a step goes to among `count`, from the selected session's lane `at`: with none
+/// (no session selected, or one without a lane that day), ↓ goes to the first and ↑ to the last.
 fn lane_to(count: usize, at: Option<usize>, step: LaneStep) -> Option<usize> {
     let last = count.checked_sub(1)?;
     Some(match (step, at) {
-        (LaneStep::First, _) | (_, None) => 0,
-        (LaneStep::Last, _) => last,
+        (LaneStep::First, _) | (LaneStep::Down, None) => 0,
+        (LaneStep::Last, _) | (LaneStep::Up, None) => last,
         (LaneStep::Up, Some(i)) => i.saturating_sub(1),
         (LaneStep::Down, Some(i)) => (i + 1).min(last),
     })
@@ -675,8 +753,11 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
         tx.close_window();
         return true;
     }
-    // ⌘1 shows Day and ⌘2 Reports; Reports takes every other key.
+    // ⌘1 shows Day, ⌘2 Reports, ⌘3 Calendar and ⌘0 Sessions; Reports takes every other key.
     if reports::switch_key(s, e) {
+        if s.reports.mode == reports::Mode::Sessions {
+            sessions::show(s, tx);
+        }
         return true;
     }
     if s.reports.mode == reports::Mode::Reports {
@@ -691,6 +772,13 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
             return true;
         }
         return reports::on_key(s, e, tx);
+    }
+    if s.reports.mode == reports::Mode::Sessions {
+        if !s.browser.editing() && matches!(&e.key, RuneKey::Text(t) if t == "?") && !e.mods.cmd && !e.mods.ctrl {
+            s.open_help();
+            return true;
+        }
+        return sessions::on_key(s, e, tx);
     }
     if s.reports.mode == reports::Mode::Calendar {
         if matches!(&e.key, RuneKey::Text(t) if t == "?") && !e.mods.cmd && !e.mods.ctrl {
@@ -708,14 +796,14 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
         let zoomed = s.browser.zoomed();
         match e.key {
             RuneKey::Tab if !zoomed => {
-                s.pane = s.pane.step(e.mods.shift);
+                s.pane = s.pane.step();
                 return true;
             }
             // In a zoomed flame graph, esc zooms out before it gives the keyboard back.
             RuneKey::Escape if s.tab == Tab::Flame && inspector::keyboard(s) && s.flame_out() => return true,
             RuneKey::Escape if inspector::keyboard(s) && requests::clear_range(s) => return true,
-            RuneKey::Escape if !zoomed && s.pane != Focus::List => {
-                s.pane = Focus::List;
+            RuneKey::Escape => {
+                step_back(s, tx);
                 return true;
             }
             _ => {}
@@ -723,12 +811,26 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
         // The full-size inspector has the keyboard, whichever pane had it.
         let pane = if zoomed { Focus::Inspector } else { s.pane };
         let taken = match pane {
-            Focus::Inspector => s.inspector_key(e, tx),
+            Focus::Inspector if zoomed || s.current().is_some() => s.inspector_key(e, tx),
+            Focus::Inspector => details::on_key(s, e, tx),
             Focus::Lanes => s.lanes_key(e, tx),
-            Focus::List => false,
         };
         if taken {
             return true;
+        }
+        match &e.key {
+            // `t` shows the day of the latest action, as Today does; `d` is gone, since the
+            // selection is always shown on its day.
+            RuneKey::Text(t) if t == "t" => {
+                s.show_latest();
+                return true;
+            }
+            RuneKey::Text(t) if t == "d" => return true,
+            // ⏎ shows the selected session full size; with none selected there is nothing to show.
+            RuneKey::Enter if s.current().is_none() => return true,
+            RuneKey::Left | RuneKey::Right => s.stepped = true,
+            RuneKey::Text(t) if ["h", "l", "[", "]"].contains(&t.as_str()) => s.stepped = true,
+            _ => {}
         }
     }
     // `?` opens the key help, where it is not typed into a filter.
@@ -743,23 +845,28 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
     true
 }
 
-/// Passes a key to the browser, and keeps the list and the inspector in step with what it did:
-/// the list where it was after a full-size view, the selected row on the screen, and the
-/// inspector from its top for another session. Returns false where the browser quits.
+/// esc in Day steps back, and never quits: the full-size inspector closes, then the details pane
+/// gives the keyboard back to the lanes, then the session is deselected, then the filter is
+/// cleared.
+fn step_back(s: &mut Desk, tx: &mut Tx) {
+    if s.browser.zoomed() {
+        browser_key(s, Key::Backspace, tx);
+    } else if s.pane == Focus::Inspector {
+        s.pane = Focus::Lanes;
+    } else if s.current().is_some() {
+        s.deselect(tx);
+    } else if !s.browser.filter().is_empty() {
+        s.browser.clear_filter();
+    }
+}
+
+/// Passes a key to the browser, and keeps the inspector in step with what it did: from its top
+/// for another session or after the full-size view. Returns false where the browser quits.
 fn browser_key(s: &mut Desk, key: Key, tx: &mut Tx) -> bool {
     let (selected, zoomed) = (s.browser.selected(), s.browser.zoomed());
     let view = s.viewport();
     if !s.browser.on_key(key, view) {
         return false;
-    }
-    // The list is drawn again after a full-size view, where it was.
-    if zoomed && !s.browser.zoomed() {
-        s.restore_list(tx);
-    }
-    if s.browser.selected() != selected
-        && let Some(row) = s.browser.selected()
-    {
-        tx.scroll_into_view(s.browser.session(row).to_string());
     }
     if (s.browser.selected(), s.browser.zoomed()) != (selected, zoomed) {
         s.cursor = 0;
@@ -833,6 +940,7 @@ fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk>
     desk.reports.data = reports;
     desk.calendar.data = calendars;
     desk.calendar.client_ignored = client_ignored;
+    desk.sessions.narrowed = !cli.agent.is_empty() || [&cli.project, &cli.session, &cli.client, &cli.since, &cli.until].iter().any(|f| f.is_some());
     desk.calendar.metric = metric(cli)?.unwrap_or(tokprof_core::calendar::Metric::Spend);
     desk.calendar.select = Query { since_ms: None, until_ms: None, ..desk_select.clone() };
     desk.month.wanted = month_of(cli)?;
@@ -845,14 +953,45 @@ fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk>
         if std::env::args().any(|a| a == "month-card") {
             return Ok(desk);
         }
+        // `--tab` shows that tab of the newest session, selected on its day; else the frame shows
+        // the day summary, with no session selected.
+        // The day of the latest action first, so that the newest session's day is known as it.
+        desk.browser.settle_day();
+        if cli.tab.is_some() {
+            select_newest(&mut desk);
+        }
+        desk.browser.hold_reports(desk.none);
         desk.browser.settle();
         if let Some(date) = cli.day.as_deref() {
             let date = rhythm::date_of(parse_date(date)? + 12 * 3_600_000, &rhythm::local_offset);
             desk.browser.show_day(date);
         }
         desk.browser.settle_day();
+        // The day summary's spend, and the lanes' caption's, come from the day store.
+        let changes = desk.browser.changes();
+        desk.calendar.data.settle(changes, Duration::from_secs(120));
     }
     Ok(desk)
+}
+
+/// Selects the newest listed session on its day, for a frame of its inspector.
+fn select_newest(s: &mut Desk) {
+    if !s.browser.is_empty() {
+        s.none = false;
+        s.browser.select_row(0);
+        s.browser.show_selected_day();
+    }
+}
+
+/// A scene of the inspector: the newest session selected on its day when none is, and its X-ray
+/// and day waited for, as a frame of `--tab` waits for them.
+fn scene_session(s: &mut Desk) {
+    if s.none {
+        select_newest(s);
+        s.browser.hold_reports(false);
+        s.browser.settle();
+        s.browser.settle_day();
+    }
 }
 
 /// What the flags select, the prices and the tab, checked as the window will use them.
@@ -1010,6 +1149,19 @@ const SCENES: &[Scene] = &[
     ("waiting", |s| {
         s.browser.set_waiting(true);
         s.browser.sort_by(Sort::Waiting);
+        sessions::scene(s);
+    }),
+    // Sessions in time order with the newest session selected and its inspector, in Projects with
+    // every project folded, and sorted by cost without the inspector.
+    ("sessions", |s| {
+        select_newest(s);
+        sessions::scene(s);
+    }),
+    ("sessions-projects", sessions::scene_projects),
+    ("sessions-cost", |s| {
+        s.browser.sort_by(Sort::Cost);
+        sessions::scene(s);
+        s.sessions.inspector = false;
     }),
     ("palette", |s| s.palette = Some(palette::Palette { query: "to".into(), at: 0 })),
     ("keys", |s| s.help = true),
@@ -1073,13 +1225,21 @@ const SCENES: &[Scene] = &[
     }),
     ("lanes-keyboard", |s| s.pane = Focus::Lanes),
     ("inspector-keyboard", |s| {
+        scene_session(s);
         s.pane = Focus::Inspector;
         s.tab = Tab::Tools;
         s.cursor = 2;
     }),
-    ("requests-hover", requests::scene_hover),
-    ("requests-range", requests::scene_range),
+    ("requests-hover", |s| {
+        scene_session(s);
+        requests::scene_hover(s);
+    }),
+    ("requests-range", |s| {
+        scene_session(s);
+        requests::scene_range(s);
+    }),
     ("flame-zoomed", |s| {
+        scene_session(s);
         s.pane = Focus::Inspector;
         s.tab = Tab::Flame;
         s.flame.dive = 2;
