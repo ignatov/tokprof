@@ -49,6 +49,9 @@ pub fn text(x: &XRay, style: &Style, profile_dir: &Path, home: &Path) -> String 
     let label = |s: &str| style.dim(&format!("{s:<9}"));
     let _ = writeln!(out, "{}", style.bold("tokprof · session X-ray"));
     let _ = writeln!(out, "{} {}  {}  {}", label("session"), x.agent.name(), style.bold(&x.project), x.id);
+    if let Some((name, folder)) = tokprof_core::place::folder_line(&x.project, &x.folder, x.placed) {
+        let _ = writeln!(out, "{} {folder}", label(name));
+    }
     if let Some(title) = &x.title {
         let _ = writeln!(out, "{} {}", label("title"), clip_end(title, 82));
     }
@@ -610,6 +613,8 @@ pub(crate) mod tests {
         XRay {
             agent: tokprof_core::source::AgentId::new(tokprof_core::source::AgentInfo::named("claude")),
             project: "~/p".into(),
+            folder: String::new(),
+            placed: None,
             id: "s".into(),
             short_id: "s".into(),
             title: None,
@@ -646,6 +651,26 @@ pub(crate) mod tests {
 
     fn prompt(number: usize, label: &str, usd: f64, activities: Vec<(&'static str, Spend)>) -> tokprof_core::xray::PromptSpend {
         tokprof_core::xray::PromptSpend { number, label: label.into(), spend: spend(10, usd), activities }
+    }
+
+    #[test]
+    fn the_folder_line_follows_the_session_line() {
+        use tokprof_core::place::{Placed, TEMPORARY};
+        let header = |project: &str, folder: &str, placed| {
+            let x = XRay { project: project.into(), folder: folder.into(), placed: Some(placed), ..xray(Vec::new()) };
+            let text = text(&x, &Style::with_color(false), Path::new("/tmp"), Path::new("/h"));
+            text.lines().skip(1).take(2).map(str::to_string).collect::<Vec<_>>()
+        };
+        let session = |project: &str| format!("session   claude  {project}  s");
+        assert_eq!(header("~/src/app", "~/w/pool/4/app", Placed::Worktree), [session("~/src/app"), "worktree  ~/w/pool/4/app".into()], "a worktree");
+        assert_eq!(
+            header("~/src/app", "~/src/app/plugins/web", Placed::Repository),
+            [session("~/src/app"), "folder    ~/src/app/plugins/web".into()],
+            "a subfolder"
+        );
+        assert_eq!(header(TEMPORARY, "/private/tmp/ttl-check-run", Placed::Temporary), [session(TEMPORARY), "folder    /private/tmp/ttl-check-run".into()]);
+        assert_eq!(header("~/w/0dca/app", "~/w/0dca/app", Placed::NotFound), [session("~/w/0dca/app"), "folder    not found".into()], "a gone unknown folder");
+        assert_eq!(header("~/src/app", "~/src/app", Placed::Repository)[1], "time      0 requests", "a repository's root has no folder line");
     }
 
     fn render(x: &XRay, f: fn(&mut String, &XRay, &Style)) -> String {

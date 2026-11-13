@@ -396,7 +396,17 @@ fn spend_box(x: &XRay, p: &Pal) -> El {
     )
 }
 
-/// The header: the title, what the session is, and the handoff.
+/// The line under the project that names the folder the session ran in, as the X-ray's folder
+/// line has it (desk-window, Folder in the inspector); none for a folder that is not found.
+pub(crate) fn folder_line(x: &XRay) -> Option<String> {
+    match tokprof_core::place::folder_line(&x.project, &x.folder, x.placed) {
+        Some(_) if x.placed == Some(tokprof_core::place::Placed::NotFound) => None,
+        Some((name, folder)) => Some(format!("{name} {folder}")),
+        None => None,
+    }
+}
+
+/// The header: the title, what the session is, the folder it ran in, and the handoff.
 fn header(s: &Desk, x: &XRay, p: &Pal) -> El {
     let agent = s.browser.selected().map(|r| s.browser.cells(r, now_ms()).agent_place).map_or(p.ink2, |place| p.agents[place % p.agents.len()]);
     let mut facts = row()
@@ -427,19 +437,20 @@ fn header(s: &Desk, x: &XRay, p: &Pal) -> El {
         what = format!("{} to {}, {}; {what}", local_time(a, "%m-%d %H:%M"), local_time(b, "%H:%M"), human_duration((b - a) as f64 / 1000.0));
     }
     let title = x.title.clone().unwrap_or_else(|| "Untitled session".to_string());
+    let mut lines = col()
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(5.0)
+        .child(text(title).key("title").w_full().wrap().max_lines(2).font(pal::TITLE).color(p.ink).selectable(true))
+        .child(facts);
+    if let Some(folder) = folder_line(x) {
+        lines = lines.child(text(folder).key("folder").w_full().font(pal::BODY).color(p.ink2).single_line().truncate_head().selectable(true));
+    }
     row()
         .key("header")
         .w_full()
         .gap(14.0)
-        .child(
-            col()
-                .grow(1.0)
-                .min_w(0.0)
-                .gap(5.0)
-                .child(text(title).key("title").w_full().wrap().max_lines(2).font(pal::TITLE).color(p.ink).selectable(true))
-                .child(facts)
-                .child(text(what).key("what").font(pal::BODY).color(p.ink2).single_line().truncate().selectable(true)),
-        )
+        .child(lines.child(text(what).key("what").font(pal::BODY).color(p.ink2).single_line().truncate().selectable(true)))
         .child(view::button("handoff", "Copy handoff line", true, p.bar, p).pr(5.0).child(overlay::keycap_on("c", p.panel, p)).on_press(|s: &mut Desk| {
             let view = s.viewport();
             s.browser.on_key(tokprof_browse::browser::Key::Char('c'), view);

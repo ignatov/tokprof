@@ -46,8 +46,8 @@ The X-ray SHALL open with the title `tokprof · session X-ray` and these lines:
 - **THEN** it shows in seconds (`59s`), whole minutes (`45m`), hours with one decimal (`9.4h`) or days with one decimal (`1.4d`)
 
 #### Scenario: Title
-- **WHEN** the session's title is `Ревью PR #1141 по чеклисту`
-- **THEN** the line after `session` reads `title     Ревью PR #1141 по чеклисту`
+- **WHEN** the session's title is `Review PR #412 against the checklist`
+- **THEN** the line after `session` reads `title     Review PR #412 against the checklist`
 - **AND** a session without a title has no `title` line
 
 ### Requirement: Layout

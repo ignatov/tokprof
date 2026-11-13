@@ -62,6 +62,18 @@ pub fn day_store() -> PathBuf {
     cache_dir().join(tokprof_core::daystore::FILE_NAME)
 }
 
+/// The file of remembered repositories in the cache folder (session-logs, Repositories
+/// remembered).
+pub fn repositories() -> PathBuf {
+    cache_dir().join(tokprof_core::place::REPOSITORIES_FILE)
+}
+
+/// The catalog, placing the projects of folders also by the temporary folders and by the
+/// repositories remembered in the cache folder, as the CLI, `tokprof ui` and the window do.
+pub fn placing(catalog: tokprof_core::catalog::Catalog) -> tokprof_core::catalog::Catalog {
+    catalog.with_places(crate::day::temp_folders(), repositories())
+}
+
 pub fn home() -> PathBuf {
     std::env::home_dir().unwrap_or_default()
 }

@@ -107,7 +107,7 @@ Under the lanes SHALL be the legend, and the `sittings`, `agents`, `answers`, `q
 
 #### Scenario: The time under the pointer
 - **WHEN** the pointer rests over a lane at 14:32
-- **THEN** the line reads like `14:32 · ecad11 Инфографика прерываний · agent working`, with `agent working`, `waiting for your answer`, `your message`, `its question`, `you stopped it`, `you were there`, `cache warm` or nothing
+- **THEN** the line reads like `14:32 · ecad11 Chart of the interruptions · agent working`, with `agent working`, `waiting for your answer`, `your message`, `its question`, `you stopped it`, `you were there`, `cache warm` or nothing
 
 #### Scenario: The queue line
 - **WHEN** the shown day had 24 answers among several sessions waiting (see work-rhythm)
@@ -115,7 +115,7 @@ Under the lanes SHALL be the legend, and the `sittings`, `agents`, `answers`, `q
 
 #### Scenario: The agents at work under the pointer
 - **WHEN** the pointer rests over the `Agents at work` lane at 14:20, while three sessions worked
-- **THEN** the line reads like `14:20 · 3 agents at work: ecad11 Инфографика…, 230043 Ордер…, 66f6be Новый…`, the sessions in the lanes' order
+- **THEN** the line reads like `14:20 · 3 agents at work: ecad11 Chart of the…, 230043 Notes…, 66f6be Fresh…`, the sessions in the lanes' order
 
 ### Requirement: The selected session's day
 Selecting a session whose last activity is on another day than the lanes show SHALL show that day in the lanes, as the local date of its last activity five hours earlier. When that day has no lane of the session, the lanes stay on it.
@@ -1340,3 +1340,19 @@ After its rows, `Could have been saved` SHALL list each miss cause that had avoi
 #### Scenario: Compaction calls stopped
 - **WHEN** compaction calls could have saved $367 in the 7 days before and nothing in the last 7 days
 - **THEN** the last row reads `compaction call` `$0.00` `was $367 · gone` in green
+
+### Requirement: Folder in the inspector
+When the selected session's folder differs from its project (see session-logs, Session id and project), `Summary` SHALL show the folder, home shown as `~`, under the project, after the label `worktree` or `folder` as the X-ray's folder line has it (see session-xray), clipped from the left with `…` to the inspector's width. A folder that is not found has no line here. The list, the palette, the menu bar menu and Reports name the project.
+
+#### Scenario: A session in a worktree
+- **WHEN** the selected session ran in `~/.branch-deck/pool/app-c821e1d7/4/app`, a worktree of `~/src/app`
+- **THEN** `Summary` names the project `~/src/app` and under it `worktree ~/.branch-deck/pool/app-c821e1d7/4/app`
+- **AND** Reports' project card counts its spend under `~/src/app`
+
+#### Scenario: A session in a subfolder
+- **WHEN** the selected session ran in `~/src/app/plugins/web`
+- **THEN** `Summary` names the project `~/src/app` and under it `folder ~/src/app/plugins/web`
+
+#### Scenario: A session at the repository's root
+- **WHEN** the selected session ran in `~/src/app`
+- **THEN** `Summary` shows no `worktree` or `folder` line

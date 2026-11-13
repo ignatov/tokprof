@@ -120,7 +120,7 @@ tokprof SHALL charge prompt tokens it cannot place to content of kind `unknown` 
 - **THEN** each of them counts as one character, so the tool schemas and the system prompt take nearly the whole prompt
 
 ### Requirement: Dimensions of spend
-Every share of spend SHALL carry the dimensions that profiles stack by (see profile-export): agent (`claude` or `codex`), project (the session's working directory, home shown as `~`), session (its short id, see session-logs), chain (its chain per session-logs, or `advisor` for advisor calls), model (as logged), turn, component, cause (on `rewrite after miss` only), kind, tool (the tool's name) and target (what the tool worked on, or a reminder's source).
+Every share of spend SHALL carry the dimensions that profiles stack by (see profile-export): agent (`claude` or `codex`), project (the session's project, see session-logs), session (its short id, see session-logs), chain (its chain per session-logs, or `advisor` for advisor calls), model (as logged), turn, component, cause (on `rewrite after miss` only), kind, tool (the tool's name) and target (what the tool worked on, or a reminder's source).
 
 #### Scenario: Content kinds
 - **WHEN** spend is broken down by kind
@@ -137,6 +137,14 @@ Every share of spend SHALL carry the dimensions that profiles stack by (see prof
 #### Scenario: An advisor call
 - **WHEN** a response consulted the advisor, which reads the conversation with another model
 - **THEN** the advisor request is charged to chain `advisor` under the advisor's model, apart from the conversation's own chain
+
+#### Scenario: Sessions in a worktree and in a subfolder
+- **WHEN** one session ran in `~/.branch-deck/pool/app-c821e1d7/4/app`, a worktree of `~/src/app`, and another in `~/src/app/plugins/web`
+- **THEN** the spend of both has the project `~/src/app`, and a flame graph stacked by project shows both in the frame `~/src/app`
+
+#### Scenario: Temporary folders
+- **WHEN** 90 sessions ran in folders under `/private/var/folders/19/nlk_x/T`, the system's temporary folder
+- **THEN** a flame graph stacked by project shows their spend in one frame `temporary folders`
 
 ### Requirement: Turn of content
 tokprof SHALL give content the turn in which it entered the context: the number of user-typed messages in the prompt up to and including its own message, in the first request of the reported window that contained it. Output takes the turn of the request that produced it. The tool schemas and system prompt that precede the conversation have no turn and show as `setup`.

@@ -84,6 +84,8 @@ fn the_ui_export_leaves_out_unreadable_subagent_logs() {
         file: c.resolve(&main).unwrap(),
         subagents: vec![gone],
         project: "~/p".into(),
+        folder: String::new(),
+        placed: None,
         id: "5e5510f0".into(),
         session_id: "5e5510f0-0000-0000-0000-000000000000".into(),
         bytes: 0,

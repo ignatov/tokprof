@@ -384,7 +384,14 @@ pub fn short_id<'a>(agent: &AgentId, id: &'a str) -> &'a str {
 pub struct Session {
     pub agent: AgentId,
     pub id: String,
+    /// The session's project (session-logs, Session id and project). A source sets the folder
+    /// the log names; the catalog places the project from it (see `crate::place`).
     pub project: String,
+    /// The folder the log names, written with `~` for the home directory, once the catalog
+    /// placed the project from it; empty as a source gives the session.
+    pub folder: String,
+    /// How the catalog placed the project; `None` as a source gives the session.
+    pub placed: Option<crate::place::Placed>,
     pub cwd: Option<String>,
     pub blocks: Vec<Block>,
     pub messages: Vec<Message>,
@@ -588,6 +595,8 @@ impl Session {
             agent,
             id,
             project: String::new(),
+            folder: String::new(),
+            placed: None,
             cwd: None,
             blocks: Vec::new(),
             messages: Vec::new(),

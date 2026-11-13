@@ -1490,6 +1490,8 @@ mod tests {
             },
             subagents: Vec::new(),
             project: project.to_string(),
+            folder: String::new(),
+            placed: None,
             id: format!("id{i}"),
             session_id: format!("id{i}"),
             bytes: 1 + at,

@@ -84,7 +84,12 @@ pub struct Entry {
     /// The id of the main session the log belongs to.
     pub main: String,
     pub subagent: bool,
+    /// The session's project (see session-logs, Session id and project).
     pub project: String,
+    /// The folder the session ran in, only when it differs from the project; an entry of an
+    /// earlier build has none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub folder: String,
     /// The rhythm leaves the session out: a program ran it, or it ran in a temporary folder.
     pub left_out: bool,
     /// The minutes with a request or a commit, in time order.
@@ -150,6 +155,7 @@ pub fn entry_of(s: &Session, f: &SessionRef, pricing: &Pricing, temp: &[String],
         main: f.main_id.clone(),
         subagent: f.subagent,
         project: s.project.clone(),
+        folder: if s.folder == s.project { String::new() } else { s.folder.clone() },
         minutes: sink.rows.into_values().collect(),
         misses: sink.misses.into_iter().map(|((h, c), usd)| (h, c.to_string(), usd)).collect(),
         models: sink.models.into_iter().map(|((h, m), usd)| (h, m, usd)).collect(),
@@ -415,7 +421,26 @@ pub fn refresh(
         e.gone = names.contains(e.agent.as_str()) && !live.contains(&e.key);
         out.gone += usize::from(e.gone);
     }
+    out.changed |= place_again(store, catalog);
     Ok(out)
+}
+
+/// Places again the project of each entry that names no folder, as the folder of a log of its
+/// agent (activity-calendar, Projects of kept entries): an entry an earlier build made, or one
+/// whose folder was its own project. When the project moves, the old one becomes the folder.
+/// Each pair of agent and folder is placed once per process. Whether an entry changed.
+fn place_again(store: &mut Store, catalog: &Catalog) -> bool {
+    let mut sources: HashMap<String, &'static str> = HashMap::new();
+    let mut changed = false;
+    for e in store.entries.iter_mut().filter(|e| e.folder.is_empty()) {
+        let source = *sources.entry(e.agent.clone()).or_insert_with(|| catalog.agent(&e.agent).ok().and_then(|a| catalog.source_of(&a)).unwrap_or(""));
+        let placed = catalog.place(source, &e.project);
+        if placed.project != e.project {
+            e.folder = std::mem::replace(&mut e.project, placed.project);
+            changed = true;
+        }
+    }
+    changed
 }
 
 #[cfg(test)]
@@ -465,6 +490,52 @@ mod tests {
         }
         assert_ne!(a, fingerprint(&p));
         assert_eq!(a, fingerprint(&Pricing::defaults()));
+    }
+
+    #[test]
+    fn an_entry_names_the_folder_only_where_it_differs_from_the_project() {
+        let f = SessionRef {
+            source: "test",
+            agent: crate::testing::claude(),
+            locator: Locator::File("/l/s.jsonl".into()),
+            session_id: "s".into(),
+            main_id: "s".into(),
+            subagent: true,
+            size: 0,
+            modified_ns: 0,
+            created_ms: None,
+        };
+        let entry = |project: &str, folder: &str| {
+            let mut s = Session::new(crate::testing::claude(), "s".into());
+            (s.project, s.folder) = (project.into(), folder.into());
+            serde_json::to_value(entry_of(&s, &f, &Pricing::defaults(), &[], "fp")).unwrap()
+        };
+        let worktree = entry("~/src/app", "~/w/pool/4/app");
+        assert_eq!((&worktree["project"], &worktree["folder"]), (&"~/src/app".into(), &"~/w/pool/4/app".into()), "a worktree's session writes both");
+        let root = entry("~/src/app", "~/src/app");
+        assert!(root.get("folder").is_none(), "the root of a repository writes no folder: {root}");
+        assert!(entry("~/src/app", "").get("folder").is_none());
+    }
+
+    #[test]
+    fn entries_with_and_without_a_folder_and_with_unknown_fields_load() {
+        let d = dir("folder");
+        let path = d.join(FILE_NAME);
+        // An entry of an earlier build, one of this build, and one of a later build.
+        let text = r#"{"format":2,"logs":[
+            {"key":"/a","len":1,"mtime_ns":0,"fingerprint":"f","agent":"claude","session":"a","main":"a","subagent":false,"project":"~/src/app","left_out":false,"minutes":[],"work":[],"actions":[],"misses":[],"models":[],"cold":[]},
+            {"key":"/b","len":1,"mtime_ns":0,"fingerprint":"f","agent":"claude","session":"b","main":"b","subagent":false,"project":"~/src/app","folder":"~/w/pool/4/app","left_out":false,"minutes":[],"work":[],"actions":[],"misses":[],"models":[],"cold":[]},
+            {"key":"/c","len":1,"mtime_ns":0,"fingerprint":"f","agent":"claude","session":"c","main":"c","subagent":false,"project":"~/src/app","branch":"main","left_out":false,"minutes":[],"work":[],"actions":[],"misses":[],"models":[],"cold":[]}
+        ]}"#;
+        std::fs::write(&path, text).unwrap();
+        let store = Store::load(&path, 0);
+        assert!(store.broken.is_none() && store.unreadable.is_none());
+        let folders: Vec<&str> = store.entries.iter().map(|e| e.folder.as_str()).collect();
+        assert_eq!(folders, ["", "~/w/pool/4/app", ""]);
+        store.save().unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written.matches("\"folder\"").count(), 1, "{written}");
+        assert!(written.starts_with("{\"format\":2,"));
     }
 
     fn dir(name: &str) -> PathBuf {

@@ -449,6 +449,70 @@ mod tests {
         assert!(line.starts_with("read no log in 0.3s; ") && line.contains(", 1 gone from disk ("), "{line}");
     }
 
+    /// The entry of a deleted log of `agent`, whose session ran in `project`, with one request on
+    /// 2026-09-01 at 10:00 UTC.
+    fn kept(agent: &str, key: &Path, project: &str) -> daystore::Entry {
+        let minute = 1_788_256_800_000 / 60_000;
+        daystore::Entry {
+            key: key.to_string_lossy().to_string(),
+            agent: agent.into(),
+            session: format!("s-{project}"),
+            main: format!("s-{project}"),
+            project: project.into(),
+            minutes: vec![daystore::Minute { minute, usd: 2.5, requests: 1, ..daystore::Minute::default() }],
+            ..daystore::Entry::default()
+        }
+    }
+
+    #[test]
+    fn kept_entries_are_placed_again() {
+        let dir = scratch("placed-again");
+        let home = dir.join("home");
+        // A repository at `~/src/app`, and a worktree of it at `~/lease/2/app`.
+        let git = home.join("src").join("app").join(".git").join("worktrees").join("app2");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("commondir"), "../..\n").unwrap();
+        let worktree = home.join("lease").join("2").join("app");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", git.to_string_lossy().replace('\\', "/"))).unwrap();
+        let sources: Vec<Box<dyn tokprof_core::source::LogSource>> = vec![
+            Box::new(tokprof_source_claude_code::ClaudeCode::at(dir.join("projects"), &home)),
+            Box::new(tokprof_source_codex::Codex::at(dir.join("codex"), &home)),
+        ];
+        let catalog = Catalog::new(sources, home.clone());
+        let path = dir.join(daystore::FILE_NAME);
+        let logs = dir.join("deleted");
+        let entries = vec![
+            kept("claude", &logs.join("a.jsonl"), "~/lease/2/app"),
+            kept("codex", &logs.join("b.jsonl"), "~/Documents/Codex/2026-09-01/f"),
+            kept("codex", &logs.join("c.jsonl"), "~/.codex/worktrees/0dca/app"),
+        ];
+        Store { path: path.clone(), entries, ..Store::default() }.save().unwrap();
+        let agents = catalog.agents();
+        let (store, r) = update(&catalog, &agents, &Pricing::defaults(), &path, |_, _| {}).unwrap();
+        assert_eq!((r.gone, r.changed), (3, true));
+        let placed: Vec<(&str, &str)> = store.entries.iter().map(|e| (e.project.as_str(), e.folder.as_str())).collect();
+        let sep = std::path::MAIN_SEPARATOR;
+        let app = format!("~{sep}src{sep}app");
+        assert_eq!(
+            placed,
+            [(app.as_str(), "~/lease/2/app"), ("codex chats", "~/Documents/Codex/2026-09-01/f"), ("~/.codex/worktrees/0dca/app", "")],
+            "a deleted log's worktree moves to its repository, a deleted Codex chat to the chats, and a gone unknown folder stays"
+        );
+        // The store keeps them so, and `--project` counts the moved entry's day.
+        let loaded = Store::load(&path, 0);
+        assert_eq!(loaded.entries.iter().map(|e| (e.project.as_str(), e.folder.as_str())).collect::<Vec<_>>(), placed);
+        let select = |project: &str| Query { agents: agents.clone(), project: Some(project.into()), ..Query::default() };
+        let now = 1_800_000_000_000;
+        let repository = compute(&store, &select(&app), now);
+        assert_eq!((repository.active(Metric::Spend).0, repository.total(Metric::Spend)), (1, 2.5), "one day with spend");
+        assert_eq!(compute(&store, &select("lease"), now).total(Metric::Spend), 2.5, "the folder's text too");
+        assert_eq!(compute(&store, &select("codex chats"), now).total(Metric::Spend), 2.5);
+        // Placed once, they are not placed again.
+        let (_, again) = update(&catalog, &agents, &Pricing::defaults(), &path, |_, _| {}).unwrap();
+        assert!(!again.changed);
+    }
+
     #[test]
     fn a_moved_log_counts_once() {
         let dir = scratch("moved");

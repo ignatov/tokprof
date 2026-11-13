@@ -9,6 +9,20 @@ fn the_fixtures_conform() {
     tokprof_core::testkit::conform_all(&[&tokprof_source_codex::Codex::at(fixtures, Path::new("/h")), &streams()]).unwrap();
 }
 
+/// A Codex Desktop chat that has no project ran in a folder of its own under
+/// `~/Documents/Codex`, which the source names as a group.
+#[test]
+fn a_codex_desktop_chat_is_in_codex_chats() {
+    use tokprof_core::source::LogSource;
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let source = tokprof_source_codex::Codex::at(fixtures, Path::new("/h"));
+    let log = source.discover().into_iter().find(|s| s.session_id.ends_with("5888")).unwrap();
+    let head = source.head(&log);
+    assert_eq!((head.project.as_str(), head.client.as_deref()), ("~/Documents/Codex/2026-11-02/explain-the-error", Some("Codex Desktop")));
+    let folder = Path::new("/h").join("Documents").join("Codex").join("2026-11-02").join("explain-the-error");
+    assert_eq!(source.folder_group(&folder), Some("codex chats"));
+}
+
 /// The main rollout holds an end of turn and an interrupt, so the checks above run over both.
 #[test]
 fn the_fixtures_hand_off_at_the_end_and_the_abort_of_a_turn() {
@@ -17,7 +31,7 @@ fn the_fixtures_hand_off_at_the_end_and_the_abort_of_a_turn() {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let source = tokprof_source_codex::Codex::at(fixtures, Path::new("/h"));
     let decode = |subagent: bool| {
-        let log = source.discover().into_iter().find(|s| s.subagent == subagent).unwrap();
+        let log = source.discover().into_iter().find(|s| s.subagent == subagent && s.path().to_string_lossy().contains("2026-10-31")).unwrap();
         let mut d = source.decoder(&log);
         source.open(&log).unwrap().for_each(&mut |r| d.feed(r)).unwrap();
         d.finish()
@@ -38,7 +52,7 @@ fn the_fixtures_hold_call_outcomes_and_request_times() {
     use tokprof_core::source::LogSource;
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let source = tokprof_source_codex::Codex::at(fixtures, Path::new("/h"));
-    let log = source.discover().into_iter().find(|s| !s.subagent).unwrap();
+    let log = source.discover().into_iter().find(|s| s.session_id.ends_with("5666")).unwrap();
     let mut d = source.decoder(&log);
     source.open(&log).unwrap().for_each(&mut |r| d.feed(r)).unwrap();
     let main = d.finish();

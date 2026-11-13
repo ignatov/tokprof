@@ -286,7 +286,7 @@ impl LogSource for OpenCode {
     fn head(&self, s: &SessionRef) -> Head {
         let directory = self.row(s).ok().and_then(|(db, id)| Some(self.known(db).rows.get(id)?.directory.clone()));
         let project = directory.map(|d| display_path(&d, None, &self.home)).unwrap_or_default();
-        Head { project, session_id: s.session_id.clone(), client: None }
+        Head { project, session_id: s.session_id.clone(), client: None, ..Head::default() }
     }
 
     fn last_active(&self, s: &SessionRef) -> Option<i64> {

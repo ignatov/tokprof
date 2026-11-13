@@ -32,8 +32,8 @@ The day view SHALL draw the day as a strip: a row of hours, a `you` lane that ma
 - **THEN** labels take 20 characters, the strip 72 columns, and at most 8 lanes show
 
 #### Scenario: Lane labels
-- **WHEN** a session's id is `ecad11b9-…` and its title is `Инфографика прерываний`
-- **THEN** its lane starts with the first 6 characters of the id and the title, cut to the label's width: `ecad11 Инфографика…` in 20 characters
+- **WHEN** a session's id is `ecad11b9-…` and its title is `Chart of the interruptions`
+- **THEN** its lane starts with the first 6 characters of the id and the title, cut to the label's width: `ecad11 Chart of the…` in 20 characters
 
 #### Scenario: Many sessions
 - **WHEN** 11 sessions had actions in the day and the strip has rows for 9 lines

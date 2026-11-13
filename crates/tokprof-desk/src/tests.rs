@@ -27,6 +27,8 @@ fn row(i: usize, project: &str, at: u64) -> SessionRow {
         },
         subagents: Vec::new(),
         project: project.to_string(),
+        folder: String::new(),
+        placed: None,
         id: format!("id{i}"),
         session_id: format!("id{i}"),
         bytes: 1 + at,
@@ -220,6 +222,65 @@ fn the_inspector_shows_the_numbers_of_tokprof_scan() {
     }
 }
 
+/// The window over the Claude Code fixture session, run in the folder at `parts` under a new
+/// home that holds a repository at `~/src/app` and a worktree of it at `~/lease/4/app`.
+fn desk_in(name: &str, parts: &[&str]) -> (Runtime<Desk>, PathBuf) {
+    let home = std::env::temp_dir().join(format!("tokprof-desk-folder-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let repo = home.join("src").join("app");
+    let git = repo.join(".git").join("worktrees").join("app4");
+    std::fs::create_dir_all(&git).unwrap();
+    std::fs::write(git.join("commondir"), "../..\n").unwrap();
+    std::fs::create_dir_all(repo.join("plugins").join("web")).unwrap();
+    let worktree = home.join("lease").join("4").join("app");
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", git.to_string_lossy().replace('\\', "/"))).unwrap();
+    let cwd = parts.iter().fold(home.clone(), |p, part| p.join(part));
+    // As the text of a JSON string: a Windows path holds `\`, which JSON escapes.
+    let quoted = serde_json::to_string(&cwd.to_string_lossy()).unwrap();
+    let id = "5e5510f0-1111-4222-8333-944445555666";
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sources/claude-code/tests/fixtures/projects/-w-app").join(format!("{id}.jsonl"));
+    let logs = home.join(".claude").join("projects").join("-scratch");
+    std::fs::create_dir_all(&logs).unwrap();
+    std::fs::write(logs.join(format!("{id}.jsonl")), std::fs::read_to_string(fixture).unwrap().replace("/w/app", &quoted[1..quoted.len() - 1])).unwrap();
+    let catalog =
+        Arc::new(Catalog::new(vec![Box::new(tokprof_source_claude_code::ClaudeCode::at(home.join(".claude").join("projects"), &home))], home.clone()));
+    let select = Query { agents: catalog.agents(), ..Query::default() };
+    let mut browser = Browser::start(catalog, Pricing::defaults(), select, false, Arc::new(|| {}), frontend()).unwrap();
+    browser.settle();
+    (runtime(Desk::new(browser, false), (1400.0, 900.0)), home)
+}
+
+#[test]
+fn the_inspector_names_the_folder_under_the_project() {
+    let sep = std::path::MAIN_SEPARATOR;
+    let app = format!("~{sep}src{sep}app");
+    let (rt, home) = desk_in("worktree", &["lease", "4", "app"]);
+    let facts = inside(&rt, "header", "facts").expect("the facts");
+    let folder = inside(&rt, "header", "folder").expect("the folder line");
+    assert_eq!(folder.text.as_deref(), Some(&*format!("worktree ~{sep}lease{sep}4{sep}app")));
+    assert!(folder.rect[1] > facts.rect[1], "under the project");
+    assert!(texts(&rt).contains(&app), "the project is the repository");
+    let _ = std::fs::remove_dir_all(home);
+
+    let (rt, home) = desk_in("subfolder", &["src", "app", "plugins", "web"]);
+    assert_eq!(text_in(&rt, "header", "folder"), format!("folder ~{sep}src{sep}app{sep}plugins{sep}web"));
+    let _ = std::fs::remove_dir_all(home);
+
+    let (rt, home) = desk_in("root", &["src", "app"]);
+    assert!(inside(&rt, "header", "folder").is_none(), "no line at the repository's root");
+    assert!(texts(&rt).contains(&app));
+    let _ = std::fs::remove_dir_all(home);
+
+    // The fixture's own folder is gone and not known: no line here, unlike the X-ray's.
+    let (catalog, select) = fixture();
+    let mut browser = Browser::start(catalog, Pricing::defaults(), select, false, Arc::new(|| {}), frontend()).unwrap();
+    browser.settle();
+    let rt = runtime(Desk::new(browser, false), (1400.0, 900.0));
+    assert_eq!(rt.state.browser.xray().map(|x| x.placed), Some(Some(tokprof_core::place::Placed::NotFound)));
+    assert!(inside(&rt, "header", "folder").is_none());
+}
+
 /// The X-ray the inspector shows, for a test to compare.
 trait ClonedX {
     fn cloned_x(self) -> tokprof_core::xray::XRay;
@@ -255,7 +316,7 @@ fn synthetic_day() -> tokprof_browse::render_rhythm::DayParts {
         you: vec![(at(13, 55), at(14, 45))],
         lanes: vec![StripLane {
             id: "id3".into(),
-            label: "id3 Инфографика прерываний".into(),
+            label: "id3 Chart of the interruptions".into(),
             marks: vec![(at(14, 0), at(14, 30), Mark::Work), (at(14, 40), at(14, 40), Mark::Message)],
         }],
         agents: Default::default(),

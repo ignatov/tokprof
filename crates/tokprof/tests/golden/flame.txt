@@ -1,8 +1,8 @@
 $ tokprof --prices tests/golden/prices.toml flame -o <home>/f.folded
 --- stdout
-wrote 55 stacks to ~/f.folded
+wrote 58 stacks to ~/f.folded
 --- stderr
-read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB), opencode 4 files (0.0 GB) in <time>
+read claude 2 files (0.0 GB), codex 3 files (0.0 GB), pi 3 files (0.0 GB), opencode 4 files (0.0 GB) in <time>
 --- f.folded
 claude;/w/app;5e5510f0;main;turn 0;assistant text;output 2182
 claude;/w/app;5e5510f0;main;turn 0;thinking;output 9818
@@ -19,6 +19,9 @@ claude;/w/app;5e5510f0;subagent: Scan the parser;turn 0;assistant text;output 12
 claude;/w/app;5e5510f0;subagent: Scan the parser;unknown;cache read 12000
 claude;/w/app;5e5510f0;subagent: Scan the parser;unknown;cache write 36000
 claude;/w/app;5e5510f0;subagent: Scan the parser;unknown;uncached input 72
+codex;/h/Documents/Codex/2026-11-02/explain-the-error;01a19a00-3333-7222;main;setup;system prompt;uncached input 2710
+codex;/h/Documents/Codex/2026-11-02/explain-the-error;01a19a00-3333-7222;main;turn 1;assistant text;output 320
+codex;/h/Documents/Codex/2026-11-02/explain-the-error;01a19a00-3333-7222;main;turn 1;user prompt;uncached input 3290
 codex;/w/svc;01a19a00-1111-7222;main;setup;system prompt;cache read 2314
 codex;/w/svc;01a19a00-1111-7222;main;setup;system prompt;rewrite after miss 3000
 codex;/w/svc;01a19a00-1111-7222;main;turn 1;assistant text;cache read 259

@@ -96,7 +96,7 @@ Under the lanes SHALL be the legend, and the `sittings`, `answers` and `cache` l
 
 #### Scenario: The time under the pointer
 - **WHEN** the pointer rests over a lane at 14:32
-- **THEN** the line reads like `14:32 · ecad11 Инфографика прерываний · agent working`, with `agent working`, `waiting for your answer`, `your message`, `its question`, `you stopped it`, `you were there`, `cache warm` or nothing
+- **THEN** the line reads like `14:32 · ecad11 Chart of the interruptions · agent working`, with `agent working`, `waiting for your answer`, `your message`, `its question`, `you stopped it`, `you were there`, `cache warm` or nothing
 
 ### Requirement: The selected session's day
 Selecting a session whose last activity is on another day than the lanes show SHALL show that day in the lanes, as the local date of its last activity five hours earlier. When that day has no lane of the session, the lanes stay on it.

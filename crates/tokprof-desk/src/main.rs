@@ -59,7 +59,7 @@ struct Cli {
     /// Only sessions created before this date (YYYY-MM-DD).
     #[arg(long)]
     until: Option<String>,
-    /// Only projects whose path contains this text.
+    /// Only sessions whose project, or the folder they ran in, contains this text.
     #[arg(long)]
     project: Option<String>,
     /// Only the session with this id prefix.
@@ -969,7 +969,7 @@ fn main() -> Result<()> {
     }
     // A job of the background work that panics shows as its error, and says nothing on stderr.
     tokprof_browse::contain::install_hook();
-    let mut desk = desk(&cli, tokprof_sources::catalog(), rune::is_headless(), Arc::new(wake))?;
+    let mut desk = desk(&cli, paths::placing(tokprof_sources::catalog()), rune::is_headless(), Arc::new(wake))?;
     // The first frame is laid out for the window's size before the root's layout says it.
     desk.window = size_of(&args).unwrap_or(view::WINDOW);
     let spec = AppSpec {

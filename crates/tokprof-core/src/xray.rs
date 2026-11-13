@@ -49,7 +49,7 @@ pub fn latest(catalog: &Catalog, select: &Query) -> Option<SessionRef> {
         }
         if select.reads_meta() {
             let head = catalog.head(&f);
-            if !select.meta(&head.project, &head.session_id, head.client.as_deref()) {
+            if !select.meta(&head.project, &head.folder, &head.session_id, head.client.as_deref()) {
                 continue;
             }
         }
@@ -222,6 +222,10 @@ impl Sink for Totals {
 pub struct XRay {
     pub agent: AgentId,
     pub project: String,
+    /// The folder the session ran in, and how its project was placed from it (see
+    /// `crate::place::folder_line`).
+    pub folder: String,
+    pub placed: Option<crate::place::Placed>,
     pub id: String,
     pub short_id: String,
     pub title: Option<String>,
@@ -370,6 +374,8 @@ pub fn xray(catalog: &Catalog, file: &SessionRef, pricing: &Pricing, now_ms: i64
     Ok(XRay {
         agent: main.agent.clone(),
         project: main.project.clone(),
+        folder: main.folder.clone(),
+        placed: main.placed,
         id: main.id.clone(),
         short_id: main.short_id().to_string(),
         title: main.title.clone(),
@@ -581,6 +587,10 @@ pub struct SessionRow {
     pub file: SessionRef,
     pub subagents: Vec<SessionRef>,
     pub project: String,
+    /// The folder the session ran in, and how its project was placed from it, as the first
+    /// lines of its main log tell.
+    pub folder: String,
+    pub placed: Option<crate::place::Placed>,
     /// The short id the session is shown by.
     pub id: String,
     /// The whole id.
@@ -602,7 +612,18 @@ impl SessionRow {
         let bytes = file.size + subagents.iter().map(|s| s.size).sum::<u64>();
         let id = crate::model::short_id(&file.agent, &head.session_id).to_string();
         let active_ms = catalog.last_active(&file);
-        SessionRow { file, subagents, project: head.project, id, session_id: head.session_id, bytes, active_ms, client: head.client }
+        SessionRow {
+            file,
+            subagents,
+            project: head.project,
+            folder: head.folder,
+            placed: head.placed,
+            id,
+            session_id: head.session_id,
+            bytes,
+            active_ms,
+            client: head.client,
+        }
     }
 
     pub fn modified_ms(&self) -> i64 {
@@ -799,6 +820,8 @@ mod tests {
             file,
             subagents: Vec::new(),
             project: String::new(),
+            folder: String::new(),
+            placed: None,
             id: n.to_string(),
             session_id: n.to_string(),
             bytes: 0,
@@ -877,6 +900,8 @@ mod tests {
             file: log(crate::testing::codex(), &format!("/r/rollout-{id}.jsonl")),
             subagents: Vec::new(),
             project: "~/src/p".into(),
+            folder: String::new(),
+            placed: None,
             id: crate::model::short_id(&crate::testing::codex(), id).to_string(),
             session_id: id.into(),
             bytes: 0,

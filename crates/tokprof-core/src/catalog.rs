@@ -8,6 +8,7 @@ use anyhow::{Result, bail};
 
 use crate::kept::Kept;
 use crate::model::Session;
+use crate::place::{Placed, Placement, Placer, Remembered, Rules};
 use crate::source::{Activity, AgentId, Claim, Head, LogSource, SessionRef, Touched};
 
 pub struct Catalog {
@@ -16,11 +17,35 @@ pub struct Catalog {
     home: PathBuf,
     /// The logs read so far, once `keep_logs` was called.
     kept: OnceLock<Kept>,
+    /// The projects of the folders placed so far (see `place`).
+    placer: Placer,
 }
 
 impl Catalog {
+    /// A catalog that places the folders of its logs from disk only (see `with_places`).
     pub fn new(sources: Vec<Box<dyn LogSource>>, home: PathBuf) -> Catalog {
-        Catalog { sources, home, kept: OnceLock::new() }
+        let placer = Placer::new(Rules::from_disk(home.clone()));
+        Catalog { sources, home, kept: OnceLock::new(), placer }
+    }
+
+    /// The catalog, placing folders also by the temporary roots, and by the repositories
+    /// remembered in the file at `repositories`, such as `<cache folder>/repositories-1.json`.
+    pub fn with_places(mut self, temp_roots: Vec<String>, repositories: PathBuf) -> Catalog {
+        self.placer = Placer::new(Rules { home: self.home.clone(), temp_roots, remembered: Some(Remembered::at(repositories)) });
+        self
+    }
+
+    /// The project of a folder of a log of `source`, written with `~` for the home directory
+    /// as the sources write it, and how it was placed (see `place::Rules::place`). Each pair of
+    /// source and folder is placed once.
+    pub fn place(&self, source: &str, folder: &str) -> Placement {
+        self.placer.place(self.source_named(source), folder)
+    }
+
+    /// The name of the first source that declares the agent, which places the folders of the
+    /// agent's logs.
+    pub fn source_of(&self, agent: &AgentId) -> Option<&'static str> {
+        self.sources.iter().find(|s| s.agents().contains(agent)).map(|s| s.name())
     }
 
     /// From now on, keeps the recent logs it reads, so that reading one again reads only what
@@ -108,16 +133,29 @@ impl Catalog {
         self.source_named(source)?.session_at(path)
     }
 
+    /// The session a log holds, with its project placed from the folder the log names, which
+    /// it keeps as its `folder`.
     pub fn parse(&self, s: &SessionRef) -> Result<Session> {
         let source = self.source(s);
-        match self.kept.get() {
+        let mut session = match self.kept.get() {
             Some(kept) => kept.parse(source, s),
             None => crate::kept::read_whole(source, s),
-        }
+        }?;
+        (session.folder, session.placed) = self.placed(s.source, &mut session.project);
+        Ok(session)
     }
 
+    /// What the first records of a log tell, with the project placed as `parse` places it.
     pub fn head(&self, s: &SessionRef) -> Head {
-        self.source(s).head(s)
+        let mut head = self.source(s).head(s);
+        (head.folder, head.placed) = self.placed(s.source, &mut head.project);
+        head
+    }
+
+    /// Puts the project of the folder in its place, and gives the folder and how it was placed.
+    fn placed(&self, source: &str, project: &mut String) -> (String, Option<Placed>) {
+        let placement = self.place(source, project);
+        (std::mem::replace(project, placement.project), Some(placement.placed))
     }
 
     /// When a session last did something, in epoch ms: what its source reads from the end of the
@@ -168,6 +206,7 @@ mod tests {
 
     struct Fake {
         name: &'static str,
+        group: Option<&'static str>,
         agents: Vec<AgentId>,
         detail: Detail,
         refs: Vec<SessionRef>,
@@ -181,6 +220,9 @@ mod tests {
         }
         fn last_active(&self, _: &SessionRef) -> Option<i64> {
             self.active
+        }
+        fn folder_group(&self, _: &Path) -> Option<&'static str> {
+            self.group
         }
         fn agents(&self) -> Vec<AgentId> {
             self.agents.clone()
@@ -239,13 +281,13 @@ mod tests {
     }
 
     fn fake(name: &'static str, agents: &[&AgentId], detail: Detail, refs: Vec<SessionRef>, claim: Claim) -> Box<dyn LogSource> {
-        Box::new(Fake { name, agents: agents.iter().map(|a| (*a).clone()).collect(), detail, refs, claim, active: None })
+        Box::new(Fake { name, group: None, agents: agents.iter().map(|a| (*a).clone()).collect(), detail, refs, claim, active: None })
     }
 
     #[test]
     fn the_last_activity_is_never_after_the_last_write() {
         let a = agent("a");
-        let source = Fake { name: "one", agents: vec![a.clone()], detail: Detail::Requests, refs: vec![], claim: Claim::No, active: Some(5_000) };
+        let source = Fake { name: "one", group: None, agents: vec![a.clone()], detail: Detail::Requests, refs: vec![], claim: Claim::No, active: Some(5_000) };
         let c = Catalog::new(vec![Box::new(source)], PathBuf::new());
         let mut s = log("one", &a, "s1", 1);
         s.modified_ns = 9_000 * 1_000_000;
@@ -304,5 +346,26 @@ mod tests {
         assert_eq!(found, [("native", "s2"), ("native", "s1"), ("turns", "s3")]);
         // Only the agents asked for.
         assert!(c.discover(&[agent("b")]).is_empty());
+    }
+
+    #[test]
+    fn a_catalog_places_folders_by_the_rules_it_was_given() {
+        use crate::place::{Placed, TEMPORARY};
+        let a = agent("a");
+        let chats =
+            Fake { name: "chats", group: Some("chats"), agents: vec![a.clone()], detail: Detail::Requests, refs: vec![], claim: Claim::No, active: None };
+        let plain = fake("plain", &[&a], Detail::Requests, vec![], Claim::No);
+        let home = std::env::temp_dir().join(format!("tokprof-catalog-place-{}", std::process::id()));
+        let temp = home.join("t").to_string_lossy().to_string();
+        let run = format!("{temp}{}run", std::path::MAIN_SEPARATOR);
+        let c = Catalog::new(vec![plain, Box::new(chats)], home.clone());
+        assert_eq!(c.place("chats", &run).placed, Placed::Group, "the source's group first");
+        // From disk only: no temporary roots.
+        assert_eq!(c.place("plain", &run).placed, Placed::NotFound);
+        assert_eq!(c.source_of(&a), Some("plain"));
+        let c = Catalog::new(vec![fake("plain", &[&a], Detail::Requests, vec![], Claim::No)], home.clone())
+            .with_places(vec![temp], home.join("cache").join(crate::place::REPOSITORIES_FILE));
+        assert_eq!(c.place("plain", &run).project, TEMPORARY);
+        assert!(!home.exists(), "nothing learned, nothing written");
     }
 }

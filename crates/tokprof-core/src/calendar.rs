@@ -151,7 +151,7 @@ impl Day {
 pub struct Filters {
     /// Agent names; empty keeps all.
     pub agents: Vec<String>,
-    /// Text the project contains.
+    /// Text the project or the folder contains (session-logs, Project filter).
     pub project: Option<String>,
     /// The start of the session id or of its main session's id, in any case.
     pub session: Option<String>,
@@ -162,7 +162,7 @@ pub struct Filters {
 impl Filters {
     pub fn keeps(&self, e: &Entry) -> bool {
         (self.agents.is_empty() || self.agents.contains(&e.agent))
-            && self.project.as_ref().is_none_or(|p| e.project.contains(p.as_str()))
+            && crate::query::project_matches(self.project.as_deref(), &e.project, &e.folder)
             && self.session.as_ref().is_none_or(|s| id_starts_with(&e.session, s) || id_starts_with(&e.main, s))
     }
 
@@ -571,6 +571,24 @@ mod tests {
             minutes,
             ..Entry::default()
         }
+    }
+
+    #[test]
+    fn the_project_filter_matches_an_entrys_project_or_folder() {
+        let entry = |project: &str, folder: &str| Entry { project: project.into(), folder: folder.into(), ..main_log(&[], Vec::new()) };
+        let worktree = entry("~/src/app", "~/w/pool/4/app");
+        let subfolder = entry("~/src/app", "~/src/app/plugins/web");
+        let temporary = entry(crate::place::TEMPORARY, "/private/tmp/run");
+        let older = entry("~/src/app", "");
+        let all = [&worktree, &subfolder, &temporary, &older];
+        let kept = |text: &str| {
+            let f = Filters { project: Some(text.into()), ..Filters::default() };
+            all.iter().filter(|e| f.keeps(e)).count()
+        };
+        assert_eq!(kept("~/src/app"), 3, "the worktree's, the subfolder's and an older entry");
+        assert_eq!(kept("pool"), 1);
+        assert_eq!(kept("temporary"), 1);
+        assert_eq!(kept("~/src/other"), 0);
     }
 
     #[test]

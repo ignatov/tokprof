@@ -9,7 +9,8 @@ use crate::xray::SessionRow;
 #[derive(Clone, Debug, Default)]
 pub struct Query {
     pub agents: Vec<AgentId>,
-    /// Text the project, written with `~` for the home directory, contains.
+    /// Text the project or the folder the session ran in, written with `~` for the home
+    /// directory, contains (session-logs, Project filter).
     pub project: Option<String>,
     /// The start of the session id, in any case.
     pub session: Option<String>,
@@ -36,9 +37,14 @@ impl Query {
         self.since_ms.is_none_or(|s| f.modified_ms() >= s) && self.until_ms.is_none_or(|u| created < u)
     }
 
+    /// Whether a session's project or the folder it ran in holds the text `--project` gives.
+    pub fn project_matches(&self, project: &str, folder: &str) -> bool {
+        project_matches(self.project.as_deref(), project, folder)
+    }
+
     /// Whether the id, the project and the client pass, as the first lines of the log tell them.
-    pub(crate) fn meta(&self, project: &str, id: &str, client: Option<&str>) -> bool {
-        self.project.as_ref().is_none_or(|p| project.contains(p.as_str()))
+    pub(crate) fn meta(&self, project: &str, folder: &str, id: &str, client: Option<&str>) -> bool {
+        self.project_matches(project, folder)
             && self.session.as_ref().is_none_or(|s| id_starts_with(id, s))
             && self.window().keeps_client(client.unwrap_or(crate::model::UNKNOWN_CLIENT))
     }
@@ -49,7 +55,7 @@ impl Query {
 
     /// Whether a listed session passes.
     pub fn row(&self, row: &SessionRow) -> bool {
-        self.times(&row.file) && self.meta(&row.project, &row.session_id, row.client.as_deref())
+        self.times(&row.file) && self.meta(&row.project, &row.folder, &row.session_id, row.client.as_deref())
     }
 
     /// Whether a log belongs to the session `session` names, for the reports: its own id, or
@@ -61,9 +67,14 @@ impl Query {
 
     /// Whether a parsed session passes the project and session filters, for the reports.
     pub fn accepts(&self, s: &Session, f: &SessionRef) -> bool {
-        self.project.as_ref().is_none_or(|p| s.project.contains(p.as_str()))
-            && self.session.as_ref().is_none_or(|id| id_starts_with(&s.id, id) || self.holds(f))
+        self.project_matches(&s.project, &s.folder) && self.session.as_ref().is_none_or(|id| id_starts_with(&s.id, id) || self.holds(f))
     }
+}
+
+/// Whether a session's project or the folder it ran in holds `text`; any session when there is
+/// no text. An empty folder holds no text.
+pub fn project_matches(text: Option<&str>, project: &str, folder: &str) -> bool {
+    text.is_none_or(|p| project.contains(p) || (!folder.is_empty() && folder.contains(p)))
 }
 
 /// Whether a session id starts with `prefix`, in any case.
@@ -112,7 +123,22 @@ mod tests {
     #[test]
     fn a_project_filter_reads_the_written_project() {
         let q = Query { project: Some("~/src/app".into()), ..Query::default() };
-        assert!(q.meta("~/src/app/web", "id", None) && !q.meta("~/src/other", "id", None));
+        assert!(q.meta("~/src/app/web", "", "id", None) && !q.meta("~/src/other", "", "id", None));
+    }
+
+    #[test]
+    fn a_project_filter_matches_the_project_or_the_folder() {
+        let q = |text: &str| Query { project: Some(text.into()), ..Query::default() };
+        let worktree = ("~/src/app", "~/w/pool/4/app");
+        let subfolder = ("~/src/app", "~/src/app/plugins/web");
+        let temporary = (crate::place::TEMPORARY, "/private/tmp/run");
+        let all = [worktree, subfolder, temporary];
+        let kept = |text: &str| all.iter().filter(|(project, folder)| q(text).meta(project, folder, "id", None)).copied().collect::<Vec<_>>();
+        assert_eq!(kept("~/src/app"), [worktree, subfolder], "a repository keeps its worktree's and its subfolder's sessions");
+        assert_eq!(kept("pool"), [worktree], "the text of the folder");
+        assert_eq!(kept("temporary"), [temporary]);
+        assert!(kept("~/src/other").is_empty());
+        assert!(Query::default().project_matches("~/src/app", ""));
     }
 
     fn request(client: Option<&str>) -> crate::model::Request {
@@ -139,7 +165,7 @@ mod tests {
     fn the_session_lists_take_the_client_from_the_log_head() {
         let q = Query { client: Some("sdk-ts".into()), ..Query::default() };
         assert!(q.reads_meta());
-        assert!(q.meta("~/src/app", "id", Some("sdk-ts")));
-        assert!(!q.meta("~/src/app", "id", Some("cli")) && !q.meta("~/src/app", "id", None));
+        assert!(q.meta("~/src/app", "", "id", Some("sdk-ts")));
+        assert!(!q.meta("~/src/app", "", "id", Some("cli")) && !q.meta("~/src/app", "", "id", None));
     }
 }

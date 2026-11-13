@@ -304,8 +304,14 @@ pub enum Touched {
 /// What the first records of a log tell, without reading the rest.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Head {
-    /// The project, written with `~` for the home directory.
+    /// The project, written with `~` for the home directory. A source gives the folder the log
+    /// names; the catalog places the project from it (see `crate::place`).
     pub project: String,
+    /// The folder the log names, once the catalog placed the project from it; empty as a source
+    /// gives the head.
+    pub folder: String,
+    /// How the catalog placed the project; `None` as a source gives the head.
+    pub placed: Option<crate::place::Placed>,
     /// The agent's own session id, or the id the log's name gives.
     pub session_id: String,
     /// The first client the log names: the program that ran the agent.
@@ -418,6 +424,13 @@ pub trait LogSource: Send + Sync {
         vec![s.path().to_path_buf()]
     }
     fn head(&self, s: &SessionRef) -> Head;
+    /// A group that the source names for a folder its own agent made, which becomes the project
+    /// of every session in the folder or below it (see `place`); `None` for any other folder.
+    /// The folder is written in full. The answer depends on the path alone, so that a folder of
+    /// a log that is gone can be placed too.
+    fn folder_group(&self, _folder: &Path) -> Option<&'static str> {
+        None
+    }
     /// When the session last did something, in epoch ms: the time of the last record in its log
     /// that carries one. Agents also write records that are not work, such as bookkeeping when a
     /// session is resumed, and those carry no time. Read from the end of the log; `None` means

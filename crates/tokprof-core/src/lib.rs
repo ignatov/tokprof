@@ -27,6 +27,7 @@ pub mod model;
 pub mod month;
 pub mod overview;
 pub mod pauses;
+pub mod place;
 pub mod pool;
 pub mod pricing;
 pub mod profile;

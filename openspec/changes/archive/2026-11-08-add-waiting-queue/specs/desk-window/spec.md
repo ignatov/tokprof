@@ -62,7 +62,7 @@ Under the lanes SHALL be the legend, and the `sittings`, `answers`, `queue` and 
 
 #### Scenario: The time under the pointer
 - **WHEN** the pointer rests over a lane at 14:32
-- **THEN** the line reads like `14:32 · ecad11 Инфографика прерываний · agent working`, with `agent working`, `waiting for your answer`, `your message`, `its question`, `you stopped it`, `you were there`, `cache warm` or nothing
+- **THEN** the line reads like `14:32 · ecad11 Chart of the interruptions · agent working`, with `agent working`, `waiting for your answer`, `your message`, `its question`, `you stopped it`, `you were there`, `cache warm` or nothing
 
 #### Scenario: The queue line
 - **WHEN** the shown day had 24 answers among several sessions waiting (see work-rhythm)

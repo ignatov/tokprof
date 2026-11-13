@@ -62,4 +62,4 @@ agent     cause            misses  re-processed  avoidable
 opencode  compaction call       1          5.3k      $0.01
 pi        compaction call       1          4.6k      $0.01
 --- stderr
-read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB), opencode 4 files (0.0 GB) in <time>
+read claude 2 files (0.0 GB), codex 3 files (0.0 GB), pi 3 files (0.0 GB), opencode 4 files (0.0 GB) in <time>

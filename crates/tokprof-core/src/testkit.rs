@@ -424,7 +424,7 @@ mod tests {
             Touched::Other
         }
         fn head(&self, _: &SessionRef) -> Head {
-            Head { project: String::new(), session_id: "t1".into(), client: None }
+            Head { session_id: "t1".into(), ..Head::default() }
         }
         fn subagents(&self, _: &SessionRef) -> Vec<SessionRef> {
             Vec::new()

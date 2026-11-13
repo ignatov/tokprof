@@ -1,0 +1,6 @@
+{"timestamp":"2026-11-02T09:00:00Z","type":"session_meta","payload":{"id":"01a19a00-3333-7222-8333-944445555888","cwd":"/h/Documents/Codex/2026-11-02/explain-the-error","originator":"Codex Desktop","cli_version":"0.166.0-alpha.5.1","base_instructions":{"text":"You are Codex."}}}
+{"timestamp":"2026-11-02T09:00:01Z","type":"turn_context","payload":{"model":"gpt-6-astra","effort":"medium","cwd":"/h/Documents/Codex/2026-11-02/explain-the-error"}}
+{"timestamp":"2026-11-02T09:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"explain the error"}]}}
+{"timestamp":"2026-11-02T09:00:06Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The file is missing."}]}}
+{"timestamp":"2026-11-02T09:00:06Z","type":"token_usage_record","payload":{"response_id":"r1","usage":{"input_tokens":3000,"cached_input_tokens":0,"output_tokens":20}}}
+{"timestamp":"2026-11-02T09:00:07Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"d1","last_agent_message":"The file is missing."}}

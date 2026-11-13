@@ -105,8 +105,8 @@ The X-ray SHALL open with the title `tokprof · session X-ray` and these lines:
 - **THEN** it shows in seconds (`59s`), whole minutes (`45m`), hours with one decimal (`9.4h`) or days with one decimal (`1.4d`)
 
 #### Scenario: Title
-- **WHEN** the session's title is `Ревью PR #1141 по чеклисту`
-- **THEN** the line after `session` reads `title     Ревью PR #1141 по чеклисту`
+- **WHEN** the session's title is `Review PR #412 against the checklist`
+- **THEN** the line after `session` reads `title     Review PR #412 against the checklist`
 - **AND** a session without a title has no `title` line
 
 #### Scenario: One client
@@ -796,3 +796,30 @@ When the log does not show what some prompts of the list held, a line after the 
 #### Scenario: Prompts not in the log
 - **WHEN** 40 requests come from a Claude Code transcript that does not show what the prompts held
 - **THEN** a line after the head reads `          the log does not show what 40 prompts held`, and those rows have no `entered` line
+
+### Requirement: Folder line
+The X-ray header SHALL show a line right after the `session` line, which names the project, when the session's folder differs from its project (see session-logs, Session id and project): `worktree` with the folder when the project came from a worktree, else `folder` with the folder, home shown as `~`. When the folder is the project and is not on disk, the line reads `folder    not found`. Otherwise there is no such line.
+
+#### Scenario: A session in a Branch Deck lease
+- **WHEN** the user X-rays a session that ran in `~/.branch-deck/pool/app-c821e1d7/4/app`, a worktree of `~/src/app`
+- **THEN** the header reads `session   claude  ~/src/app  <id>` and then `worktree  ~/.branch-deck/pool/app-c821e1d7/4/app`
+
+#### Scenario: A session in a subfolder
+- **WHEN** the user X-rays a session that ran in `~/src/app/plugins/web`
+- **THEN** the header reads `session   claude  ~/src/app  <id>` and then `folder    ~/src/app/plugins/web`
+
+#### Scenario: A session in a temporary folder
+- **WHEN** the user X-rays a session that ran in `/private/tmp/ttl-check-run`
+- **THEN** the header reads `session   claude  temporary folders  <id>` and then `folder    /private/tmp/ttl-check-run`
+
+#### Scenario: A folder that is gone and not known
+- **WHEN** the user X-rays a session that ran in `~/.codex/worktrees/0dca/app`, which is gone and not remembered
+- **THEN** the header reads `session   codex  ~/.codex/worktrees/0dca/app  <id>` and then `folder    not found`
+
+#### Scenario: A session at the repository's root
+- **WHEN** the user X-rays a session that ran in `~/src/app`, which exists
+- **THEN** the header has no `worktree` or `folder` line
+
+#### Scenario: The X-ray in tokprof ui
+- **WHEN** `tokprof ui` shows the X-ray of a session that ran in a worktree of `~/src/app`
+- **THEN** the pane's title names `~/src/app`, and the X-ray holds the `worktree` line

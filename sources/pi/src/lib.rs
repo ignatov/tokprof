@@ -170,7 +170,7 @@ impl LogSource for Pi {
         let h = header(s.path()).unwrap_or_default();
         let project = str_at(&h, "cwd").map(|cwd| display_path(cwd, None, &self.home)).unwrap_or_default();
         let session_id = str_at(&h, "id").filter(|id| !id.is_empty()).map_or_else(|| s.session_id.clone(), str::to_string);
-        Head { project, session_id, client: None }
+        Head { project, session_id, client: None, ..Head::default() }
     }
 
     fn first_active(&self, s: &SessionRef) -> Option<i64> {

@@ -2010,6 +2010,7 @@ dependencies = [
  "tokprof-core",
  "tokprof-logio",
  "tokprof-source-claude-code",
+ "tokprof-source-codex",
  "tokprof-source-opencode",
 ]
 

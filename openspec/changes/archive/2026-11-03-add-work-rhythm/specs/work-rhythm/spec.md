@@ -138,8 +138,8 @@ The day view SHALL draw the day as a strip: a row of hours, a `you` lane that ma
 - **AND** a wait for the answer lasts from an end of turn to the user's next message in that session in the same day
 
 #### Scenario: Lane labels
-- **WHEN** a session's id is `ecad11b9-…` and its title is `Инфографика прерываний`
-- **THEN** its lane starts with the first 6 characters of the id and the title, cut to 20 characters: `ecad11 Инфографика…`
+- **WHEN** a session's id is `ecad11b9-…` and its title is `Chart of the interruptions`
+- **THEN** its lane starts with the first 6 characters of the id and the title, cut to 20 characters: `ecad11 Chart of the…`
 
 #### Scenario: Many sessions
 - **WHEN** 11 sessions had actions in the day

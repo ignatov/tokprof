@@ -89,6 +89,28 @@ const CODEX_TOOLS: &[&str] = &[
 
 use decoder::Parser;
 
+/// The project of Codex Desktop's chat folders (see `LogSource::folder_group`).
+const CHATS: &str = "codex chats";
+
+/// Whether the text is a date written `YYYY-MM-DD`.
+fn is_date(text: &str) -> bool {
+    let b = text.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return false;
+    }
+    let number = |r: std::ops::Range<usize>| text.get(r).filter(|t| t.bytes().all(|c| c.is_ascii_digit())).and_then(|t| t.parse::<u32>().ok());
+    let (Some(year), Some(month), Some(day)) = (number(0..4), number(5..7), number(8..10)) else { return false };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days).contains(&day)
+}
+
 pub struct Codex {
     /// `$CODEX_HOME`.
     base: PathBuf,
@@ -292,6 +314,15 @@ impl LogSource for Codex {
         first_timestamp(s.path())
     }
 
+    /// Codex Desktop starts a chat that has no project in a new folder
+    /// `<home>/Documents/Codex/<YYYY-MM-DD>/<slug of the first prompt>`; all such folders, and
+    /// the folders below them, are one project (see README.md).
+    fn folder_group(&self, folder: &Path) -> Option<&'static str> {
+        let mut rest = folder.strip_prefix(self.home.join("Documents").join("Codex")).ok()?.components();
+        let date = rest.next()?.as_os_str().to_str()?;
+        (rest.next().is_some() && is_date(date)).then_some(CHATS)
+    }
+
     fn head(&self, s: &SessionRef) -> Head {
         let (mut project, mut id, mut client) = (String::new(), String::new(), None);
         if let Ok(reader) = tokprof_logio::open(s.path()) {
@@ -322,7 +353,7 @@ impl LogSource for Codex {
         if id.is_empty() {
             id = s.session_id.clone();
         }
-        Head { project, session_id: id, client }
+        Head { project, session_id: id, client, ..Head::default() }
     }
 
     fn subagents(&self, s: &SessionRef) -> Vec<SessionRef> {
@@ -517,6 +548,26 @@ mod tests {
         }
         assert_eq!(n.mcp_server("mcp__docs__read_file"), Some("docs"));
         assert!(n.origin_name("agent", "default") && !n.origin_name("agent", "walrus"));
+    }
+
+    #[test]
+    fn a_codex_desktop_chat_folder_is_in_codex_chats() {
+        let home = PathBuf::from(std::path::MAIN_SEPARATOR_STR).join("Users").join("me");
+        let source = Codex::at(home.join(".codex"), &home);
+        let codex = home.join("Documents").join("Codex");
+        let chat = codex.join("2026-11-02").join("cltk");
+        assert_eq!(source.folder_group(&chat), Some("codex chats"), "a chat folder");
+        assert_eq!(source.folder_group(&chat.join("src").join("web")), Some("codex chats"), "a subfolder of one");
+        assert_eq!(source.folder_group(&codex.join("2026-11-02")), None, "the day's folder itself");
+        assert_eq!(source.folder_group(&codex.join("notes")), None, "not a date");
+        assert_eq!(source.folder_group(&codex.join("notes").join("x")), None);
+        assert_eq!(source.folder_group(&codex.join("2026-13-40").join("x")), None, "a date that is not a date");
+        assert_eq!(source.folder_group(&codex.join("2026-02-29").join("x")), None, "not a leap year");
+        assert_eq!(source.folder_group(&codex.join("2028-02-29").join("x")), Some("codex chats"), "a leap year");
+        assert_eq!(source.folder_group(&codex.join("2026-1-02").join("x")), None);
+        let other = PathBuf::from(std::path::MAIN_SEPARATOR_STR).join("Users").join("you");
+        assert_eq!(source.folder_group(&other.join("Documents").join("Codex").join("2026-11-02").join("cltk")), None, "a folder under another home");
+        assert_eq!(source.folder_group(&home.join("src").join("app")), None);
     }
 
     #[test]

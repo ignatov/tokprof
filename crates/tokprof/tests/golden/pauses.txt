@@ -52,17 +52,17 @@ No cold returns.
 Sessions by largest context: the largest prompt of each session's main conversations
 
 largest context  sessions  spend   share  cold returns
-under 100k              1  $0.03  100.0%             0
+under 100k              2  $0.04  100.0%             0
 
 Where the agent's busy time went: what it waited on in its turns, and while its own background work ran after them
 
 kind                  time  share  after turns
-model                  31m  96.7%            –
-nothing                57s   3.0%            –
+model                  31m  96.6%            –
+nothing                58s   3.0%            –
 building and testing    4s   0.2%            –
 compaction              3s   0.2%            –
 
-1 of 5 requests took a minute or more (20.0%); the longest took 31m.
+1 of 6 requests took a minute or more (16.7%); the longest took 31m.
 
 OpenCode (opencode)
 
@@ -110,4 +110,4 @@ model         9s   1.4%           4s
 0 of 7 requests took a minute or more (0.0%).
 
 --- stderr
-read claude 2 files (0.0 GB), codex 2 files (0.0 GB), pi 3 files (0.0 GB), opencode 4 files (0.0 GB) in <time>
+read claude 2 files (0.0 GB), codex 3 files (0.0 GB), pi 3 files (0.0 GB), opencode 4 files (0.0 GB) in <time>

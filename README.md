@@ -409,7 +409,7 @@ Every command but `tokprof prices` takes these filters. `tokprof day` takes all 
 | `--agent` | `claude,codex,pi,opencode` |
 | `--since` | `2026-10-01`, or `7d` for the last seven days |
 | `--until` | `2026-10-16`, excluded |
-| `--project` | text the project path contains, such as `billing`; a path under the home directory works with or without `~` |
+| `--project` | text the project or the session's folder contains, such as `billing` (see [Projects](#projects)); a path under the home directory works with or without `~` |
 | `--session` | the start of a session id, with its subagents |
 | `--client` | text the client of a request contains, ignoring case, such as `sdk-ts`; `cli` also matches `sdk-cli` |
 | `--prices` | a price file, `FILE.toml` |
@@ -417,6 +417,27 @@ Every command but `tokprof prices` takes these filters. `tokprof day` takes all 
 The reports count the requests the filters select. `tokprof`, `scan`, `handoff`, `sessions` and `ui` pick or list the sessions they select: `--since` keeps sessions written since that day, `--until` sessions started before it, and `--client` sessions whose log first names a matching client. An X-ray still covers its session's whole log. With `--since`, `--until` or `--client`, the reconciliation line compares only the sessions whose every request the filters keep.
 
 A session id can be shortened to its start. Codex ids are shown by their first three groups, such as `01a197e1-4d9f-76b1`, because threads launched together share the first two. A start that several sessions share is an error that lists them.
+
+### Projects
+
+A session's project comes from the folder its agent ran in, as the log names it. The first of these rules that answers places the folder:
+
+1. A group that the log's own source names. Codex Desktop starts each chat without a project in a new folder `~/Documents/Codex/<date>/<name>`; all of them are one project, `codex chats`.
+2. A folder under the system's temporary folder (`$TMPDIR` and its resolved form) or under `/tmp` is in the project `temporary folders`.
+3. The repository, as git's own files say: the nearest folder above with a `.git` folder, or for a linked worktree the main working tree that its `.git` file and `commondir` name. So `~/src/app/plugins/web` and a worktree `~/w/pool/4/app` are both in `~/src/app`. A `.git` in the home directory or above it is never read.
+4. A repository remembered from an earlier run. tokprof writes each repository root and worktree root it finds to `repositories-1.json` in its cache folder, next to the day store, so a worktree deleted later keeps its sessions in its repository.
+5. Else the folder itself.
+
+No rule reads the layout of a path, a branch or a remote, and tokprof never runs git. A worktree deleted before tokprof ever saw it stays a project of its own.
+
+Every report and list shows the project. The X-ray names the folder in a line after `session` when it differs, and the window does under the project:
+
+```
+session   claude  ~/src/app  3f951de0-14bc-4966-880b-81f649966ccf
+worktree  ~/w/pool/4/app
+```
+
+The line reads `worktree <folder>` for a worktree, `folder <folder>` for a subfolder, a temporary folder or a chat folder, and `folder    not found` in the X-ray when the folder is its own project and is gone from disk. `--project` matches the text in the project or the folder: `--project ~/src/app` keeps the sessions of its worktrees and subfolders, `--project pool` the sessions in that worktree only, and `--project temporary` the temporary folders.
 
 ## Sharing the numbers
 
@@ -638,7 +659,7 @@ Mon  █ ▒ ▒ ▒ ▒ ░ ░ ░ ░ ▓ ░ ▓ ▓ █ █ ▒ ▓ ▓ ▓
 
 A cell is a day as `tokprof day` has it, from the middle of one night to the middle of the next, so a night's work counts in the day before it, and a cell's messages and time at the keyboard are those `tokprof day <date>` prints.
 
-The numbers come from a day store, `~/Library/Caches/tokprof/days-2.json` on macOS (`~/.cache/tokprof/` elsewhere, `$TOKPROF_CACHE_DIR` to move it). It keeps, for each log, its spend, misses, requests, commits, the minutes the agent worked and the times of your actions, by hour; no text. The first run reads every log; later runs read only the logs that changed and answer in about a second. When an agent deletes old logs (Claude Code does after `cleanupPeriodDays`, 30 days by default), the store keeps their days, and the `kept` line says how many days come only from it.
+The numbers come from a day store, `~/Library/Caches/tokprof/days-2.json` on macOS (`~/.cache/tokprof/` elsewhere, `$TOKPROF_CACHE_DIR` to move it). It keeps, for each log, its spend, misses, requests, commits, the minutes the agent worked and the times of your actions, by hour, with its project and the session's folder when the two differ; no other text. Each refresh places the project of an entry without a folder again (see [Projects](#projects)), so the days of a deleted log move into its repository too. The first run reads every log; later runs read only the logs that changed and answer in about a second. When an agent deletes old logs (Claude Code does after `cleanupPeriodDays`, 30 days by default), the store keeps their days, and the `kept` line says how many days come only from it.
 
 In the window, ⌘3 shows the same calendar, larger, with a tooltip on each day that names all its numbers and whether it comes from the store alone; a click or ⏎ opens that day. `--client` does not apply: the store does not keep the client of each request.
 

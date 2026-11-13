@@ -56,7 +56,7 @@ struct Cli {
     /// Only requests before this date (YYYY-MM-DD).
     #[arg(long, global = true)]
     until: Option<String>,
-    /// Only projects whose path contains this text.
+    /// Only sessions whose project, or the folder they ran in, contains this text.
     #[arg(long, global = true)]
     project: Option<String>,
     /// Only the session with this id prefix.
@@ -277,7 +277,7 @@ enum Value {
 }
 
 fn main() -> Result<()> {
-    let catalog = tokprof_sources::catalog();
+    let catalog = paths::placing(tokprof_sources::catalog());
     // The default agents are the ones the catalog declares; clap keeps the text for `--help`.
     let names: &'static str = Box::leak(catalog.agents().iter().map(AgentId::name).collect::<Vec<_>>().join(",").into_boxed_str());
     let matches = Cli::command().mut_arg("agent", |a| a.default_value(names)).get_matches();

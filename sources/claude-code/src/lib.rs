@@ -558,7 +558,7 @@ impl LogSource for ClaudeCode {
         if id.is_empty() {
             id = s.session_id.clone();
         }
-        Head { project, session_id: id, client }
+        Head { project, session_id: id, client, ..Head::default() }
     }
 
     fn subagents(&self, s: &SessionRef) -> Vec<SessionRef> {
