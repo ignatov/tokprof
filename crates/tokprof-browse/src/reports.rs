@@ -1,4 +1,4 @@
-//! The reports over a period that the window shows: the last 7, 30 or 90 days of what the filters
+//! The reports over a period that the window shows: the last 30 or 90 days of what the filters
 //! select, read on a worker thread into an overview (see `tokprof_core::overview`), kept for each
 //! period, and read again after the logs changed, with the back-off of the day beside the list.
 
@@ -16,7 +16,7 @@ use tokprof_core::query::Query;
 use crate::browser::{Wake, now_ms};
 
 /// The periods, in days.
-pub const PERIODS: [u32; 3] = [7, 30, 90];
+pub const PERIODS: [u32; 2] = [30, 90];
 /// The period shown first.
 pub const DEFAULT_PERIOD: u32 = 30;
 /// The least a report waits before it is read again after the logs changed, as the day beside
@@ -254,24 +254,24 @@ mod tests {
     fn only_the_report_asked_for_ends_the_wait() {
         let (tx, notes) = mpsc::channel();
         let (jobs, _queue) = mpsc::channel();
-        let mut r = Reports { jobs: Some(jobs), notes, kept: HashMap::new(), pending: Some((7, 2)), shared: Arc::default() };
+        let mut r = Reports { jobs: Some(jobs), notes, kept: HashMap::new(), pending: Some((90, 2)), shared: Arc::default() };
         let done = |job: Job| Done { job, overview: Err("empty".into()), window: (0, 1), took: Duration::ZERO };
         tx.send(done((30, 2))).unwrap();
-        assert!(r.tick(7, 2), "the 30 days arrived");
-        assert!(r.reading(7) && r.get(30).is_some(), "another period leaves 7 days reading");
-        tx.send(done((7, 1))).unwrap();
-        r.tick(7, 2);
-        assert!(r.reading(7) && r.get(7).is_some_and(|x| x.changes == 1), "a report from before the last change leaves it reading");
-        tx.send(done((7, 2))).unwrap();
-        r.tick(7, 2);
-        assert!(!r.reading(7) && r.progress().is_none(), "the report asked for ends it");
+        assert!(r.tick(90, 2), "the 30 days arrived");
+        assert!(r.reading(90) && r.get(30).is_some(), "another period leaves 90 days reading");
+        tx.send(done((90, 1))).unwrap();
+        r.tick(90, 2);
+        assert!(r.reading(90) && r.get(90).is_some_and(|x| x.changes == 1), "a report from before the last change leaves it reading");
+        tx.send(done((90, 2))).unwrap();
+        r.tick(90, 2);
+        assert!(!r.reading(90) && r.progress().is_none(), "the report asked for ends it");
     }
 
     #[test]
     fn a_period_starts_its_days_back_unless_the_filter_starts_later() {
         let now = 100 * DAY_MS;
-        let q = period_query(&Query { project: Some("app".into()), until_ms: Some(now), ..Query::default() }, 7, now);
-        assert_eq!(q.since_ms, Some(93 * DAY_MS));
+        let q = period_query(&Query { project: Some("app".into()), until_ms: Some(now), ..Query::default() }, 90, now);
+        assert_eq!(q.since_ms, Some(10 * DAY_MS));
         assert_eq!((q.project.as_deref(), q.until_ms), (Some("app"), Some(now)), "the other filters stay");
         let q = period_query(&Query { since_ms: Some(98 * DAY_MS), ..Query::default() }, 30, now);
         assert_eq!(q.since_ms, Some(98 * DAY_MS), "a later --since is kept");
@@ -316,8 +316,8 @@ mod tests {
         let due = r.next_due(30, 1).expect("due after its pause");
         assert!(due >= r.get(30).unwrap().arrived + PAUSE);
         // Another period is read on its own.
-        r.tick(7, 1);
-        assert!(r.reading(7) && r.progress().is_some(), "the worker counts its logs while it reads");
+        r.tick(90, 1);
+        assert!(r.reading(90) && r.progress().is_some(), "the worker counts its logs while it reads");
     }
 
     #[test]

@@ -29,10 +29,10 @@ fn calendar_desk() -> (Desk, Calendar) {
 }
 
 #[test]
-fn command_3_and_the_switch_show_the_calendar_and_esc_goes_back() {
+fn command_4_and_the_switch_show_the_calendar_and_esc_goes_back() {
     let (desk, _) = calendar_desk();
     let mut rt = runtime(desk, (1400.0, 1400.0));
-    command(&mut rt, '3');
+    command(&mut rt, '4');
     settle(&mut rt);
     assert_eq!(rt.state.reports.mode, reports::Mode::Calendar);
     assert!(rt.presented(calendar::PANE).is_some() && rt.presented("cal-grid").is_some());
@@ -46,9 +46,9 @@ fn command_3_and_the_switch_show_the_calendar_and_esc_goes_back() {
     click(&mut rt, "mode-calendar");
     settle(&mut rt);
     assert_eq!(rt.state.reports.mode, reports::Mode::Calendar);
-    command(&mut rt, '2');
-    assert_eq!(rt.state.reports.mode, reports::Mode::Reports, "⌘2 from Calendar");
     command(&mut rt, '3');
+    assert_eq!(rt.state.reports.mode, reports::Mode::Reports, "⌘3 from Calendar");
+    command(&mut rt, '4');
     command(&mut rt, '1');
     assert_eq!(rt.state.reports.mode, reports::Mode::Day);
 }
@@ -57,7 +57,7 @@ fn command_3_and_the_switch_show_the_calendar_and_esc_goes_back() {
 fn a_click_on_a_day_and_enter_open_it_in_day() {
     let (desk, cal) = calendar_desk();
     let mut rt = runtime(desk, (1400.0, 1400.0));
-    command(&mut rt, '3');
+    command(&mut rt, '4');
     settle(&mut rt);
     let date = cal.last - 3;
     click(&mut rt, &format!("cal-day-{date}"));
@@ -65,7 +65,7 @@ fn a_click_on_a_day_and_enter_open_it_in_day() {
     assert_eq!(rt.state.reports.mode, reports::Mode::Day);
     assert_eq!(rhythm::date_of(rt.state.browser.day_noon(), &rhythm::local_offset), date);
     // By keys: a week back from the last day, and ⏎.
-    command(&mut rt, '3');
+    command(&mut rt, '4');
     settle(&mut rt);
     press(&mut rt, RuneKey::Left);
     assert_eq!(rt.state.calendar.cursor, Some(cal.last - 7));
@@ -78,7 +78,7 @@ fn a_click_on_a_day_and_enter_open_it_in_day() {
 fn the_cursor_stays_among_the_days_shown_and_shows_its_tooltip() {
     let (desk, cal) = calendar_desk();
     let mut rt = runtime(desk, (1400.0, 1400.0));
-    command(&mut rt, '3');
+    command(&mut rt, '4');
     settle(&mut rt);
     assert!(rt.presented("cal-tip").is_none(), "no tooltip before a key moves the cursor");
     press(&mut rt, RuneKey::Down);
@@ -101,7 +101,7 @@ fn the_cursor_stays_among_the_days_shown_and_shows_its_tooltip() {
 fn m_cycles_the_metric_and_the_pills_pick_it() {
     let (desk, _) = calendar_desk();
     let mut rt = runtime(desk, (1400.0, 1400.0));
-    command(&mut rt, '3');
+    command(&mut rt, '4');
     settle(&mut rt);
     assert_eq!(rt.state.calendar.metric, Metric::Spend);
     typed(&mut rt, "mm");
@@ -138,7 +138,7 @@ fn the_first_look_reads_the_logs_into_the_store() {
     let mut desk = desk_of(3);
     desk.calendar = calendar::State::new(tokprof_browse::calendar::Calendars::detached());
     let mut rt = runtime(desk, (1400.0, 900.0));
-    command(&mut rt, '3');
+    command(&mut rt, '4');
     settle(&mut rt);
     assert_eq!(text_of(&rt, "cal-progress"), "reading the logs into the store…");
 }
@@ -159,7 +159,7 @@ fn until_card(rt: &mut Runtime<Desk>, ym: tokprof_core::month::Ym) {
 fn r_opens_the_last_complete_month_and_the_cursors_month_and_keys_stay_with_the_card() {
     let (desk, cal) = calendar_desk();
     let mut rt = runtime(desk, (1400.0, 900.0));
-    command(&mut rt, '3');
+    command(&mut rt, '4');
     settle(&mut rt);
     assert!(rt.presented("month-review").is_some(), "the button by the metric pills");
     // With no cursor moved, the last complete month, as `tokprof month` shows it.
@@ -242,7 +242,7 @@ fn a_store_that_was_reset_says_so_in_the_window() {
     let warning = "warning: the day store could not be parsed; it was kept as ~/Library/Caches/tokprof/days-2.json.broken-20261109T010000Z and started anew";
     desk.calendar.data.get_mut().unwrap().warnings.push(warning.into());
     let mut rt = runtime(desk, (1400.0, 900.0));
-    command(&mut rt, '3');
+    command(&mut rt, '4');
     settle(&mut rt);
     assert_eq!(text_of(&rt, "cal-warning"), warning.trim_start_matches("warning: "));
 }

@@ -22,6 +22,7 @@ mod sessions;
 mod settings;
 mod themes;
 mod view;
+mod week;
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -88,6 +89,10 @@ struct Cli {
     /// avoidable), as `tokprof calendar --metric` takes it.
     #[arg(long)]
     metric: Option<String>,
+    /// With --snap or --tree: the week that holds this date (YYYY-MM-DD), for the scene `week`;
+    /// this week by default.
+    #[arg(long)]
+    week: Option<String>,
     /// With --snap or --tree: the month of the month in review (YYYY-MM), for the scenes `month`
     /// and `month-card`.
     #[arg(long)]
@@ -257,6 +262,10 @@ pub struct Desk {
     pub requests: requests::State,
     /// The Sessions screen.
     pub sessions: sessions::State,
+    /// The state of Week.
+    pub week: week::State,
+    /// The week `--week` names, for its scene.
+    pub week_wanted: Option<i64>,
     /// When the clock next takes a session out of what the quick filters keep, as the last poll
     /// found it.
     pub next_filter: Option<i64>,
@@ -336,6 +345,8 @@ impl Desk {
             menu_bar: menubar::MenuBar::default(),
             requests: requests::State::default(),
             sessions: sessions::State::default(),
+            week: week::State::new(tokprof_browse::week::Weeks::detached()),
+            week_wanted: None,
             next_filter: None,
         }
     }
@@ -628,7 +639,7 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
         tx.wake_after(at.saturating_duration_since(Instant::now()).max(Duration::from_millis(1)));
     }
     // A countdown on the screen moves every second; the parts that show time move every minute.
-    // Reports and Calendar show neither.
+    // Week, Reports and Calendar show neither.
     let day = matches!(s.reports.mode, reports::Mode::Day | reports::Mode::Sessions);
     let counting = match s.reports.mode {
         reports::Mode::Sessions => sessions::counting(s, now),
@@ -650,7 +661,7 @@ fn poll(s: &mut Desk, _: f64, tx: &mut Tx) -> bool {
     if s.status_shown() {
         tx.wake_after(Duration::from_secs(view::STATUS_SECS).saturating_sub(s.status.1.elapsed()) + Duration::from_millis(5));
     }
-    let reported = reports::poll(s, tx) | calendar::poll(s, tx) | month::poll(s) | sessions::poll(s, tx);
+    let reported = reports::poll(s, tx) | calendar::poll(s, tx) | month::poll(s) | sessions::poll(s, tx) | week::poll(s, tx);
     // The menu bar counts down whether the window shows or not; it draws nothing in the window.
     menubar::poll(s, now, tx);
     arrived || relisted || cooled || waited || filtered || counting || turned || reported || dropped || revealed
@@ -753,7 +764,7 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
         tx.close_window();
         return true;
     }
-    // ⌘1 shows Day, ⌘2 Reports, ⌘3 Calendar and ⌘0 Sessions; Reports takes every other key.
+    // ⌘1 shows Day, ⌘2 Week, ⌘3 Reports, ⌘4 Calendar and ⌘0 Sessions; Reports takes every other key.
     if reports::switch_key(s, e) {
         if s.reports.mode == reports::Mode::Sessions {
             sessions::show(s, tx);
@@ -772,6 +783,17 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
             return true;
         }
         return reports::on_key(s, e, tx);
+    }
+    if s.reports.mode == reports::Mode::Week {
+        if !s.browser.editing() && matches!(&e.key, RuneKey::Text(t) if t == "?") && !e.mods.cmd && !e.mods.ctrl {
+            s.open_help();
+            return true;
+        }
+        if key_of(e) == Some(Key::Interrupt) {
+            tx.quit();
+            return true;
+        }
+        return week::on_key(s, e, tx);
     }
     if s.reports.mode == reports::Mode::Sessions {
         if !s.browser.editing() && matches!(&e.key, RuneKey::Text(t) if t == "?") && !e.mods.cmd && !e.mods.ctrl {
@@ -930,6 +952,7 @@ fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk>
         return card_image(cli, catalog, pricing, select, &paths::day_store());
     }
     let reports = tokprof_browse::reports::Reports::start(catalog.clone(), pricing.clone(), select.clone(), wake.clone());
+    let weeks = tokprof_browse::week::Weeks::start(catalog.clone(), pricing.clone(), select.clone(), wake.clone());
     let desk_select = select.clone();
     let calendars =
         tokprof_browse::calendar::Calendars::start(catalog.clone(), pricing.clone(), cli.prices.clone(), select.clone(), paths::day_store(), wake.clone());
@@ -940,6 +963,9 @@ fn desk(cli: &Cli, catalog: Catalog, headless: bool, wake: Wake) -> Result<Desk>
     desk.reports.data = reports;
     desk.calendar.data = calendars;
     desk.calendar.client_ignored = client_ignored;
+    desk.week.data = weeks;
+    desk.week.client_ignored = client_ignored;
+    desk.week_wanted = week_of(cli)?;
     desk.sessions.narrowed = !cli.agent.is_empty() || [&cli.project, &cli.session, &cli.client, &cli.since, &cli.until].iter().any(|f| f.is_some());
     desk.calendar.metric = metric(cli)?.unwrap_or(tokprof_core::calendar::Metric::Spend);
     desk.calendar.select = Query { since_ms: None, until_ms: None, ..desk_select.clone() };
@@ -1010,7 +1036,21 @@ fn checked(cli: &Cli, catalog: &Catalog) -> Result<(Query, tokprof_core::pricing
     colors(cli)?;
     metric(cli)?;
     month_of(cli)?;
+    week_of(cli)?;
     Ok((select, pricing, tab))
+}
+
+/// The local date `--week` names, if it names one: a date of a week that has begun.
+fn week_of(cli: &Cli) -> Result<Option<i64>> {
+    let Some(d) = cli.week.as_deref() else { return Ok(None) };
+    let ok = d.len() == 10 && d.as_bytes()[4] == b'-' && d.as_bytes()[7] == b'-';
+    let Some(ms) = ok.then(|| parse_date(d).ok()).flatten() else { bail!("--week takes YYYY-MM-DD") };
+    let date = rhythm::date_of(ms + 12 * 3_600_000, &rhythm::local_offset);
+    let monday = tokprof_core::week::monday_of(date);
+    if rhythm::midnight(monday, &rhythm::local_offset) > now_ms() {
+        bail!("the week of {d} has not begun");
+    }
+    Ok(Some(date))
 }
 
 /// The month `--month` names, if it names one.
@@ -1142,8 +1182,9 @@ fn main() -> Result<()> {
 type Scene = (&'static str, fn(&mut Desk));
 
 /// The scenes: a pane with the keyboard, the flame graph zoomed two levels in, a filter being typed
-/// that matches nothing, the settings open, the palette open with a query, the key help, and Reports on
-/// the last 30 days, waited for, also with the sessions of its first saving open, and Calendar.
+/// that matches nothing, the settings open, the palette open with a query, the key help, Week, and
+/// Reports on the last 30 days, waited for, also with the sessions of its first saving open, and
+/// Calendar.
 const SCENES: &[Scene] = &[
     ("settings", |s| s.panel = Some(settings::Panel::default())),
     ("waiting", |s| {
@@ -1172,12 +1213,10 @@ const SCENES: &[Scene] = &[
         // The day store, for the period before.
         s.calendar.data.settle(changes, Duration::from_secs(120));
     }),
-    ("reports-week", |s| {
-        reports::show(s, reports::Mode::Reports);
-        s.reports.days = 7;
-        let changes = s.browser.changes();
-        s.reports.data.settle(7, changes, Duration::from_secs(120));
-        s.calendar.data.settle(changes, Duration::from_secs(120));
+    // Week on the week of --week, or this week, with the store and the week's logs waited for.
+    ("week", |s| {
+        let date = s.week_wanted;
+        week::scene(s, date);
     }),
     ("reports-advice", |s| {
         reports::show(s, reports::Mode::Reports);

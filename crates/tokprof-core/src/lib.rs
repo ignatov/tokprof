@@ -44,6 +44,7 @@ pub mod testkit;
 pub mod timeline;
 pub mod tools;
 pub mod trigger;
+pub mod week;
 pub mod xray;
 
 pub use analysis::{Sink, analyze};

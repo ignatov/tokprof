@@ -704,13 +704,9 @@ fn picker(s: &Desk, p: &Pal) -> El {
 pub fn project_menu(s: &Desk) -> PopupMenu {
     let selected = s.browser.quick_filters().project.as_ref().map_or_else(|| "any".to_string(), |p| format!("p:{p}"));
     let projects = s.browser.projects();
-    let mut names: HashMap<&str, usize> = HashMap::new();
-    for (p, _) in &projects {
-        *names.entry(view::project_name(p)).or_default() += 1;
-    }
-    let shown = |p: &str| if names.get(view::project_name(p)).copied().unwrap_or(0) > 1 { p.to_string() } else { view::project_name(p).to_string() };
+    let names = view::ProjectNames::new(projects.iter().map(|(p, _)| p.as_str()));
     let options = std::iter::once(("any".to_string(), "Project: any".to_string()))
-        .chain(projects.iter().map(|(p, n)| (format!("p:{p}"), format!("{} · {}", shown(p), int(*n as u64)))));
+        .chain(projects.iter().map(|(p, n)| (format!("p:{p}"), format!("{} · {}", names.of(p), int(*n as u64)))));
     PopupMenu::picker(options, &selected)
 }
 

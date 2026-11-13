@@ -157,6 +157,9 @@ pub struct Filters {
     pub session: Option<String>,
     pub since_ms: Option<i64>,
     pub until_ms: Option<i64>,
+    /// The window's filter text: the agent, the project, the session id or the main session's
+    /// id contains it, in any case (desk-window, The filter in Week).
+    pub text: Option<String>,
 }
 
 impl Filters {
@@ -164,11 +167,19 @@ impl Filters {
         (self.agents.is_empty() || self.agents.contains(&e.agent))
             && crate::query::project_matches(self.project.as_deref(), &e.project, &e.folder)
             && self.session.as_ref().is_none_or(|s| id_starts_with(&e.session, s) || id_starts_with(&e.main, s))
+            && self.text.as_deref().is_none_or(|t| text_matches(t, &e.agent, &e.project, &e.session, &e.main))
     }
 
     fn inside(&self, ts: i64) -> bool {
         self.since_ms.is_none_or(|s| ts >= s) && self.until_ms.is_none_or(|u| ts < u)
     }
+}
+
+/// Whether the filter text is in the agent's name, the project, the session id or the main
+/// session's id, in any case; an empty text is in every one.
+pub fn text_matches(text: &str, agent: &str, project: &str, session: &str, main: &str) -> bool {
+    let t = text.trim().to_lowercase();
+    t.is_empty() || [agent, project, session, main].iter().any(|f| f.to_lowercase().contains(&t))
 }
 
 /// A run of days with a request.
@@ -209,7 +220,7 @@ pub fn weekday(date: i64) -> usize {
 
 /// Where each moment's day starts, as the calendar has it.
 #[derive(Clone, Debug, Default)]
-struct DayRule {
+pub(crate) struct DayRule {
     starts: Vec<DayStart>,
 }
 
@@ -237,13 +248,13 @@ impl DayRule {
 
     /// When the day of `date` starts and ends: its own start, else its midnight, to the next
     /// start after it, else to `end`.
-    fn bounds(&self, date: i64, end: i64, offset: Offset) -> (i64, i64) {
+    pub(crate) fn bounds(&self, date: i64, end: i64, offset: Offset) -> (i64, i64) {
         let from = self.starts.iter().find(|s| s.date == date).map_or_else(|| rhythm::midnight(date, offset), |s| s.at);
         let to = self.starts.iter().map(|s| s.at).find(|&at| at > from).unwrap_or(end).max(from);
         (from, to.min(end.max(from)))
     }
 
-    fn date_of(&self, ts: i64, offset: Offset) -> i64 {
+    pub(crate) fn date_of(&self, ts: i64, offset: Offset) -> i64 {
         let i = self.starts.partition_point(|s| s.at <= ts);
         if i == 0 { rhythm::date_of(ts, offset) } else { self.starts[i - 1].date }
     }
@@ -256,7 +267,7 @@ fn clock(ts: i64, offset: Offset) -> (usize, usize) {
 }
 
 /// The day rule of these entries' actions as of `end`: the main logs the rhythm keeps.
-fn rule_of<'a>(entries: impl Iterator<Item = &'a Entry>, end: i64, offset: Offset) -> DayRule {
+pub(crate) fn rule_of<'a>(entries: impl Iterator<Item = &'a Entry>, end: i64, offset: Offset) -> DayRule {
     let mut actions: Vec<i64> = entries.filter(|e| !e.subagent && !e.left_out).flat_map(|e| e.actions.iter().map(|a| a.0)).filter(|&t| t > 0).collect();
     actions.sort_unstable();
     actions.dedup();
@@ -367,12 +378,23 @@ pub fn day_bounds(entries: &[Entry], date: i64, now_ms: i64, offset: Offset) -> 
 impl Calendar {
     /// The calendar of the entries the filters keep, as of `now_ms` (or `--until` when earlier).
     pub fn of(entries: &[Entry], filters: &Filters, now_ms: i64, offset: Offset) -> Calendar {
+        Calendar::build(entries, filters, now_ms, offset, None)
+    }
+
+    /// The calendar's cells of the dates `first..=last` alone, with the same days and numbers as
+    /// `of` gives them, however long ago they were; the dates after the current day have none.
+    pub fn span(entries: &[Entry], filters: &Filters, (first, last): (i64, i64), now_ms: i64, offset: Offset) -> Calendar {
+        Calendar::build(entries, filters, now_ms, offset, Some((first, last)))
+    }
+
+    fn build(entries: &[Entry], filters: &Filters, now_ms: i64, offset: Offset, grid: Option<(i64, i64)>) -> Calendar {
         let end = filters.until_ms.map_or(now_ms, |u| u.min(now_ms));
         let kept: Vec<&Entry> = entries.iter().filter(|e| filters.keeps(e)).collect();
         let rhythm: Vec<&Entry> = kept.iter().copied().filter(|e| !e.subagent && !e.left_out).collect();
         let rule = rule_of(rhythm.iter().copied(), end, offset);
         let day = |ts: i64| rule.date_of(ts, offset);
-        let last = day(end.max(1) - 1);
+        let current = day(end.max(1) - 1);
+        let last = grid.map_or(current, |(first, last)| last.min(current).max(first - 1));
 
         // The first day with data inside the window.
         let mut first_data: Option<i64> = None;
@@ -389,7 +411,10 @@ impl Calendar {
         }
         let last_monday = last - weekday(last) as i64;
         let first = first_data.unwrap_or(last).min(last);
-        let first_monday = (first - weekday(first) as i64).clamp(last_monday - 7 * (MAX_WEEKS - 1), last_monday - 7 * (MIN_WEEKS - 1));
+        let first_monday = match grid {
+            Some((first, _)) => first,
+            None => (first - weekday(first) as i64).clamp(last_monday - 7 * (MAX_WEEKS - 1), last_monday - 7 * (MIN_WEEKS - 1)),
+        };
         let mut cal = Calendar {
             first_monday,
             last,
@@ -508,7 +533,7 @@ impl Calendar {
 
     /// The day of a date in the grid.
     pub fn day(&self, date: i64) -> Option<&Day> {
-        (date >= self.first_monday && date <= self.last).then(|| &self.days[(date - self.first_monday) as usize])
+        (date >= self.first_monday && date <= self.last).then(|| self.days.get((date - self.first_monday) as usize)).flatten()
     }
 
     pub fn weeks(&self) -> usize {

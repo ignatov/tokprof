@@ -211,43 +211,69 @@ impl Overview {
 /// `progress(done, total)` once before the first log and after each one.
 pub fn collect(catalog: &Catalog, select: &Query, pricing: &Pricing, progress: impl Fn(usize, usize) + Sync + Send) -> Result<Overview> {
     let files = report_logs(catalog, select);
+    collect_logs(catalog, &files, select, pricing, |_, _| true, None, progress).map(|(o, _)| o)
+}
+
+/// Reads `files` into an overview as `collect` does, keeping only the sessions `keep` keeps, and,
+/// with `temp` (the temporary folders, see `rhythm::Timeline::of`), the rhythm's timeline of each
+/// main session kept that has a request of the client `select` asks for, as `tokprof pauses` reads
+/// them.
+pub fn collect_logs(
+    catalog: &Catalog,
+    files: &[crate::source::SessionRef],
+    select: &Query,
+    pricing: &Pricing,
+    keep: impl Fn(&Session, &crate::source::SessionRef) -> bool + Sync + Send,
+    temp: Option<&[String]>,
+    progress: impl Fn(usize, usize) + Sync + Send,
+) -> Result<(Overview, Vec<rhythm::Timeline>)> {
     let total = files.len();
     progress(0, total);
     let done = AtomicUsize::new(0);
     let filter = select.window();
     // The sinks of `tokprof summary`, `pauses` and `share` with the spread and the habits by
-    // session, and the bench's scan of the main sessions, as `tokprof share` reads them.
-    type Parts = ((Collector, (Pauses, (Spread, (Share, BySession)))), bench::Found);
-    let (((collector, (mut pauses, (spread, (share, by_session)))), found), stats) = scan_counted(
+    // session, the bench's scan of the main sessions, as `tokprof share` reads them, and the
+    // timelines.
+    type Parts = ((Collector, (Pauses, (Spread, (Share, BySession)))), bench::Found, Vec<rhythm::Timeline>);
+    let (((collector, (mut pauses, (spread, (share, by_session)))), found, timelines), stats) = scan_counted(
         catalog,
-        &files,
+        files,
         select,
         OnUnreadable::Skip,
         || {
             (
                 (Collector::new(None, None), (Pauses::new(filter.clone()), (Spread::default(), (Share::new(filter.clone()), BySession::default())))),
                 bench::Found::default(),
+                Vec::new(),
             )
         },
-        |(t, found): &mut Parts, s, f| {
+        |(t, found, timelines): &mut Parts, s, f| {
+            if !keep(s, f) {
+                return;
+            }
             analysis::analyze(s, pricing, &filter, t);
             if !f.subagent {
                 *found = std::mem::take(found).merge(bench::scan(s, &filter, bench::DEFAULT_REQUESTS, bench::DEFAULT_MIN_CONTEXT));
+                let client = filter.client.is_none() || s.chains.iter().flat_map(|c| &c.requests).any(|r| filter.keeps_client(r.client_name()));
+                if let (Some(temp), true) = (temp, client) {
+                    timelines.push(rhythm::Timeline::of(s, temp));
+                }
             }
         },
-        |(mut a, fa): Parts, (b, fb): Parts| {
+        |(mut a, fa, mut ta): Parts, (b, fb, tb): Parts| {
             a.0.merge(b.0);
             a.1.0.merge(b.1.0);
             a.1.1.0.merge(b.1.1.0);
             a.1.1.1.0.merge(b.1.1.1.0);
             a.1.1.1.1.merge(b.1.1.1.1);
-            (a, fa.merge(fb))
+            ta.extend(tb);
+            (a, fa.merge(fb), ta)
         },
         || progress(done.fetch_add(1, Ordering::Relaxed) + 1, total),
     )?;
     pauses.finish();
     let changes = savings::changes(&collector, &pauses, &share, found, pricing, &by_session);
-    Ok(Overview { collector, pauses, spread, changes, logs: total, unreadable: stats.unreadable })
+    Ok((Overview { collector, pauses, spread, changes, logs: total, unreadable: stats.unreadable }, timelines))
 }
 
 #[cfg(test)]

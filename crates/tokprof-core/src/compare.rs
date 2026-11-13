@@ -111,6 +111,13 @@ pub fn gaps(entries: &[Entry], filters: &Filters, shown: (i64, i64), start: i64)
     all_gaps(entries, filters, shown, start).into_iter().filter(|g| g.2 >= MIN_SHARE).map(|g| (g.0, g.1)).collect()
 }
 
+/// The agents `gaps` leaves out as too small: their first request in the store comes after
+/// `start`, but they have less than `MIN_SHARE` of the shown period's spend; each with that
+/// request's time and its share.
+pub fn minor_gaps(entries: &[Entry], filters: &Filters, shown: (i64, i64), start: i64) -> Vec<(String, i64, f64)> {
+    all_gaps(entries, filters, shown, start).into_iter().filter(|g| g.2 < MIN_SHARE).collect()
+}
+
 /// Every agent with a request in `shown` (among the entries `filters` keeps) whose first request
 /// in the store comes after `start`, with that time and its share of the shown period's spend.
 /// The first request is the store's own: the project and session filters do not move it, since

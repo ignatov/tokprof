@@ -19,3 +19,4 @@ pub mod render_tools;
 pub mod render_xray;
 pub mod reports;
 pub mod watch;
+pub mod week;

@@ -1,4 +1,4 @@
-//! The Reports view: the report of the last 7, 30 or 90 days in place of the lanes, the list and
+//! The Reports view: the report of the last 30 or 90 days in place of the lanes, the list and
 //! the inspector, in cards in the look of the settings panel. The numbers are those `tokprof
 //! summary` and `tokprof pauses` print, from the same functions; the browser package reads them on
 //! a worker (see `tokprof_browse::reports`).
@@ -32,6 +32,8 @@ const PLOT_PAD: f32 = 7.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Mode {
     Day,
+    /// A calendar week (see `week`).
+    Week,
     Reports,
     Calendar,
     /// The Sessions screen (see `sessions`), apart from the switch.
@@ -143,10 +145,13 @@ pub fn poll(s: &mut Desk, tx: &mut Tx) -> bool {
     arrived || moved || stored
 }
 
-/// Shows Day, Reports, Calendar or Sessions.
+/// Shows Day, Week, Reports, Calendar or Sessions.
 pub fn show(s: &mut Desk, mode: Mode) {
     if mode == Mode::Sessions && s.reports.mode != Mode::Sessions {
         crate::sessions::entered(s);
+    }
+    if mode == Mode::Week && s.reports.mode != Mode::Week {
+        crate::week::entered(s);
     }
     s.reports.mode = mode;
     s.reports.hover = None;
@@ -167,15 +172,17 @@ pub fn pick_period(s: &mut Desk, days: u32, tx: &mut Tx) {
     }
 }
 
-/// ⌘1 shows Day, ⌘2 Reports, ⌘3 Calendar and ⌘0 Sessions, whichever shows now.
+/// ⌘1 shows Day, ⌘2 Week, ⌘3 Reports, ⌘4 Calendar and ⌘0 Sessions, whichever shows now.
 pub fn switch_key(s: &mut Desk, e: &KeyEvent) -> bool {
     let mode = if e.is_command('0') {
         Mode::Sessions
     } else if e.is_command('1') {
         Mode::Day
     } else if e.is_command('2') {
-        Mode::Reports
+        Mode::Week
     } else if e.is_command('3') {
+        Mode::Reports
+    } else if e.is_command('4') {
         Mode::Calendar
     } else {
         return false;
@@ -258,7 +265,7 @@ pub fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
     match r.part {
         Part::Period => {
             if let Some(step) = step.filter(|_| across || matches!(e.key, RuneKey::Home | RuneKey::End)) {
-                let at = PERIODS.iter().position(|&d| d == r.days).unwrap_or(1) as isize;
+                let at = PERIODS.iter().position(|&d| d == r.days).unwrap_or(0) as isize;
                 let to = at.saturating_add(step).clamp(0, PERIODS.len() as isize - 1) as usize;
                 pick_period(s, PERIODS[to], tx);
             }
@@ -304,13 +311,14 @@ pub fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
     true
 }
 
-/// The switch between Day, Reports and Calendar, at the start of the bar.
+/// The switch between Day, Week, Reports and Calendar, at the start of the bar.
 pub fn switch(s: &Desk, p: &Pal) -> El {
     let mode = s.reports.mode;
     view::segments(
         "mode",
         vec![
             view::segment("mode-day".into(), "Day", mode == Mode::Day, p).on_press(|s: &mut Desk| show(s, Mode::Day)),
+            view::segment("mode-week".into(), "Week", mode == Mode::Week, p).on_press(|s: &mut Desk| show(s, Mode::Week)),
             view::segment("mode-reports".into(), "Reports", mode == Mode::Reports, p).on_press(|s: &mut Desk| show(s, Mode::Reports)),
             view::segment("mode-calendar".into(), "Calendar", mode == Mode::Calendar, p).on_press(|s: &mut Desk| show(s, Mode::Calendar)),
         ],
@@ -666,6 +674,8 @@ fn bars(s: &Desk, part: Part, rows: Vec<(String, Spend)>, priced: bool, color: C
     let key = |x: &Spend| if priced { x.usd } else { x.tokens };
     let total: f64 = rows.iter().map(|(_, x)| key(x)).sum();
     let first = rows.first().map_or(0.0, |(_, x)| key(x)).max(1e-9);
+    // A project's bar reads its name, as Sessions names it; its click keeps the project.
+    let names = (part == Part::Projects).then(|| crate::view::ProjectNames::new(rows.iter().map(|(l, _)| l.as_str())));
     let mut shown: Vec<(String, Spend, bool)> = rows.iter().take(TOP).map(|(l, x)| (l.clone(), *x, true)).collect();
     if rows.len() > TOP {
         let mut rest = Spend::default();
@@ -683,7 +693,15 @@ fn bars(s: &Desk, part: Part, rows: Vec<(String, Spend)>, priced: bool, color: C
                 .px(6.0)
                 .gap(10.0)
                 .center_y()
-                .child(text(label.clone()).key("label").font(pal::BODY).color(if drill { p.ink } else { p.ink2 }).single_line().truncate().w(200.0))
+                .child(
+                    text(names.as_ref().filter(|_| drill).map_or_else(|| label.clone(), |n| n.of(&label)))
+                        .key("label")
+                        .font(pal::BODY)
+                        .color(if drill { p.ink } else { p.ink2 })
+                        .single_line()
+                        .truncate()
+                        .w(200.0),
+                )
                 .child(crate::overlay::meter(key(&x) / first, if drill { color } else { p.neutral }, p, 6.0))
                 .child(
                     row()

@@ -675,7 +675,7 @@ fn a_session_picked_in_the_palette_opens_on_its_day_or_is_selected_in_sessions()
     assert!(rt.presented("back-to-day").is_some(), "the details pane shows its inspector");
 
     // From Reports, a session opens in Day too.
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     run_from_palette(&mut rt, "skip old logs", palette::Pick::Session("id1".into()));
     settle(&mut rt);

@@ -55,7 +55,9 @@ pub fn view(s: &Desk, cx: &mut Cx<Desk>) -> El {
     // list's countdowns tick every second, so the view runs every second while one is on the
     // screen and builds the two again only when they changed.
     let inspector = |cx: &Cx<Desk>| rune::memo("inspector", crate::inspector::version(s, cx, &theme.id), || crate::inspector::inspector(s, cx, &p));
-    if s.reports.mode == crate::reports::Mode::Reports {
+    if s.reports.mode == crate::reports::Mode::Week {
+        root = root.child(crate::week::view(s, cx, &p));
+    } else if s.reports.mode == crate::reports::Mode::Reports {
         root = root.child(crate::reports::view(s, cx, &p));
     } else if s.reports.mode == crate::reports::Mode::Sessions {
         root = root.child(crate::sessions::view(s, cx, &p));
@@ -263,8 +265,12 @@ fn bar(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
     // Reports and Calendar have no day: the bar keeps the switch, the status and the live mark.
     let day = s.reports.mode == crate::reports::Mode::Day;
     let sessions = s.reports.mode == crate::reports::Mode::Sessions;
+    let week = s.reports.mode == crate::reports::Mode::Week;
     if sessions {
         bar = bar.children(crate::sessions::bar_controls(s, p));
+    }
+    if week {
+        bar = bar.children(crate::week::bar_controls(s, cx, p));
     }
     if day {
         bar = bar
@@ -277,7 +283,7 @@ fn bar(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
     if s.status_shown() {
         bar = bar.child(text(s.status.0.clone()).key("status").font(pal::BODY).color(p.ink2).single_line().truncate().shrink().min_w(0.0));
     }
-    if day || sessions {
+    if day || sessions || week {
         bar = bar.child(filter_field(s, p));
     }
     if s.live {
@@ -304,7 +310,9 @@ fn filter_field(s: &Desk, p: &Pal) -> El {
     field = overlay::ring(field, editing, p);
     // The placeholder, or what is typed; while typing, it ends at the caret, its start cut when long.
     if !(empty && editing) {
-        let (shown, color) = if empty { ("Filter by project, id or title", p.ink3) } else { (b.filter(), p.ink) };
+        // Week's filter has no titles: the day store holds none.
+        let hint = if s.reports.mode == crate::reports::Mode::Week { "Filter by agent, project or id" } else { "Filter by project, id or title" };
+        let (shown, color) = if empty { (hint, p.ink3) } else { (b.filter(), p.ink) };
         let t = text(shown.to_string()).key("filter-text").font(pal::BODY).color(color).single_line().min_w(0.0);
         field = field.child(if editing { t.truncate_head().shrink() } else { t.truncate().grow(1.0) });
     }
@@ -335,6 +343,29 @@ fn filter_field(s: &Desk, p: &Pal) -> El {
 /// a group's name as it is (`temporary folders`). The full path is in the inspector.
 pub fn project_name(project: &str) -> &str {
     project.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().filter(|n| !n.is_empty()).unwrap_or(project)
+}
+
+/// The names of a list of projects, as the project picker shows them: each by its name (see
+/// [`project_name`]), by its path where two projects of the list have one name.
+pub struct ProjectNames(std::collections::HashMap<String, usize>);
+
+impl ProjectNames {
+    pub fn new<'a>(all: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut names = std::collections::HashMap::new();
+        let mut seen = std::collections::HashSet::new();
+        for p in all {
+            if seen.insert(p) {
+                *names.entry(project_name(p).to_string()).or_default() += 1;
+            }
+        }
+        Self(names)
+    }
+
+    /// The name `project` is shown by: its path when it shares its name, else its name.
+    pub fn of(&self, project: &str) -> String {
+        let name = project_name(project);
+        if self.0.get(name).copied().unwrap_or(0) > 1 { project.to_string() } else { name.to_string() }
+    }
 }
 
 /// A day's name in the list: Today, Yesterday, the weekday within the week, the date before.

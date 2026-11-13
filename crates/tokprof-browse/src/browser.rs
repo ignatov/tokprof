@@ -1513,6 +1513,26 @@ impl<T> Browser<T> {
         self.match_titles
     }
 
+    /// The listed sessions whose title holds `text`, ignoring case, while their agent, project
+    /// and ids do not: those that Week's filter, which has no titles, does not count.
+    pub fn title_only(&self, text: &str) -> usize {
+        let t = text.trim().to_lowercase();
+        if t.is_empty() {
+            return 0;
+        }
+        self.visible
+            .iter()
+            .map(|&i| &self.entries[i])
+            .filter(|e| e.glance.as_ref().and_then(|g| g.title.as_deref()).is_some_and(|x| x.to_lowercase().contains(&t)))
+            .filter(|e| {
+                let r = &e.row;
+                !tokprof_core::calendar::text_matches(&t, r.file.agent.name(), &r.project, &r.file.session_id, &r.file.main_id)
+                    && !r.id.to_lowercase().contains(&t)
+                    && !r.session_id.to_lowercase().contains(&t)
+            })
+            .count()
+    }
+
     /// When the clock next takes a listed session out of what the quick filters keep, after
     /// `now`: its cache goes cold, its agent falls silent, or the week ends.
     pub fn next_filter_change(&self, now: i64) -> Option<i64> {

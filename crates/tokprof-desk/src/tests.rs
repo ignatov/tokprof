@@ -1213,10 +1213,10 @@ fn helped() -> Vec<&'static str> {
 fn the_key_help_names_the_keys_the_window_handles() {
     let named = helped();
     let groups: Vec<&str> = keys::GROUPS.iter().map(|g| g.0).collect();
-    assert_eq!(groups, ["Anywhere", "Lanes", "The day", "Palette", "Settings", "Sessions", "Inspector", "Flame", "Requests", "Reports", "Calendar"]);
+    assert_eq!(groups, ["Anywhere", "Lanes", "The day", "Palette", "Settings", "Sessions", "Inspector", "Flame", "Requests", "Week", "Reports", "Calendar"]);
     for k in [
         "⌘K", "⌘,", "⌘0", "?", "Tab", "⇧Tab", "⏎", "esc", "⌫", "[", "]", "t", "/", "s", "r", "c", "f", "o", "q", "⌘Q", "⌘W", "Ctrl+C", "↑", "↓", "←", "→", "j",
-        "k", "h", "l", "g", "G", "PgUp", "PgDn", "Home", "End", "1–9", "Space", "Ctrl+P", "Ctrl+N", "⌘1", "⌘2", "⌘3", "0", "⇧←", "⇧→",
+        "k", "h", "l", "g", "G", "PgUp", "PgDn", "Home", "End", "1–9", "Space", "Ctrl+P", "Ctrl+N", "⌘1", "⌘2", "⌘3", "⌘4", "0", "⇧←", "⇧→",
     ] {
         assert!(named.contains(&k), "the key help names {k}");
     }
@@ -1227,7 +1227,11 @@ fn the_key_help_names_the_keys_the_window_handles() {
     let before = (rt.state.current(), rt.state.browser.day_noon(), rt.state.browser.zoomed());
     typed(&mut rt, "d");
     assert_eq!((rt.state.current(), rt.state.browser.day_noon(), rt.state.browser.zoomed()), before, "d does nothing in Day");
-    for (group, keys) in [("Sessions", &["⏎", "→", "←", "t", "Tab", "esc"][..]), ("The day", &["↑", "↓", "⏎", "esc"][..])] {
+    for (group, keys) in [
+        ("Sessions", &["⏎", "→", "←", "t", "Tab", "esc"][..]),
+        ("The day", &["↑", "↓", "⏎", "esc"][..]),
+        ("Week", &["↑", "↓", "⏎", "←", "→", "t", "Tab", "/", "esc"][..]),
+    ] {
         let of: Vec<&str> = keys::GROUPS.iter().find(|g| g.0 == group).unwrap().1.iter().flat_map(|r| r.keys.iter().copied()).collect();
         for k in keys {
             assert!(of.contains(k), "{group} names {k}");
@@ -1465,7 +1469,7 @@ fn the_switch_and_its_keys_show_reports_and_back() {
     settle(&mut rt);
     assert_eq!(rt.state.reports.mode, reports::Mode::Day);
     assert!(rt.presented("lanes").is_some());
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     assert_eq!(rt.state.reports.mode, reports::Mode::Reports);
     // q and the browser's keys do nothing there; esc goes back to Day.
@@ -1481,7 +1485,7 @@ fn the_switch_and_its_keys_show_reports_and_back() {
 fn the_cards_show_the_numbers_of_the_summary_and_the_pauses() {
     let (desk, dates) = reports_desk(3);
     let mut rt = runtime(desk, (1400.0, 2400.0));
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     let o = reports_of(&rt);
     let (spend, (avoidable, share), (returns, premium)) = (o.spend_usd(), o.avoidable(), o.cold_returns());
@@ -1498,7 +1502,8 @@ fn the_cards_show_the_numbers_of_the_summary_and_the_pauses() {
     }
     // The projects, most expensive first, with their amounts.
     let projects = o.spread.projects();
-    assert_eq!(text_in(&rt, "rep-projects-0", "label"), projects[0].0);
+    let names = view::ProjectNames::new(projects.iter().map(|(p, _)| *p));
+    assert_eq!(text_in(&rt, "rep-projects-0", "label"), names.of(projects[0].0), "a bar reads its project's name");
     assert_eq!(text_in(&rt, "rep-projects-0", "amount"), tokprof_core::fmt::usd(projects[0].1.usd));
     let shown = texts(&rt);
     for (agent, a) in &o.pauses.agents {
@@ -1512,31 +1517,35 @@ fn the_cards_show_the_numbers_of_the_summary_and_the_pauses() {
 fn the_pills_pick_a_period_and_one_not_read_yet_says_so() {
     let (desk, _) = reports_desk(3);
     let mut rt = runtime(desk, (1400.0, 900.0));
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     assert_eq!(rt.state.reports.days, 30, "30 days to start with");
     assert!(rt.presented("kpi-spend").is_some());
-    click(&mut rt, "period-7");
+    assert!(rt.presented("period-7").is_none(), "no week in Reports: Week shows it");
+    click(&mut rt, "period-90");
     settle(&mut rt);
-    assert_eq!(rt.state.reports.days, 7);
-    assert_eq!(text_of(&rt, "rep-progress"), "computing the last 7 days…");
+    assert_eq!(rt.state.reports.days, 90);
+    assert_eq!(text_of(&rt, "rep-progress"), "computing the last 90 days…");
     assert!(rt.presented("kpi-spend").is_none());
-    // The period by keys: it has the keyboard to start with.
-    press(&mut rt, RuneKey::Right);
+    // The period by keys: it has the keyboard to start with; the keys pick 30 and 90 only.
+    press(&mut rt, RuneKey::Left);
     assert_eq!(rt.state.reports.days, 30);
     assert!(rt.presented("kpi-spend").is_some(), "the 30 days were kept");
+    press(&mut rt, RuneKey::Left);
+    assert_eq!(rt.state.reports.days, 30);
     press(&mut rt, RuneKey::End);
     assert_eq!(rt.state.reports.days, 90);
-    press(&mut rt, RuneKey::Left);
-    press(&mut rt, RuneKey::Left);
-    assert_eq!(rt.state.reports.days, 7);
+    press(&mut rt, RuneKey::Right);
+    assert_eq!(rt.state.reports.days, 90);
+    press(&mut rt, RuneKey::Home);
+    assert_eq!(rt.state.reports.days, 30);
 }
 
 #[test]
 fn a_click_on_a_day_opens_it_in_day() {
     let (desk, dates) = reports_desk(3);
     let mut rt = runtime(desk, (1400.0, 2800.0));
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     click(&mut rt, &format!("day-{}", dates[1]));
     settle(&mut rt);
@@ -1556,7 +1565,7 @@ fn a_click_on_a_project_shows_sessions_with_the_project_picked() {
     let mut desk = Desk::new(Browser::detached(Arc::new(Catalog::new(Vec::new(), PathBuf::new())), rows, Pricing::defaults(), frontend()), false);
     desk.reports.data.put(30, o, (rhythm::midnight(last - 4, offset), rhythm::midnight(last + 1, offset)), 0);
     let mut rt = runtime(desk, (1400.0, 2800.0));
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     click(&mut rt, "rep-projects-0");
     settle(&mut rt);
@@ -1570,7 +1579,7 @@ fn a_click_on_a_project_shows_sessions_with_the_project_picked() {
 
     // ⏎ on the project's row by keys does the same.
     rt.update(|s, tx| crate::sessions::pick_project(s, "any", tx));
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     rt.update(|s, _| {
         s.reports.part = reports::Part::Projects;
@@ -1586,7 +1595,7 @@ fn a_click_on_a_project_shows_sessions_with_the_project_picked() {
 fn keys_move_through_the_cards_days_and_rows_and_enter_drills_down() {
     let (desk, dates) = reports_desk(30);
     let mut rt = runtime(desk, (1400.0, 900.0));
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     assert_eq!(rt.state.reports.part, reports::Part::Period);
     // Past what to change: the savings, the ways back and the habits.
@@ -1604,7 +1613,7 @@ fn keys_move_through_the_cards_days_and_rows_and_enter_drills_down() {
     assert_eq!(rhythm::date_of(rt.state.browser.day_noon(), &rhythm::local_offset), dates[2], "two days before the last");
     // Back in Reports, Tab twice from the days reaches the projects; ↓ and ⏎ open the second in
     // Sessions.
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     press(&mut rt, RuneKey::Tab);
     assert_eq!(rt.state.reports.part, reports::Part::Projects);
@@ -1618,7 +1627,7 @@ fn keys_move_through_the_cards_days_and_rows_and_enter_drills_down() {
     press(&mut rt, RuneKey::Enter);
     assert_eq!((rt.state.reports.mode, rt.state.browser.quick_filters().project.clone()), (reports::Mode::Sessions, Some(want)));
     // Reports keeps its part; Shift+Tab from the period goes round to the last card.
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     assert_eq!(rt.state.reports.part, reports::Part::Projects);
     for _ in 0..6 {
@@ -1634,7 +1643,7 @@ fn reports_ask_for_nothing_while_day_is_shown() {
     desk.reports.data = tokprof_browse::reports::Reports::start(catalog, Pricing::defaults(), select, Arc::new(|| {}));
     let mut rt = runtime(desk, (1400.0, 900.0));
     assert!(rt.state.reports.data.progress().is_none() && rt.state.reports.report().is_none(), "Day reads nothing for reports");
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     let deadline = Instant::now() + Duration::from_secs(20);
     while rt.state.reports.report().is_none() {
@@ -1650,7 +1659,7 @@ fn reports_ask_for_nothing_while_day_is_shown() {
 fn the_pointer_over_a_day_names_its_numbers_under_the_chart() {
     let (desk, dates) = reports_desk(3);
     let mut rt = runtime(desk, (1400.0, 2800.0));
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     let head = text_of(&rt, "rep-readout-head");
     assert!(head.starts_with("5 days · "), "the period's numbers without a day: {head}");
@@ -1692,8 +1701,9 @@ fn the_palette_switches_to_reports_and_picks_a_period() {
     let act = |a| palette::Pick::Act(a);
     let offered = |rt: &Runtime<Desk>, a| palette::entries(&rt.state, "").iter().any(|e| e.pick == palette::Pick::Act(a));
     assert!(offered(&rt, palette::Action::Reports) && !offered(&rt, palette::Action::DayView), "Day is offered only from Reports");
-    run_from_palette(&mut rt, "last 7", act(palette::Action::Period7));
-    assert_eq!((rt.state.reports.mode, rt.state.reports.days), (reports::Mode::Reports, 7));
+    assert!(!palette::entries(&rt.state, "").iter().any(|e| e.title == "Reports: the last 7 days"), "no week in Reports");
+    run_from_palette(&mut rt, "last 90", act(palette::Action::Period90));
+    assert_eq!((rt.state.reports.mode, rt.state.reports.days), (reports::Mode::Reports, 90));
     assert!(offered(&rt, palette::Action::DayView));
     run_from_palette(&mut rt, "day", act(palette::Action::DayView));
     assert_eq!(rt.state.reports.mode, reports::Mode::Day);
@@ -1703,7 +1713,7 @@ fn the_palette_switches_to_reports_and_picks_a_period() {
     run_from_palette(&mut rt, "today", palette::Pick::Day(None));
     assert_eq!(rt.state.reports.mode, reports::Mode::Day);
     // `?` opens the key help from Reports too.
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     press(&mut rt, RuneKey::Text("?".into()));
     assert!(rt.state.help);
@@ -1906,7 +1916,7 @@ fn the_day_cursor_keeps_its_date_when_the_report_comes_back_with_fewer_dates() {
     let mut desk = desk_of(3);
     desk.reports.data.put(30, o(), span(last - 30, last), 0);
     let mut rt = runtime(desk, (1400.0, 900.0));
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     for _ in 0..4 {
         press(&mut rt, RuneKey::Tab);
     }
@@ -1935,7 +1945,7 @@ fn the_day_cursor_keeps_its_date_when_the_report_comes_back_with_fewer_dates() {
 fn ctrl_c_quits_in_reports() {
     let (desk, _) = reports_desk(3);
     let mut rt = runtime(desk, (1400.0, 900.0));
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     rt.key(KeyEvent { key: RuneKey::Text("c".into()), mods: rune::Mods { ctrl: true, ..rune::Mods::default() } });
     rt.frame(1.0 / 60.0);
     assert!(rt.shell_request.is_some(), "Ctrl+C quits, as Anywhere says");
@@ -1945,7 +1955,7 @@ fn ctrl_c_quits_in_reports() {
 fn the_palette_in_reports_shows_day_for_what_works_on_day() {
     let (desk, _) = reports_desk(3);
     let mut rt = runtime(desk, (1400.0, 900.0));
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     let run = |rt: &mut Runtime<Desk>, query: &str| {
         command(rt, 'k');
         typed(rt, query);
@@ -1959,14 +1969,14 @@ fn the_palette_in_reports_shows_day_for_what_works_on_day() {
     rt.update(|s, tx| {
         s.pick("id0", tx);
     });
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     run(&mut rt, "full-size");
     assert_eq!((rt.state.reports.mode, rt.state.browser.zoomed()), (reports::Mode::Day, true));
     // What does not work on Day stays in Reports.
     press(&mut rt, RuneKey::Escape);
-    command(&mut rt, '2');
-    run(&mut rt, "reports: the last 7");
-    assert_eq!((rt.state.reports.mode, rt.state.reports.days), (reports::Mode::Reports, 7));
+    command(&mut rt, '3');
+    run(&mut rt, "reports: the last 90");
+    assert_eq!((rt.state.reports.mode, rt.state.reports.days), (reports::Mode::Reports, 90));
 }
 
 #[test]
@@ -2021,7 +2031,7 @@ fn advice_desk() -> (Desk, reports::Part, String) {
 fn what_to_change_shows_the_rows_of_tokprof_share_with_their_advice() {
     let (desk, _, _) = advice_desk();
     let mut rt = runtime(desk, (1400.0, 2400.0));
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     let c = rt.state.reports.changes().unwrap().clone();
     assert!(!c.habits.is_empty(), "the fixture has habits");
@@ -2052,7 +2062,7 @@ fn what_to_change_shows_the_rows_of_tokprof_share_with_their_advice() {
 fn a_row_opens_its_top_sessions_and_a_session_opens_in_day() {
     let (desk, part, name) = advice_desk();
     let mut rt = runtime(desk, (1400.0, 2400.0));
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     let c = rt.state.reports.changes().unwrap().clone();
     let at = changes::lines(&c, part, None).iter().position(|l| *l == changes::Line::Row(name.clone())).unwrap();
@@ -2074,7 +2084,7 @@ fn a_row_opens_its_top_sessions_and_a_session_opens_in_day() {
     let row = rt.state.browser.selected().expect("a session is selected");
     assert_eq!(tokprof_core::model::short_id(&sessions[0].agent, rt.state.browser.session(row)), sessions[0].session);
     // Back in Reports, ⏎ on the row closes it again.
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     press(&mut rt, RuneKey::Up);
     press(&mut rt, RuneKey::Enter);
@@ -2086,10 +2096,10 @@ fn a_row_opens_its_top_sessions_and_a_session_opens_in_day() {
 fn a_session_opened_from_what_to_change_leaves_a_filter_being_typed_alone() {
     let (desk, part, name) = advice_desk();
     let mut rt = runtime(desk, (1400.0, 2400.0));
-    // A filter is being typed in Day, empty so far, when ⌘2 goes to Reports.
+    // A filter is being typed in Day, empty so far, when ⌘3 goes to Reports.
     typed(&mut rt, "/");
     assert!(rt.state.browser.editing());
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     let sessions = rt.state.reports.changes().unwrap().sessions_of(&name).unwrap().to_vec();
     changes::toggle(&mut rt.state, part, &name);
@@ -2115,7 +2125,7 @@ fn without_cold_returns_the_ways_back_have_no_rows_for_the_cursor() {
 fn a_session_the_list_does_not_hold_says_so_and_stays_in_reports() {
     let (desk, part, name) = reports_desk_with_advice();
     let mut rt = runtime(desk, (1400.0, 2400.0));
-    command(&mut rt, '2');
+    command(&mut rt, '3');
     settle(&mut rt);
     changes::toggle(&mut rt.state, part, &name);
     settle(&mut rt);
@@ -2299,3 +2309,6 @@ mod sessions_view;
 
 #[path = "details_tests.rs"]
 mod day_view;
+
+#[path = "week_tests.rs"]
+mod week_view;

@@ -61,8 +61,10 @@ pub enum Action {
     DayView,
     /// The Sessions screen.
     Sessions,
+    /// Week on this week, and on the week before.
+    Week,
+    WeekLast,
     Reports,
-    Period7,
     Period30,
     Period90,
     Calendar,
@@ -92,13 +94,14 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 36] = [
+    pub const ALL: [Action; 37] = [
         Action::Settings,
         Action::KeyHelp,
         Action::DayView,
         Action::Sessions,
+        Action::Week,
+        Action::WeekLast,
         Action::Reports,
-        Action::Period7,
         Action::Period30,
         Action::Period90,
         Action::Calendar,
@@ -147,8 +150,9 @@ impl Action {
             Action::KeyHelp => "Key help",
             Action::DayView => "Day",
             Action::Sessions => "Sessions",
+            Action::Week => "Week",
+            Action::WeekLast => "Week: last week",
             Action::Reports => "Reports",
-            Action::Period7 => "Reports: the last 7 days",
             Action::Period30 => "Reports: the last 30 days",
             Action::Period90 => "Reports: the last 90 days",
             Action::Handoff => "Copy the handoff line",
@@ -181,9 +185,11 @@ impl Action {
             Action::KeyHelp => &["?"],
             Action::DayView => &["⌘1"],
             Action::Sessions => &["⌘0"],
-            Action::Reports => &["⌘2"],
-            Action::Period7 | Action::Period30 | Action::Period90 => &[],
-            Action::Calendar => &["⌘3"],
+            Action::Week => &["⌘2"],
+            Action::WeekLast => &[],
+            Action::Reports => &["⌘3"],
+            Action::Period30 | Action::Period90 => &[],
+            Action::Calendar => &["⌘4"],
             Action::CalendarOf(_) => &[],
             Action::MonthReview => &["r"],
             Action::Handoff => &["c"],
@@ -219,8 +225,9 @@ impl Action {
                     | Action::KeyHelp
                     | Action::DayView
                     | Action::Sessions
+                    | Action::Week
+                    | Action::WeekLast
                     | Action::Reports
-                    | Action::Period7
                     | Action::Period30
                     | Action::Period90
                     | Action::Calendar
@@ -247,6 +254,7 @@ impl Action {
             Action::BackToLanes => zoomed,
             Action::DayView => s.reports.mode != Mode::Day,
             Action::Sessions => s.reports.mode != Mode::Sessions,
+            Action::Week => s.reports.mode != Mode::Week,
             Action::Reports => s.reports.mode != Mode::Reports,
             Action::Calendar => s.reports.mode != Mode::Calendar,
             Action::MonthReview => s.calendar.data.get().is_some_and(|c| c.store.is_some()),
@@ -654,6 +662,15 @@ impl Desk {
             Action::KeyHelp => self.open_help(),
             Action::DayView => crate::reports::show(self, Mode::Day),
             Action::Sessions => crate::sessions::show(self, tx),
+            Action::Week => {
+                crate::reports::show(self, Mode::Week);
+                crate::week::this_week(self, tx);
+            }
+            Action::WeekLast => {
+                crate::reports::show(self, Mode::Week);
+                crate::week::this_week(self, tx);
+                crate::week::step(self, -1, tx);
+            }
             Action::Reports => crate::reports::show(self, Mode::Reports),
             Action::Calendar => crate::reports::show(self, Mode::Calendar),
             Action::MonthReview => {
@@ -664,13 +681,9 @@ impl Desk {
                 crate::reports::show(self, Mode::Calendar);
                 crate::calendar::pick_metric(self, m);
             }
-            Action::Period7 | Action::Period30 | Action::Period90 => {
+            Action::Period30 | Action::Period90 => {
                 crate::reports::show(self, Mode::Reports);
-                let days = match a {
-                    Action::Period7 => 7,
-                    Action::Period30 => 30,
-                    _ => 90,
-                };
+                let days = if a == Action::Period30 { 30 } else { 90 };
                 crate::reports::pick_period(self, days, tx);
             }
             Action::Handoff => self.browser_key(key('c'), tx),

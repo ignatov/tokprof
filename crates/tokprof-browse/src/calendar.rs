@@ -94,6 +94,7 @@ pub fn filters(select: &Query) -> Filters {
         session: select.session.clone(),
         since_ms: select.since_ms,
         until_ms: select.until_ms,
+        text: None,
     }
 }
 
