@@ -121,7 +121,10 @@ fn normalize(text: &str, home: &Path) -> String {
     let text = text.replace("\r\n", "\n").replace(&*home.to_string_lossy(), "<home>").replace(&*common::root().to_string_lossy(), "<repo>");
     let lines = text.split('\n').map(|line| {
         line.split(' ')
-            .map(|w| if w.starts_with("<home>") || w.starts_with("<repo>") || w.starts_with('~') { w.replace('\\', "/") } else { w.to_string() })
+            .map(|w| {
+                let bare = w.trim_start_matches('(');
+                if bare.starts_with("<home>") || bare.starts_with("<repo>") || bare.starts_with('~') { w.replace('\\', "/") } else { w.to_string() }
+            })
             .collect::<Vec<_>>()
             .join(" ")
     });

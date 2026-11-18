@@ -214,8 +214,8 @@ pub fn punchcard(cal: &Calendar, metric: Metric, style: &Style) -> String {
     let _ = writeln!(out, "{}", hours.trim_end());
     for (wd, name) in WEEKDAYS.iter().enumerate() {
         let mut row = format!("{name:<LABEL$}");
-        for h in 0..24 {
-            row.push_str(&mark(level(cal.punch[wd][h].value(metric), cuts), style));
+        for cell in &cal.punch[wd] {
+            row.push_str(&mark(level(cell.value(metric), cuts), style));
             row.push(' ');
         }
         let _ = writeln!(out, "{}", row.trim_end());
