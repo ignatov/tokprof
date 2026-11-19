@@ -1,12 +1,13 @@
 //! The groups of tools and the call log (see tool-breakdown): the groups table that `tokprof
 //! tools` and `tokprof scan --calls` print, the X-ray's groups line, and the call log of
-//! `tokprof scan --calls`. Cells come apart from text, so that the window can lay them out.
+//! `tokprof scan --calls`, and the window's group cards. Cells come apart from text, so that the
+//! window can lay them out.
 
 use std::fmt::Write as _;
 
 use tokprof_core::calllog::{CallRow, CallStatus};
 use tokprof_core::fmt::{self, Style, clip_end, local_time, table, tokens};
-use tokprof_core::tools::{GroupFilter, GroupRow, ToolTable, median_ms};
+use tokprof_core::tools::{Group, GroupFilter, GroupRow, ToolTable, median_ms};
 use tokprof_core::xray::XRay;
 
 use crate::render_tools::{median_time, total_time};
@@ -69,6 +70,65 @@ fn with_notes(lines: &str, notes: &[String]) -> String {
         let _ = writeln!(out, "{}", format!("{line}{}  {note}", " ".repeat(pad)).trim_end());
     }
     out
+}
+
+/// A group card of the window (see desk-window, Group cards): the cells of the group's row of
+/// the groups table, and its shares of the session's calls and of their counted time.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CardCells {
+    pub group: Group,
+    pub name: String,
+    /// `340 calls`.
+    pub calls: String,
+    /// `12 failed`, or `None` when none failed.
+    pub failed: Option<String>,
+    /// `<time> · med <med time>`, `– · med –` when no call counts for times.
+    pub time: String,
+    /// `<n> tok`.
+    pub tokens: String,
+    /// The group's share of the calls of all groups.
+    pub calls_share: f64,
+    /// Its share of their counted time; `None` when none of its calls counts for times.
+    pub time_share: Option<f64>,
+    /// A server the logs list that got no call: no numbers and no shares.
+    pub never_called: bool,
+}
+
+/// The cards of the groups table of `t`, in its order, the servers never called last.
+pub fn card_cells(t: &ToolTable) -> Vec<CardCells> {
+    let (groups, all) = t.groups();
+    groups
+        .into_iter()
+        .filter_map(|r| {
+            let group = r.group.clone()?;
+            let name = r.name();
+            if r.never_called {
+                return Some(CardCells {
+                    group,
+                    name,
+                    calls: String::new(),
+                    failed: None,
+                    time: String::new(),
+                    tokens: String::new(),
+                    calls_share: 0.0,
+                    time_share: None,
+                    never_called: true,
+                });
+            }
+            let timed = !r.durations.is_empty();
+            Some(CardCells {
+                group,
+                name,
+                calls: format!("{} {}", fmt::int(r.calls), if r.calls == 1 { "call" } else { "calls" }),
+                failed: (r.failed > 0).then(|| format!("{} failed", fmt::int(r.failed))),
+                time: format!("{} · med {}", total_time(&r.durations, r.time_ms), median_time(r.median_ms())),
+                tokens: format!("{} tok", tokens(r.result_tokens)),
+                calls_share: r.calls as f64 / all.calls.max(1) as f64,
+                time_share: timed.then(|| r.time_ms as f64 / all.time_ms.max(1) as f64),
+                never_called: false,
+            })
+        })
+        .collect()
 }
 
 /// The X-ray's groups line: the first groups of the table, each with its calls and, when some of
@@ -139,22 +199,33 @@ pub fn calls_line(x: &XRay) -> String {
     parts.join(" · ")
 }
 
+/// The header of the call log.
+pub const CALL_HEADER: [&str; 9] = ["#", "started", "req", "group", "tool", "input", "status", "took", "tokens"];
+
+/// The indices of the calls that `filter` keeps, in their order.
+pub fn kept_calls(rows: &[CallRow], filter: &CallFilter) -> Vec<usize> {
+    rows.iter().enumerate().filter(|(_, r)| filter.keeps(r)).map(|(i, _)| i).collect()
+}
+
+/// The cells of call `i` of the log.
+pub fn call_row_cells(i: usize, r: &CallRow) -> Vec<String> {
+    vec![
+        (i + 1).to_string(),
+        r.start_ms.map_or("–".to_string(), |t| local_time(t, "%m-%d %H:%M:%S")),
+        r.request.map_or("–".to_string(), |n| n.to_string()),
+        r.group.name(),
+        r.tool.clone(),
+        r.input.as_deref().map_or(String::new(), |t| clip_end(t, INPUT_CHARS)),
+        r.status.name().to_string(),
+        r.duration_ms.map_or("–".to_string(), |ms| fmt::call_time(ms as f64)),
+        r.result_tokens.map_or("–".to_string(), tokens),
+    ]
+}
+
 /// The cells of the call log: the header and a row per call that `filter` keeps.
 pub fn call_cells(rows: &[CallRow], filter: &CallFilter) -> Vec<Vec<String>> {
-    let mut out = vec![["#", "started", "req", "group", "tool", "input", "status", "took", "tokens"].map(str::to_string).to_vec()];
-    for (i, r) in rows.iter().enumerate().filter(|(_, r)| filter.keeps(r)) {
-        out.push(vec![
-            (i + 1).to_string(),
-            r.start_ms.map_or("–".to_string(), |t| local_time(t, "%m-%d %H:%M:%S")),
-            r.request.map_or("–".to_string(), |n| n.to_string()),
-            r.group.name(),
-            r.tool.clone(),
-            r.input.as_deref().map_or(String::new(), |t| clip_end(t, INPUT_CHARS)),
-            r.status.name().to_string(),
-            r.duration_ms.map_or("–".to_string(), |ms| fmt::call_time(ms as f64)),
-            r.result_tokens.map_or("–".to_string(), tokens),
-        ]);
-    }
+    let mut out = vec![CALL_HEADER.map(str::to_string).to_vec()];
+    out.extend(kept_calls(rows, filter).into_iter().map(|i| call_row_cells(i, &rows[i])));
     out
 }
 
@@ -384,5 +455,62 @@ mod tests {
         assert_eq!(shown(CallFilter { group: GroupFilter::parse("mcp"), ..CallFilter::default() }).1, 2);
         assert_eq!(shown(CallFilter { tool: Some("read".into()), ..CallFilter::default() }).1, 206);
         assert_eq!(shown(CallFilter::default()).0, None);
+    }
+
+    #[test]
+    fn the_cards_hold_the_numbers_of_the_groups_table() {
+        let mut t = three_groups();
+        t.servers.insert("linear".into());
+        let cards = card_cells(&t);
+        let table = group_cells(&t);
+        // The rows with calls, then `all`, then the server never called.
+        let called: Vec<&Vec<String>> = table.rows.iter().skip(1).filter(|r| r[0] != "all" && r[1] != "0").collect();
+        assert_eq!(cards.len(), called.len() + 1);
+        for (card, row) in cards.iter().zip(&called) {
+            assert_eq!(card.name, row[0]);
+            assert_eq!(card.calls, format!("{} calls", row[1]));
+            assert_eq!(card.failed, (!row[2].is_empty()).then(|| format!("{} failed", row[2])));
+            assert_eq!(card.time, format!("{} · med {}", row[3], row[4]));
+            assert_eq!(card.tokens, format!("{} tok", row[5]));
+        }
+        let shell = &cards[0];
+        assert_eq!((shell.name.as_str(), shell.calls.as_str(), shell.failed.as_deref()), ("shell", "340 calls", Some("12 failed")));
+        assert_eq!(format!("{:.0}%", 100.0 * shell.calls_share), "72%", "340 of 472 calls");
+        assert_eq!(format!("{:.0}%", 100.0 * shell.time_share.unwrap()), "98%", "42 of 43 minutes");
+        assert_eq!(cards[1].failed, None, "files has no failed call");
+        let never = cards.last().unwrap();
+        assert!(never.never_called && never.name == "mcp linear" && never.calls.is_empty() && never.time_share.is_none());
+    }
+
+    #[test]
+    fn a_card_without_counted_time_has_no_time_share() {
+        let t = table_of(vec![("Agent", row(ToolClass::Subagent, None, 4, 0, Vec::new())), ("Read", row(ToolClass::Read, None, 2, 0, vec![100, 300]))]);
+        let cards = card_cells(&t);
+        let agent = cards.iter().find(|c| c.name == "subagents").unwrap();
+        assert_eq!((agent.time.as_str(), agent.time_share), ("– · med –", None));
+        assert_eq!(cards.iter().find(|c| c.name == "files").unwrap().time_share, Some(1.0));
+        assert_eq!(cards[0].calls, "4 calls");
+    }
+
+    #[test]
+    fn the_group_filter_keeps_the_tool_rows_of_its_group() {
+        let mut t = three_groups();
+        t.rows.insert(("Bash".into(), Some("cargo test".into())), row(ToolClass::Execute, None, 5, 0, vec![1_000]));
+        let all = crate::render_tools::tool_cells(&t, tokprof_core::tools::RowOrder::Rent, 25, false);
+        assert_eq!(all.rows.len(), 5);
+        let shell = GroupFilter::parse("shell");
+        let cells = crate::render_tools::tool_cells_of(&t, tokprof_core::tools::RowOrder::Rent, 25, false, shell.as_ref());
+        let names: Vec<&str> = cells.rows.iter().skip(1).map(|r| r[0].as_str()).collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.iter().all(|n| n.starts_with("Bash")), "{names:?}");
+        let one = crate::render_tools::tool_cells_of(&t, tokprof_core::tools::RowOrder::Rent, 1, false, shell.as_ref());
+        assert_eq!(one.more, 1, "more counts the rows of the group");
+        let mcp = crate::render_tools::tool_cells_of(&t, tokprof_core::tools::RowOrder::Rent, 25, false, GroupFilter::parse("mcp idea").as_ref());
+        assert_eq!(mcp.rows.len(), 2);
+        // The same filter narrows the call log.
+        let rows = vec![call("Bash", Group::Shell, CallStatus::Done, Some(1), None), call("Read", Group::Files, CallStatus::Done, Some(1), None)];
+        let f = CallFilter { group: shell, ..CallFilter::default() };
+        assert_eq!(kept_calls(&rows, &f), [0]);
+        assert_eq!(call_cells(&rows, &f)[1], call_row_cells(0, &rows[0]));
     }
 }

@@ -739,23 +739,26 @@ fn the_inspector_s_keys_switch_tabs_and_move_the_cursor_through_rows() {
     assert_eq!(rt.state.tab, inspector::Tab::Tools, "7 shows the seventh tab");
     let rows = rt.state.tab_rows.get();
     assert!(rows >= 2, "the fixture's tools: {rows}");
+    // Tools keeps its own cursor over both of its tables (desk-window, Keys in Tools).
     press(&mut rt, RuneKey::Down);
     press(&mut rt, RuneKey::Text("j".into()));
-    assert_eq!(rt.state.cursor, 2.min(rows - 1), "↓ and j move the cursor");
-    assert!(rt.presented(&format!("row-{}", rt.state.cursor)).is_some(), "its row is on the screen");
+    assert_eq!(rt.state.tools.cursor, 2.min(rows - 1), "↓ and j move the cursor");
+    assert!(rt.presented(&format!("row-{}", rt.state.tools.cursor)).is_some(), "its row is on the screen");
     press(&mut rt, RuneKey::End);
-    assert_eq!(rt.state.cursor, rows - 1, "End to the last row");
+    assert_eq!(rt.state.tools.cursor, rows - 1, "End to the last row");
     press(&mut rt, RuneKey::Text("k".into()));
-    assert_eq!(rt.state.cursor, rows - 2);
+    assert_eq!(rt.state.tools.cursor, rows - 2);
     press(&mut rt, RuneKey::Home);
-    assert_eq!(rt.state.cursor, 0, "Home to the first");
-    press(&mut rt, RuneKey::Right);
-    assert_eq!((rt.state.tab, rt.state.cursor), (inspector::Tab::Context, 0), "→ the next tab, from its first row");
+    assert_eq!(rt.state.tools.cursor, 0, "Home to the first");
+    shifted(&mut rt, RuneKey::Right);
+    assert_eq!((rt.state.tab, rt.state.cursor), (inspector::Tab::Context, 0), "Shift+→ the next tab, from its first row");
+    press(&mut rt, RuneKey::Down);
+    assert_eq!(rt.state.cursor, 1.min(rt.state.tab_rows.get().saturating_sub(1)), "↓ moves the inspector's cursor outside Tools");
     press(&mut rt, RuneKey::Text("h".into()));
     assert_eq!(rt.state.tab, inspector::Tab::Tools, "h the tab before");
+    shifted(&mut rt, RuneKey::Left);
     press(&mut rt, RuneKey::Left);
-    press(&mut rt, RuneKey::Left);
-    assert_eq!(rt.state.tab, inspector::Tab::Waits);
+    assert_eq!(rt.state.tab, inspector::Tab::Waits, "Shift+← leaves Tools, and ← steps outside it");
     assert_eq!(rt.state.browser.selected(), Some(0), "the session stays selected");
     press(&mut rt, RuneKey::Text("1".into()));
     assert_eq!((rt.state.tab, rt.state.tab_rows.get()), (inspector::Tab::Summary, 0), "Summary has no rows to move through");
@@ -1845,3 +1848,6 @@ mod week_view;
 
 #[path = "period_tests.rs"]
 mod period_view;
+
+#[path = "tools_tests.rs"]
+mod tools_view;

@@ -2,9 +2,8 @@
 //! read the fields `render_xray.rs` reads and format them with the same helpers, so that a
 //! number here is the number `tokprof scan` prints.
 
-use rune::{Color, Cx, El, ScrollSpec, col, el, row, spacer, text};
+use rune::{Color, Cx, El, ScrollSpec, Tx, col, el, row, spacer, text};
 use tokprof_browse::browser::{Pane, now_ms};
-use tokprof_browse::render_tools::{failures_line, tool_cells};
 use tokprof_core::advice::{Topic, Way};
 use tokprof_core::analysis::Component;
 use tokprof_core::busy;
@@ -13,7 +12,6 @@ use tokprof_core::model::BlockKind;
 use tokprof_core::profile::Values;
 use tokprof_core::report::Spend;
 use tokprof_core::rhythm::duration;
-use tokprof_core::tools::RowOrder;
 use tokprof_core::xray::XRay;
 
 use crate::Desk;
@@ -85,6 +83,7 @@ pub fn version(s: &Desk, cx: &Cx<Desk>, theme: &str) -> u64 {
             s.cursor,
         ),
         (s.tab == Tab::Flame).then(|| crate::flame::version(s, cx)),
+        (s.tab == Tab::Tools).then(|| s.tools.version()),
         (s.tab == Tab::Requests).then(|| {
             (
                 s.requests.version(),
@@ -106,18 +105,32 @@ thread_local! {
     static ROWS: std::cell::Cell<(usize, Option<usize>)> = const { std::cell::Cell::new((0, None)) };
 }
 
+/// What a double click on a numbered row does, with the row's number.
+pub(crate) type Open = fn(&mut Desk, usize, &mut Tx);
+
 /// Numbers a row of the tab being drawn (`row-0`, `row-1`, …), marks the cursor's, and lets a
 /// click put the cursor on it.
 fn numbered(line: El, p: &Pal) -> El {
+    numbered_open(line, None, p)
+}
+
+/// The same, with what a double click on the row does.
+fn numbered_open(line: El, open: Option<Open>, p: &Pal) -> El {
     let (n, cursor) = ROWS.get();
     ROWS.set((n + 1, cursor));
-    let line = line.key(format!("row-{n}")).radius(R_ROW).on_press(move |s: &mut Desk| {
+    let mut line = line.key(format!("row-{n}")).radius(R_ROW).on_press(move |s: &mut Desk| {
         s.pane = crate::Focus::Inspector;
         s.cursor = n;
         if s.tab == Tab::Requests {
             crate::requests::row_pressed(s, n);
         }
+        if s.tab == Tab::Tools {
+            crate::tools_tab::row_pressed(s, n);
+        }
     });
+    if let Some(open) = open {
+        line = line.on_double_press_tx(move |s: &mut Desk, tx| open(s, n, tx));
+    }
     if cursor == Some(n) { overlay::ring_at(line.fill(p.sel), true, 1.0, p) } else { line.hover(p.hover) }
 }
 
@@ -152,7 +165,7 @@ pub fn inspector(s: &Desk, cx: &Cx<Desk>, p: &Pal) -> El {
             Tab::Work => work(x, p),
             Tab::Waits => waits(x, p),
             Tab::Prompts => prompts(x, p),
-            Tab::Tools => tools(x, p),
+            Tab::Tools => crate::tools_tab::tab(s, x, pane_w - 36.0, p),
             Tab::Context => context(x, p),
             Tab::Cache => cache(x, p),
             Tab::Flame => crate::flame::tab(s, x, cx, p),
@@ -245,7 +258,7 @@ fn back_button(p: &Pal) -> El {
         .child(overlay::keycap_on("esc", p.panel, p))
 }
 
-fn note(s: impl Into<String>, p: &Pal) -> El {
+pub(crate) fn note(s: impl Into<String>, p: &Pal) -> El {
     text(s.into()).w_full().wrap().font(pal::BODY).color(p.ink2).selectable(true)
 }
 
@@ -267,7 +280,7 @@ pub fn tab_fit(pane_w: f32) -> (f32, bool) {
 }
 
 /// A card: its title and a note at its right over a soft group, as Month draws its cards.
-fn boxed(key: &str, title: &str, aside: Option<String>, body: El, p: &Pal) -> El {
+pub(crate) fn boxed(key: &str, title: &str, aside: Option<String>, body: El, p: &Pal) -> El {
     let mut head = row().w_full().gap(8.0).center_y().child(text(title.to_string()).font(pal::HEAD).color(p.ink2).single_line());
     if let Some(a) = aside {
         head = head.child(spacer().grow(1.0)).child(text(a).key("aside").font(pal::SMALL).color(p.ink3).single_line().truncate().shrink().min_w(0.0));
@@ -338,6 +351,11 @@ thread_local! {
 
 /// A table whose columns named in `drop` are left out, first to last, when the card is too narrow.
 pub(crate) fn table_dropping(cols: &[Column], rows: Vec<Vec<(String, Option<Color>)>>, drop: &[&str], p: &Pal) -> El {
+    table_open(cols, rows, drop, None, p)
+}
+
+/// The same, with what a double click on a row does.
+pub(crate) fn table_open(cols: &[Column], rows: Vec<Vec<(String, Option<Color>)>>, drop: &[&str], open: Option<Open>, p: &Pal) -> El {
     let keep = fitting(&cols.iter().map(|c| (c.1, c.0)).collect::<Vec<_>>(), drop, ROOM.get());
     let cols: Vec<&Column> = cols.iter().zip(&keep).filter(|(_, k)| **k).map(|(c, _)| c).collect();
     let rows: Vec<Vec<(String, Option<Color>)>> = rows.into_iter().map(|r| r.into_iter().zip(&keep).filter(|(_, k)| **k).map(|(c, _)| c).collect()).collect();
@@ -359,12 +377,12 @@ pub(crate) fn table_dropping(cols: &[Column], rows: Vec<Vec<(String, Option<Colo
             let font = if c.2 { pal::BODY_NUM } else { pal::BODY };
             cell(t, c, color.unwrap_or(p.ink), font)
         }));
-        out = out.child(numbered(line, p)).child(el().w_full().h(1.0).fill(p.row_line));
+        out = out.child(numbered_open(line, open, p)).child(el().w_full().h(1.0).fill(p.row_line));
     }
     out
 }
 
-fn plain(t: impl Into<String>) -> (String, Option<Color>) {
+pub(crate) fn plain(t: impl Into<String>) -> (String, Option<Color>) {
     (t.into(), None)
 }
 
@@ -1015,35 +1033,6 @@ fn prompts(x: &XRay, p: &Pal) -> Vec<El> {
         Column("it paid for", 260.0, false),
     ];
     vec![boxed("prompts", "Prompts", Some("what each message you typed cost, subagents included".into()), table_dropping(&cols, rows, &["it paid for"], p), p)]
-}
-
-fn tools(x: &XRay, p: &Pal) -> Vec<El> {
-    if !x.tools.rows.values().any(|r| r.calls > 0) {
-        return vec![note("No tool calls.", p)];
-    }
-    let cells = tool_cells(&x.tools, RowOrder::Rent, 24, x.tools.failed > 0);
-    let widths = [0.0, 50.0, 56.0, 64.0, 80.0, 80.0, 70.0, 70.0, 56.0, 50.0, 70.0];
-    let names: Vec<&'static str> = vec!["tool", "calls", "time", "med time", "avg result", "avg input", "rent", "trips", "single", "failed", "after"];
-    let n = cells.rows.first().map_or(0, Vec::len);
-    let mut cols: Vec<Column> = (0..n).map(|i| Column(names[i], widths[i], i > 0)).collect();
-    cols.push(Column("hint", 230.0, false));
-    let rows = cells
-        .rows
-        .iter()
-        .skip(1)
-        .zip(cells.hints.iter().skip(1))
-        .map(|(r, h)| r.iter().cloned().map(plain).chain([(h.clone(), Some(p.ink2))]).collect())
-        .collect();
-    let mut body =
-        col().w_full().gap(8.0).child(table_dropping(&cols, rows, &["hint", "after", "failed", "single", "avg input", "trips", "med time", "time"], p));
-    if cells.more > 0 {
-        body = body.child(note(format!("{} more", cells.more), p));
-    }
-    body = body.child(note(cells.spend.clone(), p));
-    if let Some(f) = failures_line(&x.tools) {
-        body = body.child(text(f).w_full().wrap().font(pal::BODY).color(p.cold).selectable(true));
-    }
-    vec![boxed("tools", "Tools", Some("calls, sizes, rent and trips by tool".into()), body, p)]
 }
 
 fn context(x: &XRay, p: &Pal) -> Vec<El> {

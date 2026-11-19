@@ -22,6 +22,7 @@ mod requests;
 mod sessions;
 mod settings;
 mod themes;
+mod tools_tab;
 mod view;
 mod week;
 mod year;
@@ -272,6 +273,8 @@ pub struct Desk {
     pub menu_bar: menubar::MenuBar,
     /// The `Requests` tab's selection, range, hover and unit.
     pub requests: requests::State,
+    /// The `Tools` tab's chosen card and cursor.
+    pub tools: tools_tab::State,
     /// The Sessions screen.
     pub sessions: sessions::State,
     /// The state of Week.
@@ -358,6 +361,7 @@ impl Desk {
             month: month::State::default(),
             menu_bar: menubar::MenuBar::default(),
             requests: requests::State::default(),
+            tools: tools_tab::State::default(),
             sessions: sessions::State::default(),
             week: week::State::new(tokprof_browse::week::Weeks::detached()),
             week_wanted: None,
@@ -480,6 +484,9 @@ impl Desk {
             return true;
         }
         if self.tab == Tab::Requests && requests::key(self, e, tx) {
+            return true;
+        }
+        if self.tab == Tab::Tools && tools_tab::key(self, e, tx) {
             return true;
         }
         let at = Tab::ALL.iter().position(|&t| t == self.tab).unwrap_or(0);
@@ -835,6 +842,7 @@ fn on_key(s: &mut Desk, e: &KeyEvent, tx: &mut Tx) -> bool {
             // In a zoomed flame graph, esc zooms out before it gives the keyboard back.
             RuneKey::Escape if s.tab == Tab::Flame && inspector::keyboard(s) && s.flame_out() => return true,
             RuneKey::Escape if inspector::keyboard(s) && requests::clear_range(s) => return true,
+            RuneKey::Escape if inspector::keyboard(s) && tools_tab::clear_group(s) => return true,
             RuneKey::Escape => {
                 step_back(s, tx);
                 return true;
@@ -1361,6 +1369,12 @@ const SCENES: &[Scene] = &[
         s.pane = Focus::Inspector;
         s.tab = Tab::Tools;
         s.cursor = 2;
+        tools_tab::scene_cursor(s, 2);
+    }),
+    // Tools with the keyboard, its first card chosen and the cursor on the first call.
+    ("tools-group", |s| {
+        scene_session(s);
+        tools_tab::scene(s);
     }),
     ("requests-hover", |s| {
         scene_session(s);

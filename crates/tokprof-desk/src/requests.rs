@@ -860,6 +860,16 @@ fn select(s: &mut Desk, i: usize, tx: &mut Tx) {
     tx.scroll_into_view(format!("row-{}", i - lo));
 }
 
+/// Shows `Requests` with request `i` of the X-ray shown selected, as a click on its column
+/// selects it, its row on the screen.
+pub fn show_request(s: &mut Desk, i: usize, tx: &mut Tx) {
+    let Some(id) = s.browser.xray().filter(|x| i < x.points.len()).map(|x| x.id.clone()) else { return };
+    adopt(s, &id);
+    s.show_tab(Tab::Requests, tx);
+    s.requests.hover = None;
+    select(s, i, tx);
+}
+
 /// A click on a row of the table selects its request.
 pub fn row_pressed(s: &mut Desk, row: usize) {
     let Some((id, n, sel)) = s.browser.xray().map(|x| (x.id.clone(), x.points.len(), current(&s.requests, x).0)) else { return };

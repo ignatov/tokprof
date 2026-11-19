@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 use tokprof_core::fmt::{self, clip_end, table, tokens, usd};
 use tokprof_core::profile::Values;
-use tokprof_core::tools::{RowOrder, ToolTable, hint};
+use tokprof_core::tools::{GroupFilter, RowOrder, ToolTable, hint};
 
 /// The line on the calls that did not work: how many failed, with the spend of the requests after
 /// them until the tool worked again, how many the user refused and how many rules denied. `None`
@@ -72,10 +72,19 @@ pub fn tool_rows(t: &ToolTable, order: RowOrder, limit: usize, failures: bool) -
 
 /// The cells of the tool table, as `tool_rows` lays them out.
 pub fn tool_cells(t: &ToolTable, order: RowOrder, limit: usize, failures: bool) -> ToolCells {
+    tool_cells_of(t, order, limit, failures, None)
+}
+
+/// The cells of the tool table with only the rows of the group `group` keeps, when it is given:
+/// `more` and the spend line count those rows only.
+pub fn tool_cells_of(t: &ToolTable, order: RowOrder, limit: usize, failures: bool, group: Option<&GroupFilter>) -> ToolCells {
     let priced = t.spend.usd > 0.0;
     let amount = |v: &Values| if priced { usd(v.usd) } else { format!("{} tok", tokens(v.tokens)) };
     let size = |v: Option<f64>| v.map_or("–".to_string(), tokens);
-    let rows = t.sorted_by(order);
+    let mut rows = t.sorted_by(order);
+    if let Some(g) = group {
+        rows.retain(|(_, r)| g.keeps(&r.group()));
+    }
     let mut header = vec!["tool", "calls", "time", "med time", "avg result", "avg input", "rent", "trips", "single"];
     if failures {
         header.extend(["failed", "after"]);

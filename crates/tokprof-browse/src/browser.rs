@@ -1420,6 +1420,15 @@ impl<T> Browser<T> {
         }
     }
 
+    /// Takes this X-ray for the session with this id, as the report would give it; for the tests
+    /// of a screen that draws an X-ray built by hand.
+    #[doc(hidden)]
+    pub fn put_xray(&mut self, session: &str, xray: XRay) {
+        if let Some(e) = self.entries.iter_mut().find(|e| e.is(session)) {
+            e.xray = Some(Arc::new(xray));
+        }
+    }
+
     /// The list's order.
     pub fn sort_order(&self) -> Sort {
         self.sort
