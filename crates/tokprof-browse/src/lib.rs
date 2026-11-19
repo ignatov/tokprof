@@ -12,6 +12,7 @@ pub mod paths;
 pub mod period;
 pub mod reading;
 pub mod render_calendar;
+pub mod render_calls;
 pub mod render_month;
 pub mod render_requests;
 pub mod render_rhythm;

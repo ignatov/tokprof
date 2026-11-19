@@ -365,6 +365,9 @@ fn tool_lines(out: &mut String, x: &XRay, style: &Style) {
     for line in crate::render_tools::tool_rows(&x.tools, tokprof_core::tools::RowOrder::Rent, 8, false).lines() {
         let _ = writeln!(out, "  {line}");
     }
+    if let Some(groups) = crate::render_calls::groups_line(&x.tools) {
+        let _ = writeln!(out, "{} {groups}", style.dim(&format!("{:<9}", "groups")));
+    }
 }
 
 /// What every request carries before the work: the setup by source with what the main
@@ -641,6 +644,7 @@ pub(crate) mod tests {
             points: Vec::new(),
             marks: Vec::new(),
             subagent_spans: Vec::new(),
+            call_log: Vec::new(),
             stacks: Default::default(),
         }
     }
@@ -729,7 +733,7 @@ pub(crate) mod tests {
         let row = text.lines().find(|l| l.contains("sed -n")).unwrap();
         assert_eq!(
             row.split_whitespace().collect::<Vec<_>>(),
-            ["Bash", "sed", "-n", "56", "1.3k", "53", "$5.21", "$3.75", "86%", "batch", "independent", "reads"]
+            ["Bash", "sed", "-n", "56", "–", "–", "1.3k", "53", "$5.21", "$3.75", "86%", "batch", "independent", "reads"]
         );
         assert!(
             text.contains("spend $27.37 · rent of these tools $5.21 · trips of these tools $3.75 (two views of the same money; do not add them)"),
@@ -1026,5 +1030,39 @@ pub(crate) mod tests {
         let shown = text(&x, &Style::with_color(false), Path::new("/tmp"), Path::new("/h"));
         let at = |label: &str| shown.find(&format!("\n{label}")).unwrap_or_else(|| panic!("no {label}: {shown}"));
         assert!(at("spend") < at("waits") && at("waits") < at("tools") && at("tools") < at("failures") && at("failures") < at("what cost the most"), "{shown}");
+    }
+
+    #[test]
+    fn the_tools_block_shows_times_and_ends_with_the_groups_line() {
+        use tokprof_core::model::{Class, ToolClass};
+        use tokprof_core::tools::ToolRow;
+        let mut x = xray(Vec::new());
+        let v = |usd| Values { tokens: 1.0, usd, avoidable: 0.0 };
+        let mut durations = vec![100; 55];
+        durations.push(100);
+        let sed = ToolRow {
+            class: Class::Tool(ToolClass::Execute),
+            calls: 56,
+            single: 48,
+            results: 56,
+            result_tokens: 56.0 * 1_300.0,
+            inputs: 56,
+            input_tokens: 56.0 * 53.0,
+            rent: v(5.21),
+            trips: v(3.75),
+            time_ms: 5_600,
+            durations,
+            ..ToolRow::default()
+        };
+        x.tools.rows.insert(("Bash".into(), Some("sed -n".into())), sed);
+        x.tools.rows.insert(("Agent".into(), None), ToolRow { class: Class::Tool(ToolClass::Subagent), calls: 4, rent: v(0.5), ..ToolRow::default() });
+        x.tools.spend = v(20.0);
+        let text = render(&x, tool_lines);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[2].trim_start().starts_with("tool") && lines[2].contains("calls  time  med time"), "{}", lines[2]);
+        let words: Vec<&str> = lines[3].split_whitespace().collect();
+        assert_eq!(words[..6], ["Bash", "sed", "-n", "56", "5.6s", "0.1s"]);
+        assert!(lines[3].ends_with("batch independent reads"), "{}", lines[3]);
+        assert_eq!(*lines.last().unwrap(), "groups    shell 56 (5.6s, med 0.1s) · subagents 4");
     }
 }

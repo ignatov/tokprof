@@ -134,6 +134,7 @@ tokprof ui                  # browse all sessions interactively
 tokprof sessions            # list session logs, newest first by last activity (--cost adds each session's cost)
 tokprof scan 3f951de0       # X-ray one session by id prefix, or: tokprof scan path/to/session.jsonl
 tokprof scan 3f951de0 --requests   # each request: tokens, cost, why, what entered its context and what changed
+tokprof scan 3f951de0 --calls      # each tool call: when, which request, group, tool, input, status, how long, result tokens
 tokprof handoff 3f951de0    # the line to start a new session with, instead of resuming this one
 tokprof day                 # today with the agents: when you sat at them and what they did meanwhile
 ```
@@ -145,6 +146,24 @@ tokprof day                 # today with the agents: when you sat at them and wh
    365  11-03 16:27:57   14.3k  865.0k         4    6.3k  879.4k   $7.05  missed: idle > TTL: 1.1h idle, 1h TTL · $6.73 avoidable
         entered  3.2k images · 618 assistant text · 309 user prompt
 ```
+
+`tokprof scan --calls` lists the tool calls of the main conversation instead of the X-ray, in the order of their start. The head gives the `calls` line and the groups table of the session with its subagents (see [Spend by tool](#spend-by-tool)). Each row gives the local start time, `req`, the request whose response made the call as `--requests` numbers it, the group, the tool, the head of its input, the status, `took` and the tokens of its result:
+
+```
+calls     412 in the main conversation, 1,020 with the subagents' · 9 failed · 2 refused · 40 background · 28m in calls, median 0.6s
+
+     #  started         req  group      tool   input                                status      took  tokens
+    17  11-19 14:00:12    5  shell      Bash   cargo test -p tokprof --test golden  failed       41s    3.4k
+    18  11-19 14:01:10    6  files      Read   src/parser.rs                        done        0.1s    2.1k
+    19  11-19 14:01:10    6  subagents  Agent  Find the parser's tests              done        4.2m     812
+```
+
+- The status is `failed`, `refused` or `denied` as the log tells (see [Spend by tool](#spend-by-tool)); otherwise `background` for a call that returned while its work went on (a background command, a subagent started in the background), `asked you` for a question or a plan to approve, and `done`. A call without a result is `running` while the main conversation sent no later request, and `no result` after one.
+- `took` runs from the time the log gives the call to the time it gives the result. It includes any wait for a permission, since no agent logs permission prompts. A tool the API runs itself has its result in the same response, so it shows `–`.
+- The input is at most 48 characters of what the source gives: the command, the path, the pattern, the URL, the query, a subagent's description, or the first string of an MCP tool's input. It is shown on this machine only and never goes into a share file.
+- A subagent is one row, its `Agent` call; its own calls count in the groups table, not as rows.
+- `--failed` keeps the failed calls, `--group <name>` the calls of one group (`mcp` keeps every MCP server), and `--tool <name>` the calls of one tool, without case. They can be combined, and a line under the header says `showing <n> of <m> calls`. They need `--calls`, and `--calls` cannot go with `--requests`.
+- Only Claude Code and Codex give call times and inputs; pi and OpenCode give no tool calls. Only Claude Code lists the MCP servers a session had, so only its servers can show as `never called`.
 
 A session's time is its last activity: the time of the last record in its log that carries one. The latest session is the one active last. Claude Code also writes records without a time, such as `cost-state`, when the IDE resumes a session that then does nothing, and those do not count.
 
@@ -852,19 +871,31 @@ These fields were seen in Claude Code 2.1.284–2.1.312 and Codex 0.146–0.163.
 
 ## Spend by tool
 
-`tokprof tools` gives one row per tool, and per command head for shell tools, such as `Bash sed -n`. The X-ray shows the session's top 8 rows under `tools`.
+`tokprof tools` gives the groups table, then one row per tool, and per command head for shell tools, such as `Bash sed -n`. The X-ray shows the session's top 8 rows under `tools`, and its first 5 groups on the `groups` line.
 
 ```
-tool                              calls  avg result  avg input    rent   trips  single  failed   after  hint
-Read                              14783        3.0k         48  $1,304  $1,155     45%      22   $6.80
-Write                              1578          89       3.9k    $318    $239     49%      12   $4.26  edit instead of rewriting the file
-Bash sed -n                        3850        2.1k        138    $297    $291     91%      41   $3.61  batch independent reads
-Bash python3 -I                    2568        1.1k        872    $250    $313     91%      32   $4.49  save long scripts to a file; edit files with the edit tool
+group        calls  failed  time  med time  tokens
+shell        25410     612  9.4h      0.6s   42.1M
+files        24180      71  2.1h      0.1s   58.3M
+agent         1210          1.6m      0.1s    2.0M
+subagents      790      13  3.2h      2.9m    1.1M
+mcp idea       150       2  5.5m      1.2s  310.0k
+other          440          4.1m      0.3s  900.0k
+all          52180     698   15h      0.4s  104.7M
+mcp linear       0                                  never called
+
+tool              calls  time  med time  avg result  avg input    rent   trips  single  failed   after  hint
+Read              14783  1.3h      0.1s        3.0k         48  $1,304  $1,155     45%      22   $6.80
+Write              1578  2.6m      0.1s          89       3.9k    $318    $239     49%      12   $4.26  edit instead of rewriting the file
+Bash sed -n        3850  6.5m      0.1s        2.1k        138    $297    $291     91%      41   $3.61  batch independent reads
+Bash python3 -I    2568   49m      0.4s        1.1k        872    $250    $313     91%      32   $4.49  save long scripts to a file; edit files with the edit tool
 spend $9,110 · rent of these tools $5,028 · trips of these tools $6,538 (two views of the same money; do not add them)
 failed 854 calls, after them $114 until the tool worked again · you refused 54 · rules denied 92
 ```
 
+- Groups: every tool belongs to one group, by where it comes from. An MCP tool belongs to `mcp <server>`. The other tools belong to the group of their kind, which each source gives its tools (the sources' READMEs list them): `files` for reads, edits, writes, deletes and moves; `search`; `shell` for commands and the reads of their output; `web` for fetches and web searches; `subagents` for the tools that start or talk to subagents; `agent` for the tools with which the agent manages itself and not the work, such as skills, tool search, the task list or plan, mode switches and questions to you; and `other`. The table is sorted by calls, `other` last; `all` gives the totals, and an MCP server that a Claude Code session's tool lists show but that got no call ends the table as `never called`. Its `tokens` are the results' tokens as `avg result` counts them.
 - `calls`: how many times the agent called it.
+- `time` and `med time`: the sum and the median of the calls' durations, from the time the log gives a call to the time it gives the result, with any wait for a permission. Calls in the background, calls that asked you and calls without a result or a duration are left out, and `–` says that none is left. A median, since a few long calls pull a mean far from a usual call; the sum next to it still shows them. Calls run side by side, so the sums are not busy time (see `waits` in the X-ray). The format is one decimal under 10 s, then whole seconds, minutes with one decimal up to 10 minutes, whole minutes, and hours.
 - `avg result` and `avg input`: tokens per call, of what the tool returned and of what the agent sent it, at their size in the first request that held them.
 - `rent`: what keeping the results and inputs in the context cost. A result is re-read by every request after it until a compaction, so a 2k-token result kept for 300 requests pays for 600k tokens of cache reads.
 - `trips`: what the calls made the agent do. That is the input of the request each result triggered, since that request re-reads the whole context, plus the output of the response that made the call. A response's spend is split equally between its calls.

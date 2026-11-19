@@ -25,6 +25,17 @@ pub fn failures_line(t: &ToolTable) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
+/// The `time` cell: the sum of the counted calls' durations, or `–` when no call counts for
+/// times (see tool-breakdown, Time per row).
+pub fn total_time(durations: &[u32], time_ms: u64) -> String {
+    if durations.is_empty() { "–".to_string() } else { fmt::call_time(time_ms as f64) }
+}
+
+/// The `med time` cell.
+pub fn median_time(median_ms: Option<f64>) -> String {
+    median_ms.map_or("–".to_string(), fmt::call_time)
+}
+
 /// `1 call`, `1,021 calls`.
 fn count_int(n: u64, one: &str, many: &str) -> String {
     format!("{} {}", fmt::int(n), if n == 1 { one } else { many })
@@ -65,7 +76,7 @@ pub fn tool_cells(t: &ToolTable, order: RowOrder, limit: usize, failures: bool) 
     let amount = |v: &Values| if priced { usd(v.usd) } else { format!("{} tok", tokens(v.tokens)) };
     let size = |v: Option<f64>| v.map_or("–".to_string(), tokens);
     let rows = t.sorted_by(order);
-    let mut header = vec!["tool", "calls", "avg result", "avg input", "rent", "trips", "single"];
+    let mut header = vec!["tool", "calls", "time", "med time", "avg result", "avg input", "rent", "trips", "single"];
     if failures {
         header.extend(["failed", "after"]);
     }
@@ -79,6 +90,8 @@ pub fn tool_cells(t: &ToolTable, order: RowOrder, limit: usize, failures: bool) 
         let mut row = vec![
             clip_end(&name, 32),
             r.calls.to_string(),
+            total_time(&r.durations, r.time_ms),
+            median_time(r.median_ms()),
             size(r.avg_result()),
             size(r.avg_input()),
             amount(&r.rent),

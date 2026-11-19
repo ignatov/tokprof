@@ -2,7 +2,7 @@
 //! inputs were, what keeping them in the context cost (rent), what they made the agent do
 //! (trips), and a fixed hint on the habit to change.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::analysis::{Fact, MissEvent, RequestRecord, Sink};
 use crate::model::{BlockKind, ChainKind, Class, HandoffKind, Outcome, Session, ToolClass};
@@ -16,6 +16,8 @@ pub struct BlockEntry<'a> {
     pub target: Option<&'a str>,
     pub class: Class,
     pub tokens: f64,
+    /// The call record of the block's call in its session, when the source gives one.
+    pub call: Option<u32>,
 }
 
 /// A share of a request's spend charged to a tool: the input of a request to the first-time
@@ -34,6 +36,120 @@ pub struct ToolShare<'a> {
     pub error: Option<&'a str>,
     /// For the share of a call: what its shell command did to version control.
     pub vcs: VcsActions,
+    /// For the share of a call: how long it took, and whether that counts for times (see
+    /// tool-breakdown, Calls that count for times).
+    pub duration_ms: Option<i64>,
+    pub timed: bool,
+}
+
+/// Where a tool comes from (see tool-breakdown, Groups).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Group {
+    Files,
+    Search,
+    Shell,
+    Web,
+    Subagents,
+    /// The tools with which the agent manages itself.
+    Agent,
+    /// The tools of one MCP server.
+    Mcp(String),
+    Other,
+}
+
+/// The groups a filter can name, as a usage error lists them.
+pub const GROUP_NAMES: &str = "files, search, shell, web, subagents, agent, mcp, mcp <server>, other";
+
+impl Group {
+    /// The group of a tool: its MCP server when the target is `mcp:<server>`, else its class's.
+    pub fn of(class: Class, target: Option<&str>) -> Group {
+        Group::of_parts(class, target.and_then(|t| t.strip_prefix("mcp:")))
+    }
+
+    /// The group of a tool of this class and, for an MCP tool, this server.
+    pub fn of_parts(class: Class, server: Option<&str>) -> Group {
+        if let Some(server) = server {
+            return Group::Mcp(server.to_string());
+        }
+        match class {
+            Class::Tool(ToolClass::Read | ToolClass::Edit | ToolClass::Write | ToolClass::Delete | ToolClass::Move) => Group::Files,
+            Class::Tool(ToolClass::Search) => Group::Search,
+            Class::Tool(ToolClass::Execute | ToolClass::ExecuteOutput) => Group::Shell,
+            Class::Tool(ToolClass::Fetch) => Group::Web,
+            Class::Tool(ToolClass::Subagent) => Group::Subagents,
+            Class::Tool(ToolClass::Think | ToolClass::SwitchMode | ToolClass::Manage) => Group::Agent,
+            _ => Group::Other,
+        }
+    }
+
+    pub fn name(&self) -> String {
+        match self {
+            Group::Files => "files".into(),
+            Group::Search => "search".into(),
+            Group::Shell => "shell".into(),
+            Group::Web => "web".into(),
+            Group::Subagents => "subagents".into(),
+            Group::Agent => "agent".into(),
+            Group::Mcp(server) => format!("mcp {server}"),
+            Group::Other => "other".into(),
+        }
+    }
+}
+
+/// A filter by group, as `--group` names it: one group, or every MCP server with `mcp`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GroupFilter {
+    One(Group),
+    AnyMcp,
+}
+
+impl GroupFilter {
+    /// The filter a name gives, without case; `None` for a name that is no group.
+    pub fn parse(name: &str) -> Option<GroupFilter> {
+        let name = name.trim().to_lowercase();
+        Some(match name.as_str() {
+            "files" => GroupFilter::One(Group::Files),
+            "search" => GroupFilter::One(Group::Search),
+            "shell" => GroupFilter::One(Group::Shell),
+            "web" => GroupFilter::One(Group::Web),
+            "subagents" => GroupFilter::One(Group::Subagents),
+            "agent" => GroupFilter::One(Group::Agent),
+            "other" => GroupFilter::One(Group::Other),
+            "mcp" => GroupFilter::AnyMcp,
+            _ => GroupFilter::One(Group::Mcp(name.strip_prefix("mcp ").or(name.strip_prefix("mcp:"))?.trim().to_string())),
+        })
+    }
+
+    pub fn keeps(&self, g: &Group) -> bool {
+        match self {
+            GroupFilter::One(one) => match (one, g) {
+                (Group::Mcp(a), Group::Mcp(b)) => a.eq_ignore_ascii_case(b),
+                _ => one == g,
+            },
+            GroupFilter::AnyMcp => matches!(g, Group::Mcp(_)),
+        }
+    }
+}
+
+/// The median of durations in ms: the middle one in order, or the mean of the two middle ones;
+/// `None` for none.
+pub fn median_ms(durations: &[u32]) -> Option<f64> {
+    if durations.is_empty() {
+        return None;
+    }
+    let mut v = durations.to_vec();
+    let mid = v.len() / 2;
+    let (_, &mut upper, _) = v.select_nth_unstable(mid);
+    if v.len() % 2 == 1 {
+        return Some(upper as f64);
+    }
+    let lower = *v[..mid].iter().max().unwrap_or(&upper);
+    Some((lower as f64 + upper as f64) / 2.0)
+}
+
+/// A duration as the tool table keeps it: whole ms, at most what 32 bits hold.
+fn kept_ms(ms: i64) -> u32 {
+    ms.clamp(0, u32::MAX as i64) as u32
 }
 
 /// A row's key: the tool, and the command head for shell tools.
@@ -63,6 +179,11 @@ pub struct ToolRow {
     pub after: Values,
     /// The line of its latest failure, with the time of the request that made the call.
     pub latest_error: Option<(i64, String)>,
+    /// The MCP server of its tool, from the first `mcp:<server>` target seen.
+    pub mcp: Option<String>,
+    /// The durations of its calls that count for times, in ms, in no order, and their sum.
+    pub durations: Vec<u32>,
+    pub time_ms: u64,
 }
 
 impl ToolRow {
@@ -70,6 +191,11 @@ impl ToolRow {
         if self.class == Class::None {
             self.class = o.class;
         }
+        if self.mcp.is_none() {
+            self.mcp.clone_from(&o.mcp);
+        }
+        self.durations.extend_from_slice(&o.durations);
+        self.time_ms += o.time_ms;
         self.calls += o.calls;
         self.single += o.single;
         self.results += o.results;
@@ -99,6 +225,16 @@ impl ToolRow {
 
     pub fn avg_input(&self) -> Option<f64> {
         (self.inputs > 0).then(|| self.input_tokens / self.inputs as f64)
+    }
+
+    /// Where its tool comes from.
+    pub fn group(&self) -> Group {
+        Group::of_parts(self.class, self.mcp.as_deref())
+    }
+
+    /// The median duration of its calls that count for times, in ms.
+    pub fn median_ms(&self) -> Option<f64> {
+        median_ms(&self.durations)
     }
 
     /// The share of calls that were alone in their response.
@@ -153,6 +289,40 @@ pub fn hint(key: &ToolKey, row: &ToolRow) -> Option<&'static str> {
     }
 }
 
+/// A row of the groups table: the rows of one group added up.
+#[derive(Clone, Debug, Default)]
+pub struct GroupRow {
+    /// `None` for the `all` row.
+    pub group: Option<Group>,
+    pub calls: u64,
+    pub failed: u64,
+    /// The durations of its calls that count for times, and their sum (see `ToolRow`).
+    pub durations: Vec<u32>,
+    pub time_ms: u64,
+    pub result_tokens: f64,
+    /// A server the logs list that got no call.
+    pub never_called: bool,
+}
+
+impl GroupRow {
+    pub fn median_ms(&self) -> Option<f64> {
+        median_ms(&self.durations)
+    }
+
+    /// The group's name, `all` for the totals.
+    pub fn name(&self) -> String {
+        self.group.as_ref().map_or_else(|| "all".to_string(), Group::name)
+    }
+
+    fn add(&mut self, r: &ToolRow) {
+        self.calls += r.calls;
+        self.failed += r.failed;
+        self.durations.extend_from_slice(&r.durations);
+        self.time_ms += r.time_ms;
+        self.result_tokens += r.result_tokens;
+    }
+}
+
 /// Spend by tool, with the spend no tool caused, as rent and as trips.
 #[derive(Clone, Debug, Default)]
 pub struct ToolTable {
@@ -171,6 +341,10 @@ pub struct ToolTable {
     pub after: Values,
     /// The failure windows that opened: each starts at the request that carried a failure.
     pub opened: u64,
+    /// The MCP servers that the logs of sessions with a selected request list.
+    pub servers: BTreeSet<String>,
+    /// The servers of the session being walked, until one of its requests is selected.
+    pending_servers: Vec<String>,
     /// The windows of the chain being walked.
     windows: Windows,
 }
@@ -215,6 +389,31 @@ impl ToolTable {
         self.denied += o.denied;
         self.after.add(o.after);
         self.opened += o.opened;
+        self.servers.extend(o.servers);
+    }
+
+    /// The groups table: one row per group with a call, most calls first and `other` last, then
+    /// the servers never called; and the `all` row.
+    pub fn groups(&self) -> (Vec<GroupRow>, GroupRow) {
+        let mut by: HashMap<Group, GroupRow> = HashMap::new();
+        let mut all = GroupRow::default();
+        for r in self.rows.values().filter(|r| r.calls > 0) {
+            let g = r.group();
+            by.entry(g.clone()).or_insert_with(|| GroupRow { group: Some(g), ..GroupRow::default() }).add(r);
+            all.add(r);
+        }
+        let mut rows: Vec<GroupRow> = by.into_values().collect();
+        rows.sort_by(|a, b| {
+            let other = |r: &GroupRow| r.group == Some(Group::Other);
+            other(a).cmp(&other(b)).then(b.calls.cmp(&a.calls)).then(a.group.cmp(&b.group))
+        });
+        for server in &self.servers {
+            let g = Group::Mcp(server.clone());
+            if !rows.iter().any(|r| r.group.as_ref() == Some(&g)) {
+                rows.push(GroupRow { group: Some(g), never_called: true, ..GroupRow::default() });
+            }
+        }
+        (rows, all)
     }
 
     /// Rows, by rent or by trips, most first: dollars when priced, tokens otherwise.
@@ -258,10 +457,15 @@ impl ToolTable {
         }
     }
 
-    fn row(&mut self, key: ToolKey, class: Class) -> &mut ToolRow {
+    fn row(&mut self, key: ToolKey, class: Class, target: Option<&str>) -> &mut ToolRow {
         let r = self.rows.entry(key).or_default();
         if r.class == Class::None {
             r.class = class;
+        }
+        if r.mcp.is_none()
+            && let Some(server) = target.and_then(|t| t.strip_prefix("mcp:"))
+        {
+            r.mcp = Some(server.to_string());
         }
         r
     }
@@ -272,9 +476,13 @@ impl Sink for ToolTable {
         let mut turn_ends: Vec<i64> = s.handoffs.iter().filter(|h| matches!(h.kind, HandoffKind::TurnEnd | HandoffKind::Interrupt)).map(|h| h.ts_ms).collect();
         turn_ends.sort_unstable();
         self.windows = Windows { turn_ends, ..Windows::default() };
+        self.pending_servers = s.mcp_servers.clone();
     }
 
     fn request(&mut self, r: &RequestRecord) {
+        if !self.pending_servers.is_empty() {
+            self.servers.extend(std::mem::take(&mut self.pending_servers));
+        }
         let w = &mut self.windows;
         let main = matches!(r.chain_kind, ChainKind::Main | ChainKind::Advisor);
         // A new chain, or a new turn of a main conversation, closes the open windows: a failure
@@ -316,14 +524,14 @@ impl Sink for ToolTable {
         self.spend.add(v);
         let tool_block = matches!(f.kind, BlockKind::ToolUse | BlockKind::ToolResult);
         match key_of(f.tool, f.target, f.class).filter(|_| tool_block) {
-            Some(k) => self.row(k, f.class).rent.add(v),
+            Some(k) => self.row(k, f.class, f.target).rent.add(v),
             None => self.other_rent.add(v),
         }
     }
 
     fn block_entered(&mut self, b: &BlockEntry) {
         let Some(k) = key_of(b.tool, b.target, b.class) else { return };
-        let r = self.row(k, b.class);
+        let r = self.row(k, b.class, b.target);
         match b.kind {
             BlockKind::ToolResult => {
                 r.results += 1;
@@ -342,10 +550,14 @@ impl Sink for ToolTable {
         match key_of(s.tool, s.target, s.class) {
             Some(k) => {
                 let ts = self.windows.latest.map_or(0, |l| l.1);
-                let r = self.row(k.clone(), s.class);
+                let r = self.row(k.clone(), s.class, s.target);
                 r.trips.add(v);
                 if let Some(alone) = s.call {
                     r.calls += 1;
+                    if let Some(ms) = s.duration_ms.filter(|_| s.timed) {
+                        r.durations.push(kept_ms(ms));
+                        r.time_ms += kept_ms(ms) as u64;
+                    }
                     r.single += u64::from(alone);
                     if s.outcome == Outcome::Failed {
                         r.failed += 1;
@@ -514,6 +726,8 @@ mod tests {
                 outcome,
                 error: Some("why"),
                 vcs: VcsActions::default(),
+                duration_ms: None,
+                timed: false,
             });
             self
         }
@@ -599,5 +813,151 @@ mod tests {
         w.request(0, 1, 1).call("Edit", None, Outcome::Failed).call("Bash", Some("cargo test"), Outcome::Failed);
         w.request(0, 2, 10).call("Edit", None, Outcome::Worked).call("Bash", Some("cargo test"), Outcome::Worked);
         assert_eq!((w.after("Edit", None).1, w.after("Bash", Some("cargo test")).1, w.table.after.tokens), (10.0, 10.0, 10.0));
+    }
+
+    /// A share of one call: its tool, class, target, duration and whether it counts for times.
+    fn timed_call<'a>(tool: &'a str, class: ToolClass, target: Option<&'a str>, ms: Option<i64>, timed: bool, outcome: Outcome) -> ToolShare<'a> {
+        ToolShare {
+            tool: Some(tool),
+            target,
+            class: Class::Tool(class),
+            tokens: 0.0,
+            usd: 0.0,
+            call: Some(true),
+            outcome,
+            error: None,
+            vcs: VcsActions::default(),
+            duration_ms: ms,
+            timed,
+        }
+    }
+
+    #[test]
+    fn a_row_sums_and_takes_the_median_of_its_counted_calls() {
+        let mut t = ToolTable::default();
+        for ms in [100, 200, 600] {
+            t.tool_share(&timed_call("Read", ToolClass::Read, Some("src/a.rs"), Some(ms), true, Outcome::Worked));
+        }
+        let read = &t.rows[&key("Read", None)];
+        assert_eq!((read.time_ms, read.median_ms()), (900, Some(200.0)));
+        // Four timed runs and one in the background, which only counts as a call.
+        let head = Some("cargo test");
+        for s in [20, 30, 40, 50] {
+            t.tool_share(&timed_call("Bash", ToolClass::Execute, head, Some(s * 1000), true, Outcome::Worked));
+        }
+        t.tool_share(&timed_call("Bash", ToolClass::Execute, head, Some(200), false, Outcome::Worked));
+        let bash = &t.rows[&key("Bash", head)];
+        assert_eq!((bash.calls, bash.time_ms, bash.median_ms()), (5, 140_000, Some(35_000.0)));
+        // A call without a duration, or one that asked, leaves the times as they were.
+        t.tool_share(&timed_call("AskUserQuestion", ToolClass::Manage, None, Some(180_000), false, Outcome::Worked));
+        t.tool_share(&timed_call("WebSearch", ToolClass::Fetch, None, None, false, Outcome::Worked));
+        for tool in ["AskUserQuestion", "WebSearch"] {
+            let r = &t.rows[&key(tool, None)];
+            assert_eq!((r.calls, r.time_ms, r.median_ms()), (1, 0, None), "{tool}");
+        }
+    }
+
+    #[test]
+    fn one_long_call_moves_the_time_but_not_the_median() {
+        let mut t = ToolTable::default();
+        for _ in 0..9 {
+            t.tool_share(&timed_call("Bash", ToolClass::Execute, Some("sleep"), Some(500), true, Outcome::Worked));
+        }
+        t.tool_share(&timed_call("Bash", ToolClass::Execute, Some("sleep"), Some(30_960_000), true, Outcome::Worked));
+        let r = &t.rows[&key("Bash", Some("sleep"))];
+        assert_eq!((crate::fmt::call_time(r.time_ms as f64), r.median_ms()), ("8.6h".to_string(), Some(500.0)));
+    }
+
+    #[test]
+    fn merged_rows_take_the_median_of_all_their_calls() {
+        let mut a = ToolTable::default();
+        for ms in [100, 100, 100] {
+            a.tool_share(&timed_call("Read", ToolClass::Read, None, Some(ms), true, Outcome::Worked));
+        }
+        let mut b = ToolTable::default();
+        for ms in [900, 1000] {
+            b.tool_share(&timed_call("Read", ToolClass::Read, None, Some(ms), true, Outcome::Worked));
+        }
+        a.merge(b);
+        let r = &a.rows[&key("Read", None)];
+        // The sessions' medians are 100 and 950; all five calls' median is 100.
+        assert_eq!((r.calls, r.time_ms, r.median_ms()), (5, 2_200, Some(100.0)));
+        assert_eq!(median_ms(&[4, 1, 3, 2]), Some(2.5));
+        assert_eq!(median_ms(&[]), None);
+    }
+
+    #[test]
+    fn tools_belong_to_the_group_of_their_kind_or_server() {
+        let g = |class: ToolClass, target: Option<&str>| Group::of(Class::Tool(class), target).name();
+        assert_eq!(g(ToolClass::Other, Some("mcp:idea")), "mcp idea");
+        let built_in = [ToolClass::Read, ToolClass::Search, ToolClass::Execute, ToolClass::Fetch, ToolClass::Subagent, ToolClass::Other];
+        assert_eq!(built_in.map(|c| g(c, None)), ["files", "search", "shell", "web", "subagents", "other"]);
+        let own = [ToolClass::Manage, ToolClass::Manage, ToolClass::Think, ToolClass::SwitchMode];
+        assert_eq!(own.map(|c| g(c, None)), ["agent"; 4]);
+        let files = [ToolClass::Edit, ToolClass::Write, ToolClass::Delete, ToolClass::Move, ToolClass::ExecuteOutput];
+        assert_eq!(files.map(|c| g(c, None)), ["files", "files", "files", "files", "shell"]);
+        assert_eq!(GroupFilter::parse("MCP"), Some(GroupFilter::AnyMcp));
+        assert_eq!(GroupFilter::parse("mcp idea"), Some(GroupFilter::One(Group::Mcp("idea".into()))));
+        assert_eq!(GroupFilter::parse("disk"), None);
+        assert!(GroupFilter::AnyMcp.keeps(&Group::Mcp("idea".into())) && !GroupFilter::AnyMcp.keeps(&Group::Shell));
+    }
+
+    #[test]
+    fn the_groups_table_adds_up_its_rows_and_lists_servers_never_called() {
+        let mut s = Session::new(crate::testing::claude(), "s".into());
+        s.mcp_servers = vec!["idea".into(), "linear".into()];
+        let mut w = Walk::new(&[]);
+        w.table.session(&s);
+        w.request(0, 1, 1);
+        let t = &mut w.table;
+        for i in 0..340 {
+            let outcome = if i < 12 { Outcome::Failed } else { Outcome::Worked };
+            let timed = i < 300;
+            let ms = if i < 150 {
+                600
+            } else if i < 299 {
+                610
+            } else {
+                2_520_000 - 150 * 600 - 149 * 610
+            };
+            t.tool_share(&timed_call("Bash", ToolClass::Execute, Some(if i % 2 == 0 { "ls" } else { "cat" }), Some(ms), timed, outcome));
+        }
+        for i in 0..120 {
+            t.tool_share(&timed_call("Read", ToolClass::Read, Some("a.rs"), Some(if i < 60 { 100 } else { 300 }), true, Outcome::Worked));
+        }
+        for i in 0..12 {
+            let outcome = if i == 0 { Outcome::Failed } else { Outcome::Worked };
+            t.tool_share(&timed_call("mcp__idea__find", ToolClass::Other, Some("mcp:idea"), Some(1_500), true, outcome));
+        }
+        t.tool_share(&timed_call("Monitor", ToolClass::Other, None, Some(1_000), true, Outcome::Worked));
+        t.block_entered(&BlockEntry {
+            kind: BlockKind::ToolResult,
+            tool: Some("Read"),
+            target: Some("a.rs"),
+            class: Class::Tool(ToolClass::Read),
+            tokens: 2_000.0,
+            call: None,
+        });
+        let (rows, all) = t.groups();
+        let cells: Vec<(String, u64, u64, u64, bool)> = rows.iter().map(|r| (r.name(), r.calls, r.failed, r.time_ms, r.never_called)).collect();
+        assert_eq!(
+            cells,
+            [
+                ("shell".to_string(), 340, 12, 2_520_000, false),
+                ("files".to_string(), 120, 0, 24_000, false),
+                ("mcp idea".to_string(), 12, 1, 18_000, false),
+                ("other".to_string(), 1, 0, 1_000, false),
+                ("mcp linear".to_string(), 0, 0, 0, true),
+            ]
+        );
+        assert_eq!(rows[0].median_ms(), Some(605.0));
+        assert_eq!((rows[1].median_ms(), rows[1].result_tokens), (Some(200.0), 2_000.0));
+        assert_eq!((all.name(), all.calls, all.failed, all.durations.len()), ("all".to_string(), 473, 13, 433));
+        // A session none of whose requests is selected lists no servers.
+        let mut idle = Session::new(crate::testing::claude(), "t".into());
+        idle.mcp_servers = vec!["sentry".into()];
+        let mut t = ToolTable::default();
+        t.session(&idle);
+        assert!(t.servers.is_empty());
     }
 }

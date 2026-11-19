@@ -310,6 +310,23 @@ impl Collector {
         }
     }
 
+    /// The number of each record, by the order it came in: its place in `points`, from 1, or
+    /// `None` for a record without a time.
+    pub fn numbers(&self) -> Vec<Option<u32>> {
+        let mut timed: Vec<usize> = (0..self.points.len()).filter(|&i| self.points[i].ts_ms > 0).collect();
+        timed.sort_by_key(|&i| self.points[i].ts_ms);
+        let mut out = vec![None; self.points.len()];
+        for (n, i) in timed.into_iter().enumerate() {
+            out[i] = Some(n as u32 + 1);
+        }
+        out
+    }
+
+    /// The index the next main record will get.
+    pub fn next_index(&self) -> usize {
+        self.points.len()
+    }
+
     /// The records with a time, in time order.
     pub fn points(self) -> Vec<RequestPoint> {
         let mut points: Vec<RequestPoint> = self.points.into_iter().filter(|p| p.ts_ms > 0).collect();

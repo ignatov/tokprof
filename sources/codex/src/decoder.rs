@@ -23,8 +23,8 @@ use serde_json::Value;
 use tokprof_core::api::ApiId;
 use tokprof_core::labels::{command_head, display_path, message_label};
 use tokprof_core::model::{
-    Block, BlockKind, CallEnd, Chain, ChainKind, Class, Compaction, CompactionTrigger, HandoffKind, Origin, Params, PromptDelta, ReminderKind, Request,
-    Session, Shape, ToolClass, TypedMessage, Usage,
+    Block, BlockKind, CallEnd, CallRecord, Chain, ChainKind, Class, Compaction, CompactionTrigger, HandoffKind, Origin, Params, PromptDelta, ReminderKind,
+    Request, Session, Shape, ToolClass, TypedMessage, Usage,
 };
 use tokprof_core::source::{AgentId, Decoder};
 use tokprof_core::trigger::{CallClass, Pending, Trigger, VcsActions, command_class, vcs_actions};
@@ -79,6 +79,12 @@ pub(crate) struct Parser {
     call_kinds: HashMap<usize, Vec<CallClass>>,
     /// The calls of the item being read, until it gets its message index.
     item_calls: Vec<CallClass>,
+    /// The tool and input head of the call item being read, until it gets its message index.
+    item_call: Option<(String, Option<String>)>,
+    /// The times and flags of each tool call, and its place in that list by call id; a hosted
+    /// call, which has no call id, is keyed by its message.
+    calls: Vec<CallRecord>,
+    call_by_id: HashMap<String, usize>,
     shape: Option<usize>,
     streams: [Stream; 2],
     /// The response ids of the `token_usage_record` lines read, each with the index of its
@@ -126,6 +132,9 @@ impl Parser {
             tools_by_call: HashMap::new(),
             call_kinds: HashMap::new(),
             item_calls: Vec::new(),
+            item_call: None,
+            calls: Vec::new(),
+            call_by_id: HashMap::new(),
             shape: None,
             streams: [Stream::default(), Stream::default()],
             responses: HashMap::new(),
@@ -310,7 +319,10 @@ impl Parser {
         if !calls.is_empty() {
             self.call_kinds.insert(idx, calls);
         }
-        if let Some(id) = str_at(item, "call_id") {
+        let call = self.item_call.take();
+        // A hosted call has no call id and no output; its message keys it.
+        let key = str_at(item, "call_id").map(str::to_string).or_else(|| call.as_ref().map(|_| format!("\0hosted {idx}")));
+        if let Some(id) = key.as_deref() {
             self.blocks_by_call.entry(id.to_string()).or_default().extend(self.session.messages[idx].blocks.clone());
             self.call_of_message.insert(idx, id.to_string());
             if matches!(str_at(item, "type"), Some("function_call_output" | "custom_tool_call_output"))
@@ -318,6 +330,7 @@ impl Parser {
             {
                 self.call_ends.insert(id.to_string(), end);
             }
+            self.note_call(id, call, output, ts_ms.filter(|&t| t > 0));
         }
         self.history.push(idx);
         self.trailing_outputs = if output { self.trailing_outputs + 1 } else { 0 };
@@ -332,6 +345,34 @@ impl Parser {
                 (false, _, _) => self.last_input_ms = Some(ts),
             }
             self.prev_output = output;
+        }
+    }
+
+    /// The times of a call (see session-logs, Call times): a call item starts it at its line's
+    /// `timestamp`, and the output item with the same `call_id` ends it at its own. A hosted call
+    /// is done without an end. Items replayed from a compaction tell no time; a call seen before
+    /// keeps its record. Seen in 0.147–0.169.
+    fn note_call(&mut self, id: &str, call: Option<(String, Option<String>)>, output: bool, ts_ms: Option<i64>) {
+        match (call, self.call_by_id.get(id)) {
+            (Some((tool, input)), None) if output => {
+                self.call_by_id.insert(id.to_string(), self.calls.len());
+                self.calls.push(CallRecord {
+                    start_ms: ts_ms,
+                    end_ms: None,
+                    done: id.starts_with('\0'),
+                    background: false,
+                    asks_user: tools::asks_the_user(&tool),
+                    input,
+                });
+            }
+            (None, Some(&at)) if !output => {
+                let call = &mut self.calls[at];
+                if !call.done {
+                    call.done = true;
+                    call.end_ms = ts_ms.filter(|_| call.start_ms.is_some());
+                }
+            }
+            _ => {}
         }
     }
 
@@ -389,6 +430,12 @@ impl Parser {
                 if let Some(id) = str_at(item, "call_id") {
                     self.tools_by_call.insert(id.to_string(), (tool.clone(), target.clone()));
                 }
+                let input = if ty == "custom_tool_call" {
+                    code_input(&tool, str_at(item, "input").unwrap_or_default(), target.as_deref(), cwd, &self.home)
+                } else {
+                    call_input(name, &serde_json::from_str(str_at(item, "arguments").unwrap_or_default()).unwrap_or(Value::Null), target.as_deref())
+                };
+                self.item_call = Some((tool.clone(), input));
                 (vec![block(BlockKind::ToolUse, name.len() as u64 + chars, Some(tool), target)], true)
             }
             "function_call_output" | "custom_tool_call_output" => {
@@ -415,7 +462,12 @@ impl Parser {
                     .collect();
                 (blocks, false)
             }
-            t if t.ends_with("_call") => (vec![block(BlockKind::ToolUse, json_len(item), Some(t.to_string()), None)], true),
+            t if t.ends_with("_call") => {
+                // A hosted call, such as `web_search_call`, which the API runs.
+                let query = item.get("action").and_then(|a| str_at(a, "query")).and_then(tokprof_core::model::input_head);
+                self.item_call = Some((t.to_string(), query));
+                (vec![block(BlockKind::ToolUse, json_len(item), Some(t.to_string()), None)], true)
+            }
             _ => (vec![block(BlockKind::Unknown, json_len(item), None, None)], false),
         }
     }
@@ -512,6 +564,13 @@ impl Parser {
         });
         self.session.chains.push(Chain { name, kind, requests });
         self.session.compactions.sort_by_key(|c| c.ts_ms);
+        // A call's times go to all its blocks, the copies in responses too.
+        for (id, &at) in &self.call_by_id {
+            for &b in self.blocks_by_call.get(id).into_iter().flatten() {
+                self.session.call_of_block.insert(b, at as u32);
+            }
+        }
+        self.session.calls = std::mem::take(&mut self.calls);
         for (id, end) in &self.call_ends {
             for &b in self.blocks_by_call.get(id).into_iter().flatten() {
                 self.session.call_ends.insert(b, end.clone());
@@ -534,8 +593,15 @@ fn class_of(b: &Block) -> Class {
     match b.kind {
         BlockKind::ToolUse | BlockKind::ToolResult => Class::Tool(match b.tool.as_deref().unwrap_or_default() {
             "exec_command" | "shell" => ToolClass::Execute,
-            // Reads what a command running in its session printed since, and how it exited.
-            "write_stdin" => ToolClass::ExecuteOutput,
+            // Reads what a command running in its session printed since, and how it exited; `wait`
+            // waits for the output of a running code cell.
+            "write_stdin" | "wait" => ToolClass::ExecuteOutput,
+            "apply_patch" => ToolClass::Edit,
+            "view_image" => ToolClass::Read,
+            "web_search_call" => ToolClass::Fetch,
+            "spawn_agent" | "send_input" | "close_agent" | "resume_agent" => ToolClass::Subagent,
+            "update_plan" => ToolClass::Think,
+            "request_user_input" | "request_user_input_async" | "sleep" => ToolClass::Manage,
             _ => ToolClass::Other,
         }),
         BlockKind::Reminder => Class::Reminder(ReminderKind::of_label(b.target.as_deref().unwrap_or_default())),
@@ -580,6 +646,26 @@ fn call_target(name: &str, args: &Value, cwd: Option<&str>, home: &Path) -> Opti
         "apply_patch" => s("input").and_then(|p| patched_file(p, cwd, home)),
         "spawn_agent" => s("agent_type").or(s("role")).or(s("name")).map(str::to_string),
         _ => tool_target(name, args, cwd, home),
+    }
+}
+
+/// The input head of a function call (see session-logs, Input of a call): the first line of a
+/// shell command, the patched file or the agent type as the target shows them.
+fn call_input(name: &str, args: &Value, target: Option<&str>) -> Option<String> {
+    match name {
+        "apply_patch" | "spawn_agent" => target.map(str::to_string),
+        _ => shell_command(name, args).as_deref().and_then(tokprof_core::model::input_head),
+    }
+}
+
+/// The input head of a custom tool call: for an `exec` call with one inner tool, that tool's, as
+/// `code_target` names it, or the file a direct `apply_patch` call patched.
+fn code_input(tool: &str, code: &str, target: Option<&str>, cwd: Option<&str>, home: &Path) -> Option<String> {
+    match tool {
+        "apply_patch" => target.map(str::to_string).or_else(|| patched_file(code, cwd, home)),
+        "spawn_agent" => target.map(str::to_string),
+        "exec_command" => js_string(code, "cmd").as_deref().and_then(tokprof_core::model::input_head),
+        _ => None,
     }
 }
 
@@ -1091,8 +1177,17 @@ mod tests {
         let tool = |kind, name| class_of(&block(kind, name));
         assert_eq!(tool(BlockKind::ToolResult, "exec_command"), Class::Tool(ToolClass::Execute));
         assert_eq!(tool(BlockKind::ToolUse, "shell"), Class::Tool(ToolClass::Execute));
-        // apply_patch keeps the default hint, as it had before classes.
-        assert_eq!(tool(BlockKind::ToolUse, "apply_patch"), Class::Tool(ToolClass::Other));
+        assert_eq!(tool(BlockKind::ToolUse, "apply_patch"), Class::Tool(ToolClass::Edit));
+        assert_eq!(tool(BlockKind::ToolResult, "write_stdin"), Class::Tool(ToolClass::ExecuteOutput));
+        assert_eq!(tool(BlockKind::ToolUse, "wait"), Class::Tool(ToolClass::ExecuteOutput));
+        assert_eq!(tool(BlockKind::ToolUse, "view_image"), Class::Tool(ToolClass::Read));
+        assert_eq!(tool(BlockKind::ToolUse, "spawn_agent"), Class::Tool(ToolClass::Subagent));
+        assert_eq!(tool(BlockKind::ToolUse, "web_search_call"), Class::Tool(ToolClass::Fetch));
+        assert_eq!(tool(BlockKind::ToolUse, "update_plan"), Class::Tool(ToolClass::Think));
+        for own in ["request_user_input", "request_user_input_async", "sleep"] {
+            assert_eq!(tool(BlockKind::ToolUse, own), Class::Tool(ToolClass::Manage), "{own}");
+        }
+        assert_eq!(tool(BlockKind::ToolUse, "js"), Class::Tool(ToolClass::Other));
         assert_eq!(tool(BlockKind::Reminder, "instructions"), Class::Reminder(ReminderKind::Instructions));
     }
 
@@ -1150,5 +1245,78 @@ mod tests {
         assert!(!scripted(serde_json::json!({"id": "t", "cwd": "/w/p", "originator": "codex-tui"})));
         assert!(!scripted(serde_json::json!({"id": "t", "cwd": "/w/p", "originator": "Codex Desktop"})));
         assert!(!scripted(serde_json::json!({"id": "t", "cwd": "/w/p"})));
+    }
+
+    /// The record of the first call of this tool.
+    fn call_record<'a>(s: &'a Session, tool: &str) -> &'a CallRecord {
+        let b = s.blocks.iter().position(|b| b.kind == BlockKind::ToolUse && b.tool.as_deref() == Some(tool)).unwrap();
+        s.call(b).unwrap()
+    }
+
+    #[test]
+    fn calls_start_at_their_item_and_end_at_their_output() {
+        use serde_json::json;
+        let item = |ts: &str, payload: Value| json!({"type": "response_item", "timestamp": ts, "payload": payload});
+        let usage = |ts: &str, id: &str| json!({"type": "token_usage_record", "timestamp": ts, "payload": {"response_id": id, "usage": {"input_tokens": 100, "output_tokens": 1}}});
+        let mut p = parser("t");
+        for l in [
+            item("2026-11-19T10:00:00Z", json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "go"}]})),
+            item(
+                "2026-11-19T10:00:04Z",
+                json!({"type": "function_call", "name": "exec_command", "call_id": "d", "arguments": "{\"cmd\":\"cargo test\\nls\"}"}),
+            ),
+            item("2026-11-19T10:00:04Z", json!({"type": "web_search_call", "status": "completed", "action": {"type": "search", "query": "codex rollout"}})),
+            item(
+                "2026-11-19T10:00:04Z",
+                json!({"type": "custom_tool_call", "name": "apply_patch", "call_id": "e", "input": "*** Begin Patch\n*** Update File: /w/p/src/a.rs\n@@"}),
+            ),
+            item("2026-11-19T10:00:04Z", json!({"type": "function_call", "name": "request_user_input_async", "call_id": "q", "arguments": "{}"})),
+            usage("2026-11-19T10:00:05Z", "r1"),
+            item("2026-11-19T10:00:30Z", json!({"type": "function_call_output", "call_id": "d", "output": "ok"})),
+            item("2026-11-19T10:00:31Z", json!({"type": "custom_tool_call_output", "call_id": "e", "output": "ok"})),
+            item("2026-11-19T10:00:04.026Z", json!({"type": "function_call_output", "call_id": "q", "output": "{\"accepted\":true}"})),
+        ] {
+            p.line(&l.to_string());
+        }
+        // A compaction replays the call; its copy keeps the record of the call.
+        p.line(
+            &json!({"type": "compacted", "timestamp": "2026-11-19T10:05:00Z", "payload": {"replacement_history": [
+                {"type": "function_call", "name": "exec_command", "call_id": "d", "arguments": "{\"cmd\":\"cargo test\"}"},
+                {"type": "function_call", "name": "exec_command", "call_id": "old", "arguments": "{\"cmd\":\"git log\"}"},
+                {"type": "function_call_output", "call_id": "old", "output": "x"}]}})
+            .to_string(),
+        );
+        let s = p.into_session();
+        let exec = call_record(&s, "exec_command");
+        assert_eq!((exec.start_ms, exec.end_ms, exec.duration_ms()), (Some(ms("2026-11-19T10:00:04Z")), Some(ms("2026-11-19T10:00:30Z")), Some(26_000)));
+        assert!(exec.done && exec.timed() && !exec.background);
+        assert_eq!(exec.input.as_deref(), Some("cargo test"));
+        let web = call_record(&s, "web_search_call");
+        assert!(web.done && web.start_ms.is_some() && web.end_ms.is_none() && !web.timed());
+        assert_eq!(web.input.as_deref(), Some("codex rollout"));
+        let patch = call_record(&s, "apply_patch");
+        assert_eq!((patch.duration_ms(), patch.input.as_deref()), (Some(27_000), Some("/w/p/src/a.rs")));
+        let ask = call_record(&s, "request_user_input_async");
+        assert!(ask.asks_user && !ask.timed());
+        let replayed: Vec<&CallRecord> = (0..s.blocks.len())
+            .filter(|&b| s.blocks[b].kind == BlockKind::ToolUse && s.blocks[b].tool.as_deref() == Some("exec_command"))
+            .filter_map(|b| s.call(b))
+            .collect();
+        assert!(replayed.contains(&exec) && replayed.iter().any(|c| c.start_ms.is_none() && c.end_ms.is_none() && c.done), "{replayed:?}");
+    }
+
+    #[test]
+    fn input_heads_of_codex_calls() {
+        let args = |cmd: &str| serde_json::json!({ "cmd": cmd });
+        assert_eq!(call_input("exec_command", &args("cargo test -p a\necho"), Some("cargo test")).as_deref(), Some("cargo test -p a"));
+        assert_eq!(call_input("spawn_agent", &serde_json::json!({"agent_type": "explorer"}), Some("explorer")).as_deref(), Some("explorer"));
+        assert_eq!(call_input("write_stdin", &serde_json::json!({"chars": "y"}), None), None);
+        let home = Path::new("/h");
+        assert_eq!(
+            code_input("exec_command", "text(await tools.exec_command({cmd: \"git status\"}))", Some("git status"), None, home).as_deref(),
+            Some("git status")
+        );
+        assert_eq!(code_input("apply_patch", "*** Update File: /w/p/a.rs\n", None, Some("/w/p"), home).as_deref(), Some("a.rs"));
+        assert_eq!(code_input("js", "1 + 1", None, None, home), None);
     }
 }

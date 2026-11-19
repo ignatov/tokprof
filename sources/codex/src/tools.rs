@@ -12,6 +12,13 @@ pub(crate) fn tool_target(tool: &str, _input: &Value, _cwd: Option<&str>, _home:
     rest.split("__").next().filter(|server| !server.is_empty()).map(|server| format!("mcp:{server}"))
 }
 
+/// Whether a Codex tool asks the user and waits for the answer. `request_user_input_async` returns
+/// at once and the answer comes later as a message (seen in 0.159); `request_user_input` was seen
+/// only in tool lists.
+pub(crate) fn asks_the_user(tool: &str) -> bool {
+    matches!(tool, "request_user_input" | "request_user_input_async")
+}
+
 /// How a call ended, from its output item: `None` for a call that worked. In code mode an `exec`
 /// output starts with `Script failed` when the script threw, and each command it printed is a JSON
 /// object with its `exit_code`; a direct command reports `Process exited with code <n>`. Seen in

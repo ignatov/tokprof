@@ -69,6 +69,8 @@ goldens! {
     flame: ["flame", "-o", "<home>/f.folded"] View::File("f.folded");
     flame_misses: ["flame", "--value", "avoidable", "--stack", "agent,model,cause", "-o", "<home>/m.collapsed"] View::File("m.collapsed");
     year: ["year", "2025"] View::Store;
+    // The share file of the fixtures: the call times, inputs and groups never reach it.
+    share: ["--since", "2026-10-01", "--until", "2026-11-10", "share", "-o", "<home>/s.json"] View::File("s.json");
 }
 
 const PRICES: &str = "tests/golden/prices.toml";

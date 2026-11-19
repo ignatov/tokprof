@@ -8,7 +8,9 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use tokprof_browse::day::{self, keeps_client, temp_folders};
 use tokprof_browse::filters::{normalize_project, parse_date, parse_since};
 use tokprof_browse::reading::{sources, warnings};
-use tokprof_browse::{calendar, clipboard, paths, render_calendar, render_month, render_requests, render_rhythm, render_sessions, render_xray, render_year};
+use tokprof_browse::{
+    calendar, clipboard, paths, render_calendar, render_calls, render_month, render_requests, render_rhythm, render_sessions, render_xray, render_year,
+};
 use tokprof_core::analysis::{self, Component};
 use tokprof_core::calendar::Metric;
 use tokprof_core::export;
@@ -22,6 +24,7 @@ use tokprof_core::rhythm::{self, Timeline, View};
 use tokprof_core::scan::{OnUnreadable, report_logs, scan};
 use tokprof_core::share::{self, Share};
 use tokprof_core::source::{AgentId, SessionRef};
+use tokprof_core::tools::GroupFilter;
 use tokprof_core::{bench, fmt, handoff, xray};
 
 /// `print!` to stdout through [`write_out`].
@@ -81,8 +84,22 @@ enum Command {
         target: Option<String>,
         /// Print the requests of the main conversation instead: each with its tokens, cost and
         /// why, what entered its context since the previous request and what changed.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "calls")]
         requests: bool,
+        /// Print the tool calls of the main conversation instead: each with its time, request,
+        /// group, tool, input, status, duration and result tokens, after the groups table.
+        #[arg(long)]
+        calls: bool,
+        /// With --calls, only the calls that failed.
+        #[arg(long, requires = "calls")]
+        failed: bool,
+        /// With --calls, only the calls of this group: files, search, shell, web, subagents,
+        /// agent, mcp (every server), mcp <server> or other.
+        #[arg(long, requires = "calls", value_parser = parse_group)]
+        group: Option<GroupFilter>,
+        /// With --calls, only the calls of this tool, its name compared without case.
+        #[arg(long, requires = "calls")]
+        tool: Option<String>,
     },
     /// The line to start a new session with so that it picks up where an earlier one stopped,
     /// instead of resuming it: the session's id and the path of its log. In a terminal, it is
@@ -297,7 +314,7 @@ fn main() -> Result<()> {
     let pricing = paths::pricing(cli.prices.as_deref())?;
     let style = fmt::Style::with_color(std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none());
     let mut command = match cli.command.take() {
-        None => Command::Scan { target: None, requests: false },
+        None => Command::Scan { target: None, requests: false, calls: false, failed: false, group: None, tool: None },
         Some(c) => c,
     };
     // Without `-o`, the profile goes into the profile directory, which is made once the options
@@ -382,7 +399,7 @@ fn main() -> Result<()> {
     let filtered = cli.project.is_some() || cli.session.is_some() || cli.since.is_some() || cli.until.is_some() || cli.client.is_some();
     let none_found = || if filtered { "no session logs found for these filters" } else { "no session logs found" };
     match &command {
-        Command::Scan { target, requests } => {
+        Command::Scan { target, requests, calls, failed, group, tool } => {
             let file = match target {
                 Some(spec) => xray::find(spec, &catalog, &select)?,
                 None => xray::latest(&catalog, &select).context(none_found())?,
@@ -390,6 +407,11 @@ fn main() -> Result<()> {
             let x = xray::xray(&catalog, &file, &pricing, now_ms())?;
             if *requests {
                 out!("{}", render_requests::text(&x, &style));
+                return Ok(());
+            }
+            if *calls {
+                let filter = render_calls::CallFilter { failed: *failed, group: group.clone(), tool: tool.clone() };
+                out!("{}", render_calls::text(&x, &filter, &style));
                 return Ok(());
             }
             out!("{}", render_xray::text(&x, &style, &paths::profile_dir(), catalog.home()));
@@ -1030,6 +1052,11 @@ fn pick_year(arg: Option<&str>, this: i32) -> Result<Option<i32>> {
     Ok(Some(year))
 }
 
+/// A group of `tokprof scan --calls --group`.
+fn parse_group(s: &str) -> Result<GroupFilter, String> {
+    GroupFilter::parse(s).ok_or_else(|| format!("unknown group {s:?}; use {}", tokprof_core::tools::GROUP_NAMES))
+}
+
 /// A metric of `tokprof calendar`.
 fn parse_metric(s: &str) -> Result<Metric, String> {
     Metric::parse(s).ok_or_else(|| format!("unknown metric {s:?}; use {}", Metric::NAMES))
@@ -1117,6 +1144,26 @@ mod tests {
         for bad in ["26", "2026-11", "+202", "twenty"] {
             assert_eq!(pick_year(Some(bad), 2026).unwrap_err().to_string(), format!("bad year {bad:?}, expected YYYY or this"));
         }
+    }
+
+    #[test]
+    fn the_call_log_options_need_calls_and_name_a_group() {
+        let parse = |args: &[&str]| Cli::try_parse_from(std::iter::once("tokprof").chain(args.iter().copied()));
+        let Some(Command::Scan { calls, failed, group, tool, .. }) =
+            parse(&["scan", "--calls", "--failed", "--group", "shell", "--tool", "Bash"]).unwrap().command
+        else {
+            panic!("not the scan")
+        };
+        assert!(calls && failed);
+        assert_eq!((group, tool.as_deref()), (Some(GroupFilter::One(tokprof_core::tools::Group::Shell)), Some("Bash")));
+        let err = |args: &[&str]| parse(args).err().unwrap().to_string();
+        assert!(err(&["scan", "--calls", "--requests"]).contains("cannot be used with"), "{}", err(&["scan", "--calls", "--requests"]));
+        for alone in [&["scan", "--failed"][..], &["scan", "--group", "shell"], &["scan", "--tool", "Read"]] {
+            assert!(err(alone).contains("--calls"), "{alone:?}: {}", err(alone));
+        }
+        let unknown = err(&["scan", "--calls", "--group", "disk"]);
+        assert!(unknown.contains("files, search, shell, web, subagents, agent, mcp, mcp <server>, other"), "{unknown}");
+        assert!(matches!(parse(&["scan", "--calls", "--group", "mcp"]).unwrap().command, Some(Command::Scan { group: Some(GroupFilter::AnyMcp), .. })));
     }
 
     #[test]

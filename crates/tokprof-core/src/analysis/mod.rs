@@ -683,7 +683,14 @@ impl<'a> Walker<'a> {
         for &(b, tokens) in &self.entered {
             let blk = block(b);
             if matches!(blk.kind, BlockKind::ToolUse | BlockKind::ToolResult) {
-                sink.block_entered(&BlockEntry { kind: blk.kind, tool: blk.tool.as_deref(), target: blk.target.as_deref(), class: blk.class, tokens });
+                sink.block_entered(&BlockEntry {
+                    kind: blk.kind,
+                    tool: blk.tool.as_deref(),
+                    target: blk.target.as_deref(),
+                    class: blk.class,
+                    tokens,
+                    call: s.call_of_block.get(&b).copied(),
+                });
             }
             if blk.kind == BlockKind::ToolResult {
                 triggers.push(b);
@@ -707,6 +714,8 @@ impl<'a> Walker<'a> {
                 outcome: ended.map_or(Outcome::Worked, |b| s.outcome(b)),
                 error: ended.and_then(|b| s.error_line(b)),
                 vcs: ended.and_then(|b| s.vcs.get(&b).copied()).unwrap_or_default(),
+                duration_ms: ended.and_then(|b| s.call(b)).and_then(|c| c.duration_ms()),
+                timed: ended.and_then(|b| s.call(b)).is_some_and(|c| c.timed()),
             }
         };
         if triggers.is_empty() {

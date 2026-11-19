@@ -65,6 +65,28 @@ pub fn human_duration(s: f64) -> String {
     }
 }
 
+/// How long a tool call took (see tool-breakdown, Format of a duration): one decimal under
+/// 10 s, whole seconds under a minute, minutes with one decimal up to 10 minutes, whole minutes up
+/// to an hour, then hours and days with one decimal. Halves round up.
+pub fn call_time(ms: f64) -> String {
+    let s = ms.max(0.0) / 1000.0;
+    let one = |x: f64| (x * 10.0).round() / 10.0;
+    let (m, h) = (s / 60.0, s / 3_600.0);
+    if one(s) < 10.0 {
+        format!("{:.1}s", one(s))
+    } else if s.round() < 60.0 {
+        format!("{:.0}s", s.round())
+    } else if one(m) < 10.0 {
+        format!("{:.1}m", one(m))
+    } else if m.round() < 60.0 {
+        format!("{:.0}m", m.round())
+    } else if one(h) < 24.0 {
+        format!("{:.1}h", one(h))
+    } else {
+        format!("{:.1}d", one(s / 86_400.0))
+    }
+}
+
 /// The text cut to `width` characters, with an ellipsis where it was cut.
 pub fn clip_end(s: &str, width: usize) -> String {
     let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -152,6 +174,15 @@ impl Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn call_times_show_one_decimal_under_ten_seconds() {
+        let shown: Vec<String> = [80.0, 400.0, 23_000.0, 210_000.0, 1_680_000.0, 13_320_000.0].into_iter().map(call_time).collect();
+        assert_eq!(shown, ["0.1s", "0.4s", "23s", "3.5m", "28m", "3.7h"]);
+        assert_eq!((call_time(9_960.0), call_time(151_000.0)), ("10s".into(), "2.5m".into()));
+        let edges: Vec<String> = [59_700.0, 75_000.0, 599_000.0, 3_590_000.0, 30_960_000.0].into_iter().map(call_time).collect();
+        assert_eq!(edges, ["1.0m", "1.3m", "10m", "1.0h", "8.6h"]);
+    }
 
     #[test]
     fn a_count_of_one_takes_the_singular() {

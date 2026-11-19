@@ -1022,8 +1022,8 @@ fn tools(x: &XRay, p: &Pal) -> Vec<El> {
         return vec![note("No tool calls.", p)];
     }
     let cells = tool_cells(&x.tools, RowOrder::Rent, 24, x.tools.failed > 0);
-    let widths = [0.0, 50.0, 80.0, 80.0, 70.0, 70.0, 56.0, 50.0, 70.0];
-    let names: Vec<&'static str> = vec!["tool", "calls", "avg result", "avg input", "rent", "trips", "single", "failed", "after"];
+    let widths = [0.0, 50.0, 56.0, 64.0, 80.0, 80.0, 70.0, 70.0, 56.0, 50.0, 70.0];
+    let names: Vec<&'static str> = vec!["tool", "calls", "time", "med time", "avg result", "avg input", "rent", "trips", "single", "failed", "after"];
     let n = cells.rows.first().map_or(0, Vec::len);
     let mut cols: Vec<Column> = (0..n).map(|i| Column(names[i], widths[i], i > 0)).collect();
     cols.push(Column("hint", 230.0, false));
@@ -1034,7 +1034,8 @@ fn tools(x: &XRay, p: &Pal) -> Vec<El> {
         .zip(cells.hints.iter().skip(1))
         .map(|(r, h)| r.iter().cloned().map(plain).chain([(h.clone(), Some(p.ink2))]).collect())
         .collect();
-    let mut body = col().w_full().gap(8.0).child(table_dropping(&cols, rows, &["hint", "after", "failed", "single", "avg input", "trips"], p));
+    let mut body =
+        col().w_full().gap(8.0).child(table_dropping(&cols, rows, &["hint", "after", "failed", "single", "avg input", "trips", "med time", "time"], p));
     if cells.more > 0 {
         body = body.child(note(format!("{} more", cells.more), p));
     }

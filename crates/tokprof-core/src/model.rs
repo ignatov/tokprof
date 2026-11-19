@@ -105,6 +105,11 @@ pub enum ToolClass {
     Think,
     Fetch,
     SwitchMode,
+    /// A tool that starts or talks to a subagent, a refinement of `other`.
+    Subagent,
+    /// A tool with which the agent manages itself and not the work, such as skills, tool search
+    /// or questions to the user; a refinement of `other`.
+    Manage,
     #[default]
     Other,
 }
@@ -122,7 +127,7 @@ impl ToolClass {
             ToolClass::Think => "think",
             ToolClass::Fetch => "fetch",
             ToolClass::SwitchMode => "switch_mode",
-            ToolClass::Other => "other",
+            ToolClass::Subagent | ToolClass::Manage | ToolClass::Other => "other",
         }
     }
 }
@@ -422,6 +427,54 @@ pub struct Session {
     /// The tool calls whose shell command committed, pushed or opened a pull request, by the
     /// index of their call blocks in `blocks`.
     pub vcs: BTreeMap<usize, VcsActions>,
+    /// The tool calls with their times and flags, as the source tells them (see `CallRecord`).
+    pub calls: Vec<CallRecord>,
+    /// The record in `calls` of every block of a call: the call, its result, and their copies.
+    pub call_of_block: BTreeMap<usize, u32>,
+    /// The MCP servers the session had, as its logs list them, whether it called them or not;
+    /// empty when the logs do not list them.
+    pub mcp_servers: Vec<String>,
+}
+
+/// A tool call's times and flags, as its source tells them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CallRecord {
+    /// When the log gives the call; `None` when the source gives no time for it.
+    pub start_ms: Option<i64>,
+    /// When the log gives its result; `None` without a result, or for a result in the same
+    /// response as the call.
+    pub end_ms: Option<i64>,
+    /// The call has its result: a result line, or a result in its own response.
+    pub done: bool,
+    /// The call returned while the work it started went on.
+    pub background: bool,
+    /// The call asked the user a question.
+    pub asks_user: bool,
+    /// A short head of its input, on one line.
+    pub input: Option<String>,
+}
+
+/// The most characters of an input head.
+pub const INPUT_HEAD_CHARS: usize = 60;
+
+/// The first non-empty line of `text`, cut to `INPUT_HEAD_CHARS` characters; `None` when there
+/// is none.
+pub fn input_head(text: &str) -> Option<String> {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    Some(line.chars().take(INPUT_HEAD_CHARS).collect())
+}
+
+impl CallRecord {
+    /// How long the call took: from its start to its result; never negative.
+    pub fn duration_ms(&self) -> Option<i64> {
+        Some((self.end_ms? - self.start_ms?).max(0))
+    }
+
+    /// Whether the call counts for times: it has a duration, ran in the foreground and asked
+    /// nobody (see tool-breakdown, Calls that count for times).
+    pub fn timed(&self) -> bool {
+        self.duration_ms().is_some() && !self.background && !self.asks_user
+    }
 }
 
 /// How a tool call ended, as its result tells.
@@ -611,6 +664,9 @@ impl Session {
             scripted: false,
             call_ends: BTreeMap::new(),
             vcs: BTreeMap::new(),
+            calls: Vec::new(),
+            call_of_block: BTreeMap::new(),
+            mcp_servers: Vec::new(),
         }
     }
 
@@ -629,6 +685,11 @@ impl Session {
     /// How the call or result in block `b` ended.
     pub fn outcome(&self, b: usize) -> Outcome {
         self.call_ends.get(&b).map_or(Outcome::Worked, |e| e.outcome)
+    }
+
+    /// The times and flags of the call that block `b` belongs to, when the source gives them.
+    pub fn call(&self, b: usize) -> Option<&CallRecord> {
+        self.call_of_block.get(&b).and_then(|&i| self.calls.get(i as usize))
     }
 
     /// The line that tells why the call or result in block `b` failed.
@@ -784,6 +845,8 @@ mod tests {
             ToolClass::Think,
             ToolClass::Fetch,
             ToolClass::SwitchMode,
+            ToolClass::Subagent,
+            ToolClass::Manage,
             ToolClass::Other,
         ] {
             assert!(acp.contains(&class.acp_kind()), "{class:?}");

@@ -12,7 +12,7 @@
 //! by hashing transcript `user` messages and `assistant` messages merged by message id. Older
 //! transcripts have no request records; their requests keep `prompt: None`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,8 +21,8 @@ use serde_json::{Value, json};
 use tokprof_core::api::ApiId;
 use tokprof_core::labels::{display_path, message_label};
 use tokprof_core::model::{
-    Block, BlockKind, CallEnd, Chain, ChainKind, Class, Compaction, CompactionTrigger, HandoffKind, Origin, Params, PromptDelta, ReminderKind, Request,
-    Session, Shape, ToolClass, TypedMessage, Usage, WakeSource,
+    Block, BlockKind, CallEnd, CallRecord, Chain, ChainKind, Class, Compaction, CompactionTrigger, HandoffKind, Origin, Params, PromptDelta, ReminderKind,
+    Request, Session, Shape, ToolClass, TypedMessage, Usage, WakeSource,
 };
 use tokprof_core::source::{AgentId, Decoder};
 use tokprof_core::trigger::{CallClass, Pending, Trigger};
@@ -173,6 +173,11 @@ pub(crate) struct Parser {
     blocks_by_call: HashMap<String, Vec<usize>>,
     /// The calls whose shell command committed, pushed or opened a pull request, by call id.
     vcs_by_call: HashMap<String, tokprof_core::trigger::VcsActions>,
+    /// The times and flags of each tool call, and its place in that list by call id.
+    calls: Vec<CallRecord>,
+    call_by_id: HashMap<String, usize>,
+    /// The MCP servers of the tool lists and deferred-tool lines.
+    mcp_servers: BTreeSet<String>,
 }
 
 impl Parser {
@@ -212,6 +217,9 @@ impl Parser {
             call_ends: HashMap::new(),
             blocks_by_call: HashMap::new(),
             vcs_by_call: HashMap::new(),
+            calls: Vec::new(),
+            call_by_id: HashMap::new(),
+            mcp_servers: BTreeSet::new(),
         }
     }
 
@@ -227,6 +235,8 @@ impl Parser {
             || line.contains("\"type\":\"custom-title\"")
             // A message the user typed while the agent worked.
             || line.contains("\"queued_command\"")
+            // Tools that became available, among them MCP servers' tools.
+            || line.contains("\"deferred_tools_delta\"")
             // An attempt of a request that failed and is sent again.
             || line.contains("\"api_error\"");
         if !interesting {
@@ -327,6 +337,7 @@ impl Parser {
         }
         let Some(msg) = v.get("message") else { return };
         self.note_call_ends(v, msg);
+        self.note_results(v, msg);
         let meta = v.get("isMeta").and_then(Value::as_bool).unwrap_or(false);
         let hash = canonical_hash(msg);
         if !self.msg_by_hash.contains_key(&hash) {
@@ -372,6 +383,59 @@ impl Parser {
         }
     }
 
+    /// The results of a `user` line end their calls at the line's `timestamp`. A `Bash` result
+    /// with `toolUseResult.backgroundTaskId`, and an `Agent` result with `toolUseResult.isAsync`
+    /// and `status` `async_launched`, returned while their work went on (seen in 2.1.284–2.1.328).
+    fn note_results(&mut self, v: &Value, msg: &Value) {
+        let Some(Value::Array(items)) = msg.get("content") else { return };
+        let ts = parse_ts_ms(v.get("timestamp"));
+        let result = v.get("toolUseResult").filter(|r| r.is_object());
+        let background_task = result.and_then(|r| str_at(r, "backgroundTaskId")).is_some_and(|t| !t.is_empty());
+        let async_agent = result.is_some_and(|r| r.get("isAsync").and_then(Value::as_bool) == Some(true) && str_at(r, "status") == Some("async_launched"));
+        for id in items.iter().filter(|i| str_at(i, "type") == Some("tool_result")).filter_map(|i| str_at(i, "tool_use_id")) {
+            let Some(&at) = self.call_by_id.get(id) else { continue };
+            let tool = self.tools_by_id.get(id).map(|(t, _)| t.as_str()).unwrap_or_default();
+            let call = &mut self.calls[at];
+            if call.done {
+                continue;
+            }
+            call.done = true;
+            call.end_ms = ts;
+            call.background = (background_task && tool == "Bash") || (async_agent && matches!(tool, "Agent" | "Task"));
+        }
+    }
+
+    /// The tool calls of an `assistant` line start at its `timestamp`, all of them at once. A tool
+    /// the API runs (`server_tool_use`) has its result in the same response, so it is done
+    /// without an end.
+    fn note_call_starts(&mut self, v: &Value, content: &[Value]) {
+        let ts = parse_ts_ms(v.get("timestamp"));
+        let cwd = self.session.cwd.clone();
+        for item in content {
+            let server = match str_at(item, "type") {
+                Some("tool_use") => false,
+                Some("server_tool_use") => true,
+                _ => continue,
+            };
+            let Some(id) = str_at(item, "id") else { continue };
+            if self.call_by_id.contains_key(id) {
+                continue;
+            }
+            let name = str_at(item, "name").unwrap_or_default();
+            let input = item.get("input").unwrap_or(&Value::Null);
+            let target = tool_target(name, input, cwd.as_deref(), &self.home);
+            self.call_by_id.insert(id.to_string(), self.calls.len());
+            self.calls.push(CallRecord {
+                start_ms: ts,
+                end_ms: None,
+                done: server,
+                background: false,
+                asks_user: asks_the_user(name),
+                input: tools::input_head(name, input, target.as_deref()),
+            });
+        }
+    }
+
     /// Whether a line belongs to the main conversation: not in a subagent's transcript, not a
     /// sidechain, and with no agent id.
     fn main_line(&self, v: &Value) -> bool {
@@ -400,6 +464,15 @@ impl Parser {
     /// worked, which Claude Code hands the agent in the same turn; background tasks' results and
     /// other sessions' messages come queued too, and their prompts start with a tag.
     fn attachment(&mut self, v: &Value) {
+        if let Some(delta) = v.get("attachment").filter(|a| str_at(a, "type") == Some("deferred_tools_delta")) {
+            // Seen in 2.1.284–2.1.328. `removedNames` is not read: a server once there was connected.
+            for name in delta.get("addedNames").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+                if let Some(server) = tools::mcp_server(name) {
+                    self.mcp_servers.insert(server.to_string());
+                }
+            }
+            return;
+        }
         let Some(queued) = v.get("attachment").filter(|a| str_at(a, "type") == Some("queued_command")) else { return };
         if !self.main_line(v) {
             return;
@@ -495,6 +568,7 @@ impl Parser {
         let Some(msg) = v.get("message") else { return };
         let message_id = str_at(msg, "id").map(str::to_string);
         let content: Vec<Value> = msg.get("content").and_then(Value::as_array).cloned().unwrap_or_default();
+        self.note_call_starts(v, &content);
         if let Some(origin) = attribution(v) {
             let launches = content.iter().filter(|i| str_at(i, "type") == Some("tool_use") && matches!(str_at(i, "name"), Some("Agent" | "Task")));
             for id in launches.filter_map(|i| str_at(i, "id")) {
@@ -686,6 +760,9 @@ impl Parser {
         let mut tool_names = Vec::new();
         for tool in shape.get("tools").and_then(Value::as_array).into_iter().flatten() {
             let name = str_at(tool, "name").unwrap_or("?").to_string();
+            if let Some(server) = tools::mcp_server(&name) {
+                self.mcp_servers.insert(server.to_string());
+            }
             let chars = name.len() as u64 + str_at(tool, "description").map_or(0, |d| d.len() as u64) + tool.get("input_schema").map_or(0, json_len);
             self.session.blocks.push(Block {
                 class: Class::None,
@@ -971,6 +1048,14 @@ impl Parser {
         for b in &mut session.blocks {
             b.class = class_of(b);
         }
+        // A call's times go to all its blocks, in every message that holds them.
+        for (id, &at) in &self.call_by_id {
+            for &b in self.blocks_by_call.get(id).into_iter().flatten() {
+                session.call_of_block.insert(b, at as u32);
+            }
+        }
+        session.calls = std::mem::take(&mut self.calls);
+        session.mcp_servers = std::mem::take(&mut self.mcp_servers).into_iter().collect();
         // Claude Code sends every request to the Anthropic API.
         for r in chains.iter_mut().flat_map(|c| &mut c.requests) {
             r.api = ApiId::Anthropic;
@@ -1168,11 +1253,15 @@ fn class_of(b: &Block) -> Class {
         BlockKind::ToolUse | BlockKind::ToolResult => Class::Tool(match b.tool.as_deref().unwrap_or_default() {
             "Bash" => ToolClass::Execute,
             "BashOutput" => ToolClass::ExecuteOutput,
-            "Read" => ToolClass::Read,
+            "Read" | "NotebookRead" => ToolClass::Read,
             "Write" => ToolClass::Write,
-            "Edit" | "MultiEdit" => ToolClass::Edit,
+            "Edit" | "MultiEdit" | "NotebookEdit" => ToolClass::Edit,
             "WebFetch" | "WebSearch" => ToolClass::Fetch,
-            "Grep" | "Glob" => ToolClass::Search,
+            "Grep" | "Glob" | "LS" => ToolClass::Search,
+            "Agent" | "Task" | "SendMessage" | "ListAgents" | "SubagentHandback" => ToolClass::Subagent,
+            "TodoWrite" | "TaskCreate" | "TaskGet" | "TaskUpdate" | "TaskList" => ToolClass::Think,
+            "EnterPlanMode" | "ExitPlanMode" | "EnterWorktree" | "ExitWorktree" => ToolClass::SwitchMode,
+            "Skill" | "ToolSearch" | "ScheduleWakeup" | "AskUserQuestion" | "advisor" => ToolClass::Manage,
             _ => ToolClass::Other,
         }),
         BlockKind::Reminder => Class::Reminder(ReminderKind::of_label(b.target.as_deref().unwrap_or_default())),
@@ -1940,7 +2029,18 @@ mod tests {
         assert_eq!(tool(BlockKind::ToolUse, "MultiEdit"), Class::Tool(ToolClass::Edit));
         assert_eq!(tool(BlockKind::ToolResult, "WebSearch"), Class::Tool(ToolClass::Fetch));
         assert_eq!(tool(BlockKind::ToolResult, "Glob"), Class::Tool(ToolClass::Search));
-        assert_eq!(tool(BlockKind::ToolUse, "Agent"), Class::Tool(ToolClass::Other));
+        assert_eq!(tool(BlockKind::ToolUse, "Agent"), Class::Tool(ToolClass::Subagent));
+        assert_eq!(tool(BlockKind::ToolResult, "SendMessage"), Class::Tool(ToolClass::Subagent));
+        assert_eq!(tool(BlockKind::ToolUse, "LS"), Class::Tool(ToolClass::Search));
+        assert_eq!(tool(BlockKind::ToolUse, "NotebookRead"), Class::Tool(ToolClass::Read));
+        assert_eq!(tool(BlockKind::ToolUse, "NotebookEdit"), Class::Tool(ToolClass::Edit));
+        assert_eq!(tool(BlockKind::ToolUse, "TodoWrite"), Class::Tool(ToolClass::Think));
+        assert_eq!(tool(BlockKind::ToolUse, "ExitPlanMode"), Class::Tool(ToolClass::SwitchMode));
+        assert_eq!(tool(BlockKind::ToolUse, "EnterWorktree"), Class::Tool(ToolClass::SwitchMode));
+        for own in ["Skill", "ToolSearch", "ScheduleWakeup", "AskUserQuestion", "advisor"] {
+            assert_eq!(tool(BlockKind::ToolUse, own), Class::Tool(ToolClass::Manage), "{own}");
+        }
+        assert_eq!(tool(BlockKind::ToolUse, "Monitor"), Class::Tool(ToolClass::Other));
         assert_eq!(tool(BlockKind::Reminder, "hook context"), Class::Reminder(ReminderKind::HookContext));
         assert_eq!(tool(BlockKind::Reminder, "task list"), Class::Reminder(ReminderKind::TaskList));
         assert_eq!(tool(BlockKind::Reminder, "attached files"), Class::Reminder(ReminderKind::AttachedFiles));
@@ -2204,5 +2304,103 @@ mod tests {
         assert!(!scripted(&[Some("cli")]));
         assert!(!scripted(&[Some("sdk-ts"), Some("sdk-cli")]), "a program that resumed a session later");
         assert!(!scripted(&[None]));
+    }
+
+    /// The record of the call with this id: the decoder keys records by the order of the calls.
+    fn call_record<'a>(s: &'a Session, tool: &str) -> &'a CallRecord {
+        let b = s.blocks.iter().position(|b| b.kind == BlockKind::ToolUse && b.tool.as_deref() == Some(tool)).unwrap();
+        s.call(b).unwrap()
+    }
+
+    #[test]
+    fn calls_start_at_their_line_and_end_at_their_result() {
+        let call = |id: &str, name: &str, input: Value| json!({"type": "tool_use", "id": id, "name": name, "input": input});
+        let result = |ts: &str, id: &str, extra: Value| {
+            let mut v =
+                json!({"type": "user", "timestamp": ts, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": "x"}]}});
+            if let (Some(line), Value::Object(extra)) = (v.as_object_mut(), extra) {
+                line.extend(extra);
+            }
+            v
+        };
+        let s = session_from(&[
+            assistant_line("m1", json!({"timestamp": "2026-11-19T14:00:12.100Z"}), json!([call("t1", "Read", json!({"file_path": "/w/a.rs"}))])),
+            result("2026-11-19T14:00:12.180Z", "t1", json!({})),
+            // Two calls on one line share its time.
+            assistant_line(
+                "m2",
+                json!({"timestamp": "2026-11-19T14:01:00Z"}),
+                json!([call("t2", "Grep", json!({"pattern": "fn main"})), call("t3", "Glob", json!({"pattern": "*.rs"}))]),
+            ),
+            result("2026-11-19T14:01:30Z", "t2", json!({})),
+            result("2026-11-19T14:01:30Z", "t3", json!({})),
+            // A tool the API runs has its result in the same response.
+            assistant_line(
+                "m3",
+                json!({"timestamp": "2026-11-19T14:02:00Z"}),
+                json!([{"type": "server_tool_use", "id": "s1", "name": "WebSearch", "input": {"query": "rust select_nth"}}, {"type": "web_search_tool_result", "tool_use_id": "s1", "content": []}]),
+            ),
+            // Background work, a question, and a call without a result.
+            assistant_line(
+                "m4",
+                json!({"timestamp": "2026-11-19T14:03:00Z"}),
+                json!([
+                    call("t4", "Bash", json!({"command": "npm run dev", "run_in_background": true})),
+                    call("t5", "Agent", json!({"description": "Find the parser", "run_in_background": true})),
+                    call("t6", "AskUserQuestion", json!({"questions": []})),
+                    call("t7", "Monitor", json!({})),
+                ]),
+            ),
+            result("2026-11-19T14:03:00.200Z", "t4", json!({"toolUseResult": {"backgroundTaskId": "b1", "stdout": ""}})),
+            result("2026-11-19T14:03:01Z", "t5", json!({"toolUseResult": {"isAsync": true, "status": "async_launched", "agentId": "a1"}})),
+            result("2026-11-19T14:06:00Z", "t6", json!({"toolUseResult": {"answers": {}}})),
+        ]);
+        let read = call_record(&s, "Read");
+        assert_eq!((read.start_ms, read.end_ms, read.duration_ms()), (Some(ms("2026-11-19T14:00:12.100Z")), Some(ms("2026-11-19T14:00:12.180Z")), Some(80)));
+        assert!(read.done && read.timed() && !read.background && !read.asks_user);
+        assert_eq!(read.input.as_deref(), Some("/w/a.rs"));
+        let (grep, glob) = (call_record(&s, "Grep"), call_record(&s, "Glob"));
+        assert_eq!((grep.start_ms, glob.start_ms), (Some(ms("2026-11-19T14:01:00Z")), Some(ms("2026-11-19T14:01:00Z"))));
+        assert_eq!((grep.duration_ms(), glob.duration_ms()), (Some(30_000), Some(30_000)));
+        let web = call_record(&s, "WebSearch");
+        assert!(web.done && web.end_ms.is_none() && web.duration_ms().is_none() && !web.timed());
+        assert_eq!(web.input.as_deref(), Some("rust select_nth"));
+        let bash = call_record(&s, "Bash");
+        assert!(bash.background && !bash.timed());
+        assert_eq!(bash.duration_ms(), Some(200));
+        assert!(call_record(&s, "Agent").background);
+        let ask = call_record(&s, "AskUserQuestion");
+        assert!(ask.asks_user && !ask.background && !ask.timed());
+        assert_eq!(ask.duration_ms(), Some(180_000));
+        let monitor = call_record(&s, "Monitor");
+        assert!(!monitor.done && monitor.end_ms.is_none() && monitor.start_ms.is_some());
+        // The copy of a call in a later prompt has the same record.
+        let copies: Vec<usize> = (0..s.blocks.len()).filter(|&b| s.call(b) == Some(read)).collect();
+        assert!(copies.len() >= 2, "{copies:?}");
+    }
+
+    #[test]
+    fn a_result_without_the_flags_of_its_tool_is_not_background() {
+        let s = session_from(&[
+            assistant_line("m1", json!({"timestamp": "2026-11-19T14:00:00Z"}), json!([{"type": "tool_use", "id": "t1", "name": "Agent", "input": {}}])),
+            json!({"type": "user", "timestamp": "2026-11-19T14:04:10Z", "toolUseResult": {"isAsync": false, "status": "completed"},
+                   "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "done"}]}}),
+        ]);
+        let agent = call_record(&s, "Agent");
+        assert!(!agent.background && agent.timed());
+        assert_eq!(agent.duration_ms(), Some(250_000));
+    }
+
+    #[test]
+    fn tool_lists_and_deferred_tools_name_the_connected_servers() {
+        let s = session_from(&[
+            json!({"type": "api-request-shape", "shapeHash": "sh", "shape": {"system": [], "tools": [
+                {"name": "Read", "description": "reads", "input_schema": {}},
+                {"name": "mcp__linear__list_issues", "description": "lists", "input_schema": {}}]}}),
+            json!({"type": "attachment", "timestamp": "2026-11-19T14:00:00Z", "attachment": {"type": "deferred_tools_delta",
+                   "addedNames": ["WebFetch", "mcp__sentry__search_issues", "mcp__linear__get_issue"], "removedNames": ["mcp__gone__x"]}}),
+        ]);
+        assert_eq!(s.mcp_servers, ["linear", "sentry"]);
+        assert!(session_from(&[user_line("hi")]).mcp_servers.is_empty());
     }
 }

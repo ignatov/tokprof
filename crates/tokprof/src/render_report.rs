@@ -374,6 +374,11 @@ fn request_table(title: &str, label: &str, rows_in: Vec<(&str, TriggerSpend)>) -
 /// failures columns and line.
 pub fn tools(t: &ToolTable, order: RowOrder, limit: usize) -> String {
     let mut out = String::from("Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent do (trips)\n\n");
+    let groups = tokprof_browse::render_calls::groups_table(t);
+    if !groups.is_empty() {
+        out.push_str(&groups);
+        out.push('\n');
+    }
     out.push_str(&tool_rows(t, order, limit, true));
     if let Some(line) = failures_line(t) {
         let _ = writeln!(out, "{line}");
@@ -696,20 +701,27 @@ mod tests {
         );
         t.spend = v(27.37);
         let text = tools(&t, RowOrder::Rent, 25);
-        assert!(text.starts_with("Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent do (trips)\n\n"));
+        assert!(
+            text.starts_with("Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent do (trips)\n\ngroup  calls"),
+            "{text}"
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        let header = lines.iter().position(|l| l.starts_with("tool ")).unwrap();
+        assert_eq!((lines[header - 2].split_whitespace().next(), lines[header - 1]), (Some("all"), ""), "the groups table, an empty line, the tool table");
         let py = text.lines().find(|l| l.contains("python3")).unwrap();
         assert!(py.contains("$4.32  $7.04     83%") && py.ends_with("  save long scripts to a file; edit files with the edit tool"), "{py}");
         let read = text.lines().find(|l| l.starts_with("Read")).unwrap();
         assert!(read.ends_with("$1.16  $0.20    100%"), "a large read once has no hint, and calls that all worked leave the failures cells empty: {read}");
         let by_trips = tools(&t, RowOrder::Trips, 1);
-        assert!(by_trips.contains("1 more") && by_trips.lines().nth(3).unwrap().contains("python3"), "{by_trips}");
+        let after_header = |text: &str| text.lines().skip_while(|l| !l.starts_with("tool ")).nth(1).unwrap().to_string();
+        assert!(by_trips.contains("1 more") && after_header(&by_trips).contains("python3"), "{by_trips}");
         assert!(
             text.contains("spend $27.37 · rent of these tools $5.48 · trips of these tools $7.24 (two views of the same money; do not add them)"),
             "{text}"
         );
         assert!(!text.contains("until the tool worked again"), "no failure, no failures line: {text}");
-        let hint_at = |l: &str| l.find("save long").or_else(|| l.find("hint"));
-        assert_eq!(hint_at(text.lines().nth(2).unwrap()), hint_at(py), "hints stay in their column");
+        let hint_at = |l: &str| l.find("save long").or_else(|| l.find("hint")).map(|at| l[..at].chars().count());
+        assert_eq!(hint_at(lines[header]), hint_at(py), "hints stay in their column");
     }
 
     #[test]
@@ -729,9 +741,10 @@ mod tests {
         t.spend = v(27.37);
         (t.failed, t.refused, t.after) = (2, 1, v(1.5));
         let text = tools(&t, RowOrder::Failed, 25);
-        let header = text.lines().nth(2).unwrap();
+        let mut table = text.lines().skip_while(|l| !l.starts_with("tool "));
+        let header = table.next().unwrap();
         assert!(header.contains("single  failed  after"), "{header}");
-        let first = text.lines().nth(3).unwrap();
+        let first = table.next().unwrap();
         assert!(first.starts_with("Edit") && first.ends_with("2  $1.50"), "the row with failures comes first: {first}");
         assert!(text.ends_with("failed 2 calls, after them $1.50 until the tool worked again · you refused 1\n"), "{text}");
         (t.failed, t.refused, t.denied) = (0, 2, 0);

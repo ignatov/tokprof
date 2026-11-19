@@ -119,6 +119,8 @@ struct Totals {
     profile: Profile,
     /// The records of the main conversation's requests.
     timeline: crate::timeline::Collector,
+    /// The rows of the call log.
+    calls: crate::calllog::Collector,
 }
 
 /// The setup block of a session: what it cost, what the main conversation and the subagents
@@ -154,12 +156,14 @@ impl Sink for Totals {
     fn session(&mut self, s: &Session) {
         self.file += 1;
         self.tools.session(s);
+        self.calls.session(self.file == 1);
     }
 
     fn request(&mut self, r: &RequestRecord) {
         self.tools.request(r);
         // An advisor call counts when it was made, like the main request it was part of.
         let main = self.file == 1 && (r.chain_kind == ChainKind::Main || r.advisor);
+        self.calls.request(main.then(|| self.timeline.next_index()));
         self.timeline.request(r, main);
         self.rows.push(RequestRow {
             file: self.file,
@@ -188,11 +192,13 @@ impl Sink for Totals {
     }
 
     fn entered(&mut self, e: &analysis::Entered) {
+        self.calls.entered(e);
         self.timeline.entered(e);
     }
 
     fn block_entered(&mut self, b: &BlockEntry) {
         self.tools.block_entered(b);
+        self.calls.block_entered(b);
     }
 
     fn tool_share(&mut self, t: &ToolShare) {
@@ -272,6 +278,9 @@ pub struct XRay {
     /// for the request timeline.
     pub marks: Vec<crate::timeline::Mark>,
     pub subagent_spans: Vec<crate::timeline::SubagentSpan>,
+    /// The tool calls of the main conversation, in the order of their start (see
+    /// tool-breakdown, Call log).
+    pub call_log: Vec<crate::calllog::CallRow>,
     /// What each stack of `tokprof flame`'s default stack spent, the stacks that
     /// `tokprof flame --session` writes for the session.
     pub stacks: Stacks,
@@ -371,6 +380,8 @@ pub fn xray(catalog: &Catalog, file: &SessionRef, pricing: &Pricing, now_ms: i64
         context = Some(context_of(live, cache, trailing.as_ref(), spend_usd, pricing, now_ms));
     }
     let setup = setup_of(main, &sessions, &totals, spend_usd);
+    let numbers = totals.timeline.numbers();
+    let call_log = std::mem::take(&mut totals.calls).rows(&numbers);
     Ok(XRay {
         agent: main.agent.clone(),
         project: main.project.clone(),
@@ -404,6 +415,7 @@ pub fn xray(catalog: &Catalog, file: &SessionRef, pricing: &Pricing, now_ms: i64
         points: totals.timeline.points(),
         marks: crate::timeline::marks_of(main),
         subagent_spans: crate::timeline::subagent_spans(&sessions),
+        call_log,
         rhythm: crate::rhythm::SessionRhythm::of(main, now_ms, &crate::rhythm::local_offset),
         busy: crate::busy::Busy::of(main, &sessions[1..]),
         stacks: totals.profile.stacks,

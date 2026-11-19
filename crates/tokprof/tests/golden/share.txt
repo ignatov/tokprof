@@ -1,0 +1,646 @@
+$ tokprof --prices tests/golden/prices.toml --since 2026-10-01 --until 2026-11-10 share -o <home>/s.json
+--- stdout
+wrote ~/s.json
+
+share   2026-10-30 – 2026-11-02
+spend   $0.46
+activity  4 active days · 6 active hours · 0h at the keyboard · busy 2.0h · $0.08 per active hour · $3.56 per hour at the keyboard
+
+At a glance
+
+spend     $0.46 · $0.08 per active hour · $3.56 per hour at the keyboard
+cache     $0.35 could have been saved (76.7%): cache lifetime: main $0.21, cache lifetime: subagents $0.10
+problems  3 failed calls, $0.04 after them; 1 requests waited 5s for retries, 1 of them for server errors
+you       0h at the keyboard in 5 sittings; you answered in a median 9.0m; the agents stood still a median 11s after you left
+made      no commits by the agents
+
+Where the money went
+what the spend paid for: model, content, origin, activity, prompt size, session length and client
+
+agent     model               cost  share
+claude    claude-opus-5-5    $0.25  55.5%
+opencode  claude-sonnet-4-5  $0.09  20.0%
+pi        claude-sonnet-4-5  $0.07  15.7%
+codex     gpt-6-astra        $0.04   8.0%
+opencode  claude-haiku-4-5   $0.00   0.8%
+pi        Qwen3.8-27B-Q6_K   $0.00   0.0%
+models without a price: Qwen3.8-27B-Q6_K (1.6k tokens); their tokens count as $0
+
+cost component       cost  share
+cache write         $0.13  28.3%
+output              $0.10  22.7%
+cache read          $0.09  19.8%
+rewrite after miss  $0.08  17.7%
+uncached input      $0.05  11.6%
+
+content of the context   cost  share
+unknown                 $0.32  70.2%
+assistant text          $0.06  13.9%
+tool calls              $0.03   6.7%
+user prompt             $0.02   5.0%
+thinking                $0.01   2.2%
+system prompt           $0.01   1.8%
+tool results            $0.00   0.3%
+prompts the logs hold: 8.0% of the spend; the rest is unknown
+
+origin            cost  share
+prompt           $0.33  72.7%
+agent            $0.06  14.1%
+  agent:Explore  $0.06  13.2%
+notification     $0.06  13.2%
+
+what the agent was doing   cost  share
+prompt                    $0.14  31.5%
+unknown                   $0.14  31.2%
+compaction                $0.09  20.8%
+building and testing      $0.03   7.1%
+subagents                 $0.02   4.9%
+other tools               $0.02   4.6%
+
+prompt size   cost   share
+under 50k    $0.46  100.0%
+
+session ran for   cost  share
+under 1h         $0.13  28.8%
+1–4h             $0.32  71.2%
+
+agent     client          cost  share
+claude    sdk-ts         $0.19  42.4%
+opencode  unknown        $0.09  20.8%
+pi        unknown        $0.07  15.7%
+claude    unknown        $0.06  13.2%
+codex     codex-tui      $0.03   5.7%
+codex     Codex Desktop  $0.01   1.4%
+codex     unknown        $0.00   0.9%
+
+What could have been saved
+dollars the prompt cache lost to misses, by cause, and what the cheaper cache lifetime would have kept
+
+item                       avoidable  share  per active hour
+cache lifetime: main           $0.21  46.6%            $0.04
+cache lifetime: subagents      $0.10  22.7%            $0.02
+compaction call                $0.03   7.4%            $0.01
+
+Cold returns by client
+returns to a session after its cache expired, per active hour
+
+agent     client         active hours  cold returns  per active hour  avoidable per active hour
+claude    sdk-ts                    2             0             0.00                      $0.00
+pi        unknown                   2             0             0.00                      $0.00
+codex     Codex Desktop             1             0             0.00                      $0.00
+codex     codex-tui                 1             0             0.00                      $0.00
+opencode  unknown                   1             0             0.00                      $0.00
+
+Problems
+calls that failed, requests that waited for retries, and slow requests, per active hour
+
+measure                              value  per active hour
+failed tool calls                        3             0.50
+spend after failures                 $0.04            $0.01
+calls the user refused                   2             0.33
+calls a rule denied                      1             0.17
+requests that waited for retries         1             0.17
+  server errors                          1             0.17
+time waiting for retries                5s               1s
+requests of a minute or more      1 (3.2%)             0.17
+
+How often it happens
+the active days and main sessions in which each happened at least once
+
+item                                 count          of  share
+days with a cold return                  0      4 days   0.0%
+days a request waited for retries        1      4 days  25.0%
+days you stopped the agent               2      4 days  50.0%
+sessions with a cold return              0  7 sessions   0.0%
+sessions with spend after a failure      2  7 sessions  28.6%
+sessions with a context of 400k+         0  7 sessions   0.0%
+sessions longer than a day               0  7 sessions   0.0%
+sessions where the agent asked           1  7 sessions  14.3%
+
+Habits that cost the most
+where to look, not what could be saved; the rows overlap
+
+habit                        cost  share
+thinking                    $0.01   2.2%
+setup                       $0.01   1.8%
+effort max or xhigh         $0.00   0.0%
+prompts of 400k+            $0.00   0.0%
+sessions longer than a day  $0.00   0.0%
+single lookups              $0.00   0.0%
+
+Where the agent's time went
+what the agents waited on while busy; after turns: while their own background work ran on
+
+kind                  time  share  after turns
+compaction            1.1h  56.8%         1.0h
+model                  32m  27.5%          11s
+nothing                17m  14.3%            –
+subagents              54s   0.8%            –
+building and testing   34s   0.5%            –
+API retries             5s   0.1%            –
+
+Your time with the agents
+your sittings and answers, and what the agents did after you left
+
+item                                   value
+time at the keyboard                    0.1h
+sittings                                   5
+you answered an end of turn in          9.0m
+… within 5 minutes                       -0%
+you answered a question in              1.8m
+… within 5 minutes                      100%
+the agent's turn took                   1.0m
+ends of turn while you were there       0.00
+turns the agent started itself            9%
+the agents stood still after you left    11s
+the agents worked through a break         0%
+
+Working with the agent
+hand-offs per hour at the keyboard, and per 100 typed messages for those a message starts
+
+hand-off                      value  per hour at the keyboard  per 100 typed messages
+typed messages                    1                      7.81                       –
+ends of turn                      4                     31.24                       –
+interrupts                        2                     15.62                  200.00
+typed while the agent worked      1                      7.81                  100.00
+questions                         1                      7.81                  100.00
+answers                           1                      7.81                  100.00
+wakes: subagent                   1                      7.81                       –
+wakes: command                    1                      7.81                       –
+wakes: other                      0                      0.00                       –
+
+Working with the agent by client
+the same by the program that ran the agent, such as an IDE or a terminal
+
+agent   client         at the keyboard  messages  interrupts  questions  commits  answered in
+claude  sdk-ts                    0.1h     38.43       12.81      12.81     0.00            –
+codex   codex-tui                 0.0h     60.00       30.00       0.00     0.00         9.0m
+codex   Codex Desktop             0.0h     60.00        0.00       0.00     0.00            –
+
+Commits and pull requests
+what the agents committed, pushed and opened, from their shell calls that did not fail
+
+action         value  per hour at the keyboard
+commits            0                      0.00
+pushes             0                      0.00
+pull requests      0                      0.00
+no commits by the agents
+
+Tools and commands
+rent: what keeping a tool's results in the context cost; trips: the requests its calls made the agent send
+
+tool                  calls  failed   rent  trips
+Agent                     1       0  $0.01  $0.01
+mcp                       1       0  $0.01  $0.00
+Bash cargo                3       1  $0.01  $0.01
+Bash rm                   1       0  $0.00  $0.00
+exec_command cargo        2       1  $0.00  $0.00
+AskUserQuestion           1       0  $0.00  $0.00
+apply_patch               1       0  $0.00  $0.00
+other                     1       0  $0.00  $0.00
+exec_command python3      1       1  $0.00  $0.00
+
+Highest effort by client
+the share of each client's spend and requests at max or xhigh
+
+agent     client          cost  of spend  of requests
+claude    sdk-ts         $0.19      0.0%         0.0%
+opencode  unknown        $0.09      0.0%         0.0%
+pi        unknown        $0.07      0.0%         0.0%
+claude    unknown        $0.06      0.0%         0.0%
+codex     codex-tui      $0.03      0.0%         0.0%
+codex     Codex Desktop  $0.01      0.0%         0.0%
+          1 more         $0.00
+
+Versions
+the agent versions in use, by requests
+
+agent     version            requests
+claude    unknown                   6
+codex     unknown                   5
+codex     0.166.0-alpha.5.1         1
+opencode  unknown                  12
+pi        unknown                   7
+the file holds shares of $0.46 and 247.0k tokens, not dollars; these two totals stay on this machine
+Nothing was sent anywhere: review the file, then send it yourself.
+--- stderr
+read claude 2 files (0.0 GB), codex 3 files (0.0 GB), pi 3 files (0.0 GB), opencode 4 files (0.0 GB) in <time>
+--- s.json
+{
+  "activity": {"active_days":4,"active_hours":6,"busy_ms":7071380},
+  "agents": {
+    "claude": {
+      "activities": {"building and testing":{"requests":1,"tokens":0.09965704,"usd":0.06577505},"compaction":{"requests":1,"tokens":0.09479809,"usd":0.1317693},"other tools":{"requests":1,"tokens":0.0970656,"usd":0.04560403},"prompt":{"requests":2,"tokens":0.1895962,"usd":0.2633194},"subagents":{"requests":1,"tokens":0.09552693,"usd":0.04889279}},
+      "activity": {"active_days":1,"active_hours":2,"busy_ms":3880000},
+      "bench": {"keep_warm_ms":21600000,"min_context":100000,"requests":60,"returns":0},
+      "cache_writes": {"main":{"long":7200,"short":0},"subagents":{"long":3000,"short":0}},
+      "clients": {
+        "sdk-ts": {
+          "active_hours": 2,
+          "avoidable_usd": 0.0,
+          "cache_writes": {"long":7200,"short":0},
+          "cold_returns": 0,
+          "cold_returns_avoidable_usd": 0.0,
+          "effort": {"unknown":{"requests":5,"usd":0.4235913}},
+          "main_sessions": 1,
+          "outcomes": {"commits":0,"pull_requests":0,"pushes":0},
+          "requests": 5,
+          "rhythm": {"answers":{"count":0,"median_ms":null},"ends":{"count":3,"present":0},"interrupts":1,"keyboard_ms":281000,"messages":3,"question_answers":{"count":1,"median_ms":110000},"questions":1,"sittings":2,"typed_while_working":1},
+          "usd": 0.4235913
+        },
+        "unknown": {
+          "active_hours": 0,
+          "avoidable_usd": 0.0,
+          "cache_writes": {"long":3000,"short":0},
+          "cold_returns": 0,
+          "cold_returns_avoidable_usd": 0.0,
+          "effort": {"unknown":{"requests":1,"usd":0.1317693}},
+          "main_sessions": 1,
+          "outcomes": {"commits":0,"pull_requests":0,"pushes":0},
+          "requests": 1,
+          "usd": 0.1317693
+        }
+      },
+      "compactions": {"auto":1},
+      "content": {"assistant text":{"tokens":0.001915236,"usd":0.03113352},"thinking":{"tokens":0.001324064,"usd":0.02148652},"tool calls":{"tokens":0.003806177,"usd":0.06182855},"unknown":{"tokens":0.5695984,"usd":0.4409121}},
+      "distributions": {"answer_ms":{"n":0},"cold_return_usd":{"n":0},"largest_context":{"n":1},"left_out_sessions":0,"session_usd":{"n":1},"turn_ms":{"n":2},"typed_per_session":{"n":1}},
+      "effort": {
+        "main": {"unknown":{"output_tokens":0.005425826,"requests":5,"usd":0.4235913}},
+        "subagents": {"unknown":{"output_tokens":0.00161965,"requests":1,"usd":0.1317693}}
+      },
+      "failures": {"after":{"tokens":0.09965704,"usd":0.06577505},"denied":1,"failed":1,"refused":1},
+      "handoffs": {"answers":1,"interrupts":1,"questions":1,"turn_ends":2,"typed_while_working":1,"wakes":{"command":1,"other":0,"subagent":1}},
+      "main_sessions": 1,
+      "misses": {},
+      "origins": {
+        "agent": {
+          "names": {"Explore":{"requests":1,"tokens":0.09479809,"usd":0.1317693}},
+          "requests": 1,
+          "tokens": 0.09479809,
+          "usd": 0.1317693
+        },
+        "notification": {"requests":1,"tokens":0.09479809,"usd":0.1317693},
+        "prompt": {"requests":4,"tokens":0.3870477,"usd":0.291822}
+      },
+      "outcomes": {"commits":0,"pull_requests":0,"pushes":0},
+      "pauses": {
+        "after_cold_return": null,
+        "cold_returns_by_pause": {},
+        "cold_returns_started_by": {"background tasks":0,"other":0,"tool results":0,"typed messages":0},
+        "sessions_by_largest_context": {"under 100k":{"cold_returns":0,"sessions":1,"tokens":0.5766438,"usd":0.5553607}},
+        "typed_after_lifetime": {"1h":0,"5m":0},
+        "typed_by_pause": {"15–30m":{"median_context":null,"messages":0},"1–2h":{"median_context":null,"messages":0},"1–5m":{"median_context":null,"messages":0},"2–4h":{"median_context":null,"messages":0},"30–60m":{"median_context":null,"messages":0},"4–8h":{"median_context":null,"messages":0},"5–15m":{"median_context":null,"messages":0},"8–24h":{"median_context":null,"messages":0},"over 1d":{"median_context":null,"messages":0},"under 1m":{"median_context":null,"messages":0}},
+        "typed_messages": 0
+      },
+      "prevalence": {"days_with_cold_return":0,"days_with_interrupt":1,"days_with_retry_wait":1,"left_out_sessions":0,"sessions_over_1d":0,"sessions_over_400k":0,"sessions_with_cold_return":0,"sessions_with_failure_window":1,"sessions_with_question":1},
+      "prompt_sizes": {
+        "main": {"under 50k":{"requests":5,"tokens":0.4818458,"usd":0.4235913}},
+        "subagents": {"under 50k":{"requests":1,"tokens":0.09479809,"usd":0.1317693}}
+      },
+      "prompts": {"all":{"requests":6,"tokens":0.5766438,"usd":0.5553607},"held":{"requests":0,"tokens":0.0,"usd":0.0}},
+      "session_spans": {"1–4h":{"cold_returns":0,"sessions":1,"tokens":0.5766438,"usd":0.5553607}},
+      "sessions": 2,
+      "setup": {},
+      "spend": {
+        "claude-opus-5-5": {
+          "components": {"cache read":{"tokens":0.5280058,"usd":0.1714536},"cache write":{"tokens":0.02915369,"usd":0.1894321},"output":{"tokens":0.007045476,"usd":0.1144486},"rewrite after miss":{"tokens":0.01219596,"usd":0.07914931},"uncached input":{"tokens":0.0002429474,"usd":0.0008770007}},
+          "priced": true,
+          "requests": 6,
+          "total": {"tokens":0.5766438,"usd":0.5553607}
+        }
+      },
+      "time": {
+        "kinds": {"API retries":{"after_turns_ms":0,"ms":5000},"building and testing":{"after_turns_ms":0,"ms":30000},"compaction":{"after_turns_ms":3660000,"ms":3660000},"model":{"after_turns_ms":0,"ms":55000},"nothing":{"after_turns_ms":0,"ms":80000},"subagents":{"after_turns_ms":0,"ms":50000}},
+        "longest_ms": 20000,
+        "requests": 6,
+        "retried": 1,
+        "retried_by_error": {"auth":0,"connection":0,"other":0,"rate_limit":0,"server":1,"sleep":0,"timeout":0},
+        "slow": 0,
+        "slow_main": 0
+      },
+      "tool_hints": {},
+      "tools": {
+        "Agent": {"after":{"tokens":0.0,"usd":0.0},"calls":1,"failed":0,"input_tokens":0.0,"inputs":0,"rent":{"tokens":0.00161965,"usd":0.02631002},"result_tokens":0.0,"results":0,"single":1,"trips":{"tokens":0.00161965,"usd":0.02631002}},
+        "AskUserQuestion": {"after":{"tokens":0.0,"usd":0.0},"calls":1,"failed":0,"input_tokens":0.0,"inputs":0,"rent":{"tokens":0.0003239299,"usd":0.005262004},"result_tokens":0.0,"results":0,"single":1,"trips":{"tokens":0.0003239299,"usd":0.005262004}},
+        "Bash": {
+          "after": {"tokens":0.09965704,"usd":0.06577505},
+          "calls": 4,
+          "failed": 1,
+          "input_tokens": 0.0,
+          "inputs": 0,
+          "programs": {
+            "cargo": {"after":{"tokens":0.09965704,"usd":0.06577505},"calls":3,"failed":1,"input_tokens":0.0,"inputs":0,"rent":{"tokens":0.0006721546,"usd":0.01096251},"result_tokens":0.0,"results":0,"single":0,"trips":{"tokens":0.0007814809,"usd":0.01271651}},
+            "rm": {"after":{"tokens":0.0,"usd":0.0},"calls":1,"failed":0,"input_tokens":0.0,"inputs":0,"rent":{"tokens":0.0004454036,"usd":0.007235255},"result_tokens":0.0,"results":0,"single":0,"trips":{"tokens":0.0005385335,"usd":0.008770007}}
+          },
+          "rent": {"tokens":0.001117558,"usd":0.01819776},
+          "result_tokens": 0.0,
+          "results": 0,
+          "single": 0,
+          "trips": {"tokens":0.001324064,"usd":0.02148652}
+        },
+        "mcp": {"after":{"tokens":0.0,"usd":0.0},"calls":1,"failed":0,"input_tokens":0.0,"inputs":0,"rent":{"tokens":0.0007450388,"usd":0.01205876},"result_tokens":0.0,"results":0,"single":0,"trips":{"tokens":0.0005385335,"usd":0.008770007}}
+      },
+      "triggers": {"compaction":{"requests":1,"tokens":0.09479809,"usd":0.1317693},"prompt":{"requests":2,"tokens":0.1895962,"usd":0.2633194},"run":{"requests":2,"tokens":0.1967226,"usd":0.1113791},"subagent":{"requests":1,"tokens":0.09552693,"usd":0.04889279}},
+      "versions": {"unknown":{"held":0,"requests":6,"usd":0.5553607}},
+      "whatif": {"main":{"actual_usd":0.3354528,"requests":5,"simulated_1h_usd":1.335014,"simulated_5m_usd":0.8691077},"subagents":{"actual_usd":0.1054593,"requests":1,"simulated_1h_usd":0.6053497,"simulated_5m_usd":0.3784258}}
+    },
+    "codex": {
+      "activities": {"building and testing":{"requests":1,"tokens":0.03291938,"usd":0.005042754},"compaction":{"requests":1,"tokens":0.03664457,"usd":0.02345977},"prompt":{"requests":4,"tokens":0.09580227,"usd":0.05152379}},
+      "activity": {"active_days":2,"active_hours":2,"busy_ms":1925000},
+      "bench": {"keep_warm_ms":21600000,"min_context":100000,"requests":60,"returns":0},
+      "cache_writes": {"main":{"long":0,"short":0},"subagents":{"long":0,"short":0}},
+      "clients": {
+        "Codex Desktop": {
+          "active_hours": 1,
+          "avoidable_usd": 0.0,
+          "cache_writes": {"long":0,"short":0},
+          "cold_returns": 0,
+          "cold_returns_avoidable_usd": 0.0,
+          "effort": {"medium":{"requests":1,"usd":0.01381276}},
+          "main_sessions": 1,
+          "outcomes": {"commits":0,"pull_requests":0,"pushes":0},
+          "requests": 1,
+          "rhythm": {"answers":{"count":0,"median_ms":null},"ends":{"count":1,"present":0},"interrupts":0,"keyboard_ms":60000,"messages":1,"question_answers":{"count":0,"median_ms":null},"questions":0,"sittings":1,"typed_while_working":0},
+          "usd": 0.01381276
+        },
+        "codex-tui": {
+          "active_hours": 1,
+          "avoidable_usd": 0.0,
+          "cache_writes": {"long":0,"short":0},
+          "cold_returns": 0,
+          "cold_returns_avoidable_usd": 0.0,
+          "effort": {"high":{"requests":4,"usd":0.05700504}},
+          "main_sessions": 1,
+          "outcomes": {"commits":0,"pull_requests":0,"pushes":0},
+          "requests": 4,
+          "rhythm": {"answers":{"count":1,"median_ms":538000},"ends":{"count":1,"present":0},"interrupts":1,"keyboard_ms":120000,"messages":2,"question_answers":{"count":0,"median_ms":null},"questions":0,"sittings":2,"typed_while_working":0},
+          "usd": 0.05700504
+        },
+        "unknown": {
+          "active_hours": 0,
+          "avoidable_usd": 0.0,
+          "cache_writes": {"long":0,"short":0},
+          "cold_returns": 0,
+          "cold_returns_avoidable_usd": 0.0,
+          "effort": {"unknown":{"requests":1,"usd":0.008989257}},
+          "main_sessions": 1,
+          "outcomes": {"commits":0,"pull_requests":0,"pushes":0},
+          "requests": 1,
+          "usd": 0.008989257
+        }
+      },
+      "compactions": {"unknown":1},
+      "content": {"assistant text":{"tokens":0.00572951,"usd":0.004823504},"system prompt":{"tokens":0.05840861,"usd":0.01754001},"tool calls":{"tokens":0.005713314,"usd":0.004823504},"tool results":{"tokens":0.02250098,"usd":0.002850252},"user prompt":{"tokens":0.07300975,"usd":0.04998904}},
+      "distributions": {"answer_ms":{"n":1},"cold_return_usd":{"n":0},"largest_context":{"n":2},"left_out_sessions":0,"session_usd":{"n":2},"turn_ms":{"n":3},"typed_per_session":{"n":2}},
+      "effort": {
+        "main": {"high":{"output_tokens":0.0006883511,"requests":4,"usd":0.05700504},"medium":{"output_tokens":0.00008098248,"requests":1,"usd":0.01381276}},
+        "subagents": {"unknown":{"output_tokens":0.0002024562,"requests":1,"usd":0.008989257}}
+      },
+      "failures": {"after":{"tokens":0.06956395,"usd":0.02850252},"denied":0,"failed":2,"refused":1},
+      "handoffs": {"answers":0,"interrupts":1,"questions":0,"turn_ends":2,"typed_while_working":0,"wakes":{"command":0,"other":0,"subagent":0}},
+      "main_sessions": 2,
+      "misses": {},
+      "origins": {"agent":{"requests":1,"tokens":0.01234983,"usd":0.008989257},"prompt":{"requests":5,"tokens":0.1530164,"usd":0.0708178}},
+      "outcomes": {"commits":0,"pull_requests":0,"pushes":0},
+      "pauses": {
+        "after_cold_return": null,
+        "cold_returns_by_pause": {},
+        "cold_returns_started_by": {"background tasks":0,"other":0,"tool results":0,"typed messages":0},
+        "sessions_by_largest_context": {"under 100k":{"cold_returns":0,"sessions":2,"tokens":0.1653662,"usd":0.07980706}},
+        "typed_after_lifetime": {"30m":0},
+        "typed_by_pause": {"15–30m":{"median_context":null,"messages":0},"1–2h":{"median_context":null,"messages":0},"1–5m":{"median_context":null,"messages":0},"2–4h":{"median_context":null,"messages":0},"30–60m":{"median_context":null,"messages":0},"4–8h":{"median_context":null,"messages":0},"5–15m":{"median_context":9500,"messages":1},"8–24h":{"median_context":null,"messages":0},"over 1d":{"median_context":null,"messages":0},"under 1m":{"median_context":null,"messages":0}},
+        "typed_messages": 1
+      },
+      "prevalence": {"days_with_cold_return":0,"days_with_interrupt":1,"days_with_retry_wait":0,"left_out_sessions":0,"sessions_over_1d":0,"sessions_over_400k":0,"sessions_with_cold_return":0,"sessions_with_failure_window":1,"sessions_with_question":0},
+      "prompt_sizes": {
+        "main": {"under 50k":{"requests":5,"tokens":0.1530164,"usd":0.0708178}},
+        "subagents": {"under 50k":{"requests":1,"tokens":0.01234983,"usd":0.008989257}}
+      },
+      "prompts": {"all":{"requests":6,"tokens":0.1653662,"usd":0.07980706},"held":{"requests":6,"tokens":0.1653662,"usd":0.07980706}},
+      "session_spans": {"under 1h":{"cold_returns":0,"sessions":2,"tokens":0.1653662,"usd":0.07980706}},
+      "sessions": 3,
+      "setup": {"system prompt":{"subagents_usd":0.0,"tokens":0.05840861,"usd":0.01754001}},
+      "spend": {
+        "gpt-6-astra": {
+          "components": {"cache read":{"tokens":0.1093263,"usd":0.01183951},"cache write":{"tokens":0.0,"usd":0.0},"output":{"tokens":0.0009717898,"usd":0.008331506},"rewrite after miss":{"tokens":0.01457685,"usd":0.01578601},"uncached input":{"tokens":0.04049124,"usd":0.04385003}},
+          "priced": true,
+          "requests": 6,
+          "total": {"tokens":0.1653662,"usd":0.07980706}
+        }
+      },
+      "time": {
+        "kinds": {"building and testing":{"after_turns_ms":0,"ms":4000},"compaction":{"after_turns_ms":0,"ms":3400},"model":{"after_turns_ms":0,"ms":1859600},"nothing":{"after_turns_ms":0,"ms":58000}},
+        "longest_ms": 1844600,
+        "requests": 6,
+        "retried": 0,
+        "retried_by_error": {"auth":0,"connection":0,"other":0,"rate_limit":0,"server":0,"sleep":0,"timeout":0},
+        "slow": 1,
+        "slow_main": 1
+      },
+      "tool_hints": {},
+      "tools": {
+        "apply_patch": {"after":{"tokens":0.0,"usd":0.0},"calls":1,"failed":0,"input_tokens":0.0,"inputs":0,"rent":{"tokens":0.00004454036,"usd":0.0004385003},"result_tokens":0.0,"results":0,"single":0,"trips":{"tokens":0.00004049124,"usd":0.0004385003}},
+        "exec_command": {
+          "after": {"tokens":0.06956395,"usd":0.02850252},
+          "calls": 3,
+          "failed": 2,
+          "input_tokens": 0.005227419,
+          "inputs": 1,
+          "programs": {
+            "cargo": {"after":{"tokens":0.03291938,"usd":0.005042754},"calls":2,"failed":1,"input_tokens":0.005227419,"inputs":1,"rent":{"tokens":0.02809282,"usd":0.006577505},"result_tokens":0.02250098,"results":1,"single":2,"trips":{"tokens":0.03316233,"usd":0.007016005}},
+            "python3": {"after":{"tokens":0.03664457,"usd":0.02345977},"calls":1,"failed":1,"input_tokens":0.0,"inputs":0,"rent":{"tokens":0.00002429474,"usd":0.0002192502},"result_tokens":0.0,"results":0,"single":0,"trips":{"tokens":0.00004049124,"usd":0.0004385003}}
+          },
+          "rent": {"tokens":0.02811712,"usd":0.006796755},
+          "result_tokens": 0.02250098,
+          "results": 1,
+          "single": 2,
+          "trips": {"tokens":0.03320282,"usd":0.007454506}
+        },
+        "other": {"after":{"tokens":0.0,"usd":0.0},"calls":1,"failed":0,"input_tokens":0.0,"inputs":0,"rent":{"tokens":0.00004858949,"usd":0.0004385003},"result_tokens":0.0,"results":0,"single":0,"trips":{"tokens":0.00004049124,"usd":0.0004385003}}
+      },
+      "triggers": {"compaction":{"requests":1,"tokens":0.03664457,"usd":0.02345977},"prompt":{"requests":4,"tokens":0.09580227,"usd":0.05152379},"run":{"requests":1,"tokens":0.03291938,"usd":0.005042754}},
+      "versions": {"0.166.0-alpha.5.1":{"held":1,"requests":1,"usd":0.01381276},"unknown":{"held":5,"requests":5,"usd":0.0659943}}
+    },
+    "opencode": {
+      "activities": {"compaction":{"requests":3,"tokens":0.01656092,"usd":0.02345977},"unknown":{"requests":9,"tokens":0.126029,"usd":0.1846086}},
+      "activity": {"active_days":1,"active_hours":1,"busy_ms":604880},
+      "bench": {"keep_warm_ms":21600000,"min_context":100000,"requests":60,"returns":0},
+      "cache_writes": {"main":{"long":0,"short":5300},"subagents":{"long":0,"short":0}},
+      "clients": {
+        "unknown": {
+          "active_hours": 1,
+          "avoidable_usd": 0.04648103,
+          "cache_writes": {"long":0,"short":5300},
+          "cold_returns": 0,
+          "cold_returns_avoidable_usd": 0.0,
+          "effort": {"unknown":{"requests":12,"usd":0.2080684}},
+          "main_sessions": 3,
+          "outcomes": {"commits":0,"pull_requests":0,"pushes":0},
+          "requests": 12,
+          "rhythm": {"answers":{"count":0,"median_ms":null},"ends":{"count":3,"present":0},"interrupts":0,"keyboard_ms":0,"messages":0,"question_answers":{"count":0,"median_ms":null},"questions":0,"sittings":0,"typed_while_working":0},
+          "usd": 0.2080684
+        }
+      },
+      "compactions": {"auto":2,"manual":1},
+      "content": {"assistant text":{"tokens":0.005243616,"usd":0.04187678},"thinking":{"tokens":0.00008098248,"usd":0.0006577505},"unknown":{"tokens":0.1372653,"usd":0.1657531}},
+      "distributions": {"answer_ms":{"n":0},"cold_return_usd":{"n":0},"largest_context":{"n":3},"left_out_sessions":0,"session_usd":{"n":3},"turn_ms":{"n":0},"typed_per_session":{"n":3}},
+      "effort": {
+        "main": {"unknown":{"output_tokens":0.005122142,"requests":10,"usd":0.1999561}},
+        "subagents": {"unknown":{"output_tokens":0.0002024562,"requests":2,"usd":0.008112256}}
+      },
+      "failures": {"after":{"tokens":0.0,"usd":0.0},"denied":0,"failed":0,"refused":0},
+      "handoffs": {"answers":0,"interrupts":0,"questions":0,"turn_ends":0,"typed_while_working":0,"wakes":{"command":0,"other":0,"subagent":0}},
+      "main_sessions": 3,
+      "misses": {"compaction call":{"avoidable_usd":0.04648103,"misses":2,"tokens":0.03178562}},
+      "origins": {"prompt":{"requests":12,"tokens":0.1425899,"usd":0.2080684}},
+      "outcomes": {"commits":0,"pull_requests":0,"pushes":0},
+      "pauses": {
+        "after_cold_return": null,
+        "cold_returns_by_pause": {},
+        "cold_returns_started_by": {"background tasks":0,"other":0,"tool results":0,"typed messages":0},
+        "sessions_by_largest_context": {"under 100k":{"cold_returns":0,"sessions":3,"tokens":0.1425899,"usd":0.2080684}},
+        "typed_after_lifetime": {"1h":0,"5m":0},
+        "typed_by_pause": {"15–30m":{"median_context":null,"messages":0},"1–2h":{"median_context":null,"messages":0},"1–5m":{"median_context":null,"messages":0},"2–4h":{"median_context":null,"messages":0},"30–60m":{"median_context":null,"messages":0},"4–8h":{"median_context":null,"messages":0},"5–15m":{"median_context":null,"messages":0},"8–24h":{"median_context":null,"messages":0},"over 1d":{"median_context":null,"messages":0},"under 1m":{"median_context":null,"messages":0}},
+        "typed_messages": 0
+      },
+      "prevalence": {"days_with_cold_return":0,"days_with_interrupt":0,"days_with_retry_wait":0,"left_out_sessions":0,"sessions_over_1d":0,"sessions_over_400k":0,"sessions_with_cold_return":0,"sessions_with_failure_window":0,"sessions_with_question":0},
+      "prompt_sizes": {
+        "main": {"under 50k":{"requests":10,"tokens":0.126029,"usd":0.1999561}},
+        "subagents": {"under 50k":{"requests":2,"tokens":0.01656092,"usd":0.008112256}}
+      },
+      "prompts": {"all":{"requests":12,"tokens":0.1425899,"usd":0.2080684},"held":{"requests":0,"tokens":0.0,"usd":0.0}},
+      "session_spans": {"under 1h":{"cold_returns":0,"sessions":3,"tokens":0.1425899,"usd":0.2080684}},
+      "sessions": 4,
+      "setup": {},
+      "spend": {
+        "claude-haiku-4-5": {
+          "components": {"cache read":{"tokens":0.008098248,"usd":0.0006577505},"cache write":{"tokens":0.0,"usd":0.0},"output":{"tokens":0.0002024562,"usd":0.0008770007},"rewrite after miss":{"tokens":0.0,"usd":0.0},"uncached input":{"tokens":0.008260213,"usd":0.006796755}},
+          "priced": true,
+          "requests": 2,
+          "total": {"tokens":0.01656092,"usd":0.008112256}
+        },
+        "claude-sonnet-4-5": {
+          "components": {"cache read":{"tokens":0.03198808,"usd":0.005262004},"cache write":{"tokens":0.02146036,"usd":0.04363078},"output":{"tokens":0.005122142,"usd":0.04165753},"rewrite after miss":{"tokens":0.03178562,"usd":0.05174304},"uncached input":{"tokens":0.03567278,"usd":0.05788204}},
+          "priced": true,
+          "requests": 10,
+          "total": {"tokens":0.126029,"usd":0.1999561}
+        }
+      },
+      "time": {
+        "kinds": {"compaction":{"after_turns_ms":0,"ms":291710},"model":{"after_turns_ms":6780,"ms":23340},"nothing":{"after_turns_ms":0,"ms":285540},"subagents":{"after_turns_ms":0,"ms":4290}},
+        "longest_ms": 3000,
+        "requests": 12,
+        "retried": 0,
+        "retried_by_error": {"auth":0,"connection":0,"other":0,"rate_limit":0,"server":0,"sleep":0,"timeout":0},
+        "slow": 0,
+        "slow_main": 0
+      },
+      "tool_hints": {},
+      "tools": {},
+      "triggers": {"compaction":{"requests":3,"tokens":0.01656092,"usd":0.02345977},"unknown":{"requests":9,"tokens":0.126029,"usd":0.1846086}},
+      "versions": {"unknown":{"held":0,"requests":12,"usd":0.2080684}},
+      "whatif": {"main":{"actual_usd":0.1582986,"requests":10,"simulated_1h_usd":0.1635606,"simulated_5m_usd":0.1067748},"subagents":{"actual_usd":0.007454506,"requests":2,"simulated_1h_usd":0.01403201,"simulated_5m_usd":0.008989257}}
+    },
+    "pi": {
+      "activities": {"compaction":{"requests":1,"tokens":0.009596424,"usd":0.02916027},"unknown":{"requests":6,"tokens":0.1058036,"usd":0.1273843}},
+      "activity": {"active_days":1,"active_hours":2,"busy_ms":661500},
+      "bench": {"keep_warm_ms":21600000,"min_context":100000,"requests":60,"returns":0},
+      "cache_writes": {"main":{"long":0,"short":6030},"subagents":{"long":0,"short":0}},
+      "clients": {
+        "unknown": {
+          "active_hours": 2,
+          "avoidable_usd": 0.02740627,
+          "cache_writes": {"long":0,"short":6030},
+          "cold_returns": 0,
+          "cold_returns_avoidable_usd": 0.0,
+          "effort": {"unknown":{"requests":7,"usd":0.1567639}},
+          "main_sessions": 1,
+          "outcomes": {"commits":0,"pull_requests":0,"pushes":0},
+          "requests": 7,
+          "rhythm": {"answers":{"count":0,"median_ms":null},"ends":{"count":3,"present":0},"interrupts":0,"keyboard_ms":0,"messages":0,"question_answers":{"count":0,"median_ms":null},"questions":0,"sittings":0,"typed_while_working":0},
+          "usd": 0.1567639
+        }
+      },
+      "compactions": {"unknown":1},
+      "content": {"assistant text":{"tokens":0.007741925,"usd":0.0616093},"thinking":{"tokens":0.000161965,"usd":0.0},"unknown":{"tokens":0.1074961,"usd":0.09493532}},
+      "distributions": {"answer_ms":{"n":0},"cold_return_usd":{"n":0},"largest_context":{"n":1},"left_out_sessions":0,"session_usd":{"n":1},"turn_ms":{"n":0},"typed_per_session":{"n":1}},
+      "effort": {
+        "main": {"unknown":{"output_tokens":0.00790389,"requests":7,"usd":0.1567639}},
+        "subagents": {}
+      },
+      "failures": {"after":{"tokens":0.0,"usd":0.0},"denied":0,"failed":0,"refused":0},
+      "handoffs": {"answers":0,"interrupts":0,"questions":0,"turn_ends":0,"typed_while_working":0,"wakes":{"command":0,"other":0,"subagent":0}},
+      "main_sessions": 1,
+      "misses": {"compaction call":{"avoidable_usd":0.02740627,"misses":1,"tokens":0.01876769}},
+      "origins": {"prompt":{"requests":7,"tokens":0.1154,"usd":0.1567639}},
+      "outcomes": {"commits":0,"pull_requests":0,"pushes":0},
+      "pauses": {
+        "after_cold_return": null,
+        "cold_returns_by_pause": {},
+        "cold_returns_started_by": {"background tasks":0,"other":0,"tool results":0,"typed messages":0},
+        "sessions_by_largest_context": {"under 100k":{"cold_returns":0,"sessions":1,"tokens":0.1154,"usd":0.1567639}},
+        "typed_after_lifetime": {"1h":0,"5m":0},
+        "typed_by_pause": {"15–30m":{"median_context":null,"messages":0},"1–2h":{"median_context":null,"messages":0},"1–5m":{"median_context":null,"messages":0},"2–4h":{"median_context":null,"messages":0},"30–60m":{"median_context":null,"messages":0},"4–8h":{"median_context":null,"messages":0},"5–15m":{"median_context":null,"messages":0},"8–24h":{"median_context":null,"messages":0},"over 1d":{"median_context":null,"messages":0},"under 1m":{"median_context":null,"messages":0}},
+        "typed_messages": 0
+      },
+      "prevalence": {"days_with_cold_return":0,"days_with_interrupt":0,"days_with_retry_wait":0,"left_out_sessions":0,"sessions_over_1d":0,"sessions_over_400k":0,"sessions_with_cold_return":0,"sessions_with_failure_window":0,"sessions_with_question":0},
+      "prompt_sizes": {
+        "main": {"under 50k":{"requests":7,"tokens":0.1154,"usd":0.1567639}},
+        "subagents": {}
+      },
+      "prompts": {"all":{"requests":7,"tokens":0.1154,"usd":0.1567639},"held":{"requests":0,"tokens":0.0,"usd":0.0}},
+      "session_spans": {"1–4h":{"cold_returns":0,"sessions":1,"tokens":0.1154,"usd":0.1567639}},
+      "sessions": 3,
+      "setup": {},
+      "spend": {
+        "Qwen3.8-27B-Q6_K": {
+          "components": {"cache read":{"tokens":0.006251847,"usd":0.0},"cache write":{"tokens":0.0,"usd":0.0},"output":{"tokens":0.0003117825,"usd":0.0},"rewrite after miss":{"tokens":0.0,"usd":0.0},"uncached input":{"tokens":0.00005263861,"usd":0.0}},
+          "priced": false,
+          "requests": 1,
+          "total": {"tokens":0.006616269,"usd":0.0}
+        },
+        "claude-sonnet-4-5": {
+          "components": {"cache read":{"tokens":0.05421777,"usd":0.008770007},"cache write":{"tokens":0.02441622,"usd":0.04955054},"output":{"tokens":0.007592107,"usd":0.0616093},"rewrite after miss":{"tokens":0.01876769,"usd":0.03047577},"uncached input":{"tokens":0.00378998,"usd":0.006139005}},
+          "priced": true,
+          "requests": 6,
+          "total": {"tokens":0.1087838,"usd":0.1567639}
+        }
+      },
+      "time": {
+        "kinds": {"compaction":{"after_turns_ms":0,"ms":63500},"model":{"after_turns_ms":4500,"ms":9000},"nothing":{"after_turns_ms":0,"ms":589000}},
+        "longest_ms": 1500,
+        "requests": 7,
+        "retried": 0,
+        "retried_by_error": {"auth":0,"connection":0,"other":0,"rate_limit":0,"server":0,"sleep":0,"timeout":0},
+        "slow": 0,
+        "slow_main": 0
+      },
+      "tool_hints": {},
+      "tools": {},
+      "triggers": {"compaction":{"requests":1,"tokens":0.009596424,"usd":0.02916027},"unknown":{"requests":6,"tokens":0.1058036,"usd":0.1273843}},
+      "versions": {"unknown":{"held":0,"requests":7,"usd":0.1567639}},
+      "whatif": {"main":{"actual_usd":0.09493532,"requests":6,"simulated_1h_usd":0.1368121,"simulated_5m_usd":0.1243148},"subagents":{"actual_usd":0.0,"requests":0,"simulated_1h_usd":0.0,"simulated_5m_usd":0.0}}
+    }
+  },
+  "format": 3,
+  "platform": "macos-aarch64",
+  "prevalence": {"days_with_cold_return":0,"days_with_interrupt":2,"days_with_retry_wait":1},
+  "rhythm": {
+    "answers": {"by_pause":{"5–15m":1},"count":1,"median_ms":538000},
+    "breaks": 1,
+    "ends": {"count":11,"present":0,"started_by_agent":1},
+    "interrupts": 2,
+    "keyboard_ms": 461000,
+    "messages": 6,
+    "question_answers": {"by_pause":{"1–5m":1},"count":1,"median_ms":110000},
+    "questions": 1,
+    "sessions": 3,
+    "sittings": 5,
+    "stood_still": {"by_pause":{"under 1m":1},"count":1,"median_ms":11000},
+    "turns": {"by_pause":{"1–5m":2,"30–60m":1,"under 1m":2},"count":5,"median_ms":60000},
+    "typed_while_working": 1,
+    "worked_share_median": 0.005
+  },
+  "tokprof": "0.1.6",
+  "window": {"first":"2026-10-30","last":"2026-11-02"}
+}

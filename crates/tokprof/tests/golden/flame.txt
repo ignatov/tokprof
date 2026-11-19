@@ -1,6 +1,6 @@
 $ tokprof --prices tests/golden/prices.toml flame -o <home>/f.folded
 --- stdout
-wrote 58 stacks to ~/f.folded
+wrote 62 stacks to ~/f.folded
 --- stderr
 read claude 2 files (0.0 GB), codex 3 files (0.0 GB), pi 3 files (0.0 GB), opencode 4 files (0.0 GB) in <time>
 --- f.folded
@@ -8,9 +8,11 @@ claude;/w/app;5e5510f0;main;turn 0;assistant text;output 2182
 claude;/w/app;5e5510f0;main;turn 0;thinking;output 9818
 claude;/w/app;5e5510f0;main;turn 0;tool calls;Agent;Explore;output 12000
 claude;/w/app;5e5510f0;main;turn 0;tool calls;AskUserQuestion;output 2400
-claude;/w/app;5e5510f0;main;turn 0;tool calls;Bash;cargo clippy;output 5902
-claude;/w/app;5e5510f0;main;turn 0;tool calls;Bash;cargo test;output 1800
-claude;/w/app;5e5510f0;main;turn 0;tool calls;Bash;rm -rf;output 6098
+claude;/w/app;5e5510f0;main;turn 0;tool calls;Bash;cargo bench;output 1358
+claude;/w/app;5e5510f0;main;turn 0;tool calls;Bash;cargo clippy;output 3186
+claude;/w/app;5e5510f0;main;turn 0;tool calls;Bash;cargo test;output 442
+claude;/w/app;5e5510f0;main;turn 0;tool calls;Bash;rm -rf;output 3292
+claude;/w/app;5e5510f0;main;turn 0;tool calls;mcp__idea__search_symbol;mcp:idea;output 5522
 claude;/w/app;5e5510f0;main;unknown;cache read 66240
 claude;/w/app;5e5510f0;main;unknown;cache write 50400
 claude;/w/app;5e5510f0;main;unknown;rewrite after miss 36072
@@ -26,9 +28,11 @@ codex;/w/svc;01a19a00-1111-7222;main;setup;system prompt;cache read 2314
 codex;/w/svc;01a19a00-1111-7222;main;setup;system prompt;rewrite after miss 3000
 codex;/w/svc;01a19a00-1111-7222;main;turn 1;assistant text;cache read 259
 codex;/w/svc;01a19a00-1111-7222;main;turn 1;assistant text;output 800
+codex;/w/svc;01a19a00-1111-7222;main;turn 1;tool calls;apply_patch;output 183
 codex;/w/svc;01a19a00-1111-7222;main;turn 1;tool calls;exec_command;cargo test;cache read 258
 codex;/w/svc;01a19a00-1111-7222;main;turn 1;tool calls;exec_command;cargo test;output 800
-codex;/w/svc;01a19a00-1111-7222;main;turn 1;tool calls;exec_command;python3 x.py;output 480
+codex;/w/svc;01a19a00-1111-7222;main;turn 1;tool calls;exec_command;python3 x.py;output 98
+codex;/w/svc;01a19a00-1111-7222;main;turn 1;tool calls;web_search_call;output 199
 codex;/w/svc;01a19a00-1111-7222;main;turn 1;tool results;exec_command;cargo test;cache read 1091
 codex;/w/svc;01a19a00-1111-7222;main;turn 1;tool results;exec_command;cargo test;uncached input 200
 codex;/w/svc;01a19a00-1111-7222;main;turn 1;user prompt;cache read 543

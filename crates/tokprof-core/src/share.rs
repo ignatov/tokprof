@@ -2395,6 +2395,8 @@ mod tests {
             outcome,
             error,
             vcs: crate::trigger::VcsActions::default(),
+            duration_ms: None,
+            timed: false,
         };
         let edit = |outcome| ToolShare { tool: Some("Edit"), target: None, class: Class::Tool(ToolClass::Edit), ..call(outcome, None) };
         sink.session(&s);
@@ -2544,6 +2546,8 @@ mod tests {
                 outcome,
                 error: None,
                 vcs,
+                duration_ms: None,
+                timed: false,
             };
             let commit = VcsActions { commit: true, ..VcsActions::default() };
             let push = VcsActions { push: true, ..VcsActions::default() };
@@ -2941,6 +2945,8 @@ mod tests {
                 outcome: crate::model::Outcome::Failed,
                 error: None,
                 vcs: crate::trigger::VcsActions::default(),
+                duration_ms: None,
+                timed: false,
             };
             // Session `a` fails twice, and a request carries each failure; session `b` fails in its
             // last response, so no window opens.

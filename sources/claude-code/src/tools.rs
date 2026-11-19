@@ -78,8 +78,35 @@ pub(crate) fn tool_target(tool: &str, input: &Value, cwd: Option<&str>, home: &P
     target.filter(|t| !t.is_empty())
 }
 
+/// The short head of a call's input (see session-logs, Input of a call): the first line of
+/// `command`, the path as the target shows it, `pattern`, `url`, `query`, the `description` of a
+/// subagent, the skill, or the first string value of an MCP tool's input.
+pub(crate) fn input_head(tool: &str, input: &Value, target: Option<&str>) -> Option<String> {
+    let s = |k: &str| input.get(k).and_then(Value::as_str);
+    let text = if tool.starts_with("mcp__") {
+        input.as_object().and_then(|m| m.values().find_map(Value::as_str))
+    } else {
+        match tool {
+            "Bash" => s("command"),
+            "Read" | "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "NotebookRead" | "LS" => target,
+            "Grep" | "Glob" => s("pattern"),
+            "WebFetch" => s("url"),
+            "WebSearch" | "ToolSearch" => s("query"),
+            "Agent" | "Task" => s("description"),
+            "Skill" => target,
+            _ => None,
+        }
+    };
+    text.and_then(tokprof_core::model::input_head)
+}
+
+/// The MCP server a tool name names: `mcp__<server>__<tool>`.
+pub(crate) fn mcp_server(tool: &str) -> Option<&str> {
+    tool.strip_prefix("mcp__")?.split("__").next().filter(|s| !s.is_empty())
+}
+
 /// Whether a Claude Code tool asks the user and waits for the answer: a question, or a plan to
-/// approve. Seen in 2.1.310–2.1.316.
+/// approve. Seen in 2.1.310–2.1.326.
 pub(crate) fn asks_the_user(tool: &str) -> bool {
     matches!(tool, "AskUserQuestion" | "ExitPlanMode")
 }
@@ -107,6 +134,7 @@ pub(crate) fn call_class(tool: &str, input: &Value) -> CallClass {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn outcome(is_error: bool, text: &str, rejected: bool) -> (Outcome, Option<String>) {
         call_end(is_error, text, rejected).map_or((Outcome::Worked, None), |e| (e.outcome, e.error))
@@ -139,6 +167,21 @@ mod tests {
             (Outcome::Denied, None)
         );
         assert_eq!(outcome(true, "This session is isolated in the worktree /w, but this command is too complex", true), (Outcome::Denied, None));
+    }
+
+    #[test]
+    fn input_heads_take_the_field_of_each_tool() {
+        let input = json!({"command": "cargo test -p tokprof --test golden\necho done", "pattern": "fn main", "url": "https://example.com/a"});
+        assert_eq!(input_head("Bash", &input, Some("cargo test")).as_deref(), Some("cargo test -p tokprof --test golden"));
+        assert_eq!(input_head("Read", &json!({"file_path": "/w/src/a.rs"}), Some("src/a.rs")).as_deref(), Some("src/a.rs"));
+        assert_eq!(input_head("Grep", &input, Some("(project)")).as_deref(), Some("fn main"));
+        assert_eq!(input_head("WebFetch", &input, Some("example.com")).as_deref(), Some("https://example.com/a"));
+        assert_eq!(input_head("Agent", &json!({"description": "Find the parser", "prompt": "long"}), None).as_deref(), Some("Find the parser"));
+        assert_eq!(input_head("mcp__idea__search_symbol", &json!({"limit": 5, "query": "Parser"}), Some("mcp:idea")).as_deref(), Some("Parser"));
+        assert_eq!(input_head("TodoWrite", &json!({"todos": []}), None), None);
+        let long = "x".repeat(100);
+        assert_eq!(input_head("Bash", &json!({"command": long}), None).map(|h| h.chars().count()), Some(60));
+        assert_eq!((mcp_server("mcp__plugin_slack_slack__send"), mcp_server("Read")), (Some("plugin_slack_slack"), None));
     }
 
     #[test]
