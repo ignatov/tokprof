@@ -248,16 +248,20 @@ Every tool call SHALL belong to one group, by where its tool comes from. An MCP 
 - **THEN** the 12 calls belong to the group `mcp idea`
 
 #### Scenario: Built-in tools
-- **WHEN** a session called `Read`, `Grep`, `Bash`, `WebSearch`, `Agent` and `Monitor`
-- **THEN** they belong to `files`, `search`, `shell`, `web`, `subagents` and `other`
+- **WHEN** a session called `Read`, `Grep`, `Bash`, `Monitor`, `WebSearch`, `Agent` and `Artifact`
+- **THEN** they belong to `files`, `search`, `shell`, `shell`, `web`, `subagents` and `other`
 
 #### Scenario: The agent's own tools
-- **WHEN** a Claude Code session called `Skill`, `ToolSearch`, `TodoWrite` and `ExitPlanMode`
+- **WHEN** a Claude Code session called `Skill`, `ToolSearch`, `TodoWrite`, `ExitPlanMode` and `CronCreate`
 - **THEN** they belong to `agent`, not `other`
 
 #### Scenario: Codex tools
-- **WHEN** a Codex session called `apply_patch`, `exec_command`, `spawn_agent`, the hosted web search and `update_plan`
-- **THEN** they belong to `files`, `shell`, `subagents`, `web` and `agent`
+- **WHEN** a Codex session called `apply_patch`, `exec_command`, `exec` with code that calls several tools, `spawn_agent`, the hosted web search and `update_plan`
+- **THEN** they belong to `files`, `shell`, `shell`, `subagents`, `web` and `agent`
+
+#### Scenario: Codex MCP tools
+- **WHEN** a Codex session called `js` in the `namespace` `mcp__cua_repl`, and `exec` with code that calls only `tools.mcp__docs__search`
+- **THEN** they belong to `mcp cua_repl` and `mcp docs`
 
 ### Requirement: Groups table
 The groups table SHALL have one row per group with a call: `group`, `calls`, `failed`, `time`, `med time` and `tokens`. `time` and `med time` are as for a tool row (see Time per row), over the group's calls; `tokens` are its results' tokens as `avg result` counts them. Rows are sorted by calls, most first, `other` last. A last row `all` gives the totals.
@@ -299,7 +303,7 @@ When a session's logs list the MCP servers it had (see session-logs, Connected M
 - **THEN** the command fails with a usage error that says they cannot be used together
 
 #### Scenario: The plain X-ray
-- **WHEN** the user runs `tokprof scan 230043e6` without `--calls`
+- **WHEN** the user runs `tokprof scan 5e5510f0` without `--calls`
 - **THEN** the output is the X-ray, with the `tools` block as session-xray describes it
 
 ### Requirement: Call log rows

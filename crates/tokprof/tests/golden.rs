@@ -14,6 +14,8 @@
 //! a golden: the runs give no window ending at "now", and the reports that print local times
 //! (`scan`, `sessions`, `day`, `calendar`, `month`, the list of `misses`, the rhythm of `pauses`)
 //! are left out or cut before them. A Windows binary ignores TZ, so these must hold in any zone.
+//! The call log of `scan --calls` is kept with its start times masked: they are its only local
+//! times, and its rows are sorted by the instant, so their order holds in any zone.
 //! `year` runs on a synthetic day store of a year that is over, with no log, no agent time and
 //! no action, its requests at noon UTC: it prints dates but no time of day.
 //! Printed paths start with `<home>` or `<repo>` and use `/`, and the read line's timing is
@@ -36,6 +38,8 @@ enum View {
     File(&'static str),
     /// Stdout whole, of a run on no log with the synthetic day store of `year_store`.
     Store,
+    /// Stdout whole, with each local time `MM-DD HH:MM:SS` as `MM-DD hh:mm:ss`, of the same width.
+    Masked,
 }
 
 macro_rules! goldens {
@@ -71,6 +75,10 @@ goldens! {
     year: ["year", "2025"] View::Store;
     // The share file of the fixtures: the call times, inputs and groups never reach it.
     share: ["--since", "2026-10-01", "--until", "2026-11-10", "share", "-o", "<home>/s.json"] View::File("s.json");
+    // The call log of the Claude Code fixture session, whole and narrowed.
+    scan_calls: ["scan", "5e5510f0", "--calls"] View::Masked;
+    scan_calls_failed: ["scan", "5e5510f0", "--calls", "--failed"] View::Masked;
+    scan_calls_group: ["scan", "5e5510f0", "--calls", "--group", "shell"] View::Masked;
 }
 
 const PRICES: &str = "tests/golden/prices.toml";
@@ -105,6 +113,7 @@ fn check(name: &str, args: &[&str], view: View) {
             stdout[..at + 1].to_string()
         }
         View::Prices => test_prices(&stdout),
+        View::Masked => mask_local_times(&stdout),
     };
     let mut text = format!("$ tokprof --prices {PRICES} {}\n", paths(&args.join(" ")));
     text.push_str(&format!("--- stdout\n{stdout}"));
@@ -131,6 +140,23 @@ fn normalize(text: &str, home: &Path) -> String {
             .join(" ")
     });
     lines.collect::<Vec<_>>().join("\n")
+}
+
+/// Each `MM-DD HH:MM:SS` as `MM-DD hh:mm:ss`: the call log's start times, which are local.
+fn mask_local_times(text: &str) -> String {
+    const SHAPE: &[u8] = b"00-00 00:00:00";
+    let mut bytes = text.as_bytes().to_vec();
+    let mut at = 0;
+    while at + SHAPE.len() <= bytes.len() {
+        let fits = SHAPE.iter().zip(&bytes[at..]).all(|(s, b)| if *s == b'0' { b.is_ascii_digit() } else { s == b });
+        if fits {
+            bytes[at..at + SHAPE.len()].copy_from_slice(b"MM-DD hh:mm:ss");
+            at += SHAPE.len();
+        } else {
+            at += 1;
+        }
+    }
+    String::from_utf8(bytes).expect("only ASCII digits were replaced")
 }
 
 /// The read line's ` in 0.1s` as ` in <time>`, at its end or before the store's `;`.

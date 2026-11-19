@@ -1212,24 +1212,36 @@ Each source SHALL give each of its tools one kind: read, edit, write, delete, mo
 - **WHEN** a Claude Code session calls `Read`, `NotebookRead`, `Edit`, `MultiEdit`, `NotebookEdit`, `Write`, `Grep`, `Glob`, `LS`, `Bash`, `BashOutput`, `WebFetch`, `WebSearch`, `Agent`, `Task` and `SendMessage`
 - **THEN** their kinds are read, read, edit, edit, edit, write, search, search, search, execute, execute output, fetch, fetch, subagent, subagent and subagent
 
+#### Scenario: Claude Code's background commands
+- **WHEN** a Claude Code session calls `Monitor`, which runs a command in the background and reports its lines, and `TaskStop`, which stops such a command (seen in 2.1.284–2.1.328)
+- **THEN** their kinds are execute and execute
+
 #### Scenario: Claude Code's own tools
-- **WHEN** a Claude Code session calls `TodoWrite`, `ExitPlanMode`, `EnterWorktree`, `Skill`, `ToolSearch`, `ScheduleWakeup`, `AskUserQuestion` and the API's `advisor`
-- **THEN** their kinds are think, switch mode, switch mode, manage, manage, manage, manage and manage
+- **WHEN** a Claude Code session calls `TodoWrite`, `ExitPlanMode`, `EnterWorktree`, `Skill`, `ToolSearch`, `ScheduleWakeup`, `CronCreate`, `AskUserQuestion` and the API's `advisor`
+- **THEN** their kinds are think, switch mode, switch mode, manage, manage, manage, manage, manage and manage
 
 #### Scenario: Codex
 - **WHEN** a Codex session calls `exec_command`, `write_stdin`, `wait`, `apply_patch`, `view_image`, `spawn_agent` and the hosted `web_search_call`
 - **THEN** their kinds are execute, execute output, execute output, edit, read, subagent and fetch, as `wait` waits for the output of a running code cell (seen in 0.147–0.167)
 
 #### Scenario: Codex's own tools
-- **WHEN** a Codex session calls `update_plan`, `request_user_input` and `sleep`
-- **THEN** their kinds are think, manage and manage
+- **WHEN** a Codex session calls `update_plan`, `update_goal`, `request_user_input`, `sleep` and the `collaboration` tool `wait_agent`
+- **THEN** their kinds are think, think, manage, manage and subagent
 
 #### Scenario: A Codex `exec` call with one inner tool
 - **WHEN** a Codex `exec` call's code calls only `tools.apply_patch`
 - **THEN** the call has the kind of `apply_patch`, edit, as it shows as that tool (see tool-breakdown)
 
+#### Scenario: A Codex `exec` call with several inner tools
+- **WHEN** a Codex `exec` call's code calls `tools.exec_command` and `tools.write_stdin`
+- **THEN** the call shows as `exec` and its kind is execute, as `exec` runs code
+
+#### Scenario: A Codex MCP tool
+- **WHEN** a Codex `function_call` item names the tool `js` in the `namespace` `mcp__cua_repl` (seen in 0.154–0.169), or an `exec` call's code calls only `tools.mcp__docs__search`
+- **THEN** the tools are `mcp__cua_repl__js` and `mcp__docs__search`, tools of the MCP servers `cua_repl` and `docs`
+
 #### Scenario: An unknown tool
-- **WHEN** a session calls a tool its source does not list, such as `Monitor`
+- **WHEN** a session calls a tool its source does not list, such as Claude Code's `bash`, which Claude Code refuses as a tool it does not have
 - **THEN** its kind is other
 
 ### Requirement: Input of a call

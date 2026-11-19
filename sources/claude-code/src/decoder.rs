@@ -1251,7 +1251,10 @@ fn stream_chain(agent_id: &str, source: &str, subagent_file: bool) -> (String, C
 fn class_of(b: &Block) -> Class {
     match b.kind {
         BlockKind::ToolUse | BlockKind::ToolResult => Class::Tool(match b.tool.as_deref().unwrap_or_default() {
-            "Bash" => ToolClass::Execute,
+            // `Monitor` runs a command in the background and reports its lines; `TaskStop`, and
+            // the retired `KillShell` and `KillBash`, stop such a command (293 of 295 calls in the
+            // 30 days to 2026-11-19 stopped a command, 2 a subagent).
+            "Bash" | "Monitor" | "TaskStop" | "KillShell" | "KillBash" => ToolClass::Execute,
             "BashOutput" => ToolClass::ExecuteOutput,
             "Read" | "NotebookRead" => ToolClass::Read,
             "Write" => ToolClass::Write,
@@ -1261,7 +1264,7 @@ fn class_of(b: &Block) -> Class {
             "Agent" | "Task" | "SendMessage" | "ListAgents" | "SubagentHandback" => ToolClass::Subagent,
             "TodoWrite" | "TaskCreate" | "TaskGet" | "TaskUpdate" | "TaskList" => ToolClass::Think,
             "EnterPlanMode" | "ExitPlanMode" | "EnterWorktree" | "ExitWorktree" => ToolClass::SwitchMode,
-            "Skill" | "ToolSearch" | "ScheduleWakeup" | "AskUserQuestion" | "advisor" => ToolClass::Manage,
+            "Skill" | "ToolSearch" | "ScheduleWakeup" | "CronCreate" | "CronDelete" | "CronList" | "AskUserQuestion" | "advisor" => ToolClass::Manage,
             _ => ToolClass::Other,
         }),
         BlockKind::Reminder => Class::Reminder(ReminderKind::of_label(b.target.as_deref().unwrap_or_default())),
@@ -2037,10 +2040,16 @@ mod tests {
         assert_eq!(tool(BlockKind::ToolUse, "TodoWrite"), Class::Tool(ToolClass::Think));
         assert_eq!(tool(BlockKind::ToolUse, "ExitPlanMode"), Class::Tool(ToolClass::SwitchMode));
         assert_eq!(tool(BlockKind::ToolUse, "EnterWorktree"), Class::Tool(ToolClass::SwitchMode));
-        for own in ["Skill", "ToolSearch", "ScheduleWakeup", "AskUserQuestion", "advisor"] {
+        for own in ["Skill", "ToolSearch", "ScheduleWakeup", "CronCreate", "CronDelete", "CronList", "AskUserQuestion", "advisor"] {
             assert_eq!(tool(BlockKind::ToolUse, own), Class::Tool(ToolClass::Manage), "{own}");
         }
-        assert_eq!(tool(BlockKind::ToolUse, "Monitor"), Class::Tool(ToolClass::Other));
+        for command in ["Monitor", "TaskStop", "KillShell", "KillBash"] {
+            assert_eq!(tool(BlockKind::ToolUse, command), Class::Tool(ToolClass::Execute), "{command}");
+        }
+        // A deliverable for the user, and a name no tool has.
+        for other in ["Artifact", "bash"] {
+            assert_eq!(tool(BlockKind::ToolUse, other), Class::Tool(ToolClass::Other), "{other}");
+        }
         assert_eq!(tool(BlockKind::Reminder, "hook context"), Class::Reminder(ReminderKind::HookContext));
         assert_eq!(tool(BlockKind::Reminder, "task list"), Class::Reminder(ReminderKind::TaskList));
         assert_eq!(tool(BlockKind::Reminder, "attached files"), Class::Reminder(ReminderKind::AttachedFiles));

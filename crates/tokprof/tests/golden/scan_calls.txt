@@ -1,0 +1,23 @@
+$ tokprof --prices tests/golden/prices.toml scan 5e5510f0 --calls
+--- stdout
+tokprof · tool calls of the main conversation
+session   claude  /w/app  5e5510f0-1111-4222-8333-944445555666
+calls     7 in the main conversation · 1 failed · 1 refused · 1 denied · 1 running · 2 background · 2.2m in calls, median 50s
+
+group       calls  failed  time  med time  tokens
+shell           4       1  2.2m       50s       0
+subagents       1             –         –       0
+agent           1             –         –       0
+mcp idea        1             –         –       0
+all             7       1  2.2m       50s       0
+mcp linear      0                                  never called
+
+#  started         req  group      tool                      input            status      took  tokens
+1  MM-DD hh:mm:ss    1  subagents  Agent                     Scan the parser  background   50s       –
+2  MM-DD hh:mm:ss    2  agent      AskUserQuestion                            asked you   1.8m       –
+3  MM-DD hh:mm:ss    3  shell      Bash                      cargo test       failed       30s       –
+4  MM-DD hh:mm:ss    3  shell      Bash                      cargo bench      background  0.3s       –
+5  MM-DD hh:mm:ss    5  shell      Bash                      cargo clippy     refused      50s       –
+6  MM-DD hh:mm:ss    5  shell      Bash                      rm -rf target    denied       50s       –
+7  MM-DD hh:mm:ss    5  mcp idea   mcp__idea__search_symbol  Parser           running        –       –
+--- stderr

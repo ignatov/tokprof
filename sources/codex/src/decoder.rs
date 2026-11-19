@@ -411,7 +411,10 @@ impl Parser {
                 (vec![block(BlockKind::Thinking, encrypted + summary, None, None)], true)
             }
             "function_call" | "custom_tool_call" => {
-                let name = str_at(item, "name").unwrap_or("?");
+                // The log's name sizes the block; an MCP server's tool is named with its server.
+                let logged = str_at(item, "name").unwrap_or("?");
+                let name = mcp_name(item);
+                let name = name.as_deref().unwrap_or(logged);
                 let (tool, target, chars, vcs) = if ty == "custom_tool_call" {
                     let input = str_at(item, "input").unwrap_or_default();
                     self.item_calls = code_calls(name, input);
@@ -436,7 +439,7 @@ impl Parser {
                     call_input(name, &serde_json::from_str(str_at(item, "arguments").unwrap_or_default()).unwrap_or(Value::Null), target.as_deref())
                 };
                 self.item_call = Some((tool.clone(), input));
-                (vec![block(BlockKind::ToolUse, name.len() as u64 + chars, Some(tool), target)], true)
+                (vec![block(BlockKind::ToolUse, logged.len() as u64 + chars, Some(tool), target)], true)
             }
             "function_call_output" | "custom_tool_call_output" => {
                 let (tool, target) = str_at(item, "call_id").and_then(|id| self.tools_by_call.get(id).cloned()).map_or((None, None), |(t, g)| (Some(t), g));
@@ -592,15 +595,18 @@ impl Parser {
 fn class_of(b: &Block) -> Class {
     match b.kind {
         BlockKind::ToolUse | BlockKind::ToolResult => Class::Tool(match b.tool.as_deref().unwrap_or_default() {
-            "exec_command" | "shell" => ToolClass::Execute,
+            // `exec` here runs code that calls no tool or several, mostly `exec_command` and
+            // `write_stdin`; with one inner tool it shows as that tool.
+            "exec_command" | "shell" | "exec" => ToolClass::Execute,
             // Reads what a command running in its session printed since, and how it exited; `wait`
             // waits for the output of a running code cell.
             "write_stdin" | "wait" => ToolClass::ExecuteOutput,
             "apply_patch" => ToolClass::Edit,
             "view_image" => ToolClass::Read,
             "web_search_call" => ToolClass::Fetch,
-            "spawn_agent" | "send_input" | "close_agent" | "resume_agent" => ToolClass::Subagent,
-            "update_plan" => ToolClass::Think,
+            "spawn_agent" | "send_input" | "close_agent" | "resume_agent" | "wait_agent" | "list_agents" | "followup_task" | "send_message"
+            | "interrupt_agent" => ToolClass::Subagent,
+            "update_plan" | "create_goal" | "update_goal" | "get_goal" => ToolClass::Think,
             "request_user_input" | "request_user_input_async" | "sleep" => ToolClass::Manage,
             _ => ToolClass::Other,
         }),
@@ -669,6 +675,14 @@ fn code_input(tool: &str, code: &str, target: Option<&str>, cwd: Option<&str>, h
     }
 }
 
+/// The name of a call of an MCP server's tool that the item names by its server's `namespace`
+/// (`js` in `mcp__cua_repl`, seen in 0.154–0.169), as `exec` code names such a tool:
+/// `mcp__cua_repl__js`. `None` for a tool of Codex's own namespaces, such as `clock`.
+fn mcp_name(item: &Value) -> Option<String> {
+    let namespace = str_at(item, "namespace").filter(|n| n.starts_with("mcp__") && n.len() > 5)?;
+    Some(format!("{namespace}__{}", str_at(item, "name")?))
+}
+
 /// Codex's `exec` tool takes JavaScript that calls the real tools (`tools.exec_command(...)`);
 /// a single inner tool becomes the tool, with its command or patched file as the target.
 fn code_target(name: &str, code: &str, cwd: Option<&str>, home: &Path) -> (String, Option<String>) {
@@ -685,7 +699,7 @@ fn code_target(name: &str, code: &str, cwd: Option<&str>, home: &Path) -> (Strin
             let target = match one.as_str() {
                 "exec_command" => js_string(code, "cmd").map(|c| command_head(&c)),
                 "apply_patch" => patched_file(code, cwd, home),
-                _ => None,
+                t => crate::tools::tool_target(t, &Value::Null, cwd, home),
             };
             (one.clone(), target)
         }
@@ -834,6 +848,21 @@ mod tests {
             code_target("exec", "await Promise.all([tools.exec_command({}), tools.write_stdin({})])", cwd, Path::new("/h")).1.as_deref(),
             Some("exec_command, write_stdin")
         );
+        assert_eq!(
+            code_target("exec", "text(await tools.mcp__docs__search({query: \"proxy\"}))", cwd, Path::new("/h")),
+            ("mcp__docs__search".to_string(), Some("mcp:docs".to_string())),
+            "an MCP tool belongs to its server"
+        );
+        assert_eq!(code_target("exec", "text(await tools.update_goal({status: \"complete\"}))", cwd, Path::new("/h")), ("update_goal".to_string(), None));
+    }
+
+    #[test]
+    fn a_call_in_an_mcp_namespace_is_a_tool_of_that_server() {
+        let call =
+            |namespace: &str, name: &str| serde_json::json!({"type": "function_call", "name": name, "namespace": namespace, "call_id": "c", "arguments": "{}"});
+        assert_eq!(mcp_name(&call("mcp__cua_repl", "js")).as_deref(), Some("mcp__cua_repl__js"));
+        assert_eq!(mcp_name(&call("clock", "sleep")), None, "a namespace of Codex's own");
+        assert_eq!(mcp_name(&serde_json::json!({"type": "function_call", "name": "wait"})), None);
     }
 
     #[test]
@@ -1184,6 +1213,13 @@ mod tests {
         assert_eq!(tool(BlockKind::ToolUse, "spawn_agent"), Class::Tool(ToolClass::Subagent));
         assert_eq!(tool(BlockKind::ToolUse, "web_search_call"), Class::Tool(ToolClass::Fetch));
         assert_eq!(tool(BlockKind::ToolUse, "update_plan"), Class::Tool(ToolClass::Think));
+        assert_eq!(tool(BlockKind::ToolUse, "exec"), Class::Tool(ToolClass::Execute), "code that calls several tools");
+        for subagent in ["wait_agent", "list_agents", "followup_task", "send_message", "interrupt_agent"] {
+            assert_eq!(tool(BlockKind::ToolUse, subagent), Class::Tool(ToolClass::Subagent), "{subagent}");
+        }
+        for goal in ["create_goal", "update_goal", "get_goal"] {
+            assert_eq!(tool(BlockKind::ToolUse, goal), Class::Tool(ToolClass::Think), "{goal}");
+        }
         for own in ["request_user_input", "request_user_input_async", "sleep"] {
             assert_eq!(tool(BlockKind::ToolUse, own), Class::Tool(ToolClass::Manage), "{own}");
         }
