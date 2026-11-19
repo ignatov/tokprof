@@ -26,6 +26,8 @@ TOKPROF_BLESS=1 cargo test -p tokprof --test golden    # a change of what the CL
 cargo install --path crates/tokprof --root ~/.local    # the binary the author runs
 ```
 
+A pre-push hook runs the formatting and Clippy checks of CI, so that a red Clippy does not reach `main`. Enable it once in a fresh clone with `git config core.hooksPath .githooks`. Skip it once with `git push --no-verify`.
+
 The window, `crates/tokprof-desk`, is a workspace of its own that the root excludes, so that the root and the checks of every push never fetch Rune; only the release's macOS jobs build it, as the Mac app. When a change touches it or `tokprof-browse`, check it in its folder too:
 
 ```sh

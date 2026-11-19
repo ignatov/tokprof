@@ -1,0 +1,27 @@
+#!/bin/sh
+# Runs the formatting and Clippy checks of .github/workflows/ci.yml (job "Clippy") before a push.
+# Enable it once per clone: git config core.hooksPath .githooks
+# Skip it once: git push --no-verify
+
+zero=0000000000000000000000000000000000000000
+check=no
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+    case "$remote_ref" in refs/tags/*) continue ;; esac
+    [ "$local_sha" = "$zero" ] && continue
+    check=yes
+done
+[ "$check" = yes ] || exit 0
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+fail() {
+    echo >&2
+    echo "pre-push: $1 failed, the push is stopped." >&2
+    echo "Fix it, or skip this check once with: git push --no-verify" >&2
+    exit 1
+}
+
+echo "pre-push: cargo fmt --all --check" >&2
+cargo fmt --all --check || fail "cargo fmt (run: cargo fmt --all)"
+echo "pre-push: cargo clippy --workspace --all-targets --locked -- -D warnings" >&2
+cargo clippy --workspace --all-targets --locked -- -D warnings || fail "cargo clippy"
