@@ -623,7 +623,7 @@ read claude 2 files (0.0 GB), codex 3 files (0.0 GB), pi 3 files (0.0 GB), openc
     }
   },
   "format": 3,
-  "platform": "macos-aarch64",
+  "platform": "<platform>",
   "prevalence": {"days_with_cold_return":0,"days_with_interrupt":2,"days_with_retry_wait":1},
   "rhythm": {
     "answers": {"by_pause":{"5–15m":1},"count":1,"median_ms":538000},
@@ -641,6 +641,6 @@ read claude 2 files (0.0 GB), codex 3 files (0.0 GB), pi 3 files (0.0 GB), openc
     "typed_while_working": 1,
     "worked_share_median": 0.005
   },
-  "tokprof": "0.1.6",
+  "tokprof": "<version>",
   "window": {"first":"2026-10-30","last":"2026-11-02"}
 }

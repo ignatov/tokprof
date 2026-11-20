@@ -120,10 +120,19 @@ fn check(name: &str, args: &[&str], view: View) {
     text.push_str(&format!("--- stderr\n{}", timing(&stderr)));
     if let View::File(file) = view {
         let written = std::fs::read_to_string(home.join(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
-        text.push_str(&format!("--- {file}\n{}", paths(&written)));
+        text.push_str(&format!("--- {file}\n{}", platform(&paths(&written))));
     }
     std::fs::remove_dir_all(&home).unwrap();
     compare(name, &text);
+}
+
+/// A written file with the platform and the version it names as `<platform>` and `<version>`:
+/// the share file says which system and processor the binary was built for, and CI runs the
+/// tests on three; the version changes with every release.
+fn platform(text: &str) -> String {
+    let own = format!("\"platform\": \"{}-{}\"", std::env::consts::OS, std::env::consts::ARCH);
+    let version = format!("\"tokprof\": \"{}\"", env!("CARGO_PKG_VERSION"));
+    text.replace(&own, "\"platform\": \"<platform>\"").replace(&version, "\"tokprof\": \"<version>\"")
 }
 
 /// The home as `<home>` and the repository as `<repo>`, and `/` in the paths that start with
