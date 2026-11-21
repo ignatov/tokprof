@@ -6,7 +6,7 @@ Shows, per tool and shell command, how often an agent called it, how big its res
 ## Requirements
 
 ### Requirement: Rows by tool and command
-The tool breakdown SHALL have one row per tool, the session's subagents included. A shell tool, such as Claude Code `Bash` or Codex `exec_command`, gets one row per command head (see cost-attribution): `Bash sed -n`, `exec_command cargo test`. A Codex `exec` call whose code calls one inner tool shows as that tool, as cost-attribution names it; one that calls several shows as `exec`.
+The tool breakdown SHALL have one row per tool, the session's subagents included. A shell tool, such as Claude Code `Bash` or Codex `exec_command`, gets one row per command head (see cost-attribution): `Bash sed -n`, `exec_command cargo test`. The head skips a leading `cd <dir>` up to the first `&&` or `;`. A Codex `exec` call whose code calls one inner tool shows as that tool, as cost-attribution names it; one that calls several shows as `exec`.
 
 #### Scenario: Shell commands
 - **WHEN** a session ran `sed -n 1,80p a.rs` 56 times and `grep -n foo src` 40 times through `Bash`
@@ -15,6 +15,10 @@ The tool breakdown SHALL have one row per tool, the session's subagents included
 #### Scenario: Other tools
 - **WHEN** a session called `Read` on 3 different files
 - **THEN** they make one `Read` row with 3 calls, whatever the files
+
+#### Scenario: A command that first changes the folder
+- **WHEN** a session ran `cd /w/app && cargo test` and `cd /w/app; ./gradlew test --tests X` through its shell tool
+- **THEN** their rows are those of `cargo test` and `gradlew test`, and no row is named after the `cd`
 
 ### Requirement: Sizes per call
 `avg result` and `avg input` SHALL be the mean tokens of a row's tool results and of its call inputs, each block counted once, at the size it had in the first request that held it. For a request without usage (see cost-attribution), a block's size is the one its log gives (see session-logs, Sizes the log gives), and a block without one is left out of the mean. A row whose sizes the log cannot rebuild shows `–`.
