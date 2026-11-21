@@ -292,3 +292,10 @@ When no earlier cause fits, the cause SHALL be `lookback > 20 blocks` for a Clau
 #### Scenario: A Codex miss after an answer
 - **WHEN** a Codex response ended with an assistant message, and the next request misses with no earlier cause
 - **THEN** its cause is `unknown (server side?)`
+
+### Requirement: Requests without usage are not judged
+A request without usage (see cost-attribution, Requests without usage) SHALL never be judged as a hit or a miss, and never be the request a later one is judged against. `tokprof misses` and `tokprof whatif` show nothing for it.
+
+#### Scenario: A Copilot session
+- **WHEN** `tokprof --agent copilot misses` runs over Copilot sessions only
+- **THEN** it lists no miss, and its totals are zero

@@ -33,7 +33,7 @@ A session's agent SHALL count as busy from the start of each turn of its main co
 - **THEN** the agent is not busy from 10:04 to 10:10, and is busy in the turn that starts at 10:10
 
 ### Requirement: What the busy time went to
-Each moment of busy time SHALL go to the first kind that applies: `model` while a request of a main conversation runs; `API retries` while such a request waits to be sent again after an API error; `subagents` while a subagent of the session works; then what the agent waited on before its next main request (see What the agent waited on between requests); and `nothing` when none applies.
+Each moment of busy time SHALL go to the first kind that applies: `model` while a request of a main conversation runs; `API retries` while such a request waits to be sent again after an API error; `subagents` while a subagent of the session works; `environment setup` while a call of that kind runs (see session-logs, Kind of a tool); then what the agent waited on before its next main request (see What the agent waited on between requests); and `nothing` when none applies.
 
 #### Scenario: A request
 - **WHEN** a main request is sent at 10:00:00 and its response ends at 10:00:40
@@ -61,6 +61,14 @@ Each moment of busy time SHALL go to the first kind that applies: `model` while 
 #### Scenario: A subagent while a main request runs
 - **WHEN** a subagent works while a main request runs
 - **THEN** that time goes to `model`
+
+#### Scenario: Copilot setup steps
+- **WHEN** a Copilot session's typed message is at 10:00:00, its setup steps run from 10:00:00 to 10:06:30, and its first request is sent at 10:06:40 and ends at 10:06:50
+- **THEN** 6.5 minutes go to `environment setup`, 10 seconds to `nothing` and 10 seconds to `model`
+
+#### Scenario: A request without usage
+- **WHEN** a Copilot request is sent at 10:07:00 and its response ends at 10:07:04
+- **THEN** those 4 seconds go to `model`, as for a request with usage
 
 ### Requirement: What the agent waited on between requests
 Busy time from the end of a main response to the send of the next main request SHALL go to that request's activity (see cost-attribution, Activity of a request) when calls triggered it, the activity `subagents` counting as `subagents`. It goes to `compaction` when that request's trigger is `compaction`, and to `background commands` from an end of turn to a wake that reports a background command.
