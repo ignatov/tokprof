@@ -40,6 +40,10 @@ const AGENT_WORDS: &[&str] = &[
     "step-finish",
     "Junie",
     "junie",
+    "Copilot",
+    "copilot",
+    "sweagent",
+    "toolTelemetry",
 ];
 
 /// The one file of the framework that may name vendors: the cache rules of their APIs.

@@ -406,6 +406,11 @@ pub trait LogSource: Send + Sync {
     fn name(&self) -> &'static str;
     /// The agents the source knows. It may report other agents that its logs name.
     fn agents(&self) -> Vec<AgentId>;
+    /// The source's agents are read only when asked for by name, not by default (session-logs,
+    /// Agent selection): their logs are not this machine's work.
+    fn on_request(&self) -> bool {
+        false
+    }
     fn detail(&self) -> Detail;
     /// Every log the source holds: main sessions and subagents.
     fn discover(&self) -> Vec<SessionRef>;

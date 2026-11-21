@@ -1,6 +1,6 @@
 # tokprof
 
-A token, cost and prompt-cache profiler for AI coding-agent session logs (Claude Code, Codex, pi, OpenCode).
+A token, cost and prompt-cache profiler for AI coding-agent session logs (Claude Code, Codex, pi, OpenCode, and the saved logs of the GitHub Copilot coding agent).
 It reads the logs the agents already write. It needs no proxy and no account, and nothing leaves the machine.
 
 <picture>
@@ -163,7 +163,7 @@ calls     412 in the main conversation, 1,020 with the subagents' · 9 failed ·
 - The input is at most 48 characters of what the source gives: the command, the path, the pattern, the URL, the query, a subagent's description, or the first string of an MCP tool's input. It is shown on this machine only and never goes into a share file.
 - A subagent is one row, its `Agent` call; its own calls count in the groups table, not as rows.
 - `--failed` keeps the failed calls, `--group <name>` the calls of one group (`mcp` keeps every MCP server), and `--tool <name>` the calls of one tool, without case. They can be combined, and a line under the header says `showing <n> of <m> calls`. They need `--calls`, and `--calls` cannot go with `--requests`.
-- Only Claude Code and Codex give call times and inputs; pi and OpenCode give no tool calls. Only Claude Code lists the MCP servers a session had, so only its servers can show as `never called`.
+- Only Claude Code, Codex and Copilot give call times and inputs; pi and OpenCode give no tool calls. Only Claude Code and Copilot list the MCP servers a session had, so only their servers can show as `never called`.
 
 A session's time is its last activity: the time of the last record in its log that carries one. The latest session is the one active last. Claude Code also writes records without a time, such as `cost-state`, when the IDE resumes a session that then does nothing, and those do not count.
 
@@ -441,7 +441,7 @@ Every command but `tokprof prices` takes these filters. `tokprof day` takes all 
 
 | Filter | Example |
 |---|---|
-| `--agent` | `claude,codex,pi,opencode` |
+| `--agent` | `claude,codex,pi,opencode` (the default); `copilot` only when named |
 | `--since` | `2026-10-01`, or `7d` for the last seven days |
 | `--until` | `2026-10-16`, excluded |
 | `--project` | text the project or the session's folder contains, such as `billing` (see [Projects](#projects)); a path under the home directory works with or without `~` |
@@ -838,6 +838,7 @@ Coverage depends on what the logs contain:
   - Subagent threads join their parent through `parent_thread_id`, and count under the topmost thread above them, so threads that subagents spawn belong to the same session.
 - **pi** logs are read from `$PI_CODING_AGENT_SESSION_DIR`, else `$PI_CODING_AGENT_DIR/sessions`, by default `~/.pi/agent/sessions` (pi 0.84.2). Each reply with usage is a request, on every branch of the session's tree, and each `compaction` is a compaction call; a fork's copies of earlier entries count once, in the log they came from. pi's prompts are not rebuilt, so a miss gets no cause from the prompt. pi's own `cost.total` is compared with tokprof's price, never used as one: a local model stays unpriced. pi-durable SQLite stores are not read.
 - **OpenCode** keeps no log files: tokprof reads its SQLite stores, `opencode.db` and `opencode-<channel>.db` in `$XDG_DATA_HOME/opencode`, by default `~/.local/share/opencode`, or the one `$OPENCODE_DB` names, read-only (opencode 1.18–1.19 and 2.2). Each session in a store is a log; both table layouts are read, a session 2.x copied from 1.x once. Each step with usage is a request, a compaction's own call a compaction call, and a session that the `task` tool started is a subagent of the session above it. OpenCode's prompts are not rebuilt, so a miss gets no cause from the prompt. Its own `cost` is compared with tokprof's price, never used as one. The JSON files of opencode before 1.x are not read.
+- **GitHub Copilot coding agent** (`--agent copilot`, never in the default list) writes no local logs. Save each session's log, the answer of the agent sessions API, as `<session id>.sse` or `.sse.gz`, and its record of the agent tasks API as `<session id>.json`, anywhere under `$TOKPROF_COPILOT_DIR`, by default `~/tokprof/copilot` (`$TOKPROF_DIR/copilot`). The logs give no token counts, so every request is one without usage: it has its times, model and calls, but no tokens, no dollars and no cache verdict. The session's cost is the record's billed credits at $0.01 a credit, shown as its own cost in `tokprof summary`, the X-ray and `tokprof sessions --cost` (with `*`); a record without `usage`, as for the later sessions of a task whose credits GitHub puts on the first session, has no cost. What works for this agent: `sessions`, `tools`, `scan` and `scan --calls`, with call times, outcomes and the result sizes the log gives; the busy time, with the setup steps before the work as `environment setup`. `rent`, `trips`, `after` and hints show `–` or nothing, and `misses`, `whatif`, `bench` and the profiles have nothing to show. The fields read are in `sources/copilot/README.md`.
 
 ## Origin and task
 

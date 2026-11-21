@@ -305,8 +305,8 @@ enum Value {
 
 fn main() -> Result<()> {
     let catalog = paths::placing(tokprof_sources::catalog());
-    // The default agents are the ones the catalog declares; clap keeps the text for `--help`.
-    let names: &'static str = Box::leak(catalog.agents().iter().map(AgentId::name).collect::<Vec<_>>().join(",").into_boxed_str());
+    // The default agents are the ones the catalog reads by default; clap keeps the text for `--help`.
+    let names: &'static str = Box::leak(catalog.default_agents().iter().map(AgentId::name).collect::<Vec<_>>().join(",").into_boxed_str());
     let matches = Cli::command().mut_arg("agent", |a| a.default_value(names)).get_matches();
     let mut cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     cli.project = cli.project.as_deref().map(normalize_project);

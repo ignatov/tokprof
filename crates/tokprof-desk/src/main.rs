@@ -1047,7 +1047,7 @@ fn scene_session(s: &mut Desk) {
 /// What the flags select, the prices and the tab, checked as the window will use them.
 fn checked(cli: &Cli, catalog: &Catalog) -> Result<(Query, tokprof_core::pricing::Pricing, Tab)> {
     let agents = match cli.agent.is_empty() {
-        true => catalog.agents(),
+        true => catalog.default_agents(),
         false => cli.agent.iter().map(|a| catalog.agent(a)).collect::<Result<Vec<_>>>()?,
     };
     let select = query(cli, agents)?;

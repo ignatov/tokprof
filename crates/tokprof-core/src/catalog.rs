@@ -70,6 +70,13 @@ impl Catalog {
         out
     }
 
+    /// The agents read when none is named: those of the sources that are not read on request
+    /// only, in registry order.
+    pub fn default_agents(&self) -> Vec<AgentId> {
+        let on_request: Vec<AgentId> = self.sources.iter().filter(|s| s.on_request()).flat_map(|s| s.agents()).collect();
+        self.agents().into_iter().filter(|a| !on_request.contains(a)).collect()
+    }
+
     /// The declared agent of this name.
     pub fn agent(&self, name: &str) -> Result<AgentId> {
         match self.agents().into_iter().find(|a| a.name() == name) {

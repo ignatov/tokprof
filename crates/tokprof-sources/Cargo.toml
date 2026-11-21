@@ -8,11 +8,12 @@ repository.workspace = true
 publish.workspace = true
 
 [features]
-default = ["claude-code", "codex", "pi", "opencode"]
+default = ["claude-code", "codex", "pi", "opencode", "copilot"]
 claude-code = ["dep:tokprof-source-claude-code"]
 codex = ["dep:tokprof-source-codex"]
 pi = ["dep:tokprof-source-pi"]
 opencode = ["dep:tokprof-source-opencode"]
+copilot = ["dep:tokprof-source-copilot"]
 
 [dependencies]
 tokprof-core.workspace = true
@@ -20,6 +21,7 @@ tokprof-source-claude-code = { workspace = true, optional = true }
 tokprof-source-codex = { workspace = true, optional = true }
 tokprof-source-pi = { workspace = true, optional = true }
 tokprof-source-opencode = { workspace = true, optional = true }
+tokprof-source-copilot = { workspace = true, optional = true }
 
 [dev-dependencies]
 anyhow.workspace = true
