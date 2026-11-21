@@ -25,10 +25,11 @@ pub fn display_path(path: &str, cwd: Option<&str>, home: &Path) -> String {
 /// First words of a shell command: `cargo test`, `git status`, `python3 -I`.
 pub fn command_head(cmd: &str) -> String {
     let mut cmd = cmd.trim();
+    // A leading `cd <dir> && ` or `cd <dir>; ` only says where the command runs.
     if cmd.starts_with("cd ")
-        && let Some((_, rest)) = cmd.split_once("&&")
+        && let Some(at) = [cmd.find("&&").map(|i| (i, 2)), cmd.find(';').map(|i| (i, 1))].into_iter().flatten().min()
     {
-        cmd = rest.trim();
+        cmd = cmd[at.0 + at.1..].trim();
     }
     let words: Vec<&str> = cmd.split_whitespace().skip_while(|w| w.contains('=') && !w.starts_with('-')).take(2).collect();
     let mut head = words.iter().enumerate().map(|(i, w)| if i == 0 { w.rsplit('/').next().unwrap_or(w) } else { w }).collect::<Vec<_>>().join(" ");
@@ -88,6 +89,9 @@ mod tests {
     #[test]
     fn command_heads() {
         assert_eq!(command_head("cd /tmp && cargo test --all"), "cargo test");
+        assert_eq!(command_head("cd /w/app; ./gradlew test --tests X"), "gradlew test", "a `cd` that ends with `;`");
+        assert_eq!(command_head("cd /w; git status && git diff"), "git status", "the first separator ends the `cd`");
+        assert_eq!(command_head("cd /w && ls; pwd"), "ls; pwd", "only the `cd` part is skipped");
         assert_eq!(command_head("RUST_LOG=debug /usr/bin/python3 -I x.py"), "python3 -I");
     }
 
