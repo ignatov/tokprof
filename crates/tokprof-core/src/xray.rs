@@ -205,6 +205,11 @@ impl Sink for Totals {
         self.tools.tool_share(t);
     }
 
+    fn platform_call(&mut self, s: &Session, b: usize) {
+        self.tools.platform_call(s, b);
+        self.calls.platform_call(s, b);
+    }
+
     fn fact(&mut self, f: &Fact) {
         self.tools.fact(f);
         self.setup.add(f);

@@ -32,13 +32,27 @@ pub fn summary(c: &Collector, window: &Filter, price_file: &Path) -> String {
     ];
     let mut unpriced: Vec<(String, f64)> = Vec::new();
     for ((agent, model), m) in c.spend.by_cost() {
-        let cell = |v: &Values| if m.priced { usd(v.usd) } else { tokens(v.tokens) };
+        let cell = |v: &Values| {
+            if m.no_usage() {
+                "–".to_string()
+            } else if m.priced {
+                usd(v.usd)
+            } else {
+                tokens(v.tokens)
+            }
+        };
         let mut row =
             vec![agent.name().to_string(), model.clone(), m.requests.to_string(), format!("{:.0}%", 100.0 * m.with_prompt as f64 / m.requests.max(1) as f64)];
         row.extend(m.by_component.iter().map(cell));
-        row.push(if m.priced { usd(m.usd()) } else { format!("{} tok", tokens(m.tokens())) });
+        row.push(if m.no_usage() {
+            "–".to_string()
+        } else if m.priced {
+            usd(m.usd())
+        } else {
+            format!("{} tok", tokens(m.tokens()))
+        });
         rows.push(row);
-        if !m.priced {
+        if !m.priced && !m.no_usage() {
             unpriced.push((model.clone(), m.tokens()));
         }
     }
@@ -58,7 +72,11 @@ pub fn summary(c: &Collector, window: &Filter, price_file: &Path) -> String {
         let what = format!("{n} session{}{}", if n == 1 { "" } else { "s" }, if windowed { " inside the window" } else { "" });
         let info = r.agent.info();
         let counter = info.cost_counter.clone().unwrap_or_else(|| format!("{}'s own cost counter", info.title));
-        let _ = writeln!(out, "{counter} for {what}: {}; tokprof for the same sessions: {}", usd(r.reported_usd), usd(r.ours_usd));
+        if r.no_usage {
+            let _ = writeln!(out, "{counter} for {what}: {}; their logs give no usage, so tokprof has no figure to compare", usd(r.reported_usd));
+        } else {
+            let _ = writeln!(out, "{counter} for {what}: {}; tokprof for the same sessions: {}", usd(r.reported_usd), usd(r.ours_usd));
+        }
     }
     out.push('\n');
     out.push_str(&clients(c));

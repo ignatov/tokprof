@@ -53,6 +53,7 @@ pub fn retry_class(text: &str) -> &'static str {
 pub const MODEL: &str = "model";
 pub const API_RETRIES: &str = "API retries";
 pub const SUBAGENTS: &str = "subagents";
+pub const ENVIRONMENT_SETUP: &str = "environment setup";
 pub const COMPACTION: &str = "compaction";
 pub const BACKGROUND: &str = "background commands";
 pub const NOTHING: &str = "nothing";
@@ -63,6 +64,8 @@ enum Kind {
     Model,
     Retries,
     Subagents,
+    /// A step that sets up the agent's environment runs (see `Session::platform_calls`).
+    Setup,
     /// The activity of the next main request, or `compaction`.
     Between(&'static str),
     Background,
@@ -74,6 +77,7 @@ impl Kind {
             Kind::Model => MODEL,
             Kind::Retries => API_RETRIES,
             Kind::Subagents => SUBAGENTS,
+            Kind::Setup => ENVIRONMENT_SETUP,
             Kind::Between(name) => name,
             Kind::Background => BACKGROUND,
         }
@@ -163,6 +167,12 @@ impl Parts {
                 paint.push((before.end, turn.start, Layer::Kind(Kind::Background)));
             }
         }
+        // While a step that sets up the environment runs.
+        for &b in &main.platform_calls {
+            if let Some((start, end)) = main.call(b).and_then(|c| Some((c.start_ms?, c.end_ms?))) {
+                parts.paint.push((start, end.max(start), Layer::Kind(Kind::Setup)));
+            }
+        }
         parts.counts.paint_requests(main, &mut parts.paint, window);
         parts.add_chains(main, true);
         parts
@@ -204,7 +214,7 @@ impl Parts {
                 }
             }
             let (c, window) = (&mut self.counts, self.window);
-            for r in chain.requests.iter().filter(|r| !r.advisor && (r.usage.prompt() > 0 || r.usage.output > 0) && inside(window, r.ts_ms)) {
+            for r in chain.requests.iter().filter(|r| !r.advisor && r.answered() && inside(window, r.ts_ms)) {
                 c.requests += 1;
                 let Some(run) = r.run_ms() else { continue };
                 if run >= SLOW_MS {
@@ -261,7 +271,7 @@ impl Busy {
             let timed: Vec<&Request> = requests.into_iter().filter(|r| !r.advisor && r.sent_ms.is_some()).collect();
             for (i, r) in timed.iter().enumerate() {
                 let (first, sent) = (r.first_sent_ms.unwrap_or(r.sent_ms.unwrap_or_default()), r.sent_ms.unwrap_or_default());
-                let answered = r.usage.prompt() > 0 || r.usage.output > 0;
+                let answered = r.answered();
                 let counted = inside(window, r.ts_ms);
                 if answered && counted {
                     self.main_requests += 1;
@@ -525,6 +535,26 @@ mod tests {
     }
 
     use HandoffKind::*;
+
+    #[test]
+    fn setup_steps_and_requests_without_usage() {
+        use crate::model::{Block, BlockKind, CallRecord, Class, ToolClass};
+        // Typed at 10:00:00; a setup step runs to 10:06:30; the first request runs 10:06:40–10:06:50
+        // and the second 10:07:00–10:07:04, both without usage; the turn ends with the second.
+        let plain = |sent, ended| Request { usage: Usage::default(), no_usage: true, ..req(sent, ended) };
+        let mut s = session(&[at(10, 0, 0)], &[(at(10, 7, 4), TurnEnd)], vec![plain(at(10, 6, 40), at(10, 6, 50)), plain(at(10, 7, 0), at(10, 7, 4))]);
+        let step = Block { class: Class::Tool(ToolClass::EnvironmentSetup), kind: BlockKind::ToolUse, chars: 10, tool: Some("run_setup".into()), target: None };
+        let m = s.push_message(vec![step], false);
+        let b = s.messages[m].blocks.start;
+        s.calls.push(CallRecord { start_ms: Some(at(10, 0, 0)), end_ms: Some(at(10, 6, 30)), done: true, ..CallRecord::default() });
+        s.call_of_block.insert(b, 0);
+        s.platform_calls.push(b);
+        let busy = Busy::of(&s, &[]);
+        assert_eq!(time(&busy, ENVIRONMENT_SETUP).0, 6 * MIN + 30_000);
+        assert_eq!(time(&busy, MODEL).0, 14_000, "both requests count as answered");
+        assert_eq!(time(&busy, NOTHING).0, 20_000);
+        assert_eq!(busy.main_requests, 2);
+    }
 
     #[test]
     fn a_turn_and_the_answer_after_it() {

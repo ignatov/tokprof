@@ -358,7 +358,7 @@ impl Sink for Pauses {
         let mut order = Vec::new();
         for (i, c) in s.chains.iter().enumerate() {
             for r in &c.requests {
-                if (r.usage.prompt() > 0 || r.usage.output > 0) && self.filter.keeps(r) {
+                if r.answered() && self.filter.keeps(r) {
                     order.push(i);
                 }
             }

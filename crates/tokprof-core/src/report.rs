@@ -253,9 +253,16 @@ pub struct ModelTotals {
     pub with_prompt: u64,
     pub priced: bool,
     pub by_component: [Values; 5],
+    /// Requests whose log gives no usage (cost-attribution, Requests without usage).
+    pub without_usage: u64,
 }
 
 impl ModelTotals {
+    /// Every request of the row has no usage, so its components and total are not known.
+    pub fn no_usage(&self) -> bool {
+        self.requests > 0 && self.without_usage == self.requests
+    }
+
     /// What the model's requests cost, over the components.
     pub fn usd(&self) -> f64 {
         self.by_component.iter().map(|v| v.usd).sum()
@@ -271,6 +278,8 @@ impl ModelTotals {
 struct SessionTotals {
     ours: f64,
     reported: Option<f64>,
+    /// Some request of the session has no usage, so tokprof has no figure of its own for it.
+    no_usage: bool,
     /// The first and the last request of the session, in every chain and file.
     span: Option<(i64, i64)>,
     /// The clients of its requests, in every chain and file.
@@ -302,10 +311,11 @@ pub struct ModelSpend {
 }
 
 impl ModelSpend {
-    /// The models, most expensive first, as the summary's table lists them.
+    /// The models, most expensive first, as the summary's table lists them; the rows without
+    /// usage last.
     pub fn by_cost(&self) -> Vec<(&(AgentId, String), &ModelTotals)> {
         let mut models: Vec<_> = self.models.iter().collect();
-        models.sort_by(|a, b| b.1.usd().total_cmp(&a.1.usd()).then(a.0.cmp(b.0)));
+        models.sort_by(|a, b| a.1.no_usage().cmp(&b.1.no_usage()).then(b.1.usd().total_cmp(&a.1.usd())).then(a.0.cmp(b.0)));
         models
     }
 
@@ -320,6 +330,7 @@ impl ModelSpend {
             let m = self.models.entry(k).or_default();
             m.requests += v.requests;
             m.with_prompt += v.with_prompt;
+            m.without_usage += v.without_usage;
             m.priced |= v.priced;
             for (a, b) in m.by_component.iter_mut().zip(v.by_component) {
                 a.add(b);
@@ -329,6 +340,7 @@ impl ModelSpend {
             let s = self.sessions.entry(k).or_default();
             s.ours += v.ours;
             s.reported = max_opt(s.reported, v.reported);
+            s.no_usage |= v.no_usage;
             s.span = union(s.span, v.span);
             s.clients.extend(v.clients);
         }
@@ -340,12 +352,13 @@ impl Sink for ModelSpend {
         // Keyed by the short id that facts carry; subagent files share their parent's id.
         let e = self.sessions.entry((s.agent.clone(), s.short_id().to_string())).or_default();
         e.reported = max_opt(e.reported, s.reported_usd);
+        e.no_usage |= s.chains.iter().flat_map(|c| &c.requests).any(|r| r.no_usage);
         let times = s.chains.iter().flat_map(|c| &c.requests).map(|r| r.ts_ms);
         let span = times.clone().min().zip(times.max());
         e.span = union(e.span, span);
         // Only requests with usage, the ones the analysis reports: a request record without a
         // response has no client.
-        for r in s.chains.iter().flat_map(|c| &c.requests).filter(|r| r.usage.prompt() > 0 || r.usage.output > 0) {
+        for r in s.chains.iter().flat_map(|c| &c.requests).filter(|r| r.answered()) {
             if !e.clients.contains(r.client_name()) {
                 e.clients.insert(r.client_name().to_string());
             }
@@ -356,6 +369,7 @@ impl Sink for ModelSpend {
         let m = self.models.entry((r.agent.clone(), r.model.to_string())).or_default();
         m.requests += 1;
         m.with_prompt += r.composition as u64;
+        m.without_usage += u64::from(r.no_usage);
         m.priced |= r.price.is_some();
     }
 
@@ -583,6 +597,10 @@ impl Sink for Collector {
         self.tools.block_entered(b);
     }
 
+    fn platform_call(&mut self, s: &Session, b: usize) {
+        self.tools.platform_call(s, b);
+    }
+
     fn tool_share(&mut self, t: &ToolShare) {
         self.tools.tool_share(t);
     }
@@ -604,6 +622,9 @@ pub struct Reconciliation {
     pub sessions: usize,
     pub reported_usd: f64,
     pub ours_usd: f64,
+    /// The sessions' requests have no usage, so `ours_usd` says nothing (cost-attribution, Own
+    /// cost without usage).
+    pub no_usage: bool,
 }
 
 impl ModelSpend {
@@ -614,16 +635,16 @@ impl ModelSpend {
         let windowed = window.since_ms.is_some() || window.until_ms.is_some();
         let in_time = |s: &SessionTotals| !windowed || s.span.is_some_and(|(first, last)| window.accepts(first) && window.accepts(last));
         let inside = |s: &SessionTotals| in_time(s) && s.clients.iter().all(|c| window.keeps_client(c));
-        let mut by_agent: BTreeMap<&AgentId, (f64, f64, usize)> = BTreeMap::new();
+        let mut by_agent: BTreeMap<(&AgentId, bool), (f64, f64, usize)> = BTreeMap::new();
         for ((agent, _), s) in self.sessions.iter().filter(|(_, s)| inside(s)) {
             if let Some(r) = s.reported {
-                let e = by_agent.entry(agent).or_default();
+                let e = by_agent.entry((agent, s.no_usage)).or_default();
                 *e = (e.0 + s.ours, e.1 + r, e.2 + 1);
             }
         }
         by_agent
             .into_iter()
-            .map(|(agent, (ours_usd, reported_usd, sessions))| Reconciliation { agent: agent.clone(), sessions, reported_usd, ours_usd })
+            .map(|((agent, no_usage), (ours_usd, reported_usd, sessions))| Reconciliation { agent: agent.clone(), sessions, reported_usd, ours_usd, no_usage })
             .collect()
     }
 }
@@ -718,6 +739,7 @@ mod tests {
         for (origin, task, read) in [("prompt", "Fix the parser", 1_000), ("skill:code-review", "Fix the parser", 5_000), ("agent:Explore", "Scan docs", 2_000)]
         {
             w.add(&RequestRecord {
+                no_usage: false,
                 agent: &crate::testing::claude(),
                 ts_ms: 0,
                 chain: "main",

@@ -1162,7 +1162,7 @@ mod tests {
             assert!(err(alone).contains("--calls"), "{alone:?}: {}", err(alone));
         }
         let unknown = err(&["scan", "--calls", "--group", "disk"]);
-        assert!(unknown.contains("files, search, shell, web, subagents, agent, mcp, mcp <server>, other"), "{unknown}");
+        assert!(unknown.contains("files, search, shell, web, subagents, agent, environment, mcp, mcp <server>, other"), "{unknown}");
         assert!(matches!(parse(&["scan", "--calls", "--group", "mcp"]).unwrap().command, Some(Command::Scan { group: Some(GroupFilter::AnyMcp), .. })));
     }
 

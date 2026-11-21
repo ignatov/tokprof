@@ -12,7 +12,10 @@ use tokprof_core::tools::{GroupFilter, RowOrder, ToolTable, hint};
 pub fn failures_line(t: &ToolTable) -> Option<String> {
     let priced = t.spend.usd > 0.0;
     let mut parts = Vec::new();
-    if t.failed > 0 {
+    if t.failed > 0 && !metered(t) {
+        // No request with usage: there is no spend after the failures to tell.
+        parts.push(format!("failed {}", count_int(t.failed, "call", "calls")));
+    } else if t.failed > 0 {
         let after = if priced { usd(t.after.usd) } else { format!("{} tok", tokens(t.after.tokens)) };
         parts.push(format!("failed {}, after them {after} until the tool worked again", count_int(t.failed, "call", "calls")));
     }
@@ -23,6 +26,12 @@ pub fn failures_line(t: &ToolTable) -> Option<String> {
         parts.push(format!("rules denied {}", fmt::int(t.denied)));
     }
     (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// Whether some spend of the table comes from requests with usage (see tool-breakdown, Spend of
+/// calls without usage).
+fn metered(t: &ToolTable) -> bool {
+    t.spend.tokens > 0.0 || t.rows.values().any(|r| r.calls > 0 && !r.no_usage())
 }
 
 /// The `time` cell: the sum of the counted calls' durations, or `–` when no call counts for
@@ -103,14 +112,18 @@ pub fn tool_cells_of(t: &ToolTable, order: RowOrder, limit: usize, failures: boo
             median_time(r.median_ms()),
             size(r.avg_result()),
             size(r.avg_input()),
-            amount(&r.rent),
-            amount(&r.trips),
+            if r.no_usage() { "–".to_string() } else { amount(&r.rent) },
+            if r.no_usage() { "–".to_string() } else { amount(&r.trips) },
             format!("{:.0}%", 100.0 * r.single_share()),
         ];
         if failures {
             // A row whose calls all worked leaves both cells empty.
             row.push(if r.failed > 0 { r.failed.to_string() } else { String::new() });
-            row.push(if r.failed > 0 { amount(&r.after) } else { String::new() });
+            row.push(match (r.failed > 0, r.no_usage()) {
+                (false, _) => String::new(),
+                (true, false) => amount(&r.after),
+                (true, true) => "–".to_string(),
+            });
         }
         table_rows.push(row);
         hints.push(hint(key, r).unwrap_or("").to_string());
@@ -121,11 +134,15 @@ pub fn tool_cells_of(t: &ToolTable, order: RowOrder, limit: usize, failures: boo
         rent.add(r.rent);
         trips.add(r.trips);
     }
-    let spend = format!(
-        "spend {} · rent of these tools {} · trips of these tools {} (two views of the same money; do not add them)",
-        amount(&t.spend),
-        amount(&rent),
-        amount(&trips)
-    );
+    let spend = if metered(t) {
+        format!(
+            "spend {} · rent of these tools {} · trips of these tools {} (two views of the same money; do not add them)",
+            amount(&t.spend),
+            amount(&rent),
+            amount(&trips)
+        )
+    } else {
+        "spend – · the logs give no usage, so these calls have no rent or trips".to_string()
+    };
     ToolCells { rows: table_rows, hints, more: rows.len().saturating_sub(limit), spend }
 }

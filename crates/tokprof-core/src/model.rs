@@ -102,6 +102,9 @@ pub enum ToolClass {
     Execute,
     /// Reading the output of a command running in the background, a refinement of `execute`.
     ExecuteOutput,
+    /// A step that the agent's platform runs to prepare the environment before the model
+    /// works, such as a clone or the start of an MCP server; a refinement of `execute`.
+    EnvironmentSetup,
     Think,
     Fetch,
     SwitchMode,
@@ -123,7 +126,7 @@ impl ToolClass {
             ToolClass::Delete => "delete",
             ToolClass::Move => "move",
             ToolClass::Search => "search",
-            ToolClass::Execute | ToolClass::ExecuteOutput => "execute",
+            ToolClass::Execute | ToolClass::ExecuteOutput | ToolClass::EnvironmentSetup => "execute",
             ToolClass::Think => "think",
             ToolClass::Fetch => "fetch",
             ToolClass::SwitchMode => "switch_mode",
@@ -305,12 +308,22 @@ pub struct Request {
     pub retries: u32,
     /// The text of the last of those errors, as the log gives it.
     pub retry_error: Option<Arc<str>>,
+    /// The log gives no usage for the request (cost-attribution, Requests without usage): its
+    /// zero `usage` is not known to be zero, so it adds no tokens and no dollars, and it is never
+    /// judged for the cache.
+    pub no_usage: bool,
 }
 
 /// The client of a request whose log names none.
 pub const UNKNOWN_CLIENT: &str = "unknown";
 
 impl Request {
+    /// The request got its response: it has usage, or its log gives no usage and shows the
+    /// response.
+    pub fn answered(&self) -> bool {
+        self.usage.prompt() > 0 || self.usage.output > 0 || (self.no_usage && self.ended_ms.is_some())
+    }
+
     /// The program that ran the agent for this request, as the log names it, or `unknown`.
     pub fn client_name(&self) -> &str {
         self.client.as_deref().unwrap_or(UNKNOWN_CLIENT)
@@ -434,6 +447,12 @@ pub struct Session {
     /// The MCP servers the session had, as its logs list them, whether it called them or not;
     /// empty when the logs do not list them.
     pub mcp_servers: Vec<String>,
+    /// The tokens the log gives for a block, as the agent counted them, by the block's index
+    /// (session-logs, Sizes the log gives); used only for requests without usage.
+    pub logged_tokens: BTreeMap<usize, u64>,
+    /// The call blocks that no request made, such as the steps the agent's platform ran to
+    /// set up the environment before the work (tool-breakdown, Calls no request made).
+    pub platform_calls: Vec<usize>,
 }
 
 /// A tool call's times and flags, as its source tells them.
@@ -667,6 +686,8 @@ impl Session {
             calls: Vec::new(),
             call_of_block: BTreeMap::new(),
             mcp_servers: Vec::new(),
+            logged_tokens: BTreeMap::new(),
+            platform_calls: Vec::new(),
         }
     }
 

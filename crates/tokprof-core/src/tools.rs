@@ -16,6 +16,9 @@ pub struct BlockEntry<'a> {
     pub target: Option<&'a str>,
     pub class: Class,
     pub tokens: f64,
+    /// The block has a size: one scaled to its request's usage, or one its log gives for a
+    /// request without usage. An unsized block counts in no mean of sizes.
+    pub sized: bool,
     /// The call record of the block's call in its session, when the source gives one.
     pub call: Option<u32>,
 }
@@ -40,6 +43,9 @@ pub struct ToolShare<'a> {
     /// tool-breakdown, Calls that count for times).
     pub duration_ms: Option<i64>,
     pub timed: bool,
+    /// The share comes from a request without usage, or from a call no request made: its zero
+    /// tokens and dollars say nothing (see tool-breakdown, Spend of calls without usage).
+    pub no_usage: bool,
 }
 
 /// Where a tool comes from (see tool-breakdown, Groups).
@@ -52,13 +58,15 @@ pub enum Group {
     Subagents,
     /// The tools with which the agent manages itself.
     Agent,
+    /// The steps that set up the agent's environment before the work.
+    Environment,
     /// The tools of one MCP server.
     Mcp(String),
     Other,
 }
 
 /// The groups a filter can name, as a usage error lists them.
-pub const GROUP_NAMES: &str = "files, search, shell, web, subagents, agent, mcp, mcp <server>, other";
+pub const GROUP_NAMES: &str = "files, search, shell, web, subagents, agent, environment, mcp, mcp <server>, other";
 
 impl Group {
     /// The group of a tool: its MCP server when the target is `mcp:<server>`, else its class's.
@@ -78,6 +86,7 @@ impl Group {
             Class::Tool(ToolClass::Fetch) => Group::Web,
             Class::Tool(ToolClass::Subagent) => Group::Subagents,
             Class::Tool(ToolClass::Think | ToolClass::SwitchMode | ToolClass::Manage) => Group::Agent,
+            Class::Tool(ToolClass::EnvironmentSetup) => Group::Environment,
             _ => Group::Other,
         }
     }
@@ -90,6 +99,7 @@ impl Group {
             Group::Web => "web".into(),
             Group::Subagents => "subagents".into(),
             Group::Agent => "agent".into(),
+            Group::Environment => "environment".into(),
             Group::Mcp(server) => format!("mcp {server}"),
             Group::Other => "other".into(),
         }
@@ -114,6 +124,7 @@ impl GroupFilter {
             "web" => GroupFilter::One(Group::Web),
             "subagents" => GroupFilter::One(Group::Subagents),
             "agent" => GroupFilter::One(Group::Agent),
+            "environment" => GroupFilter::One(Group::Environment),
             "other" => GroupFilter::One(Group::Other),
             "mcp" => GroupFilter::AnyMcp,
             _ => GroupFilter::One(Group::Mcp(name.strip_prefix("mcp ").or(name.strip_prefix("mcp:"))?.trim().to_string())),
@@ -184,6 +195,8 @@ pub struct ToolRow {
     /// The durations of its calls that count for times, in ms, in no order, and their sum.
     pub durations: Vec<u32>,
     pub time_ms: u64,
+    /// Its calls that came from requests without usage, or from no request.
+    pub calls_without_usage: u64,
 }
 
 impl ToolRow {
@@ -196,6 +209,7 @@ impl ToolRow {
         }
         self.durations.extend_from_slice(&o.durations);
         self.time_ms += o.time_ms;
+        self.calls_without_usage += o.calls_without_usage;
         self.calls += o.calls;
         self.single += o.single;
         self.results += o.results;
@@ -235,6 +249,12 @@ impl ToolRow {
     /// The median duration of its calls that count for times, in ms.
     pub fn median_ms(&self) -> Option<f64> {
         median_ms(&self.durations)
+    }
+
+    /// No spend of the row comes from a request with usage, so its `rent`, `trips` and `after`
+    /// are not known (see tool-breakdown, Spend of calls without usage).
+    pub fn no_usage(&self) -> bool {
+        self.calls > 0 && self.calls_without_usage == self.calls && self.rent.tokens == 0.0 && self.trips.tokens == 0.0
     }
 
     /// The share of calls that were alone in their response.
@@ -431,9 +451,17 @@ impl ToolTable {
             RowOrder::Failed => (r.failed, amount(r.after)),
         };
         let mut rows: Vec<(&ToolKey, &ToolRow)> = self.rows.iter().filter(|(_, r)| r.calls > 0 || r.rent.tokens > 0.0).collect();
+        // Rows of calls without usage have no spend to sort by: they come after the others, by
+        // the failures the order asks for, then by their time and their calls.
+        let unmetered = |r: &ToolRow| (r.failed * u64::from(order == RowOrder::Failed), r.time_ms, r.calls);
         rows.sort_by(|a, b| {
             let (ka, kb) = (key(a.1), key(b.1));
-            kb.0.cmp(&ka.0).then(kb.1.total_cmp(&ka.1)).then(a.0.cmp(b.0))
+            a.1.no_usage()
+                .cmp(&b.1.no_usage())
+                .then(kb.0.cmp(&ka.0))
+                .then(kb.1.total_cmp(&ka.1))
+                .then(if a.1.no_usage() { unmetered(b.1).cmp(&unmetered(a.1)) } else { std::cmp::Ordering::Equal })
+                .then(a.0.cmp(b.0))
         });
         rows
     }
@@ -532,6 +560,9 @@ impl Sink for ToolTable {
     fn block_entered(&mut self, b: &BlockEntry) {
         let Some(k) = key_of(b.tool, b.target, b.class) else { return };
         let r = self.row(k, b.class, b.target);
+        if !b.sized {
+            return;
+        }
         match b.kind {
             BlockKind::ToolResult => {
                 r.results += 1;
@@ -554,6 +585,7 @@ impl Sink for ToolTable {
                 r.trips.add(v);
                 if let Some(alone) = s.call {
                     r.calls += 1;
+                    r.calls_without_usage += u64::from(s.no_usage);
                     if let Some(ms) = s.duration_ms.filter(|_| s.timed) {
                         r.durations.push(kept_ms(ms));
                         r.time_ms += kept_ms(ms) as u64;
@@ -571,6 +603,29 @@ impl Sink for ToolTable {
                 }
             }
             None => self.other_trips.add(v),
+        }
+    }
+
+    fn platform_call(&mut self, s: &Session, b: usize) {
+        let blk = &s.blocks[b];
+        let Some(k) = key_of(blk.tool.as_deref(), blk.target.as_deref(), blk.class) else { return };
+        let call = s.call(b);
+        let r = self.row(k, blk.class, blk.target.as_deref());
+        r.calls += 1;
+        r.calls_without_usage += 1;
+        if let Some(ms) = call.filter(|c| c.timed()).and_then(|c| c.duration_ms()) {
+            r.durations.push(kept_ms(ms));
+            r.time_ms += kept_ms(ms) as u64;
+        }
+        // No request carried its result, so no failure window opens after it.
+        match s.outcome(b) {
+            Outcome::Failed => {
+                r.failed += 1;
+                self.failed += 1;
+            }
+            Outcome::Refused => self.refused += 1,
+            Outcome::Denied => self.denied += 1,
+            Outcome::Worked => {}
         }
     }
 }
@@ -623,6 +678,13 @@ mod tests {
 
     fn key(tool: &str, head: Option<&str>) -> ToolKey {
         (tool.to_string(), head.map(str::to_string))
+    }
+
+    #[test]
+    fn setup_steps_have_a_group_of_their_own() {
+        let g = Group::of(Class::Tool(ToolClass::EnvironmentSetup), None);
+        assert_eq!((g.name(), GroupFilter::parse("environment")), ("environment".to_string(), Some(GroupFilter::One(Group::Environment))));
+        assert_eq!(ToolClass::EnvironmentSetup.acp_kind(), "execute");
     }
 
     #[test]
@@ -688,6 +750,7 @@ mod tests {
         /// A request of chain `chain` at `ts` whose prompt holds `tokens`.
         fn request(&mut self, chain: usize, ts: i64, tokens: u64) -> &mut Walk {
             let r = RequestRecord {
+                no_usage: false,
                 agent: &self.agent,
                 ts_ms: ts,
                 chain: "main",
@@ -717,6 +780,7 @@ mod tests {
         fn call(&mut self, tool: &str, head: Option<&str>, outcome: Outcome) -> &mut Walk {
             let class = Class::Tool(if head.is_some() { ToolClass::Execute } else { ToolClass::Edit });
             self.table.tool_share(&ToolShare {
+                no_usage: false,
                 tool: Some(tool),
                 target: head,
                 class,
@@ -818,6 +882,7 @@ mod tests {
     /// A share of one call: its tool, class, target, duration and whether it counts for times.
     fn timed_call<'a>(tool: &'a str, class: ToolClass, target: Option<&'a str>, ms: Option<i64>, timed: bool, outcome: Outcome) -> ToolShare<'a> {
         ToolShare {
+            no_usage: false,
             tool: Some(tool),
             target,
             class: Class::Tool(class),
@@ -931,6 +996,7 @@ mod tests {
         }
         t.tool_share(&timed_call("Monitor", ToolClass::Other, None, Some(1_000), true, Outcome::Worked));
         t.block_entered(&BlockEntry {
+            sized: true,
             kind: BlockKind::ToolResult,
             tool: Some("Read"),
             target: Some("a.rs"),

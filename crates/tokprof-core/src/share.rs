@@ -2356,6 +2356,7 @@ mod tests {
     /// A request record of a main chain, as the analysis hands it to the sinks.
     fn record(agent: &AgentId, index: i64, price: Option<crate::pricing::Price>) -> crate::analysis::RequestRecord<'_> {
         crate::analysis::RequestRecord {
+            no_usage: false,
             agent,
             ts_ms: 1_793_620_800_000 + index * 60_000,
             chain: "main",
@@ -2386,6 +2387,7 @@ mod tests {
         let price = Pricing::defaults().get("claude-opus-5-5", 100_000, 1_793_620_800_000);
         let mut sink = (Collector::new(None, None), (Pauses::new(Filter::default()), Share::new(Filter::default())));
         let call = |outcome, error| ToolShare {
+            no_usage: false,
             tool: Some("Bash"),
             target: Some("cargo test"),
             class: Class::Tool(ToolClass::Execute),
@@ -2537,6 +2539,7 @@ mod tests {
             let price = Pricing::defaults().get("claude-opus-5-5", 100_000, 1_793_620_800_000);
             let mut sink = (Collector::new(None, None), (Pauses::new(Filter::default()), Share::new(Filter::default())));
             let call = |outcome, vcs| ToolShare {
+                no_usage: false,
                 tool: Some("Bash"),
                 target: Some("git commit"),
                 class: Class::Tool(ToolClass::Execute),
@@ -2936,6 +2939,7 @@ mod tests {
             let price = Pricing::defaults().get("claude-opus-5-5", 100_000, T0);
             let mut sink = (Collector::new(None, None), (Pauses::new(Filter::default()), Share::new(Filter::default())));
             let fail = ToolShare {
+                no_usage: false,
                 tool: Some("Bash"),
                 target: Some("cargo test"),
                 class: Class::Tool(ToolClass::Execute),

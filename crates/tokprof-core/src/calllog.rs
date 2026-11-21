@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use crate::analysis::Entered;
-use crate::model::{BlockKind, Outcome};
+use crate::model::{BlockKind, CallRecord, Outcome, Session};
 use crate::tools::{BlockEntry, Group};
 
 /// How a call ended, as its row shows it (see tool-breakdown, Status of a call).
@@ -97,15 +97,7 @@ impl Collector {
             let blk = &s.blocks[b];
             let record = s.call_of_block.get(&b).copied();
             let call = record.and_then(|i| s.calls.get(i as usize));
-            let status = match (s.outcome(b), call) {
-                (Outcome::Failed, _) => CallStatus::Failed,
-                (Outcome::Refused, _) => CallStatus::Refused,
-                (Outcome::Denied, _) => CallStatus::Denied,
-                (_, Some(c)) if c.background => CallStatus::Background,
-                (_, Some(c)) if c.asks_user => CallStatus::AskedYou,
-                (_, Some(c)) if !c.done => CallStatus::Running,
-                _ => CallStatus::Done,
-            };
+            let status = status(s, b, call);
             if let Some(i) = record {
                 self.row_of_call.entry(i).or_insert(self.rows.len());
             }
@@ -124,13 +116,41 @@ impl Collector {
         }
     }
 
+    /// A call that no request made, such as a setup step: its row has no request.
+    pub fn platform_call(&mut self, s: &Session, b: usize) {
+        if !self.main_log {
+            return;
+        }
+        let blk = &s.blocks[b];
+        let record = s.call_of_block.get(&b).copied();
+        let call = record.and_then(|i| s.calls.get(i as usize));
+        if let Some(i) = record {
+            self.row_of_call.entry(i).or_insert(self.rows.len());
+        }
+        self.rows.push(CallRow {
+            start_ms: call.and_then(|c| c.start_ms),
+            request: None,
+            tool: blk.tool.clone().unwrap_or_else(|| "?".to_string()),
+            group: Group::of(blk.class, blk.target.as_deref()),
+            input: call.and_then(|c| c.input.clone()),
+            status: status(s, b, call),
+            duration_ms: call.and_then(|c| c.duration_ms()),
+            timed: call.is_some_and(|c| c.timed()),
+            result_tokens: None,
+        });
+        // No request index: its `req` stays empty.
+        self.request_of.push(usize::MAX);
+    }
+
     /// A tool block entered a prompt; a result gives its call's row its tokens the first time.
     pub fn block_entered(&mut self, b: &BlockEntry) {
         if !self.main_log || b.kind != BlockKind::ToolResult {
             return;
         }
         let Some(&row) = b.call.and_then(|c| self.row_of_call.get(&c)) else { return };
-        self.rows[row].result_tokens.get_or_insert(b.tokens);
+        if b.sized {
+            self.rows[row].result_tokens.get_or_insert(b.tokens);
+        }
     }
 
     /// The rows in the order of their start, with their request numbers from `numbers` (see
@@ -152,6 +172,19 @@ impl Collector {
             .collect();
         rows.sort_by_key(|(start, _)| *start);
         rows.into_iter().map(|(_, r)| r).collect()
+    }
+}
+
+/// How the call in block `b` ended, as its row shows it before the later requests are known.
+fn status(s: &Session, b: usize, call: Option<&CallRecord>) -> CallStatus {
+    match (s.outcome(b), call) {
+        (Outcome::Failed, _) => CallStatus::Failed,
+        (Outcome::Refused, _) => CallStatus::Refused,
+        (Outcome::Denied, _) => CallStatus::Denied,
+        (_, Some(c)) if c.background => CallStatus::Background,
+        (_, Some(c)) if c.asks_user => CallStatus::AskedYou,
+        (_, Some(c)) if !c.done => CallStatus::Running,
+        _ => CallStatus::Done,
     }
 }
 
@@ -187,6 +220,9 @@ mod tests {
         fn block_entered(&mut self, b: &BlockEntry) {
             self.calls.block_entered(b);
         }
+        fn platform_call(&mut self, s: &Session, b: usize) {
+            self.calls.platform_call(s, b);
+        }
     }
 
     fn block(kind: BlockKind, tool: &str, class: ToolClass, target: Option<&str>) -> Block {
@@ -204,6 +240,41 @@ mod tests {
 
     /// A row as the test reads it: tool, request, group, status, duration and whether it counts.
     type Shown<'a> = (&'a str, Option<u32>, String, CallStatus, Option<i64>, bool);
+
+    #[test]
+    fn a_setup_step_has_a_row_without_a_request() {
+        let mut s = Session::new(crate::testing::claude(), "s".into());
+        let prompt = s.push_message(vec![Block { class: Class::None, kind: BlockKind::Prompt, chars: 400, tool: None, target: None }], true);
+        let step = s.push_message(vec![block(BlockKind::ToolUse, "run_custom_setup_step", ToolClass::EnvironmentSetup, None)], false);
+        let call = s.push_message(vec![block(BlockKind::ToolUse, "view", ToolClass::Read, Some("a.rs"))], false);
+        let result = s.push_message(vec![block(BlockKind::ToolResult, "view", ToolClass::Read, Some("a.rs"))], false);
+        let (sb, cb, rb) = (s.messages[step].blocks.start, s.messages[call].blocks.start, s.messages[result].blocks.start);
+        record(&mut s, &[sb], 1_000, Some(9_000), false, "Install the JDK");
+        record(&mut s, &[cb, rb], 20_000, Some(21_000), false, "a.rs");
+        s.platform_calls.push(sb);
+        s.logged_tokens.insert(rb, 120);
+        let req = |ts_ms, keep, tail: Vec<usize>, produced| Request {
+            ts_ms,
+            model: "m".into(),
+            prompt: Some(PromptDelta { shape: None, keep, tail }),
+            produced,
+            sent_ms: Some(ts_ms - 1),
+            ended_ms: Some(ts_ms),
+            no_usage: true,
+            ..Request::default()
+        };
+        let requests = vec![req(20_000, 0, vec![prompt], Some(call)), req(22_000, 1, vec![call, result], None)];
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+        let mut pass = Pass::default();
+        analyze(&s, &Pricing::defaults(), &Filter::default(), &mut pass);
+        let numbers = pass.timeline.numbers();
+        let rows = pass.calls.rows(&numbers);
+        let shown: Vec<_> = rows.iter().map(|r| (r.tool.as_str(), r.request, r.group.name(), r.duration_ms, r.result_tokens)).collect();
+        assert_eq!(
+            shown,
+            [("run_custom_setup_step", None, "environment".to_string(), Some(8_000), None), ("view", Some(1), "files".to_string(), Some(1_000), Some(120.0))]
+        );
+    }
 
     #[test]
     fn rows_of_the_main_calls_in_the_order_of_their_start() {

@@ -158,6 +158,8 @@ pub struct RequestRecord<'a> {
     pub effort: Option<&'a str>,
     /// The version of the agent that wrote the request's log, as the log names it.
     pub version: Option<&'a str>,
+    /// The log gives no usage for the request: its zero usage and missing price say nothing.
+    pub no_usage: bool,
 }
 
 pub trait Sink {
@@ -171,6 +173,9 @@ pub trait Sink {
     fn tool_share(&mut self, _: &ToolShare) {}
     /// What a request added to its chain's context, after its request, miss and shares.
     fn entered(&mut self, _: &Entered) {}
+    /// A call that no request made (see `Session::platform_calls`), by its call block, once per
+    /// session after `session`.
+    fn platform_call(&mut self, _: &Session, _: usize) {}
 }
 
 /// A request with what entered its chain's context since the previous request: for the X-ray's
@@ -253,6 +258,11 @@ impl<A: Sink, B: Sink> Sink for (A, B) {
         self.1.tool_share(t);
     }
 
+    fn platform_call(&mut self, s: &Session, b: usize) {
+        self.0.platform_call(s, b);
+        self.1.platform_call(s, b);
+    }
+
     fn entered(&mut self, e: &Entered) {
         self.0.entered(e);
         self.1.entered(e);
@@ -279,6 +289,12 @@ fn origin_name(req: &Request) -> String {
 
 pub fn analyze(s: &Session, pricing: &Pricing, filter: &Filter, sink: &mut dyn Sink) {
     sink.session(s);
+    for &b in &s.platform_calls {
+        let start = s.call(b).and_then(|c| c.start_ms);
+        if start.is_none_or(|t| filter.accepts(t)) && filter.keeps_client(s.first_client()) {
+            sink.platform_call(s, b);
+        }
+    }
     let msg_chars = message_chars(s);
     let task = s.task_label();
     for chain in &s.chains {
@@ -588,11 +604,11 @@ impl<'a> Walker<'a> {
         }
         let usage = req.usage;
         let prompt = usage.prompt();
-        if prompt == 0 && usage.output == 0 {
+        if !req.answered() {
             return; // a request record without a response
         }
 
-        let verdict = match (&self.prev, req.advisor) {
+        let verdict = match (&self.prev, req.advisor || req.no_usage) {
             (Some(prev), false) => {
                 let edit = edit_at.map(|at| Edit { at, len_before, removed: &removed, added: &self.list[at..self.list.len().min(at + removed.len())] });
                 cache::judge(s, prev, req, self.shape, edit.as_ref(), tail_blocks)
@@ -601,7 +617,8 @@ impl<'a> Walker<'a> {
         };
 
         if self.filter.keeps(req) {
-            let price = self.pricing.get(&req.model, prompt, req.ts_ms);
+            // A request without usage has no price: its zero usage would read as $0.
+            let price = if req.no_usage { None } else { self.pricing.get(&req.model, prompt, req.ts_ms) };
             let origin = origin_name(req);
             sink.request(&RequestRecord {
                 agent: &s.agent,
@@ -624,6 +641,7 @@ impl<'a> Walker<'a> {
                 client: req.client_name(),
                 effort: req.params.as_ref().and_then(|p| p.effort.as_deref()),
                 version: req.version.as_deref(),
+                no_usage: req.no_usage,
             });
             let premium = self.attribute(req, price, verdict.as_ref());
             self.tool_shares(req, price, sink);
@@ -649,13 +667,13 @@ impl<'a> Walker<'a> {
                 chain_kind: if req.advisor { ChainKind::Advisor } else { self.chain.kind },
                 shape: self.shape,
                 prev: self.prev.as_ref(),
-                blocks: self.known.then_some(self.entered.as_slice()),
+                blocks: (self.known && !req.no_usage).then_some(self.entered.as_slice()),
                 price,
                 rewritten: verdict.as_ref().map_or(0, |v| v.rewritten),
             });
         }
 
-        if !req.advisor {
+        if !req.advisor && !req.no_usage {
             // A request that wrote nothing to the cache says nothing about its lifetime, so the
             // lifetime of the latest one that did carries on, as in the X-ray.
             let long_ttl = match &self.prev {
@@ -683,12 +701,16 @@ impl<'a> Walker<'a> {
         for &(b, tokens) in &self.entered {
             let blk = block(b);
             if matches!(blk.kind, BlockKind::ToolUse | BlockKind::ToolResult) {
+                // A request without usage has no tokens to scale: the block has the size its log
+                // gives, or none.
+                let logged = req.no_usage.then(|| s.logged_tokens.get(&b).map(|&t| t as f64));
                 sink.block_entered(&BlockEntry {
                     kind: blk.kind,
                     tool: blk.tool.as_deref(),
                     target: blk.target.as_deref(),
                     class: blk.class,
-                    tokens,
+                    tokens: logged.map_or(tokens, |t| t.unwrap_or(0.0)),
+                    sized: logged.is_none_or(|t| t.is_some()),
                     call: s.call_of_block.get(&b).copied(),
                 });
             }
@@ -716,6 +738,7 @@ impl<'a> Walker<'a> {
                 vcs: ended.and_then(|b| s.vcs.get(&b).copied()).unwrap_or_default(),
                 duration_ms: ended.and_then(|b| s.call(b)).and_then(|c| c.duration_ms()),
                 timed: ended.and_then(|b| s.call(b)).is_some_and(|c| c.timed()),
+                no_usage: req.no_usage,
             }
         };
         if triggers.is_empty() {
@@ -1178,6 +1201,113 @@ mod tests {
         let rent: f64 = t.rows.values().map(|r| r.rent.usd).sum::<f64>() + t.other_rent.usd;
         let trips: f64 = t.rows.values().map(|r| r.trips.usd).sum::<f64>() + t.other_trips.usd;
         assert!((rent - t.spend.usd).abs() < 1e-12 && (trips - t.spend.usd).abs() < 1e-12, "both views add up to the spend");
+    }
+
+    /// A session of a log without usage: a prompt, a response that reads a file and runs a
+    /// command, and the response after their results; the read's result has logged tokens.
+    fn session_without_usage() -> Session {
+        use crate::model::{Class, ToolClass};
+        let mut s = Session::new(crate::testing::claude(), "s".into());
+        let blk = |kind, tool: Option<&str>, target: Option<&str>, class, chars| Block {
+            class,
+            kind,
+            chars,
+            tool: tool.map(str::to_string),
+            target: target.map(str::to_string),
+        };
+        let read = Class::Tool(ToolClass::Read);
+        let shell = Class::Tool(ToolClass::Execute);
+        let prompt = s.push_message(vec![blk(BlockKind::Prompt, None, None, Class::None, 400)], true);
+        let calls = s.push_message(
+            vec![blk(BlockKind::ToolUse, Some("view"), Some("a.rs"), read, 100), blk(BlockKind::ToolUse, Some("bash"), Some("grep -n"), shell, 100)],
+            false,
+        );
+        let results = s.push_message(
+            vec![blk(BlockKind::ToolResult, Some("view"), Some("a.rs"), read, 300), blk(BlockKind::ToolResult, Some("bash"), Some("grep -n"), shell, 100)],
+            false,
+        );
+        s.logged_tokens.insert(s.messages[results].blocks.start, 80);
+        let req = |ts_ms, keep, tail: Vec<usize>, produced| Request {
+            ts_ms,
+            model: "claude-opus-5-5".into(),
+            prompt: Some(PromptDelta { shape: None, keep, tail }),
+            produced,
+            sent_ms: Some(ts_ms - 1),
+            ended_ms: Some(ts_ms),
+            no_usage: true,
+            ..Request::default()
+        };
+        let requests = vec![req(10, 0, vec![prompt], Some(calls)), req(20, 1, vec![calls, results], None)];
+        s.chains.push(Chain { name: "main".into(), kind: ChainKind::Main, requests });
+        s
+    }
+
+    #[test]
+    fn a_request_without_usage_reaches_the_sinks_without_tokens_or_dollars() {
+        use crate::report::Collector;
+        use crate::tools::ToolTable;
+        let s = session_without_usage();
+        let pricing = Pricing::defaults();
+        let mut t = ToolTable::default();
+        analyze(&s, &pricing, &Filter::default(), &mut t);
+        let view = &t.rows[&("view".to_string(), None)];
+        let grep = &t.rows[&("bash".to_string(), Some("grep -n".to_string()))];
+        assert_eq!((view.calls, view.results, view.result_tokens), (1, 1, 80.0), "the size its log gives");
+        assert_eq!((grep.calls, grep.results, grep.avg_result()), (1, 0, None), "no logged size, no size");
+        assert_eq!(view.avg_input(), None, "call inputs have no logged size");
+        assert!(view.no_usage() && grep.no_usage());
+        assert_eq!((t.spend.tokens, t.spend.usd), (0.0, 0.0));
+        let mut c = Collector::default();
+        analyze(&s, &pricing, &Filter::default(), &mut c);
+        let m = &c.spend.models[&(crate::testing::claude(), "claude-opus-5-5".to_string())];
+        assert_eq!((m.requests, m.without_usage, m.priced), (2, 2, false), "counted, never priced");
+        assert!(m.no_usage() && m.tokens() == 0.0 && m.usd() == 0.0);
+        assert!(c.misses.is_empty(), "never judged");
+    }
+
+    #[test]
+    fn a_request_without_usage_is_no_base_of_a_cache_verdict() {
+        #[derive(Default)]
+        struct Misses(Vec<i64>);
+        impl Sink for Misses {
+            fn session(&mut self, _: &Session) {}
+            fn request(&mut self, _: &RequestRecord) {}
+            fn miss(&mut self, m: MissEvent) {
+                self.0.push(m.ts_ms);
+            }
+            fn fact(&mut self, _: &Fact) {}
+        }
+        let mut s = session_without_usage();
+        // A request with usage that cached its prompt comes first: the requests without usage,
+        // which read nothing, are not judged against it, nor is it the base of theirs.
+        let before =
+            Request { ts_ms: 5, model: "claude-opus-5-5".into(), usage: Usage { cache_read: 5_000, output: 10, ..Usage::default() }, ..Request::default() };
+        s.chains[0].requests.insert(0, before);
+        let mut m = Misses::default();
+        analyze(&s, &Pricing::defaults(), &Filter::default(), &mut m);
+        assert!(m.0.is_empty(), "{:?}", m.0);
+    }
+
+    #[test]
+    fn calls_no_request_made_count_once_per_session() {
+        use crate::model::{CallRecord, Class, ToolClass};
+        use crate::tools::ToolTable;
+        let mut s = session_without_usage();
+        let step = Block { class: Class::Tool(ToolClass::EnvironmentSetup), kind: BlockKind::ToolUse, chars: 10, tool: Some("run_setup".into()), target: None };
+        let m = s.push_message(vec![step], false);
+        let b = s.messages[m].blocks.start;
+        s.calls.push(CallRecord { start_ms: Some(0), end_ms: Some(4_000), done: true, ..CallRecord::default() });
+        s.call_of_block.insert(b, 0);
+        s.platform_calls.push(b);
+        let mut t = ToolTable::default();
+        analyze(&s, &Pricing::defaults(), &Filter::default(), &mut t);
+        let row = &t.rows[&("run_setup".to_string(), None)];
+        assert_eq!((row.calls, row.time_ms, row.no_usage()), (1, 4_000, true));
+        let (groups, _) = t.groups();
+        assert!(groups.iter().any(|g| g.group == Some(crate::tools::Group::Environment) && g.calls == 1));
+        let mut later = ToolTable::default();
+        analyze(&s, &Pricing::defaults(), &Filter { since_ms: Some(1), ..Filter::default() }, &mut later);
+        assert!(!later.rows.contains_key(&("run_setup".to_string(), None)), "a window that starts after it leaves it out");
     }
 
     #[test]
