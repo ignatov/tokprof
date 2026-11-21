@@ -1,4 +1,4 @@
-//! Reading agent logs, without knowing any agent: files that may be zstd-compressed, their lines,
+//! Reading agent logs, without knowing any agent: files that may be zstd- or gzip-compressed, their lines,
 //! and the JSON helpers every log format needs.
 
 use std::fs::{File, Metadata};
@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-/// A log file for reading, decompressed when it ends in `.zst`.
+/// A log file for reading, decompressed when it ends in `.zst` or `.gz`.
 pub fn open(path: &Path) -> Result<Box<dyn BufRead>> {
     if is_compressed(path) {
         Ok(Box::new(BufReader::with_capacity(CHUNK, open_compressed(path)?)))
@@ -29,18 +29,25 @@ const CHUNK: usize = 1 << 20;
 const AHEAD: usize = 4;
 
 fn is_compressed(path: &Path) -> bool {
-    path.extension().is_some_and(|e| e == "zst")
+    path.extension().is_some_and(|e| e == "zst" || e == "gz")
+}
+
+fn is_gzip(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == "gz")
 }
 
 fn open_file(path: &Path) -> Result<File> {
     File::open(path).with_context(|| format!("opening {}", path.display()))
 }
 
-type Zstd = zstd::stream::read::Decoder<'static, BufReader<File>>;
-
-/// A compressed log's decoder, which reads every frame of the file one after the other.
-fn open_compressed(path: &Path) -> Result<Zstd> {
-    zstd::stream::read::Decoder::new(open_file(path)?).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
+/// A compressed log's decoder, which reads every frame (zstd) or member (gzip) of the file one
+/// after the other.
+fn open_compressed(path: &Path) -> Result<Box<dyn Read + Send>> {
+    if is_gzip(path) {
+        return Ok(Box::new(flate2::read::MultiGzDecoder::new(BufReader::new(open_file(path)?))));
+    }
+    let zstd = zstd::stream::read::Decoder::new(open_file(path)?).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    Ok(Box::new(zstd))
 }
 
 /// Calls `f` for every line of a JSONL file, tolerating invalid UTF-8. A compressed file is
@@ -189,7 +196,7 @@ pub const CHECK: usize = 256;
 /// compressed and cannot be read from the middle. A last line without a newline is left for the
 /// next read.
 pub fn for_each_line_from(path: &Path, from: u64, check: &[u8], mut f: impl FnMut(&str)) -> Result<Option<ReadOn>> {
-    if path.extension().is_some_and(|e| e == "zst") {
+    if is_compressed(path) {
         return Ok(None);
     }
     let Some(start) = from.checked_sub(check.len() as u64) else { return Ok(None) };
@@ -233,7 +240,7 @@ pub fn for_each_line_back(path: &Path, f: impl FnMut(&str) -> ControlFlow<()>) -
 }
 
 fn lines_back(path: &Path, mut block: u64, mut f: impl FnMut(&str) -> ControlFlow<()>) -> Result<()> {
-    if path.extension().is_some_and(|e| e == "zst") {
+    if is_compressed(path) {
         bail!("{} is compressed and cannot be read from its end", path.display());
     }
     let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
@@ -499,6 +506,33 @@ mod tests {
         assert_eq!(ahead, read_all(|f| lines(open(&path)?, f)));
         assert_eq!(ahead, (vec!["{\"a\":1}\n".to_string(), "{\"b\":2}\n".to_string(), "{\"c\":3}\n".to_string()], None));
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_gzip_log_of_several_members_is_read_to_the_end() {
+        use std::io::Write;
+        let member = |text: &str| {
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            e.write_all(text.as_bytes()).unwrap();
+            e.finish().unwrap()
+        };
+        let mut packed = member("data: {\"a\":1}\n\ndata: {\"b\":");
+        packed.extend(member("2}\n"));
+        let dir = std::env::temp_dir().join(format!("tokprof-logio-{}-gzip", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.sse.gz");
+        std::fs::write(&path, &packed).unwrap();
+        let ahead = read_all(|f| for_each_line(&path, f));
+        assert_eq!(ahead, read_all(|f| lines(open(&path)?, f)));
+        assert_eq!(ahead, (vec!["data: {\"a\":1}\n".to_string(), "\n".to_string(), "data: {\"b\":2}\n".to_string()], None));
+        assert_eq!(for_each_line_from(&path, 0, b"", |_| {}).unwrap(), None, "a gzip log is not read on");
+        assert!(for_each_line_back(&path, |_| ControlFlow::Continue(())).is_err(), "nor from its end");
+        // A file that is no gzip fails while it is read, as a plain read does.
+        let junk = dir.join("junk.sse.gz");
+        std::fs::write(&junk, b"not gzip").unwrap();
+        let (_, error) = read_all(|f| for_each_line(&junk, f));
+        assert!(error.is_some());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Gives its bytes a few at a time, then panics, or gives them without end; it says when it

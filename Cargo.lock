@@ -2035,6 +2035,7 @@ version = "0.1.6"
 dependencies = [
  "anyhow",
  "chrono",
+ "flate2",
  "serde_json",
  "sha2",
  "zstd",
