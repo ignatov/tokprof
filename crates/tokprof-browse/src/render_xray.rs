@@ -66,6 +66,9 @@ pub fn text(x: &XRay, style: &Style, profile_dir: &Path, home: &Path) -> String 
     if let Some(r) = &x.rhythm {
         let _ = writeln!(out, "{}", r.line());
     }
+    if x.without_usage {
+        return without_usage(out, x, style);
+    }
     if let Some(context) = &x.context {
         out.push('\n');
         context_lines(&mut out, context, style);
@@ -96,6 +99,21 @@ pub fn text(x: &XRay, style: &Style, profile_dir: &Path, home: &Path) -> String 
             id = x.short_id
         ))
     );
+    out
+}
+
+/// The X-ray of a session whose log gives no usage (session-xray, Sessions without usage): its
+/// own cost, and the blocks that rest on times and calls only.
+fn without_usage(mut out: String, x: &XRay, style: &Style) -> String {
+    let counter = x.agent.info().cost_counter.clone().unwrap_or_else(|| format!("{}'s own cost count", x.agent.info().title));
+    let cost = match x.own_usd {
+        Some(own) => format!("{} by {counter}; the log gives no usage", usd(own)),
+        None => "the log gives no usage".to_string(),
+    };
+    let _ = writeln!(out, "{} {cost}", style.dim(&format!("{:<9}", "cost")));
+    waits_lines(&mut out, x, style);
+    tool_lines(&mut out, x, style);
+    failure_lines(&mut out, x, style);
     out
 }
 
@@ -338,7 +356,8 @@ fn failure_lines(out: &mut String, x: &XRay, style: &Style) {
                 Some(head) => format!("{} {head}", key.0),
                 None => key.0.clone(),
             };
-            table.push(vec![clip_end(&name, 32), r.failed.to_string(), format!("{:.0}%", 100.0 * r.failed_share()), amount(&r.after)]);
+            let after = if r.no_usage() { "–".to_string() } else { amount(&r.after) };
+            table.push(vec![clip_end(&name, 32), r.failed.to_string(), format!("{:.0}%", 100.0 * r.failed_share()), after]);
             errors.push(r.latest_error.as_ref().map_or(String::new(), |e| clip_end(&e.1, 60)));
         }
         let lines = tokprof_core::fmt::table(&table, 1);
@@ -569,6 +588,20 @@ pub(crate) mod tests {
     use tokprof_core::xray::TrailingCompaction;
 
     #[test]
+    fn a_session_without_usage_shows_its_own_cost_and_no_spend() {
+        use tokprof_core::source::{AgentId, AgentInfo};
+        let agent = AgentId::new(AgentInfo { cost_counter: Some("the platform's bill".into()), ..AgentInfo::named("cloud") });
+        let x = XRay { agent, without_usage: true, own_usd: Some(1.5), ..xray(Vec::new()) };
+        let shown = text(&x, &Style::with_color(false), Path::new("/tmp"), Path::new("/h"));
+        assert!(shown.contains("\ncost      $1.50 by the platform's bill; the log gives no usage\n"), "{shown}");
+        for gone in ["spend  ", "work   ", "what cost the most", "profile:"] {
+            assert!(!shown.contains(gone), "{gone}: {shown}");
+        }
+        let none = text(&XRay { own_usd: None, ..x }, &Style::with_color(false), Path::new("/tmp"), Path::new("/h"));
+        assert!(none.contains("\ncost      the log gives no usage\n"), "{none}");
+    }
+
+    #[test]
     fn the_share_of_a_cost_that_reads_zero_is_left_out() {
         assert_eq!(of_session(0.01, 0.004), "");
         assert_eq!(of_session(0.01, 0.0), "");
@@ -638,6 +671,8 @@ pub(crate) mod tests {
             prompts,
             tools: Default::default(),
             setup: None,
+            without_usage: false,
+            own_usd: None,
             misses: Vec::new(),
             rhythm: None,
             busy: Default::default(),

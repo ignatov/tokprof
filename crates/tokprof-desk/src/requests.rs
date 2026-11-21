@@ -1026,6 +1026,7 @@ mod tests {
 
     fn point(ts_ms: i64, usd: f64) -> RequestPoint {
         RequestPoint {
+            no_usage: false,
             ts_ms,
             prompt_tokens: 1_000,
             usd,

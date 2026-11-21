@@ -22,7 +22,7 @@ pub fn text(x: &XRay, style: &Style) -> String {
     if points.is_empty() {
         return out;
     }
-    let unknown = points.iter().filter(|p| p.entered.is_none()).count();
+    let unknown = points.iter().filter(|p| p.entered.is_none() && !p.no_usage).count();
     if unknown > 0 {
         let _ = writeln!(out, "          {}", style.dim(&format!("the log does not show what {} held", count(unknown as u64, "prompt", "prompts"))));
     }
@@ -44,6 +44,9 @@ fn head(points: &[RequestPoint]) -> String {
     if points.is_empty() {
         return n;
     }
+    if points.iter().all(|p| p.no_usage) {
+        return format!("{n} · the log gives no usage");
+    }
     let priced = points.iter().any(|p| p.priced);
     let show = |v: f64| if priced { usd(v) } else { format!("{} tokens", tokens(v)) };
     let part = |i: usize| points.iter().map(|p| if priced { p.parts[i].usd } else { p.parts[i].tokens }).sum::<f64>();
@@ -61,16 +64,19 @@ fn head(points: &[RequestPoint]) -> String {
 fn row(n: usize, p: &RequestPoint, style: &Style) -> String {
     let u = &p.usage;
     let cost = if p.priced { usd(p.usd) } else { format!("{} tok", tokens(p.total(false))) };
+    // A request without usage has no tokens or cost to show.
+    let known = |v: f64| if p.no_usage { "–".to_string() } else { tokens(v) };
+    let cost = if p.no_usage { "–".to_string() } else { cost };
     let why = why(p, true);
     let why = if p.miss.as_ref().is_some_and(|m| !m.cause.expected()) { style.paint("31", &why) } else { why };
     let mut out = format!(
         "{n:>6}  {:<14}{:>8}{:>8}{:>10}{:>8}{:>8}{:>8}  {why}",
         local_time(p.ts_ms, "%m-%d %H:%M:%S"),
-        tokens(u.cache_read as f64),
-        tokens(u.cache_write() as f64),
-        tokens(u.uncached as f64),
-        tokens(u.output as f64),
-        tokens(p.prompt_tokens as f64),
+        known(u.cache_read as f64),
+        known(u.cache_write() as f64),
+        known(u.uncached as f64),
+        known(u.output as f64),
+        known(p.prompt_tokens as f64),
         cost
     );
     out = out.trim_end().to_string();
@@ -94,6 +100,7 @@ mod tests {
 
     fn point(ts_ms: i64) -> RequestPoint {
         RequestPoint {
+            no_usage: false,
             ts_ms,
             prompt_tokens: 0,
             usd: 0.0,
@@ -132,6 +139,14 @@ mod tests {
     }
 
     /// Request 57: an idle miss that re-wrote 490.3k.
+    #[test]
+    fn a_request_without_usage_shows_dashes() {
+        let p = RequestPoint { no_usage: true, ..point(1_000) };
+        let line = row(1, &p, &Style::with_color(false));
+        assert!(line.trim_end().ends_with("–       –         –       –       –       –  the log gives no usage"), "{line}");
+        assert_eq!(head(&[p]), "1 request · the log gives no usage");
+    }
+
     fn missed() -> RequestPoint {
         let ts = local_ts("2026-11-03 14:00:12");
         let mut p = point(ts);

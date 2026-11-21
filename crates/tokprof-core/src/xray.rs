@@ -289,6 +289,11 @@ pub struct XRay {
     /// What each stack of `tokprof flame`'s default stack spent, the stacks that
     /// `tokprof flame --session` writes for the session.
     pub stacks: Stacks,
+    /// Every request of the session, its subagents included, has no usage in its log
+    /// (session-xray, Sessions without usage).
+    pub without_usage: bool,
+    /// The session's own cost, as its agent counted it (session-logs, Agent-reported cost).
+    pub own_usd: Option<f64>,
 }
 
 /// What one typed message cost: the requests from it to the next typed message, and the
@@ -423,6 +428,11 @@ pub fn xray(catalog: &Catalog, file: &SessionRef, pricing: &Pricing, now_ms: i64
         call_log,
         rhythm: crate::rhythm::SessionRhythm::of(main, now_ms, &crate::rhythm::local_offset),
         busy: crate::busy::Busy::of(main, &sessions[1..]),
+        without_usage: {
+            let mut requests = sessions.iter().flat_map(|s| s.chains.iter().flat_map(|c| &c.requests)).peekable();
+            requests.peek().is_some() && requests.all(|r| r.no_usage)
+        },
+        own_usd: main.reported_usd,
         stacks: totals.profile.stacks,
     })
 }
@@ -725,6 +735,11 @@ pub struct Glance {
     /// `None` for a session the rhythm leaves out. The session runs while this is less than 15
     /// minutes old (see [`Glance::runs_at`]).
     pub working_last: Option<i64>,
+    /// Every request of the main log has no usage: `cost` says nothing, and `own_usd` stands
+    /// for it (session-browser, Own cost in the session list).
+    pub without_usage: bool,
+    /// The session's own cost, as its agent counted it.
+    pub own_usd: Option<f64>,
 }
 
 impl Glance {
@@ -815,6 +830,11 @@ fn glance_of(main: Option<Session>, totals: &Totals, pricing: &Pricing, now_ms: 
             g.waiting_since = lane.waiting_since();
             g.working_last = lane.working_last();
         }
+    }
+    if let Some(s) = main.as_ref() {
+        let mut requests = s.chains.iter().flat_map(|c| &c.requests).peekable();
+        g.without_usage = requests.peek().is_some() && requests.all(|r| r.no_usage);
+        g.own_usd = s.reported_usd;
     }
     g.title = main.and_then(|s| s.title);
     g

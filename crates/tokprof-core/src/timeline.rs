@@ -49,6 +49,8 @@ pub struct RequestPoint {
     pub streak: bool,
     /// Shell calls of the response that committed and worked.
     pub commits: u32,
+    /// The log gives no usage for the request: its tokens and cost are not known.
+    pub no_usage: bool,
 }
 
 impl RequestPoint {
@@ -261,6 +263,7 @@ impl Collector {
             failed: 0,
             streak: false,
             commits: 0,
+            no_usage: r.no_usage,
         });
         self.open = Some(self.points.len() - 1);
         self.chain = r.chain.to_string();
@@ -418,6 +421,9 @@ pub fn why(p: &RequestPoint, long: bool) -> String {
             out += &format!(" · {} avoidable", usd(u));
         }
         return out;
+    }
+    if p.no_usage {
+        return "the log gives no usage".to_string();
     }
     if p.first {
         return "first request".to_string();

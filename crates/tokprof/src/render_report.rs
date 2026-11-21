@@ -61,7 +61,14 @@ pub fn summary(c: &Collector, window: &Filter, price_file: &Path) -> String {
     let total = c.spend.priced_usd();
     // The premium of the misses the cause table lists, so expected rebuilds are left out of both.
     let avoidable = c.avoidable_usd();
-    let _ = writeln!(out, "\nTotal priced: {}   avoidable on cache misses: {} ({:.1}%)", usd(total), usd(avoidable), 100.0 * avoidable / total.max(1e-9));
+    // Only requests without usage: no spend to total or to break down (cost-attribution, Summary
+    // rows without usage).
+    let without_usage = !c.spend.models.is_empty() && c.spend.models.values().all(|m| m.no_usage());
+    if without_usage {
+        out.push('\n');
+    } else {
+        let _ = writeln!(out, "\nTotal priced: {}   avoidable on cache misses: {} ({:.1}%)", usd(total), usd(avoidable), 100.0 * avoidable / total.max(1e-9));
+    }
     if !unpriced.is_empty() {
         let list = unpriced.iter().map(|(m, t)| format!("{m} ({} tokens)", tokens(*t))).collect::<Vec<_>>().join(", ");
         let _ = writeln!(out, "No price for {list}. Add them to {}", price_file.display());
@@ -77,6 +84,10 @@ pub fn summary(c: &Collector, window: &Filter, price_file: &Path) -> String {
         } else {
             let _ = writeln!(out, "{counter} for {what}: {}; tokprof for the same sessions: {}", usd(r.reported_usd), usd(r.ours_usd));
         }
+    }
+    if without_usage {
+        out.push_str("\nThe logs give no usage: no spend by client, origin, task, trigger or activity, no setup and no cache misses.\n");
+        return out;
     }
     out.push('\n');
     out.push_str(&clients(c));
