@@ -5,14 +5,14 @@ use std::path::{Path, PathBuf};
 
 use tokprof_core::model::{CallRecord, ChainKind, Outcome, Session, ToolClass};
 use tokprof_core::source::{Claim, LogSource};
-use tokprof_source_copilot::Copilot;
+use tokprof_source_copilot_cloud::CopilotCloud;
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures")
 }
 
-fn source() -> Copilot {
-    Copilot::at(fixtures())
+fn source() -> CopilotCloud {
+    CopilotCloud::at(fixtures())
 }
 
 fn sessions() -> Vec<Session> {
@@ -92,7 +92,7 @@ fn a_log_without_a_record() {
 /// A log outside the folder is read when its first data line is a chat chunk.
 #[test]
 fn a_log_given_as_the_target() {
-    let elsewhere = Copilot::at(fixtures().join("2026-10-27"));
+    let elsewhere = CopilotCloud::at(fixtures().join("2026-10-27"));
     let loose = fixtures().join("loose").join("1b2c3d4e-0000-4000-8000-000000000003.sse");
     assert_eq!(elsewhere.claim(&loose), Claim::Yes);
     assert_eq!(elsewhere.claim(Path::new("no-such.sse")), Claim::No);

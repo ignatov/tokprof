@@ -1,7 +1,7 @@
-$ tokprof --prices tests/golden/prices.toml --agent copilot scan 1b2c3d4e-0000-4000-8000-000000000001 --calls
+$ tokprof --prices tests/golden/prices.toml --agent copilot-cloud scan 1b2c3d4e-0000-4000-8000-000000000001 --calls
 --- stdout
 tokprof · tool calls of the main conversation
-session   copilot  github.com/octo/app  1b2c3d4e-0000-4000-8000-000000000001
+session   copilot-cloud  github.com/octo/app  1b2c3d4e-0000-4000-8000-000000000001
 calls     12 in the main conversation · 1 failed · 3.4m in calls, median 1.5s
 
 group        calls  failed  time  med time  tokens

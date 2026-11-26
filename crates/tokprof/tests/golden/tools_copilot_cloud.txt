@@ -1,4 +1,4 @@
-$ tokprof --prices tests/golden/prices.toml --agent copilot tools
+$ tokprof --prices tests/golden/prices.toml --agent copilot-cloud tools
 --- stdout
 Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent do (trips)
 
@@ -31,4 +31,4 @@ grep                       1  0.0s      0.0s           8          –     –   
 spend – · the logs give no usage, so these calls have no rent or trips
 failed 1 call · rules denied 1
 --- stderr
-read copilot 3 files (0.0 GB) in <time>
+read copilot-cloud 3 files (0.0 GB) in <time>

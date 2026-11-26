@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/tokprof-core", "crates/tokprof-logio", "crates/tokprof-sources", "crates/tokprof-browse", "crates/tokprof", "sources/claude-code", "sources/codex", "sources/pi", "sources/opencode", "sources/copilot"]
+members = ["crates/tokprof-core", "crates/tokprof-logio", "crates/tokprof-sources", "crates/tokprof-browse", "crates/tokprof", "sources/claude-code", "sources/codex", "sources/pi", "sources/opencode", "sources/copilot-cloud"]
 # The window builds in a workspace of its own, so that this one never fetches Rune.
 exclude = ["crates/tokprof-desk"]
 
@@ -20,7 +20,7 @@ tokprof-source-claude-code = { path = "sources/claude-code" }
 tokprof-source-codex = { path = "sources/codex" }
 tokprof-source-pi = { path = "sources/pi" }
 tokprof-source-opencode = { path = "sources/opencode" }
-tokprof-source-copilot = { path = "sources/copilot" }
+tokprof-source-copilot-cloud = { path = "sources/copilot-cloud" }
 ansi-to-tui = "8"
 anyhow = "1"
 chrono = "0.4"

@@ -79,10 +79,10 @@ goldens! {
     scan_calls: ["scan", "5e5510f0", "--calls"] View::Masked;
     scan_calls_failed: ["scan", "5e5510f0", "--calls", "--failed"] View::Masked;
     scan_calls_group: ["scan", "5e5510f0", "--calls", "--group", "shell"] View::Masked;
-    // The saved Copilot logs, whose requests have no usage.
-    summary_copilot: ["--agent", "copilot", "summary"] View::Out;
-    tools_copilot: ["--agent", "copilot", "tools"] View::Out;
-    scan_calls_copilot: ["--agent", "copilot", "scan", "1b2c3d4e-0000-4000-8000-000000000001", "--calls"] View::Masked;
+    // The saved logs of the Copilot coding agent, whose requests have no usage.
+    summary_copilot_cloud: ["--agent", "copilot-cloud", "summary"] View::Out;
+    tools_copilot_cloud: ["--agent", "copilot-cloud", "tools"] View::Out;
+    scan_calls_copilot_cloud: ["--agent", "copilot-cloud", "scan", "1b2c3d4e-0000-4000-8000-000000000001", "--calls"] View::Masked;
 }
 
 const PRICES: &str = "tests/golden/prices.toml";

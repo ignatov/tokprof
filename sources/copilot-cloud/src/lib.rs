@@ -45,7 +45,7 @@ const TOOLS: &[&str] = &[
     "run_custom_setup_step",
 ];
 
-pub struct Copilot {
+pub struct CopilotCloud {
     /// The folder the logs were saved in.
     root: PathBuf,
     agent: AgentId,
@@ -53,23 +53,23 @@ pub struct Copilot {
     records: Mutex<Option<HashMap<String, PathBuf>>>,
 }
 
-impl Copilot {
+impl CopilotCloud {
     /// The logs under `$TOKPROF_COPILOT_DIR`, else under `copilot` in `$TOKPROF_DIR`, else in
     /// `~/tokprof`.
-    pub fn from_env(home: &Path) -> Copilot {
+    pub fn from_env(home: &Path) -> CopilotCloud {
         let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
         let root = var("TOKPROF_COPILOT_DIR").unwrap_or_else(|| var("TOKPROF_DIR").unwrap_or_else(|| home.join("tokprof")).join("copilot"));
-        Copilot::at(root)
+        CopilotCloud::at(root)
     }
 
     /// The logs under a folder.
-    pub fn at(root: PathBuf) -> Copilot {
-        Copilot { root, agent: Copilot::agent(), records: Mutex::new(None) }
+    pub fn at(root: PathBuf) -> CopilotCloud {
+        CopilotCloud { root, agent: CopilotCloud::agent(), records: Mutex::new(None) }
     }
 
     pub fn agent() -> AgentId {
         AgentId::new(AgentInfo {
-            name: "copilot".to_string(),
+            name: "copilot-cloud".to_string(),
             title: "GitHub Copilot coding agent".to_string(),
             // A session id is a random UUID.
             short_id_len: 8,
@@ -95,7 +95,7 @@ impl Copilot {
         let session_id = id_from_name(path);
         let (modified_ns, created_ms) = file_times(meta);
         SessionRef {
-            source: "copilot",
+            source: "copilot-cloud",
             agent: self.agent.clone(),
             locator: Locator::File(path.to_path_buf()),
             main_id: session_id.clone(),
@@ -143,9 +143,9 @@ impl Copilot {
     }
 }
 
-impl LogSource for Copilot {
+impl LogSource for CopilotCloud {
     fn name(&self) -> &'static str {
-        "copilot"
+        "copilot-cloud"
     }
 
     fn agents(&self) -> Vec<AgentId> {
@@ -331,7 +331,7 @@ mod tests {
 
     #[test]
     fn the_folder_is_the_one_given() {
-        let c = Copilot::at(PathBuf::from("/data/copilot"));
+        let c = CopilotCloud::at(PathBuf::from("/data/copilot"));
         assert_eq!(c.watched_paths(), [PathBuf::from("/data/copilot")]);
         assert_eq!(c.claim(Path::new("/data/copilot/2026-11-15/a.sse.gz")), Claim::Yes);
         assert_eq!(c.claim(Path::new("/data/copilot/a.json")), Claim::No);

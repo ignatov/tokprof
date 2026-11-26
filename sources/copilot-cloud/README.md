@@ -1,6 +1,6 @@
-# tokprof-source-copilot
+# tokprof-source-copilot-cloud
 
-tokprof's source of the saved logs of the GitHub Copilot coding agent, the cloud agent that works on a repository and opens pull requests. Its agent is `copilot`, read only with `--agent copilot`: it is not in the default list.
+tokprof's source of the saved logs of the GitHub Copilot coding agent, the cloud agent that works on a repository and opens pull requests. Its agent is `copilot-cloud`, read only with `--agent copilot-cloud`: it is not in the default list. The agent `copilot` is the GitHub Copilot CLI, whose source is `sources/copilot`.
 
 - **Where:** the agent writes no local logs. The user saves each session's log, the answer of the agent sessions API (`GET …/agents/sessions/<id>/logs`), as `<session id>.sse` or `<session id>.sse.gz`, at any depth under `$TOKPROF_COPILOT_DIR`, else under `copilot` in the profile directory (`$TOKPROF_DIR`, else `~/tokprof`). A log elsewhere is read when given as the target and its first data line is a chat chunk.
 - **Record:** the session's record of the agent tasks API, `<session id>.json`, beside the log or anywhere under the same folder, whose `id` is the session id. It gives the title (`name`), the model (`model`, such as `sweagent-capi:claude-fable-5.2`, shown as `claude-fable-5-2`: after the last `:`, with the dots of a `claude-` id as dashes) and the billed credits (`usage.amount / 1e9` when `usage.type` is `ai_credits`). A session without a record has the model `unknown` and no cost.

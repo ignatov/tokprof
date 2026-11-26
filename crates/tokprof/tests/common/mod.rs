@@ -50,7 +50,7 @@ pub fn tokprof(home: &Path) -> Command {
 }
 
 /// tokprof over the log sources' fixture logs: Claude Code's and Codex's, and with `all` pi's,
-/// OpenCode's and the saved Copilot logs too; Copilot's are read only with `--agent copilot`. OpenCode's fixtures are SQL text; its stores are built from them in the home's
+/// OpenCode's and the saved Copilot logs too; the cloud agent's are read only with `--agent copilot-cloud`. OpenCode's fixtures are SQL text; its stores are built from them in the home's
 /// data directory, as its conformance test builds them.
 pub fn tokprof_fixtures(home: &Path, all: bool) -> Command {
     let root = root();
@@ -60,7 +60,7 @@ pub fn tokprof_fixtures(home: &Path, all: bool) -> Command {
     if all {
         c.env("PI_CODING_AGENT_SESSION_DIR", root.join("sources").join("pi").join("tests").join("fixtures").join("sessions"));
         opencode_stores(&home.join(".local").join("share").join("opencode"));
-        c.env("TOKPROF_COPILOT_DIR", root.join("sources").join("copilot").join("tests").join("fixtures"));
+        c.env("TOKPROF_COPILOT_DIR", root.join("sources").join("copilot-cloud").join("tests").join("fixtures"));
     }
     c
 }

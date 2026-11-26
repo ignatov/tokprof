@@ -1,5 +1,5 @@
 [package]
-name = "tokprof-source-copilot"
+name = "tokprof-source-copilot-cloud"
 description = "tokprof's source of the saved logs of the GitHub Copilot coding agent"
 version.workspace = true
 edition.workspace = true
