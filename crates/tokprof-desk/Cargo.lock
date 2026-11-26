@@ -3453,6 +3453,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokprof-source-copilot-cloud"
+version = "0.1.6"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "tokprof-core",
+ "tokprof-logio",
+]
+
+[[package]]
 name = "tokprof-source-opencode"
 version = "0.1.6"
 dependencies = [
@@ -3481,6 +3491,7 @@ dependencies = [
  "tokprof-source-claude-code",
  "tokprof-source-codex",
  "tokprof-source-copilot",
+ "tokprof-source-copilot-cloud",
  "tokprof-source-opencode",
  "tokprof-source-pi",
 ]

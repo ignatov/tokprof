@@ -1,8 +1,8 @@
 $ tokprof --prices tests/golden/prices.toml flame -o <home>/f.folded
 --- stdout
-wrote 62 stacks to ~/f.folded
+wrote 119 stacks to ~/f.folded
 --- stderr
-read claude 2 files (0.0 GB), codex 3 files (0.0 GB), pi 3 files (0.0 GB), opencode 4 files (0.0 GB) in <time>
+read claude 2 files (0.0 GB), codex 3 files (0.0 GB), pi 3 files (0.0 GB), opencode 4 files (0.0 GB), copilot 2 files (0.0 GB) in <time>
 --- f.folded
 claude;/w/app;5e5510f0;main;turn 0;assistant text;output 2182
 claude;/w/app;5e5510f0;main;turn 0;thinking;output 9818
@@ -44,6 +44,63 @@ codex;/w/svc;01a19a00-1111-7222;main;turn 2;user prompt;uncached input 1000
 codex;/w/svc;01a19a00-1111-7222;subagent:explorer;assistant text;output 800
 codex;/w/svc;01a19a00-1111-7222;subagent:explorer;turn 1;user prompt;cache read 300
 codex;/w/svc;01a19a00-1111-7222;subagent:explorer;turn 1;user prompt;uncached input 3000
+copilot;/Users/me/src/app;c0de0001;main;thinking;output 181600
+copilot;/Users/me/src/app;c0de0001;main;turn 0;assistant text;cache read 2087
+copilot;/Users/me/src/app;c0de0001;main;turn 0;assistant text;output 10400
+copilot;/Users/me/src/app;c0de0001;main;turn 0;reminders;other;cache read 1301
+copilot;/Users/me/src/app;c0de0001;main;turn 0;reminders;other;cache write 16000
+copilot;/Users/me/src/app;c0de0001;main;turn 0;reminders;other;uncached input 80
+copilot;/Users/me/src/app;c0de0001;main;turn 1;assistant text;cache read 3013
+copilot;/Users/me/src/app;c0de0001;main;turn 1;assistant text;output 37
+copilot;/Users/me/src/app;c0de0001;main;turn 1;thinking;cache read 3013
+copilot;/Users/me/src/app;c0de0001;main;turn 1;thinking;output 530
+copilot;/Users/me/src/app;c0de0001;main;turn 1;tool calls;bash;cargo test;cache read 13202
+copilot;/Users/me/src/app;c0de0001;main;turn 1;tool calls;bash;cargo test;output 161
+copilot;/Users/me/src/app;c0de0001;main;turn 1;tool calls;bash;git status;cache read 6744
+copilot;/Users/me/src/app;c0de0001;main;turn 1;tool calls;bash;git status;output 82
+copilot;/Users/me/src/app;c0de0001;main;turn 1;tool results;bash;cargo test;cache read 6601
+copilot;/Users/me/src/app;c0de0001;main;turn 1;tool results;bash;git status;cache read 2009
+copilot;/Users/me/src/app;c0de0001;main;turn 1;user prompt;cache read 9758
+copilot;/Users/me/src/app;c0de0001;main;turn 1;user prompt;cache write 114275
+copilot;/Users/me/src/app;c0de0001;main;turn 1;user prompt;uncached input 8
+copilot;/Users/me/src/app;c0de0001;main;turn 2;assistant text;cache read 6010
+copilot;/Users/me/src/app;c0de0001;main;turn 2;assistant text;output 207240
+copilot;/Users/me/src/app;c0de0001;main;turn 2;assistant text;rewrite after miss 469980
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool calls;ask_user;cache read 1274
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool calls;ask_user;output 1148
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool calls;bash;cargo watch;cache read 1853
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool calls;bash;cargo watch;output 1669
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool calls;edit;/etc/hosts;cache read 1892
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool calls;edit;/etc/hosts;output 1704
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool calls;github-mcp-server-web_search;mcp:github-mcp-server;cache read 1583
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool calls;github-mcp-server-web_search;mcp:github-mcp-server;output 1426
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool calls;read_bash;cache read 1043
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool calls;read_bash;output 939
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool calls;report_tool;cache read 463
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool calls;report_tool;output 417
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool calls;task;cache read 5058
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool calls;task;output 4556
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool calls;view;/Users/me/src/app/src/parser.rs;cache read 1622
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool calls;view;/Users/me/src/app/src/parser.rs;output 1461
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool results;bash;cargo watch;cache read 1557
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool results;bash;cargo watch;cache write 12889
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool results;github-mcp-server-web_search;mcp:github-mcp-server;cache read 811
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool results;report_tool;cache write 3821
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool results;report_tool;uncached input 32
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool results;task;cache read 1274
+copilot;/Users/me/src/app;c0de0001;main;turn 2;tool results;view;/Users/me/src/app/src/parser.rs;cache read 618
+copilot;/Users/me/src/app;c0de0001;main;turn 2;user prompt;cache read 3512
+copilot;/Users/me/src/app;c0de0001;main;turn 2;user prompt;cache write 25280
+copilot;/Users/me/src/app;c0de0001;main;turn 2;user prompt;uncached input 16
+copilot;/Users/me/src/app;c0de0001;subagent: review-parser;turn 1;assistant text;output 16000
+copilot;/Users/me/src/app;c0de0001;subagent: review-parser;turn 1;tool calls;grep;fn parse;cache read 1864
+copilot;/Users/me/src/app;c0de0001;subagent: review-parser;turn 1;tool calls;grep;fn parse;output 4800
+copilot;/Users/me/src/app;c0de0001;subagent: review-parser;turn 1;tool results;grep;fn parse;cache read 1269
+copilot;/Users/me/src/app;c0de0001;subagent: review-parser;turn 1;tool results;grep;fn parse;cache write 3000
+copilot;/Users/me/src/app;c0de0001;subagent: review-parser;turn 1;tool results;grep;fn parse;uncached input 80
+copilot;/Users/me/src/app;c0de0001;subagent: review-parser;turn 1;user prompt;cache read 1065
+copilot;/Users/me/src/app;c0de0001;subagent: review-parser;turn 1;user prompt;cache write 209900
+copilot;/Users/me/src/app;c0de0001;subagent: review-parser;turn 1;user prompt;uncached input 80
 opencode;/h/src/api;ses_f00000000003cccc;main;assistant text;output 8100
 opencode;/h/src/api;ses_f00000000003cccc;main;unknown;cache read 420
 opencode;/h/src/api;ses_f00000000003cccc;main;unknown;cache write 7875

@@ -1,0 +1,29 @@
+$ tokprof --prices tests/golden/prices.toml --agent copilot scan c0de0001 --calls
+--- stdout
+tokprof · tool calls of the main conversation
+session   copilot  /Users/me/src/app  c0de0001-0000-4000-8000-000000000001
+calls     11 in the main conversation, 12 with the subagents' · 2 failed · 1 refused · 1 denied · 1 background · 27s in calls, median 0.2s
+
+group                  calls  failed  time  med time  tokens
+shell                      5       2   17s      2.6s   40.5k
+files                      2          0.1s      0.1s    3.1k
+search                     1          0.2s      0.2s    6.7k
+subagents                  1          8.1s      8.1s    6.4k
+agent                      1             –         –       0
+mcp github-mcp-server      1          1.4s      1.4s    4.1k
+other                      1          0.1s      0.1s     386
+all                       12       2   27s      0.2s   61.1k
+
+ #  started         req  group                  tool                          input                                      status      took  tokens
+ 1  MM-DD hh:mm:ss    1  shell                  bash                          cd /Users/me/src/app && cargo test -p app  failed       12s   24.1k
+ 2  MM-DD hh:mm:ss    1  shell                  bash                          git status                                 done        0.2s    7.3k
+ 3  MM-DD hh:mm:ss    2  subagents              task                          review-parser                              done        8.1s    6.4k
+ 4  MM-DD hh:mm:ss    2  files                  view                          /Users/me/src/app/src/parser.rs            done        0.1s    3.1k
+ 5  MM-DD hh:mm:ss    2  mcp github-mcp-server  github-mcp-server-web_search  rust recursive descent parser              done        1.4s    4.1k
+ 6  MM-DD hh:mm:ss    2  agent                  ask_user                                                                 refused      13s       0
+ 7  MM-DD hh:mm:ss    2  shell                  bash                          cargo watch -x test                        background  0.5s    9.1k
+ 8  MM-DD hh:mm:ss    2  files                  edit                          /etc/hosts                                 denied      0.0s       0
+ 9  MM-DD hh:mm:ss    2  shell                  read_bash                     7                                          failed      0.0s       0
+10  MM-DD hh:mm:ss    2  other                  report_tool                                                              done        0.1s     386
+11  MM-DD hh:mm:ss    –  shell                  read_bash                     7                                          done        5.0s       –
+--- stderr

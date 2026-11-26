@@ -1,7 +1,7 @@
 //! What the commands print over the log sources' fixture logs, compared with the expected text in
 //! `tests/golden/<case>.txt`: the command line, its stdout, its stderr and, for `flame`, the file
 //! it wrote. Each case runs the binary on a home of its own (see `common`), over the fixtures of
-//! Claude Code, Codex, pi and OpenCode, and with `--prices tests/golden/prices.toml`, which prices every
+//! Claude Code, Codex, pi, OpenCode and the Copilot CLI, and with `--prices tests/golden/prices.toml`, which prices every
 //! model the fixtures name, so that a change to the built-in prices changes no golden.
 //!
 //! After a change of the printed text, write the files again and review their diff:
@@ -83,6 +83,11 @@ goldens! {
     summary_copilot_cloud: ["--agent", "copilot-cloud", "summary"] View::Out;
     tools_copilot_cloud: ["--agent", "copilot-cloud", "tools"] View::Out;
     scan_calls_copilot_cloud: ["--agent", "copilot-cloud", "scan", "1b2c3d4e-0000-4000-8000-000000000001", "--calls"] View::Masked;
+    // The Copilot CLI's logs: requests with usage and GitHub's credits, and a log without usage.
+    summary_copilot: ["--agent", "copilot", "summary"] View::Out;
+    tools_copilot: ["--agent", "copilot", "tools"] View::Out;
+    misses_copilot: ["--agent", "copilot", "misses", "--top", "0", "--expected"] View::Out;
+    scan_calls_copilot: ["--agent", "copilot", "scan", "c0de0001", "--calls"] View::Masked;
 }
 
 const PRICES: &str = "tests/golden/prices.toml";

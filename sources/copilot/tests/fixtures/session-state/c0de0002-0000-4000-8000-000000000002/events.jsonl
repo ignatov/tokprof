@@ -1,0 +1,8 @@
+{"type":"session.start","data":{"sessionId":"c0de0002-0000-4000-8000-000000000002","version":1,"producer":"copilot-agent","copilotVersion":"1.0.85","startTime":"2026-10-09T20:30:00.000Z","context":{"cwd":"/Users/me/notes"}},"id":"e0001","timestamp":"2026-10-09T20:30:00.000Z","parentId":null}
+{"type":"user.message","data":{"content":"what is in todo.md?","delivery":"idle"},"id":"e0002","timestamp":"2026-10-09T20:30:03.000Z","parentId":"e0001"}
+{"type":"assistant.turn_start","data":{"turnId":"0"},"id":"e0003","timestamp":"2026-10-09T20:30:03.200Z","parentId":"e0002"}
+{"type":"assistant.message","data":{"messageId":"m3","content":"","toolRequests":[{"toolCallId":"o1","name":"view","arguments":{"path":"/Users/me/notes/todo.md"},"type":"function"}],"model":"claude-fable-5.1","apiCallId":"msg_o1","turnId":"1"},"id":"e0004","timestamp":"2026-10-09T20:30:06.000Z","parentId":"e0003"}
+{"type":"tool.execution_start","data":{"toolCallId":"o1","toolName":"view","arguments":{"path":"/Users/me/notes/todo.md"}},"id":"e0005","timestamp":"2026-10-09T20:30:06.100Z","parentId":"e0004"}
+{"type":"tool.execution_complete","data":{"toolCallId":"o1","success":true,"toolTelemetry":{"properties":{"executionMode":"sync","detached":"false"},"metrics":{"result_token_count":12}},"result":{"content":"1. buy milk"}},"id":"e0006","timestamp":"2026-10-09T20:30:06.200Z","parentId":"e0005"}
+{"type":"assistant.turn_start","data":{"turnId":"1"},"id":"e0007","timestamp":"2026-10-09T20:30:06.300Z","parentId":"e0006"}
+{"type":"assistant.message","data":{"messageId":"m7","content":"One item: buy milk.","toolRequests":[],"model":"claude-fable-5.1","apiCallId":"msg_o2","turnId":"1"},"id":"e0008","timestamp":"2026-10-09T20:30:09.000Z","parentId":"e0007"}

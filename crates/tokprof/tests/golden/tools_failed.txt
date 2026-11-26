@@ -2,29 +2,43 @@ $ tokprof --prices tests/golden/prices.toml tools --by failed
 --- stdout
 Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent do (trips)
 
-group       calls  failed  time  med time  tokens
-shell           7       3  3.0m       38s    5.6k
-files           1          3.4s      3.4s       0
-web             1             –         –       0
-subagents       1             –         –       0
-agent           1             –         –       0
-mcp idea        1             –         –       0
-all            12       3  3.1m       30s    5.6k
-mcp linear      0                                  never called
+group                  calls  failed  time  med time  tokens
+shell                     12       5  3.3m      8.5s   46.1k
+files                      4          3.6s      0.1s    3.1k
+subagents                  2          8.1s      8.1s    6.4k
+agent                      2             –         –       0
+search                     1          0.2s      0.2s    6.7k
+web                        1             –         –       0
+mcp github-mcp-server      1          1.4s      1.4s    4.1k
+mcp idea                   1             –         –       0
+other                      1          0.1s      0.1s     386
+all                       25       5  3.5m      3.2s   66.7k
+mcp linear                 0                                  never called
 
-tool                       calls  time  med time  avg result  avg input   rent  trips  single  failed  after  hint
-Bash cargo test                1   30s       30s           –          –  $0.00  $0.00      0%       1  $0.03
-exec_command python3 x.py      1  3.0s      3.0s           –          –  $0.00  $0.00      0%       1  $0.01
-exec_command cargo test        2   49s       25s        5.6k       1.3k  $0.00  $0.00    100%       1  $0.00
-Agent                          1     –         –           –          –  $0.01  $0.01    100%
-AskUserQuestion                1     –         –           –          –  $0.00  $0.00    100%
-Bash cargo bench               1     –         –           –          –  $0.00  $0.00      0%
-Bash cargo clippy              1   50s       50s           –          –  $0.00  $0.00      0%
-Bash rm -rf                    1   50s       50s           –          –  $0.00  $0.00      0%
-apply_patch                    1  3.4s      3.4s           –          –  $0.00  $0.00      0%
-mcp__idea__search_symbol       1     –         –           –          –  $0.01  $0.00      0%
-web_search_call                1     –         –           –          –  $0.00  $0.00      0%
-spend $0.46 · rent of these tools $0.03 · trips of these tools $0.03 (two views of the same money; do not add them)
-failed 3 calls, after them $0.04 until the tool worked again · you refused 2 · rules denied 1
+tool                          calls  time  med time  avg result  avg input   rent  trips  single  failed  after  hint
+read_bash                         2  5.0s      2.5s           0       5.2k  $0.00  $0.03      0%       1  $0.26
+bash cargo test                   1   12s       12s       24.1k      48.2k  $0.02  $0.03      0%       1  $0.25
+Bash cargo test                   1   30s       30s           –          –  $0.00  $0.00      0%       1  $0.03
+exec_command python3 x.py         1  3.0s      3.0s           –          –  $0.00  $0.00      0%       1  $0.01
+exec_command cargo test           2   49s       25s        5.6k       1.3k  $0.00  $0.00    100%       1  $0.00
+Agent                             1     –         –           –          –  $0.01  $0.01    100%
+AskUserQuestion                   1     –         –           –          –  $0.00  $0.00    100%
+Bash cargo bench                  1     –         –           –          –  $0.00  $0.00      0%
+Bash cargo clippy                 1   50s       50s           –          –  $0.00  $0.00      0%
+Bash rm -rf                       1   50s       50s           –          –  $0.00  $0.00      0%
+apply_patch                       1  3.4s      3.4s           –          –  $0.00  $0.00      0%
+ask_user                          1     –         –           0       6.4k  $0.00  $0.03      0%
+bash cargo watch                  1     –         –        9.1k       9.3k  $0.02  $0.03      0%
+bash git status                   1  0.2s      0.2s        7.3k      24.6k  $0.01  $0.03      0%
+edit                              1  0.0s      0.0s           0       9.5k  $0.00  $0.03      0%
+github-mcp-server-web_search      1  1.4s      1.4s        4.1k       7.9k  $0.00  $0.03      0%
+grep                              1  0.2s      0.2s        6.7k       9.3k  $0.01  $0.01    100%
+mcp__idea__search_symbol          1     –         –           –          –  $0.01  $0.00      0%
+report_tool                       1  0.1s      0.1s         386       2.3k  $0.00  $0.03      0%
+task                              1  8.1s      8.1s        6.4k      25.3k  $0.01  $0.03      0%
+view                              2  0.2s      0.1s        3.1k       8.1k  $0.00  $0.03     50%
+web_search_call                   1     –         –           –          –  $0.00  $0.00      0%
+spend $1.83 · rent of these tools $0.12 · trips of these tools $0.34 (two views of the same money; do not add them)
+failed 5 calls, after them $0.55 until the tool worked again · you refused 3 · rules denied 2
 --- stderr
-read claude 2 files (0.0 GB), codex 3 files (0.0 GB), pi 3 files (0.0 GB), opencode 4 files (0.0 GB) in <time>
+read claude 2 files (0.0 GB), codex 3 files (0.0 GB), pi 3 files (0.0 GB), opencode 4 files (0.0 GB), copilot 2 files (0.0 GB) in <time>

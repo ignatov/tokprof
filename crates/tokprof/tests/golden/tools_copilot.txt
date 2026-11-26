@@ -1,0 +1,30 @@
+$ tokprof --prices tests/golden/prices.toml --agent copilot tools
+--- stdout
+Spend by tool: calls, sizes, what keeping them cost (rent) and what they made the agent do (trips)
+
+group                  calls  failed  time  med time  tokens
+shell                      5       2   17s      2.6s   40.5k
+files                      3          0.2s      0.1s    3.1k
+search                     1          0.2s      0.2s    6.7k
+subagents                  1          8.1s      8.1s    6.4k
+agent                      1             –         –       0
+mcp github-mcp-server      1          1.4s      1.4s    4.1k
+other                      1          0.1s      0.1s     386
+all                       13       2   27s      0.2s   61.1k
+
+tool                          calls  time  med time  avg result  avg input   rent  trips  single  failed  after  hint
+bash cargo test                   1   12s       12s       24.1k      48.2k  $0.02  $0.03      0%       1  $0.25
+bash cargo watch                  1     –         –        9.1k       9.3k  $0.02  $0.03      0%
+grep                              1  0.2s      0.2s        6.7k       9.3k  $0.01  $0.01    100%
+task                              1  8.1s      8.1s        6.4k      25.3k  $0.01  $0.03      0%
+bash git status                   1  0.2s      0.2s        7.3k      24.6k  $0.01  $0.03      0%
+report_tool                       1  0.1s      0.1s         386       2.3k  $0.00  $0.03      0%
+github-mcp-server-web_search      1  1.4s      1.4s        4.1k       7.9k  $0.00  $0.03      0%
+view                              2  0.2s      0.1s        3.1k       8.1k  $0.00  $0.03     50%
+edit                              1  0.0s      0.0s           0       9.5k  $0.00  $0.03      0%
+ask_user                          1     –         –           0       6.4k  $0.00  $0.03      0%
+read_bash                         2  5.0s      2.5s           0       5.2k  $0.00  $0.03      0%       1  $0.26
+spend $1.37 · rent of these tools $0.09 · trips of these tools $0.31 (two views of the same money; do not add them)
+failed 2 calls, after them $0.51 until the tool worked again · you refused 1 · rules denied 1
+--- stderr
+read copilot 2 files (0.0 GB) in <time>

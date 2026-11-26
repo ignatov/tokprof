@@ -63,6 +63,8 @@ pub fn catalog_at(home: &Path) -> Catalog {
     sources.push(Box::new(tokprof_source_pi::Pi::from_env(home)));
     #[cfg(feature = "opencode")]
     sources.push(Box::new(tokprof_source_opencode::OpenCode::from_env(home)));
+    #[cfg(feature = "copilot")]
+    sources.push(Box::new(tokprof_source_copilot::Copilot::from_env(home)));
     #[cfg(feature = "copilot-cloud")]
     sources.push(Box::new(tokprof_source_copilot_cloud::CopilotCloud::from_env(home)));
     Catalog::new(sources, home.to_path_buf())

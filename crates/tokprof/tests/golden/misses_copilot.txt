@@ -1,0 +1,12 @@
+$ tokprof --prices tests/golden/prices.toml --agent copilot misses --top 0 --expected
+--- stdout
+Cache misses by cause
+
+agent    cause                  misses  re-processed  avoidable
+copilot  compaction (expected)       1         47.0k      $0.46
+
+Most expensive misses
+
+when  agent  project  session  chain  context  re-processed  avoidable  cause
+--- stderr
+read copilot 2 files (0.0 GB) in <time>
