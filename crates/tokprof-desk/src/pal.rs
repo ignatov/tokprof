@@ -48,7 +48,8 @@ pub struct Pal {
     pub out: Color,
     /// The rewrite after a miss as a part of the spend; `cold` is its text.
     pub miss: Color,
-    pub agents: [Color; 4],
+    /// The agents' colors, by the agent's place in the registry: [`AGENT_RGB`] in every theme.
+    pub agents: [Color; 6],
     pub work: Color,
     pub wait: Color,
     /// The edge of a wait's bar, so that its shape shows where its color is close to work's.
@@ -60,6 +61,17 @@ pub struct Pal {
     pub tail: Color,
     /// The context and other bars that are not money.
     pub neutral: Color,
+}
+
+/// The agents' colors as sRGB bytes, by the agent's place in the registry: each close to the icon
+/// of its product, and the same in every theme. `tokprof ui` colors the agents with the same
+/// values.
+pub const AGENT_RGB: [[u8; 3]; 6] = [[0xD9, 0x77, 0x57], [0x3B, 0x82, 0xF6], [0x06, 0xB6, 0xD4], [0xEA, 0xB3, 0x08], [0x89, 0x57, 0xE5], [0xDB, 0x61, 0xA2]];
+
+/// An opaque color from sRGB bytes.
+fn srgb(r: u8, g: u8, b: u8) -> Color {
+    let v = |x: u8| rune::color::srgb_decode(f32::from(x) / 255.0);
+    Color { r: v(r), g: v(g), b: v(b), a: 1.0 }
 }
 
 /// The window's colors in a theme. The alphas of the translucent marks are lower on a light
@@ -101,7 +113,7 @@ pub fn pal(t: &Theme) -> Pal {
         write: fill("warning"),
         out: fill("terminalAnsi6"),
         miss: fill("danger"),
-        agents: [c("terminalAnsi5"), c("terminalAnsi4"), c("terminalAnsi6"), c("terminalAnsi3")],
+        agents: AGENT_RGB.map(|[r, g, b]| srgb(r, g, b)),
         work: fill("success"),
         wait: c("warning").alpha(wait),
         wait_edge: c("warning").alpha(wait + 0.25),

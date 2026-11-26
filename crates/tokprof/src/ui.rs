@@ -23,8 +23,16 @@ use tokprof_core::rhythm;
 
 const LIST_WIDTH: u16 = 74;
 
-/// The colors of the agent column, by the agent's place in the registry.
-const AGENT_COLORS: [Color; 4] = [Color::Magenta, Color::Green, Color::Cyan, Color::Yellow];
+/// The colors of the agent column, by the agent's place in the registry: each close to the icon
+/// of its product, the same values as the window's.
+const AGENT_COLORS: [Color; 6] = [
+    Color::Rgb(0xD9, 0x77, 0x57),
+    Color::Rgb(0x3B, 0x82, 0xF6),
+    Color::Rgb(0x06, 0xB6, 0xD4),
+    Color::Rgb(0xEA, 0xB3, 0x08),
+    Color::Rgb(0x89, 0x57, 0xE5),
+    Color::Rgb(0xDB, 0x61, 0xA2),
+];
 
 type App = Browser<Text<'static>>;
 
